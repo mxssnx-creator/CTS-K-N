@@ -38,6 +38,17 @@ describe("live dispatch outcome classification", () => {
     })).toBe("blocked")
   })
 
+  test("does not report settled protective rollbacks as failed entries", () => {
+    expect(classifyLiveDispatchResult({
+      status: "closed",
+      statusReason: "entry protection contract incomplete; rolled back",
+    })).toBe("deferred")
+    expect(classifyLiveDispatchResult({
+      status: "placed_unconfirmed",
+      statusReason: "tracking by clientOrderId until authoritative recovery",
+    })).toBe("pending")
+  })
+
   test("separates venue rejects and unexpected errors", () => {
     expect(classifyLiveDispatchResult({ status: "rejected", statusReason: "BingX margin rejected" })).toBe("rejected")
     expect(classifyLiveDispatchResult({ status: "error", errorCode: "101204" })).toBe("rejected")

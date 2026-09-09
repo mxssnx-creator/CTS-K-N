@@ -62,6 +62,7 @@ export type LiveOrderDirection = "long" | "short"
 export type LiveOrderMode = "live" | "simulated"
 export type LiveOrderSourceLane = "direct-trade" | "main-trade" | "preset-trade" | "signal-trade" | "other"
 export type LiveOrderMarginType = "cross" | "isolated"
+export type LiveOrderAccountingClass = "entry" | "control"
 
 export interface PlaceLiveOrderInput {
   connectionId: string
@@ -107,6 +108,12 @@ export interface PlaceLiveOrderInput {
   positionTicket?: number
   /** Exact venue position identifier, distinct from the local ledger id. */
   exchangePositionId?: string
+  /**
+   * Accounting lane for progression counters. Reduce-only/control orders are
+   * never new exposure and therefore must not inflate entry failure totals.
+   * The default is derived from reduceOnly so legacy callers remain safe.
+   */
+  countEntryOrder?: boolean
 }
 
 function finiteOptional(value: unknown): number | undefined {
@@ -2039,6 +2046,8 @@ export interface PerSymbolOrderCounterOptions {
   epoch?: number
   /** Require the captured epoch to still own the connection before writing. */
   requireEpoch?: boolean
+  /** Control/DCA rows are kept out of the entry-order forensic hash. */
+  accountingClass?: LiveOrderAccountingClass
 }
 
 export async function recordPerSymbolOrderCounter(
@@ -2058,6 +2067,7 @@ export async function recordPerSymbolOrderCounter(
     const currentEpoch = await getCurrentEpoch(connectionId)
     if (currentEpoch === null || currentEpoch !== expectedEpoch) return false
   }
+  if (options.accountingClass === "control") return true
   const symbolKey = normalizeOrderSymbol(symbol)
   const directionKey = normalizeDirection(direction)
   await client.hincrby(liveOrdersBySymbolKey(connectionId), `${symbolKey}:${directionKey}:${metric}`, 1)
@@ -2081,16 +2091,27 @@ export function normalizeLiveOrderSourceLane(source: unknown): LiveOrderSourceLa
 async function recordLiveOrderSourceCounter(
   connectionId: string,
   source: unknown,
-  event: "placed" | "filled" | "failed" | "simulated",
+  event: "placed" | "filled" | "failed" | "preflight_failed" | "simulated",
   volumeUsd: number,
-  options: { countPositionCreated?: boolean; countAccumulated?: boolean },
+  options: {
+    countPositionCreated?: boolean
+    countAccumulated?: boolean
+    countEntryOrder?: boolean
+  },
 ): Promise<void> {
   const client = getRedisClient() as any
   const key = `live_orders_by_source_v1:${connectionId}`
-  const lane = normalizeLiveOrderSourceLane(source)
+  // Keep add-on/close controls in their own source lane even when an older
+  // caller only supplied a generic `main-trade` source. This is forensic
+  // context for the separate control counters and prevents an operator from
+  // mistaking a DCA retry for a new-entry failure.
+  const lane = options.countEntryOrder === false
+    ? "control"
+    : normalizeLiveOrderSourceLane(source)
   const increment = async (metric: string) => client.hincrby(key, `${lane}:${metric}`, 1)
   if (event === "placed") await increment("placed")
   if (event === "failed") await increment("failed")
+  if (event === "preflight_failed") await increment("preflight_failed")
   if (event === "simulated") {
     await increment("simulated")
     if (options.countPositionCreated !== false) await increment("simulated_position_created")
@@ -2135,53 +2156,86 @@ export async function recordLiveOrderProgression(
   connectionId: string,
   symbol: string,
   direction: LiveOrderDirection,
-  event: "placed" | "filled" | "failed" | "simulated",
+  event: "placed" | "filled" | "failed" | "preflight_failed" | "simulated",
   volumeUsd = 0,
   eventKey?: string,
-  options: { countPositionCreated?: boolean; countAccumulated?: boolean; source?: string } = {},
+  options: {
+    countPositionCreated?: boolean
+    countAccumulated?: boolean
+    source?: string
+    /** False routes placed/filled/failed totals to the control lane. */
+    countEntryOrder?: boolean
+  } = {},
 ): Promise<boolean> {
   const client = getRedisClient() as any
   const progKey = `progression:${connectionId}`
   const directionKey = normalizeDirection(direction)
   if (!(await claimLiveOrderProgressionEvent(connectionId, eventKey))) return false
-  await recordLiveOrderSourceCounter(connectionId, options.source, event, volumeUsd, options)
+  const countEntryOrder = options.countEntryOrder !== false
+  const metricPrefix = countEntryOrder ? "live_orders" : "live_control_orders"
+  await recordLiveOrderSourceCounter(connectionId, options.source, event, volumeUsd, {
+    ...options,
+    countEntryOrder,
+  })
   if (event === "placed") {
-    await client.hincrby(progKey, "live_orders_attempted_count", 1)
-    await client.hincrby(progKey, "live_orders_placed_count", 1)
+    await client.hincrby(progKey, `${metricPrefix}_attempted_count`, 1)
+    await client.hincrby(progKey, `${metricPrefix}_placed_count`, 1)
   }
   if (event === "filled") {
-    await client.hincrby(progKey, "live_orders_filled_count", 1)
-    if (options.countPositionCreated !== false) {
+    await client.hincrby(progKey, `${metricPrefix}_filled_count`, 1)
+    if (countEntryOrder && options.countPositionCreated !== false) {
       await client.hincrby(progKey, "live_positions_created_count", 1)
     }
     if (options.countAccumulated === true) {
-      await client.hincrby(progKey, "live_orders_accumulated_count", 1)
+      await client.hincrby(progKey, countEntryOrder
+        ? "live_orders_accumulated_count"
+        : "live_control_orders_accumulated_count", 1)
     }
     if (volumeUsd) {
-      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_volume_usd_total", volumeUsd)
-      else await client.hincrby(progKey, "live_volume_usd_total", Math.round(volumeUsd))
+      const volumeField = countEntryOrder
+        ? "live_volume_usd_total"
+        : "live_control_volume_usd_total"
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, volumeField, volumeUsd)
+      else await client.hincrby(progKey, volumeField, Math.round(volumeUsd))
     }
   }
   if (event === "failed") {
-    await client.hincrby(progKey, "live_orders_attempted_count", 1)
-    await client.hincrby(progKey, "live_orders_failed_count", 1)
+    await client.hincrby(progKey, `${metricPrefix}_attempted_count`, 1)
+    await client.hincrby(progKey, `${metricPrefix}_failed_count`, 1)
+  }
+  if (event === "preflight_failed") {
+    // No venue request was started. Keep this diagnostic count separate from
+    // both attempted and rejected order totals.
+    await client.hincrby(progKey, `${metricPrefix}_preflight_failed_count`, 1)
   }
   if (event === "simulated") {
     // Paper execution has its own counters. Never mix it into real venue
     // attempted/placed/filled/position-created metrics.
-    await client.hincrby(progKey, "live_orders_simulated_count", 1)
-    if (options.countPositionCreated !== false) {
+    const simulatedField = countEntryOrder
+      ? "live_orders_simulated_count"
+      : "live_control_orders_simulated_count"
+    await client.hincrby(progKey, simulatedField, 1)
+    if (countEntryOrder && options.countPositionCreated !== false) {
       await client.hincrby(progKey, "live_simulated_positions_created_count", 1)
     }
     if (options.countAccumulated === true) {
-      await client.hincrby(progKey, "live_simulated_orders_accumulated_count", 1)
+      await client.hincrby(progKey, countEntryOrder
+        ? "live_simulated_orders_accumulated_count"
+        : "live_control_orders_accumulated_count", 1)
     }
     if (volumeUsd) {
-      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, "live_simulated_volume_usd_total", volumeUsd)
-      else await client.hincrby(progKey, "live_simulated_volume_usd_total", Math.round(volumeUsd))
+      const volumeField = countEntryOrder
+        ? "live_simulated_volume_usd_total"
+        : "live_control_simulated_volume_usd_total"
+      if (typeof client.hincrbyfloat === "function") await client.hincrbyfloat(progKey, volumeField, volumeUsd)
+      else await client.hincrby(progKey, volumeField, Math.round(volumeUsd))
     }
   }
-  if (event !== "simulated") await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event)
+  if (event !== "simulated" && event !== "preflight_failed") {
+    await recordPerSymbolOrderCounter(connectionId, symbol, directionKey, event, {
+      accountingClass: countEntryOrder ? "entry" : "control",
+    })
+  }
   return true
 }
 
@@ -2381,6 +2435,11 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     countPositionCreated: input.countPositionCreated !== false,
     countAccumulated: input.countAccumulated === true,
     source: input.source,
+    // Reduce-only orders close or protect an existing position. They are
+    // control executions and must never inflate the new-entry failure
+    // denominator. Callers can still force the lane explicitly when a venue
+    // integration needs a non-standard lifecycle.
+    countEntryOrder: input.countEntryOrder ?? input.reduceOnly !== true,
   }
   const recordReconciledProgression = async (fill: ParsedFill, orderId: string, terminal: boolean) => {
     if (!willUseRealExchange || input.updateCounters === false) return
@@ -2416,7 +2475,11 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
       )
     }
   }
-  const completeDirectControlFailure = async (failure: unknown, raw?: any) => {
+  const completeDirectControlFailure = async (
+    failure: unknown,
+    raw?: any,
+    options: { venueAttempted?: boolean } = {},
+  ) => {
     const failedOrderId = liveOrderId(raw)
     const error = String(
       (failure as any)?.error
@@ -2426,13 +2489,14 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     )
     if (input.updateCounters !== false) {
       const identity = progressionIdentity(failedOrderId)
+      const progressionEvent = options.venueAttempted === false ? "preflight_failed" : "failed"
       await recordLiveOrderProgression(
         input.connectionId,
         symbol,
         direction,
-        "failed",
+        progressionEvent,
         0,
-        identity ? `${symbol}:${direction}:${identity}:failed` : undefined,
+        identity ? `${symbol}:${direction}:${identity}:${progressionEvent}` : undefined,
         progressionOptions,
       )
     }
@@ -2643,7 +2707,7 @@ export async function placeLiveOrder(input: PlaceLiveOrderInput): Promise<any> {
     // failure here is definitive: mark the claimed generation terminal so the
     // worker may advance instead of reconciling an order that was never sent.
     if (!directControl) throw error
-    return completeDirectControlFailure(error)
+    return completeDirectControlFailure(error, undefined, { venueAttempted: false })
   }
   const hedgeMode = String(connection.position_mode || "").toLowerCase().includes("hedge") || String(connection.position_mode || "").toLowerCase().includes("dual")
   const options = hedgeMode

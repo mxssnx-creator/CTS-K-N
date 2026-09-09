@@ -1284,6 +1284,11 @@ export async function GET(
     const globalOrderPlaced = n(liveOrderHash.live_orders_placed_count)
     const globalOrderFilled = n(liveOrderHash.live_orders_filled_count)
     const globalOrderFailed = n(liveOrderHash.live_orders_failed_count)
+    const controlOrderAttempted = n(liveOrderHash.live_control_orders_attempted_count)
+    const controlOrderPlaced = n(liveOrderHash.live_control_orders_placed_count)
+    const controlOrderFilled = n(liveOrderHash.live_control_orders_filled_count)
+    const controlOrderFailed = n(liveOrderHash.live_control_orders_failed_count)
+    const preflightOrderFailed = n(liveOrderHash.live_orders_preflight_failed_count)
     const progHash: Record<string, string> =
       activeProgressionKey === scope.progressionKey
         ? (Object.keys(activeProgressionRaw).length > 0 ? activeProgressionRaw : scopedProgHash)
@@ -1340,6 +1345,15 @@ export async function GET(
         terminal: globalOrderPlaced + globalOrderFailed,
         attemptedMatchesTerminal: globalOrderAttempted === globalOrderPlaced + globalOrderFailed,
       },
+      control: {
+        attempted: controlOrderAttempted,
+        placed: controlOrderPlaced,
+        filled: controlOrderFilled,
+        failed: controlOrderFailed,
+        terminal: controlOrderPlaced + controlOrderFailed,
+        attemptedMatchesTerminal: controlOrderAttempted === controlOrderPlaced + controlOrderFailed,
+      },
+      preflightFailures: preflightOrderFailed,
       perSymbol: {
         placed: perSymbolOrderPlaced,
         filled: perSymbolOrderFilled,
@@ -5225,6 +5239,13 @@ export async function GET(
         ordersPlaced:     n(liveOrderHash.live_orders_placed_count),
         ordersFilled:     n(liveOrderHash.live_orders_filled_count),
         ordersFailed:     n(liveOrderHash.live_orders_failed_count),
+        ordersPreflightFailed: preflightOrderFailed,
+        controlOrdersAttempted: controlOrderAttempted,
+        controlOrdersPlaced: controlOrderPlaced,
+        controlOrdersFilled: controlOrderFilled,
+        controlOrdersFailed: controlOrderFailed,
+        controlOrdersAccumulated: n(liveOrderHash.live_control_orders_accumulated_count),
+        controlVolumeUsdTotal: n(liveOrderHash.live_control_volume_usd_total),
         ordersRejected:   n(liveOrderHash.live_orders_rejected_count),
         ordersSimulated:  n(liveOrderHash.live_orders_simulated_count),
         openOrders: liveExecutionSummary?.openOrders ?? 0,

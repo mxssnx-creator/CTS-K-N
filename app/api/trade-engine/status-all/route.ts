@@ -361,6 +361,13 @@ async function buildStatusAllResponse() {
             placed: nonNegativeMetric(progression.live_orders_placed_count),
             filled: nonNegativeMetric(progression.live_orders_filled_count),
             failed: nonNegativeMetric(progression.live_orders_failed_count),
+            // Control/DCA/close mutations have a separate denominator. They
+            // are real venue actions, but never new-entry failures.
+            controlAttempted: nonNegativeMetric(progression.live_control_orders_attempted_count),
+            controlPlaced: nonNegativeMetric(progression.live_control_orders_placed_count),
+            controlFilled: nonNegativeMetric(progression.live_control_orders_filled_count),
+            controlFailed: nonNegativeMetric(progression.live_control_orders_failed_count),
+            preflightFailed: nonNegativeMetric(progression.live_orders_preflight_failed_count),
             // Guard outcomes are separate from venue failures. Keeping them
             // distinct prevents the overview from reporting every safe
             // minimum/exposure/pacing decision as an API error.
@@ -384,6 +391,8 @@ async function buildStatusAllResponse() {
             currentDeferred: liveDispatch.deferred,
             currentBlocked: liveDispatch.blocked,
             lifetimeErrors: nonNegativeMetric(progression.live_orders_failed_count),
+            lifetimePreflightFailures: nonNegativeMetric(progression.live_orders_preflight_failed_count),
+            lifetimeControlErrors: nonNegativeMetric(progression.live_control_orders_failed_count),
             lifetimeRejects: nonNegativeMetric(progression.live_orders_rejected_count),
             counterIntegrity: {
               globalTerminal: nonNegativeMetric(progression.live_orders_placed_count)
@@ -393,6 +402,12 @@ async function buildStatusAllResponse() {
                 === nonNegativeMetric(progression.live_orders_placed_count)
                   + nonNegativeMetric(progression.live_orders_failed_count),
               currentDispatchTerminal: liveDispatch.placed + liveDispatch.failedToOpen,
+              controlTerminal: nonNegativeMetric(progression.live_control_orders_placed_count)
+                + nonNegativeMetric(progression.live_control_orders_failed_count),
+              controlAttempted: nonNegativeMetric(progression.live_control_orders_attempted_count),
+              controlConsistent: nonNegativeMetric(progression.live_control_orders_attempted_count)
+                === nonNegativeMetric(progression.live_control_orders_placed_count)
+                  + nonNegativeMetric(progression.live_control_orders_failed_count),
             },
           }
           // Read-only Next route contexts must not import the complete engine

@@ -2851,18 +2851,18 @@ describe("requested regression guardrails", () => {
 
     expect(simBlock).toContain("await savePosition(livePosition)")
     expect(simBlock).toContain("await recordFillCountersOnce(")
-    expect(simBlock).toContain('incrementMetric(connectionId, "live_orders_simulated_count")')
-    expect(simBlock).toContain('incrementMetric(connectionId, "live_simulated_positions_created_count")')
-    expect(simBlock).not.toContain('incrementMetric(connectionId, "live_orders_placed_count")')
+    expect(simBlock).toContain('incrementExecutionMetric( "live_orders_simulated_count")')
+    expect(simBlock).toContain('incrementExecutionMetric( "live_simulated_positions_created_count")')
+    expect(simBlock).not.toContain('incrementExecutionMetric( "live_orders_placed_count")')
     expect(simBlock).not.toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "placed")')
-    expect(liveStage).toContain('await incrementMetric(connectionId, "live_orders_filled_count")')
-    expect(liveStage).toContain('await incrementOrdersBySymbol(connectionId, symbol, direction, "filled")')
+    expect(liveStage).toContain('await incrementMetric(connectionId, "live_orders_filled_count", 1, accountingClass)')
+    expect(liveStage).toContain('await incrementOrdersBySymbol(connectionId, symbol, direction, "filled", accountingClass)')
     expect(liveStage).toContain("await recordConfirmedStrategyEntry(connectionId, position")
     const liveOrderService = read("lib/live-order-service.ts")
     expect(liveOrderService).toContain('if (event === "simulated")')
-    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_orders_simulated_count", 1)')
-    expect(liveOrderService).toContain('await client.hincrby(progKey, "live_simulated_positions_created_count", 1)')
-    expect(liveOrderService).toContain('if (event !== "simulated") await recordPerSymbolOrderCounter')
+    expect(liveOrderService).toContain('const simulatedField = countEntryOrder')
+    expect(liveOrderService).toContain('live_simulated_positions_created_count')
+    expect(liveOrderService).toContain('if (event !== "simulated" && event !== "preflight_failed")')
     const statsRoute = read("app/api/connections/progression/[id]/stats/route.ts")
     expect(statsRoute).toContain("Real exchange and paper execution must stay deliberately separate")
     expect(statsRoute).toContain("simulatedPositionsCreated: n(liveOrderHash.live_simulated_positions_created_count)")
@@ -2879,7 +2879,7 @@ describe("requested regression guardrails", () => {
     expect(productionSoak).toContain("sample.simulatedPositionsCreated")
     expect(productionSoak).toContain("Forced-simulation soak mutated real exchange execution counters")
     expect(simBlock.indexOf("await savePosition(livePosition)")).toBeLessThan(
-      simBlock.indexOf('incrementMetric(connectionId, "live_orders_simulated_count")'),
+      simBlock.indexOf('incrementExecutionMetric( "live_orders_simulated_count")'),
     )
   })
 
@@ -3564,29 +3564,35 @@ describe("requested regression guardrails", () => {
     }))
   })
 
-  test("live order failure paths update global and per-symbol failed counters", () => {
+  test("live order failure paths separate preflight, control, and venue failures", () => {
     const source = read("lib/trade-engine/stages/live-stage.ts")
-    const failedMetric = 'await incrementMetric(connectionId, "live_orders_failed_count")'
-    const failedBySymbol = 'await incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")'
+    const failedMetric = 'incrementExecutionMetric( "live_orders_failed_count")'
+    const failedBySymbol = 'incrementExecutionOrdersBySymbol( realPosition.symbol, realPosition.direction, "failed")'
 
     const failedMetricCount = source.split(failedMetric).length - 1
     const failedBySymbolCount = source.split(failedBySymbol).length - 1
 
-    expect(failedMetricCount).toBeGreaterThanOrEqual(5)
+    expect(failedMetricCount).toBeGreaterThanOrEqual(2)
     expect(failedBySymbolCount).toBe(failedMetricCount)
+    expect(source).toContain('live_orders_preflight_failed_count')
+    expect(source).toContain('const recordExecutionPreflightFailure')
 
     for (const marker of [
-      'Exchange connector not available or missing placeOrder',
+      '"Exchange connector not available or missing placeOrder"',
       '`No authoritative exchange ticker available for ${realPosition.symbol}`',
       '`Exchange circuit breaker active for ${realPosition.symbol} — retrying in <5min`',
-      'Entry order rejected for ${realPosition.symbol}',
+      '`Entry order rejected for ${realPosition.symbol}`',
       '`Live pipeline unhandled error for ${realPosition.symbol}`',
     ]) {
       const markerIndex = source.indexOf(marker)
       expect(markerIndex).toBeGreaterThanOrEqual(0)
       const block = source.slice(Math.max(0, markerIndex - 1200), markerIndex + 2500)
-      expect(block).toContain('incrementMetric(connectionId, "live_orders_failed_count")')
-      expect(block).toContain('incrementOrdersBySymbol(connectionId, realPosition.symbol, realPosition.direction, "failed")')
+      if (marker.includes('connector') || marker.includes('ticker') || marker.includes('unhandled')) {
+        expect(block).toContain('recordExecutionPreflightFailure')
+      } else {
+        expect(block).toContain('live_orders_failed_count')
+        expect(block).toContain('incrementExecutionOrdersBySymbol')
+      }
     }
 
     expect(source).toMatch(/async function incrementOrdersBySymbol[\s\S]*?catch \{[\s\S]*?best-effort/)
@@ -3599,9 +3605,10 @@ describe("requested regression guardrails", () => {
       source.indexOf("async function incrementOrdersBySymbol"),
     )
     expect(terminalBlock).toContain("hincrbyProgressionBatch")
-    expect(terminalBlock).toContain("[metric]: delta")
-    expect(terminalBlock).toContain("live_orders_attempted_count: delta")
-    expect(terminalBlock).toContain('metric === "live_orders_placed_count" || metric === "live_orders_failed_count"')
+    expect(terminalBlock).toContain("[effectiveMetric]: delta")
+    expect(terminalBlock).toContain("[attemptedMetric]: delta")
+    expect(terminalBlock).toContain('effectiveMetric === "live_orders_placed_count"')
+    expect(terminalBlock).toContain('live_control_orders_failed_count')
     expect(terminalBlock).toContain("currentEpoch")
   })
 

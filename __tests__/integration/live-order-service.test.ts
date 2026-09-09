@@ -924,8 +924,9 @@ describe("live-order-service integration accounting", () => {
     expect(connector.setLeverage).toHaveBeenCalledTimes(1)
     expect(connector.placeOrder).not.toHaveBeenCalled()
     expect(hashStore.get("progression:conn-direct-leverage-failure")).toMatchObject({
-      live_orders_failed_count: "1",
+      live_orders_preflight_failed_count: "1",
     })
+    expect(hashStore.get("progression:conn-direct-leverage-failure")?.live_orders_failed_count).toBeUndefined()
   })
 
   test("Direct-Trade releases a claim when inline durability fails before placement", async () => {
@@ -1197,6 +1198,53 @@ describe("live-order-service integration accounting", () => {
       "direct-trade:simulated": "1",
       "direct-trade:simulated_accumulated": "1",
       "direct-trade:simulated_volume_usd": "40",
+    })
+  })
+
+  test("keeps control failures out of the entry denominator", async () => {
+    const { recordLiveOrderProgression } = await import("@/lib/live-order-service")
+
+    await recordLiveOrderProgression(
+      "conn-control-lane",
+      "BTCUSDT",
+      "long",
+      "placed",
+      0,
+      "block-1:placed",
+      { countEntryOrder: false, source: "main-trade-block" },
+    )
+    await recordLiveOrderProgression(
+      "conn-control-lane",
+      "BTCUSDT",
+      "long",
+      "failed",
+      0,
+      "dca-1:failed",
+      { countEntryOrder: false, source: "direct-trade-dca" },
+    )
+    await recordLiveOrderProgression(
+      "conn-control-lane",
+      "BTCUSDT",
+      "long",
+      "preflight_failed",
+      0,
+      "block-2:preflight",
+      { countEntryOrder: false, source: "main-trade-block" },
+    )
+
+    expect(hashStore.get("progression:conn-control-lane")).toMatchObject({
+      live_control_orders_attempted_count: "2",
+      live_control_orders_placed_count: "1",
+      live_control_orders_failed_count: "1",
+      live_control_orders_preflight_failed_count: "1",
+    })
+    expect(hashStore.get("progression:conn-control-lane")?.live_orders_attempted_count).toBeUndefined()
+    expect(hashStore.get("progression:conn-control-lane")?.live_orders_failed_count).toBeUndefined()
+    expect(hashStore.get("live_orders_by_symbol_v2:conn-control-lane")).toBeUndefined()
+    expect(hashStore.get("live_orders_by_source_v1:conn-control-lane")).toMatchObject({
+      "control:placed": "1",
+      "control:failed": "1",
+      "control:preflight_failed": "1",
     })
   })
 

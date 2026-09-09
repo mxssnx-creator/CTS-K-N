@@ -81,6 +81,15 @@ export function classifyLiveDispatchResult(
     return "pending"
   }
 
+  // A protective rollback or an already-settled lifecycle is a completed
+  // coordination result. It is not a failed new entry and must not make the
+  // overview's current "failed to open" number grow on every reconciliation
+  // tick. The durable position ledger remains the source of truth for the
+  // realised close/PnL counters.
+  if (["closed", "closing", "closing_partial", "settled"].includes(status)) {
+    return "deferred"
+  }
+
   // A protection/readiness guard has priority over textual deferral wording.
   if (isBlocked(result)) return "blocked"
   if (isExpectedDeferral(result)) return "deferred"
