@@ -6,6 +6,7 @@ import {
 import { initRedis, getRedisClient, getConnection } from "@/lib/redis-db"
 import { getAlternateLivePositionKeys } from "@/lib/live-position-alt-index"
 import { countLiveOpenPositions, isLiveOpenStatus } from "@/lib/live-position-status"
+import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { calculateLivePositionStatistics } from "@/lib/live-position-statistics"
 import {
@@ -441,7 +442,14 @@ async function buildLivePositionsResponse(request: Request) {
     const viewsById = new Map(positionViews.map((position) => [String(position.id), position]))
     const viewFor = (position: any) => viewsById.get(String(position.id)) || toLivePositionView(position)
 
-    const liveReadiness = evaluateRealTradeReadiness((connection || {}) as Record<string, any>)
+    // This read model is polled beside status-all and engine-states. Project
+    // the same connection-scoped runtime admission guard so a protection halt
+    // cannot appear as `liveExecutionMode: "live"` in one of the dashboards.
+    const liveReadiness = await readLiveEntryReadiness(
+      client,
+      connectionId,
+      evaluateRealTradeReadiness((connection || {}) as Record<string, any>),
+    )
     const liveTradeEnabled = liveReadiness.canPlaceRealOrders
     const liveTradeRequested = liveReadiness.requested
     const liveTradeBlockedReason = liveReadiness.blockReason

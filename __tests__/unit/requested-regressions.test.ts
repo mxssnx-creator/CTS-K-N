@@ -2918,6 +2918,8 @@ describe("requested regression guardrails", () => {
     const route = read("app/api/trading/live-positions/route.ts")
     const altIndex = read("lib/live-position-alt-index.ts")
 
+    expect(route).toContain("readLiveEntryReadiness")
+    expect(route).toContain("liveTradeBlockCode: liveReadiness.blockCode")
     expect(route).toContain("getAlternateLivePositionKeys")
     expect(route).toContain("partialLegacyScan")
     expect(route).not.toMatch(/(?:client|getRedisClient\(\))\.keys\s*\(/)
