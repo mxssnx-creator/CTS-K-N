@@ -6,7 +6,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
 import { getTradeEngine } from "@/lib/trade-engine"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
 import { toRedisFlag } from "@/lib/boolean-utils"
-import { isTruthyFlag } from "@/lib/connection-state-utils"
+import { isConnectionLiveTradeEnabled, isTruthyFlag } from "@/lib/connection-state-utils"
 import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import {
   DEFAULT_TRAILING_VARIANTS,
@@ -617,6 +617,21 @@ export async function GET(
 
     const effectiveSymbols = resolveCanonicalSymbols(connection, settings)
     const safeSettings = maskConnectionSettings(settings)
+    // Live switches are owned by the versioned connection record. The flat
+    // settings mirrors can predate a switch, and returning their stale value
+    // makes reopening/saving the dialog appear to undo the operator's choice.
+    // Keep runtime admission (credentials/protection/leases) a separate check.
+    const hasLiveSwitch = [connection.is_live_trade, connection.live_trade_enabled]
+      .some(value => value !== undefined && value !== null && value !== "")
+    if (hasLiveSwitch) {
+      const enabled = isConnectionLiveTradeEnabled(connection)
+      safeSettings.is_live_trade = enabled
+      safeSettings.live_trade_enabled = enabled
+      const requested = connection.live_trade_requested
+      safeSettings.live_trade_requested = requested !== undefined && requested !== null && requested !== ""
+        ? isTruthyFlag(requested)
+        : enabled
+    }
     if (effectiveSymbols.count > 0) {
       // The GET path must describe the current scoped basket consistently with
       // connection cards and progression stats. Legacy flattened fields may

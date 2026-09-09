@@ -9,6 +9,7 @@ import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
 import { createVstReadPacer } from "@/lib/bingx-vst-read-pacer"
+import { readFreshPositionSnapshot } from "@/lib/fresh-position-snapshot"
 import { resolveVstSoakPlan, parseVstSoakCandidateSymbols, vstSoakCoverageDirection } from "@/lib/bingx-vst-soak-plan"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
@@ -603,7 +604,7 @@ async function main(): Promise<void> {
     let observed = 0
     do {
       assertNotAborted()
-      const rows = await connector.getPositions(symbol)
+      const rows = await readFreshPositionSnapshot(connector, symbol)
       assertSnapshotHealthy("positions")
       const active = activePositions(rows).filter((row: any) => normalizeSymbol(row?.symbol) === symbol)
       const conflicting = active.find((row: any) => positionDirectionOf(row) !== direction)
