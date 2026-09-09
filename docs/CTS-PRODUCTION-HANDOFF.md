@@ -83,27 +83,6 @@ sudo bash "$bootstrap_dir/scripts/bootstrap-install.sh" \
   -- --reinstall
 ```
 
-Independent CTS-G example on the same host:
-
-```bash
-bootstrap_dir="$(mktemp -d)"
-git clone --depth 1 --branch main https://github.com/mxssnx-creator/CTS-K-N.git "$bootstrap_dir"
-sudo bash "$bootstrap_dir/scripts/bootstrap-install.sh" \
-  --dir /opt/cts-g \
-  --name cts-g \
-  --port 3003 \
-  --runtime systemd \
-  --service-user cts-g \
-  --state-dir /var/lib/cts/instances/cts-g \
-  --redis-mode native \
-  --redis-db 1 \
-  --public-url http://152.53.114.112:3003 \
-  --repository https://github.com/mxssnx-creator/CTS-K-N.git \
-  --branch main \
-  --safe-simulation \
-  -- --reinstall
-```
-
 Use a unique `--redis-port` as well when `--redis-mode npm` is selected. Native
 Redis instances share port 6379 but use distinct logical DBs. The installer
 derives DBs from ports when omitted, validates all collisions, and allocates

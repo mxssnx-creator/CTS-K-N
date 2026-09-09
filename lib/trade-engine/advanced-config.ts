@@ -140,16 +140,16 @@ export function generateIndicationConfigurationSets(
   config: AdvancedEngineConfig
 ): Array<{
   id: string
-  indicationType: "direction" | "move" | "active" | "optimal" | "auto" | "signal" | "break" | "trend"
+  indicationType: "direction" | "move" | "active" | "optimal" | "auto" | "signal" | "trend"
   parameters: Record<string, number>
 }> {
   const sets: Array<{
     id: string
-    indicationType: "direction" | "move" | "active" | "optimal" | "auto" | "signal" | "break" | "trend"
+    indicationType: "direction" | "move" | "active" | "optimal" | "auto" | "signal" | "trend"
     parameters: Record<string, number>
   }> = []
 
-  const indicationTypes: ("direction" | "move" | "active" | "optimal" | "auto" | "signal" | "break" | "trend")[] = [
+  const indicationTypes: ("direction" | "move" | "active" | "optimal" | "auto" | "signal" | "trend")[] = [
     "direction",
     "move",
     "active",
@@ -157,7 +157,6 @@ export function generateIndicationConfigurationSets(
     "auto",
     "signal",
     "trend",
-    "break",
   ]
 
   for (const type of indicationTypes) {
@@ -327,7 +326,7 @@ function generateParamHash(params: Record<string, number>): string {
  * Get indication configuration for a specific type
  */
 export function getIndicationConfigForType(
-  type: "direction" | "move" | "active" | "optimal" | "auto" | "signal" | "break" | "trend",
+  type: "direction" | "move" | "active" | "optimal" | "auto" | "signal" | "trend",
   config: AdvancedEngineConfig
 ): Record<string, { min: number; max: number; default: number; step: number }> {
   if (type === "active") {

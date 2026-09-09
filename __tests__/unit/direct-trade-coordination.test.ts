@@ -99,7 +99,7 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(normaliseEnabledDirectTradeIndicationTypes(undefined, ["relative"])).toEqual(["relative"])
     expect(normaliseEnabledDirectTradeIndicationTypes(["breakout", "bad", "breakout"], []))
       .toEqual(["breakout"])
-    expect(normaliseEntryTactics([])).toEqual(["trend", "break", "trend_break", "momentum", "mean_reversion", "breakout", "relative"])
+    expect(normaliseEntryTactics([])).toEqual(["momentum", "mean_reversion", "breakout", "relative"])
   })
 
   test("materialises independent TP/SL/trailing keys and keeps hindsight best exits analytical only", () => {

@@ -2644,7 +2644,6 @@ export class StrategyCoordinator {
       dca:      boolean
     }
     indicationVariants: StrategyIndicationVariantPolicy
-    dcaTrendBreakPriority: boolean
     /**
      * Block-strategy previous-position × volume-ratio coordination knobs.
      *
@@ -2719,7 +2718,6 @@ export class StrategyCoordinator {
     blockProfitFactorRatio: 1.1,
     blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockMaxStack:    6,
-    dcaTrendBreakPriority: true,
     blockPauseCountRatio: 1.0,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
@@ -3339,7 +3337,6 @@ export class StrategyCoordinator {
       this._coordinationSettings.variants.trailing = bool(s.variantTrailingEnabled, true)
       this._coordinationSettings.variants.block    = bool(s.variantBlockEnabled,    true)
       this._coordinationSettings.variants.dca      = bool(s.variantDcaEnabled,      false)
-      this._coordinationSettings.dcaTrendBreakPriority = bool(s.dcaTrendBreakPriority, true)
       this._coordinationSettings.indicationVariants =
         normalizeStrategyIndicationVariantPolicy(s)
       this._coordinationSettings.normalEnabled = bool(
@@ -4431,7 +4428,7 @@ export class StrategyCoordinator {
             profitFactor: pf,
             drawdownTime: 0,
             confidence: conf,
-            ...(["trend", "break"].includes(group.indicationType) && adaptiveTpFactors.length > 0 && {
+            ...(group.indicationType === "trend" && adaptiveTpFactors.length > 0 && {
               adaptiveTpFactors,
             }),
             ...(activeProtection &&
@@ -5343,8 +5340,7 @@ export class StrategyCoordinator {
       if (set.variant === "dca") return 4
       return 5
     }
-    mainSets.sort((a, b) => mainSetOrder(a) - mainSetOrder(b)
-      || (this._coordinationSettings.dcaTrendBreakPriority ? Number(["trend", "break"].includes(b.indicationType)) - Number(["trend", "break"].includes(a.indicationType)) : 0))
+    mainSets.sort((a, b) => mainSetOrder(a) - mainSetOrder(b))
 
     // ─── VARIANT accounting ───────────────────────�������────���──────────────────
     // Each related Main Set now carries an authoritative `variant` tag set
@@ -9410,8 +9406,7 @@ export class StrategyCoordinator {
               if (set.variant === "dca") return 2
               return 0
             }
-            dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b)
-              || (this._coordinationSettings.dcaTrendBreakPriority ? Number(["trend", "break"].includes(b.indicationType)) - Number(["trend", "break"].includes(a.indicationType)) : 0))
+            dispatchSets.sort((a, b) => dispatchOrder(a) - dispatchOrder(b))
 
             let placed = 0
             let filled = 0
@@ -9984,7 +9979,7 @@ export class StrategyCoordinator {
                 )
                 if (!bestEntry) return
 
-                const adaptiveTrendTp = ["trend", "break"].includes(set.indicationType)
+                const adaptiveTrendTp = set.indicationType === "trend"
                   ? bestEntry.adaptiveTpFactors?.find(
                       (factor) => Number.isFinite(factor) && factor > 0,
                     )

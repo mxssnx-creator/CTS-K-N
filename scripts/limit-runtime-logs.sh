@@ -68,16 +68,14 @@ shopt -s nullglob
 for log_dir in \
   "$(rooted /var/lib/cts/instances)"/*/logs \
   "$(rooted /var/lib)"/cts-*/logs \
-  "$(rooted /var/lib)"/grok-*/logs \
   "$(rooted /opt)"/cts-*/logs \
-  "$(rooted /opt)"/cts-*/.agent-logs \
-  "$(rooted /opt)"/grok-*/logs; do
+  "$(rooted /opt)"/cts-*/.agent-logs; do
   scan_logs "$log_dir"
 done
 
-# Some legacy CTS-G/Pulse processes write their bounded diagnostic files at
-# the checkout root. maxdepth=1 prevents accidental traversal into state.
-for project_root in "$(rooted /opt)"/cts-* "$(rooted /opt)"/grok-*; do
+# Some CTS processes write bounded diagnostic files at the checkout root.
+# maxdepth=1 prevents accidental traversal into state.
+for project_root in "$(rooted /opt)"/cts-*; do
   [[ -d "$project_root" ]] || continue
   while IFS= read -r -d '' file; do trim_log "$file"; done < <(
     find "$project_root" -maxdepth 1 -type f \

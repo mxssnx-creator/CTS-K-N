@@ -37,7 +37,6 @@ import { assertMarginCallEntryAllowed, monitorConnectionMarginCall } from "@/lib
 import { LiveSlotLookupCache } from "@/lib/live-slot-lookup-cache"
 import { createHash } from "node:crypto"
 import { LiveEntryBudgetBlockCache } from "@/lib/live-entry-budget-block-cache"
-import { coordinateCtsGExit } from "@/lib/cts-g-exit"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import {
@@ -731,6 +730,144 @@ function setCachedPositions(connId: string, positions: any[]): void {
     if (typeof client?.del === "function") await client.del(liveEntryHaltKey(connectionId)).catch(() => 0)
   }
 
+  // A protection halt is deliberately sticky after an ambiguous venue write.
+  // It must not disappear merely because a process restarted or because one
+  // transient snapshot happened to be empty.  Once the connector has supplied
+  // two fresh, identical *authoritative* empty-book observations, however,
+  // there is no owned exposure left that could be unprotected and the stale
+  // halt can be retired safely.  The observation is kept in Redis so the
+  // proof survives worker hand-off and is never inferred from process memory.
+  const EMPTY_BOOK_HALT_OBSERVATION_TTL_SECONDS = 120
+  const EMPTY_BOOK_HALT_CONFIRMATION_MIN_AGE_MS = 1_500
+  const EMPTY_BOOK_HALT_OBSERVATION_KEY = (connectionId: string) =>
+    `live:entry-protection-halt-observation:${connectionId}`
+
+  function venuePositionQuantityForEmptyBook(row: Record<string, any>): number | null {
+    const candidates = [
+      row?.contracts,
+      row?.positionAmt,
+      row?.position_amount,
+      row?.quantity,
+      row?.size,
+    ].filter((value) => value !== undefined && value !== null && value !== "")
+    if (candidates.length === 0) return null
+    const parsed = candidates.map((value) => Number(value))
+    if (parsed.some((value) => !Number.isFinite(value))) return null
+    return Math.max(...parsed.map((value) => Math.abs(value)))
+  }
+
+  function isAuthoritativeVenueBookFlat(
+    venuePositions: readonly Record<string, any>[],
+  ): boolean {
+    return Array.isArray(venuePositions) && venuePositions.every((row) => {
+      const quantity = venuePositionQuantityForEmptyBook(row)
+      return quantity !== null && quantity <= 1e-10
+    })
+  }
+
+  function isEmptyBookProtectionSafe(input: {
+    localOpenPositionCount: number
+    venuePositions: readonly Record<string, any>[]
+    liveOrderIds: Set<string> | null
+  }): boolean {
+    return input.localOpenPositionCount === 0
+      && isAuthoritativeVenueBookFlat(input.venuePositions)
+      && input.liveOrderIds instanceof Set
+      && input.liveOrderIds.size === 0
+  }
+
+  function emptyBookProtectionFingerprint(
+    connectionId: string,
+    venuePositions: readonly Record<string, any>[],
+    liveOrderIds: Set<string>,
+  ): string {
+    const venue = venuePositions.map((row) => ({
+      symbol: String(row?.symbol || row?.Symbol || "").toUpperCase().replace(/[-_]/g, ""),
+      direction: String(row?.positionSide || row?.position_side || row?.side || "").toLowerCase(),
+      quantity: venuePositionQuantityForEmptyBook(row),
+    })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+    return createHash("sha256")
+      .update(JSON.stringify({
+        connectionId,
+        venue,
+        orderIds: [...liveOrderIds].map(String).sort(),
+      }))
+      .digest("hex")
+  }
+
+  async function reconcileEmptyBookProtectionHalt(input: {
+    connectionId: string
+    localOpenPositions: readonly LivePosition[]
+    venuePositions: readonly Record<string, any>[]
+    liveOrderIds: Set<string> | null
+  }): Promise<"not_halted" | "observed" | "cleared" | "unsafe"> {
+    const { connectionId, localOpenPositions, venuePositions, liveOrderIds } = input
+    if (!connectionId) return "unsafe"
+    const client = getRedisClient() as any
+    const haltKey = entryProtectionHaltKeyOf(connectionId)
+    const observationKey = EMPTY_BOOK_HALT_OBSERVATION_KEY(connectionId)
+    const halt = typeof client?.get === "function"
+      ? await client.get(haltKey).catch(() => null)
+      : null
+    if (!halt) {
+      if (typeof client?.del === "function") await client.del(observationKey).catch(() => 0)
+      return "not_halted"
+    }
+
+    const safe = isEmptyBookProtectionSafe({
+      localOpenPositionCount: localOpenPositions.length,
+      venuePositions,
+      liveOrderIds,
+    })
+    if (!safe) {
+      if (typeof client?.del === "function") await client.del(observationKey).catch(() => 0)
+      return "unsafe"
+    }
+
+    const fingerprint = emptyBookProtectionFingerprint(connectionId, venuePositions, liveOrderIds!)
+    const now = Date.now()
+    let previous: { fingerprint?: string; observedAt?: number } | null = null
+    if (typeof client?.get === "function") {
+      const raw = await client.get(observationKey).catch(() => null)
+      if (raw) {
+        try {
+          const parsed = JSON.parse(String(raw))
+          if (parsed && typeof parsed === "object") previous = parsed
+        } catch {
+          previous = null
+        }
+      }
+    }
+
+    const previousAt = Number(previous?.observedAt || 0)
+    const sameFreshSnapshot = previous?.fingerprint === fingerprint
+      && previousAt > 0
+      && now - previousAt >= EMPTY_BOOK_HALT_CONFIRMATION_MIN_AGE_MS
+      && now - previousAt <= EMPTY_BOOK_HALT_OBSERVATION_TTL_SECONDS * 1000
+    if (sameFreshSnapshot) {
+      // reconcileLivePositions already owns the connection-wide live-sync
+      // lease. Delete only after both snapshots passed the empty-book proof.
+      await client.del(haltKey).catch(() => 0)
+      await client.del(observationKey).catch(() => 0)
+      await logProgressionEvent(
+        connectionId,
+        "live_trading",
+        "info",
+        "Cleared stale entry-protection halt after two authoritative empty-book snapshots",
+        { localOpenPositions: 0, venuePositions: venuePositions.length, openOrderIds: 0 },
+      ).catch(() => {})
+      return "cleared"
+    }
+
+    const observation = JSON.stringify({ fingerprint, observedAt: now })
+    if (typeof client?.setex === "function") {
+      await client.setex(observationKey, EMPTY_BOOK_HALT_OBSERVATION_TTL_SECONDS, observation).catch(() => 0)
+    } else if (typeof client?.set === "function") {
+      await client.set(observationKey, observation, { EX: EMPTY_BOOK_HALT_OBSERVATION_TTL_SECONDS }).catch(() => 0)
+    }
+    return "observed"
+  }
+
   async function readLiveEntryHalt(connectionId: string): Promise<string | null> {
     if (!connectionId) return null
     const client = getRedisClient() as any
@@ -1129,11 +1266,6 @@ export interface LivePosition {
   settledOrderIds?: string[]
   /** PositionCost percentage captured at entry for canonical PF-ratio history. */
   positionCostPct?: number
-  /** Opt-in on newly created CTS-G Sets; legacy/manual positions are unchanged. */
-  ctsGExitEnabled?: boolean
-  ctsGExitPeakPrice?: number
-  ctsGExitStopPrice?: number
-  ctsGExitLane?: "hard" | "lock" | "peak"
   /** Immutable upstream Real-stage PF snapshot used for Real↔Live comparison. */
   realProfitFactorAtEntry?: number
   timestamp?: number
@@ -2438,7 +2570,6 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     leverage: Number(hash.leverage || 1),
     version: Number(hash.version || 0),
     createdAt: Number(hash.createdAt || 0),
-    ctsGExitEnabled: hash.ctsGExitEnabled === true || hash.ctsGExitEnabled === "true",
     updatedAt: Number(hash.updatedAt || 0),
     closedAt: Number(hash.closedAt || 0) || undefined,
     // Zero is an authoritative exchange result, not an absent value. Keeping
@@ -2587,8 +2718,6 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "realizedPnL",
     "realized_pnl",
     "positionCostPct",
-    "ctsGExitPeakPrice",
-    "ctsGExitStopPrice",
     "lotSize",
     "quoteToUsdRate",
     "quoteBid",
@@ -8495,11 +8624,6 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     if (!Number.isFinite(desiredSl)) desiredSl = 0
   }
 
-  const ctsGStop = Number(pos.ctsGExitStopPrice || 0)
-  if (pos.ctsGExitEnabled && !pos.manualProtectionOverride && ctsGStop > 0 && desiredSl > 0) {
-    desiredSl = direction === "long" ? Math.max(desiredSl, ctsGStop) : Math.min(desiredSl, ctsGStop)
-  }
-
   const rawTpPct = pos.takeProfit || 0
   // Guard: ensure takeProfit is numeric and non-negative before percentage calc
   const tpPct = Number.isFinite(rawTpPct) && rawTpPct > 0 ? (rawTpPct / 100) : 0
@@ -8518,29 +8642,6 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
   if (!Number.isFinite(desiredTp)) desiredTp = 0
 
   return { desiredSl, desiredTp }
-}
-
-function ratchetCtsGExitStop(pos: LivePosition, markPrice: number): boolean {
-  if (pos.ctsGExitEnabled !== true || pos.manualProtectionOverride || !(pos.executedQuantity > 0)) return false
-  const direction = resolveLivePositionDirection(pos)
-  if (!direction || !Number.isFinite(markPrice) || markPrice <= 0) return false
-  const entry = Number(pos.averageExecutionPrice)
-  if (!(entry > 0)) return false
-  const previousPeak = Number(pos.ctsGExitPeakPrice || entry)
-  const peakPrice = direction === "long" ? Math.max(previousPeak, markPrice) : Math.min(previousPeak, markPrice)
-  const decision = coordinateCtsGExit({
-    direction, entryPrice: entry, markPrice, peakPrice,
-    hardStopPrice: computeDesiredProtectionPrices(pos).desiredSl,
-    ageSeconds: Math.max(0, Date.now() - Number(pos.fills?.[0]?.timestamp || pos.createdAt || Date.now())) / 1000,
-    positionCostPct: Number(pos.positionCostPct ?? 0.1),
-  })
-  const changed = peakPrice !== previousPeak || (decision.lane !== "hard" && decision.stopPrice !== pos.ctsGExitStopPrice)
-  pos.ctsGExitPeakPrice = peakPrice
-  if (decision.lane !== "hard") {
-    pos.ctsGExitStopPrice = decision.stopPrice
-    pos.ctsGExitLane = decision.lane
-  }
-  return changed
 }
 
 function normalizeProtectionTriggerPrice(
@@ -9197,7 +9298,6 @@ async function updateProtectionOrders(
     )
   }
 
-  if (ratchetCtsGExitStop(pos, getProtectionReferencePrice(pos))) result.changed = true
   const computedProtectionPrices = computeDesiredProtectionPrices(pos)
   const rawDesiredSl = Number.isFinite(Number(options.desiredPricesOverride?.desiredSl))
     ? Math.max(0, Number(options.desiredPricesOverride?.desiredSl))
@@ -12329,8 +12429,6 @@ export async function executeLivePosition(
     setKey:         realPosition.setKey,
     parentSetKey:   realPosition.parentSetKey,
     indicationType: realPosition.indicationType,
-    ctsGExitEnabled: ["trend", "break"].includes(String(realPosition.indicationType))
-      && String(realPosition.setKey || "").includes("cts-g"),
     signalRisk:     realPosition.signalRisk,
     setVariant:     realPosition.setVariant,
     executionLane:  liveExecutionLane(realPosition),
@@ -17461,7 +17559,6 @@ async function checkAndForceCloseOnSltpCross(
   // Use the same canonical resolver as venue control-order reconciliation.
   // This keeps engine-side fallback exactly coordinated with trailing,
   // operator absolute-price overrides and DCA take-profit recalculation.
-  ratchetCtsGExitStop(pos, markPrice)
   const { desiredSl, desiredTp } = computeDesiredProtectionPrices(pos)
 
   // Nothing to evaluate if neither protection band is configured.
@@ -17904,6 +18001,24 @@ export async function reconcileLivePositions(
     // 2 × getOrder() calls per position the alternative would require.
     // `null` means "skip verification this tick"; the next tick retries.
     const liveOrderIds = await fetchLiveOrderIdSet(exchangeConnector)
+    // A previous response-lost entry can leave the connection-wide
+    // entry-protection halt sticky even after its row was safely retired. Do
+    // not clear it on one empty response: require two fresh, identical,
+    // authoritative position + open-order snapshots with no owned local rows.
+    // The helper also resets its observation when any exposure/order appears.
+    await reconcileEmptyBookProtectionHalt({
+      connectionId,
+      localOpenPositions: openPositions.filter((position) =>
+        isExchangeLifecyclePosition(position, connectionId),
+      ),
+      venuePositions: exchangePositions,
+      liveOrderIds,
+    }).catch((error) => {
+      console.warn(
+        `${LOG_PREFIX} empty-book protection-halt reconciliation deferred:`,
+        error instanceof Error ? error.message : String(error),
+      )
+    })
     const aggregateProtection = await reconcileAggregateProtectionBook(
       connectionId,
       exchangeConnector,
@@ -20647,10 +20762,10 @@ export const __liveStageTest = {
   clearMissingProtectionOrderIds,
   resolvePseudoProtectionPercents,
   isTrailingStopTightening,
-  ratchetCtsGExitStop,
   isPreFillWithoutExchangeHandle,
   hasLiveExchangeHandle,
   shouldPersistCanonicalLivePosition,
+  isEmptyBookProtectionSafe,
   readAbsoluteProtectionPrices(pos: LivePosition) {
     return computeDesiredProtectionPrices(pos)
   },

@@ -393,13 +393,13 @@ export function DirectTradeSettings() {
             <div className="space-y-3 rounded-lg border p-3">
               <div><Label className="text-xs">Live entry indication types</Label><p className="text-xs text-muted-foreground">All sliders may be off. Historical calculation and validation still run for the calculated indication types below.</p></div>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                {[["trend", "Trend (CTS-G)"], ["break", "Break (CTS-G)"], ["trend_break", "Trend + Break"], ["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]].map(([value, title]) => {
+                {[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]].map(([value, title]) => {
                   const checked = state.enabledIndicationTypes.includes(value)
                   return <label key={value} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-xs"><span>{title}</span><Switch aria-label={`Enable ${title} Direct-Trade live entries`} checked={checked} onCheckedChange={(nextChecked) => update("enabledIndicationTypes", nextChecked ? [...state.enabledIndicationTypes, value] : state.enabledIndicationTypes.filter((entry) => entry !== value))} /></label>
                 })}
               </div>
             </div>
-            <SelectableList label="Calculated indication types" values={state.entryTactics} options={[["trend", "Trend (CTS-G)"], ["break", "Break (CTS-G)"], ["trend_break", "Trend + Break"], ["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
+            <SelectableList label="Calculated indication types" values={state.entryTactics} options={[["momentum", "Momentum"], ["mean_reversion", "Mean reversion"], ["breakout", "Breakout"], ["relative", "Relative"]]} onChange={(value) => update("entryTactics", value)} />
             <SelectableList label="Exit tactics" values={state.exitTactics} options={[["bracket", "Bracket"], ["momentum_reversal", "Momentum reversal"], ["relative", "Relative reversal"], ["time", "Time"]]} onChange={(value) => update("exitTactics", value)} />
             <div className="max-w-xs space-y-2"><Label className="text-xs">Entry timing</Label><Select value={state.entryTiming} onValueChange={(value: DirectTradeState["entryTiming"]) => update("entryTiming", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="current">Current causal candle</SelectItem><SelectItem value="last_confirmed">Last confirmed candle</SelectItem></SelectContent></Select></div>
           </div></section>

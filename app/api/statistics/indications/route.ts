@@ -47,7 +47,6 @@ const MAIN_TYPES = [
   "optimal",
   "auto",
   "trend",
-  "break",
 ]
 
 const COMMON_TYPES = ["common"]

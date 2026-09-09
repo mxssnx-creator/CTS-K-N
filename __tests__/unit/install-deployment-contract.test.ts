@@ -383,15 +383,15 @@ describe("production installation and Kilo deployment contract", () => {
       })
 
       const kn = resolveInstall("cts-kn", 3002)
-      const g = resolveInstall("cts-g", 3003)
+      const secondary = resolveInstall("cts-secondary", 3003)
       expect(kn).toContain("CTS_STATE_DIR=/var/lib/cts/instances/cts-kn")
       expect(kn).toContain("CTS_ENV_FILE=/var/lib/cts/instances/cts-kn/.env.production.local")
       expect(kn).toContain("CTS_REDIS_DB=0")
       expect(kn).toContain("CTS_REDIS_PORT=6379")
-      expect(g).toContain("CTS_STATE_DIR=/var/lib/cts/instances/cts-g")
-      expect(g).toContain("CTS_ENV_FILE=/var/lib/cts/instances/cts-g/.env.production.local")
-      expect(g).toContain("CTS_REDIS_DB=1")
-      expect(g).toContain("CTS_REDIS_PORT=6380")
+      expect(secondary).toContain("CTS_STATE_DIR=/var/lib/cts/instances/cts-secondary")
+      expect(secondary).toContain("CTS_ENV_FILE=/var/lib/cts/instances/cts-secondary/.env.production.local")
+      expect(secondary).toContain("CTS_REDIS_DB=1")
+      expect(secondary).toContain("CTS_REDIS_PORT=6380")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -399,13 +399,13 @@ describe("production installation and Kilo deployment contract", () => {
 
   it("rejects a second checkout that reuses an installed identity", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cts-multi-install-collision-"))
-    const otherRuntime = path.join(root, "cts-g", ".cts-runtime")
+    const otherRuntime = path.join(root, "cts-secondary", ".cts-runtime")
     try {
       await mkdir(otherRuntime, { recursive: true })
       await writeFile(path.join(otherRuntime, "install-values.env"), [
-        "CTS_INSTALLED_APP_NAME=cts-g",
+        "CTS_INSTALLED_APP_NAME=cts-secondary",
         "CTS_INSTALLED_APP_PORT=3003",
-        "CTS_INSTALLED_STATE_DIR=/var/lib/cts/instances/cts-g",
+        "CTS_INSTALLED_STATE_DIR=/var/lib/cts/instances/cts-secondary",
         "CTS_INSTALLED_REDIS_DB=1",
         "CTS_INSTALLED_REDIS_PORT=6380",
         "",

@@ -152,66 +152,6 @@ const PARSED_CANDLES_CACHE = new Map<
 const PARSED_CANDLES_TTL = 5 * 60_000 // 5 min — defensive eviction
 const PARSED_CANDLES_MAX_ENTRIES = 64
 
-import { compactCtsGMinuteCloses, CTS_G_HISTORY_MINUTES, type CtsGMinuteClose } from "@/lib/cts-g-timeframes"
-
-const CTS_G_VENUE_HISTORY_ATTEMPT = new Map<string, number>()
-const CTS_G_MINUTE_REFRESH_AT = new Map<string, number>()
-const CTS_G_MINUTE_CACHE = new Map<string, CtsGMinuteClose[]>()
-const CTS_G_MINUTE_FLIGHTS = new Map<string, Promise<CtsGMinuteClose[]>>()
-
-/** Read each cold historic chunk once, retaining only <= 1,441 minute closes.
- * Thereafter the existing rolling tail extends the compact history. This does
- * not inflate the 5,400-row per-second hot cache to a full day's tick data. */
-export async function getCtsGMinuteHistory(symbol: string, realtimeTail: any[], connectionId: string): Promise<CtsGMinuteClose[]> {
-  const key = marketDataKey(symbol, "cts-g-minutes", connectionId)
-  const tail = compactCtsGMinuteCloses(realtimeTail)
-  const cached = CTS_G_MINUTE_CACHE.get(key)
-  if (cached && (cached.length >= CTS_G_HISTORY_MINUTES || Date.now() - (CTS_G_MINUTE_REFRESH_AT.get(key) ?? 0) < 30_000) && tail.length && tail[0].timestamp <= (cached.at(-1)?.timestamp ?? 0) + 60_000) {
-    const merged = compactCtsGMinuteCloses([...cached, ...tail])
-    CTS_G_MINUTE_CACHE.set(key, merged)
-    return merged
-  }
-  const pending = CTS_G_MINUTE_FLIGHTS.get(key)
-  if (pending) return compactCtsGMinuteCloses([...(await pending), ...tail])
-  const flight = (async () => {
-    const ranges = await loadHistoricChunkRanges(symbol, connectionId)
-    const client = getRedisClient()
-    const end = tail.at(-1)?.timestamp ?? ranges.at(-1)?.end ?? 0
-    const start = end - CTS_G_HISTORY_MINUTES * 60_000
-    let minutes: CtsGMinuteClose[] = []
-    for (let index = 0; index < ranges.length; index++) {
-      if (ranges[index].end < start || ranges[index].start > end) continue
-      const chunks = await client.lrange(marketDataKey(symbol, "history:chunks", connectionId), index, index)
-      minutes = compactCtsGMinuteCloses([...minutes, ...compactCtsGMinuteCloses(normalizeHistoricCandles(chunks))])
-    }
-    // A 5,400-second hot history supplies only 90 M1 bars. Fetch a compact
-    // real M1 day for 15/30-minute Trend/Break warm-up, never synthesized ticks.
-    // Failed venue hydration backs off independently of cheap Redis retries.
-    if (minutes.length < CTS_G_HISTORY_MINUTES && Date.now() - (CTS_G_VENUE_HISTORY_ATTEMPT.get(key) ?? -Infinity) >= 300_000) {
-      CTS_G_VENUE_HISTORY_ATTEMPT.set(key, Date.now())
-      while (CTS_G_VENUE_HISTORY_ATTEMPT.size > 64) CTS_G_VENUE_HISTORY_ATTEMPT.delete(CTS_G_VENUE_HISTORY_ATTEMPT.keys().next().value!)
-      try {
-        const { ExchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
-        const connector = await ExchangeConnectorFactory.getInstance().getOrCreateConnector(connectionId)
-        const venue = await connector?.getOHLCV(symbol, "1m", CTS_G_HISTORY_MINUTES + 1)
-        minutes = compactCtsGMinuteCloses([...compactCtsGMinuteCloses(venue || []), ...minutes])
-      } catch { /* retain measured history; gaps remain explicit warm-up */ }
-    }
-    const merged = compactCtsGMinuteCloses([...minutes, ...tail])
-    if (CTS_G_MINUTE_CACHE.size >= 64 && !CTS_G_MINUTE_CACHE.has(key)) {
-      const oldest = CTS_G_MINUTE_CACHE.keys().next().value!
-      CTS_G_MINUTE_CACHE.delete(oldest)
-      CTS_G_MINUTE_REFRESH_AT.delete(oldest)
-      CTS_G_VENUE_HISTORY_ATTEMPT.delete(oldest)
-    }
-    CTS_G_MINUTE_CACHE.set(key, merged)
-    CTS_G_MINUTE_REFRESH_AT.set(key, Date.now())
-    return merged
-  })()
-  CTS_G_MINUTE_FLIGHTS.set(key, flight)
-  try { return await flight } finally { CTS_G_MINUTE_FLIGHTS.delete(key) }
-}
-
 interface HistoricChunkRange {
   start: number
   end: number
@@ -531,17 +471,8 @@ function _storeParsedCandles(cacheKey: string, candles: any[], sig: number, now:
 
 /** Drop a symbol's parsed-candle cache (call after a forced reload). */
 export function invalidateParsedCandles(symbol?: string, connectionId?: string) {
-  if (symbol) {
-    PARSED_CANDLES_CACHE.delete(marketDataKey(symbol, "candles", connectionId))
-    CTS_G_MINUTE_CACHE.delete(marketDataKey(symbol, "cts-g-minutes", connectionId))
-    CTS_G_MINUTE_REFRESH_AT.delete(marketDataKey(symbol, "cts-g-minutes", connectionId))
-    CTS_G_VENUE_HISTORY_ATTEMPT.delete(marketDataKey(symbol, "cts-g-minutes", connectionId))
-  } else {
-    PARSED_CANDLES_CACHE.clear()
-    CTS_G_MINUTE_CACHE.clear()
-    CTS_G_MINUTE_REFRESH_AT.clear()
-    CTS_G_VENUE_HISTORY_ATTEMPT.clear()
-  }
+  if (symbol) PARSED_CANDLES_CACHE.delete(marketDataKey(symbol, "candles", connectionId))
+  else PARSED_CANDLES_CACHE.clear()
 }
 
 

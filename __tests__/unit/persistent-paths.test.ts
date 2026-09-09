@@ -9,8 +9,8 @@ describe("persistent runtime paths", () => {
   })
 
   test("uses the durable absolute instance path when configured", () => {
-    process.env.CTS_DATA_DIR = "/var/lib/cts/instances/cts-g/data/"
-    expect(resolvePersistentDataDir("/workspace/data")).toBe("/var/lib/cts/instances/cts-g/data")
+    process.env.CTS_DATA_DIR = "/var/lib/cts/instances/cts-secondary/data/"
+    expect(resolvePersistentDataDir("/workspace/data")).toBe("/var/lib/cts/instances/cts-secondary/data")
   })
 
   test.each(["", "/", "relative/data", "/var/lib/../secret", "/var//lib"])(

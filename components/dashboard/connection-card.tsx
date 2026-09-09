@@ -60,7 +60,6 @@ interface ActiveIndicationConfig {
   optimal: boolean
   active_advanced: boolean // NEW
   trend: boolean
-  break: boolean
 }
 
 interface StrategyConfig {
@@ -148,7 +147,7 @@ export function ConnectionCard({
     active: true,
     optimal: false,
     active_advanced: false, // NEW
-    trend: true, break: true,
+    trend: true,
   })
   const [strategyConfig, setStrategyConfig] = useState<StrategyConfig>({
     trailing: true,
@@ -1496,13 +1495,6 @@ export function ConnectionCard({
                     onCheckedChange={(checked) => setActiveIndications({ ...activeIndications, trend: checked })}
                   />
                 </div>
-<div className="flex items-center justify-between p-2 bg-muted rounded">
-                  <span className="text-sm">Break</span>
-                  <Switch
-                    checked={activeIndications.break}
-                    onCheckedChange={(checked) => setActiveIndications({ ...activeIndications, break: checked })}
-                  />
-                </div>
               </div>
               <p className="text-xs text-muted-foreground">
                 Active (Advanced) uses optimal market change calculations for frequently and short time trades (1-40min)
@@ -1621,13 +1613,6 @@ export function ConnectionCard({
                 <Switch
                   checked={activeIndications.trend}
                   onCheckedChange={(checked) => setActiveIndications({ ...activeIndications, trend: checked })}
-                />
-              </div>
-<div className="flex items-center justify-between p-2 bg-muted rounded">
-                <span className="text-sm">Break</span>
-                <Switch
-                  checked={activeIndications.break}
-                  onCheckedChange={(checked) => setActiveIndications({ ...activeIndications, break: checked })}
                 />
               </div>
             </div>

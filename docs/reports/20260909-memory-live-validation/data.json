@@ -484,7 +484,6 @@
           "auto",
           "signal",
           "trend",
-          "break",
           "common"
         ],
         "missingTypes": [],
@@ -653,21 +652,7 @@
               "activeSituations": 2,
               "combinedStepVariants": 3
             },
-            "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
-          },
-          {
-            "type": "break",
-            "label": "Break",
-            "group": "additional",
-            "storage": "independent_set",
-            "possibleSets": 96,
-            "evaluationConfigurations": 48,
-            "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
-            "params": {
-              "timeframes": 4,
-              "range": 16
-            },
-            "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+            "description": "Native EMA, spread, and confirmation trend evaluation."
           },
           {
             "type": "common",
@@ -1009,7 +994,6 @@
           "auto",
           "signal",
           "trend",
-          "break",
           "common"
         ],
         "missingTypes": [],
@@ -1178,21 +1162,7 @@
               "activeSituations": 2,
               "combinedStepVariants": 3
             },
-            "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
-          },
-          {
-            "type": "break",
-            "label": "Break",
-            "group": "additional",
-            "storage": "independent_set",
-            "possibleSets": 96,
-            "evaluationConfigurations": 48,
-            "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
-            "params": {
-              "timeframes": 4,
-              "range": 16
-            },
-            "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+            "description": "Native EMA, spread, and confirmation trend evaluation."
           },
           {
             "type": "common",
@@ -1523,368 +1493,6 @@
       ]
     }
   },
-  "matrix": [
-    {
-      "kind": "trend",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm4",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm3",
-      "minimumSpreadRatio": 0.0015,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm4",
-      "minimumSpreadRatio": 0.0015,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm3",
-      "minimumSpreadRatio": 0.002,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm4",
-      "minimumSpreadRatio": 0.002,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3:ema5-13",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 5,
-      "slowPeriod": 13,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm4:ema5-13",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 5,
-      "slowPeriod": 13,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm3:ema5-13",
-      "minimumSpreadRatio": 0.0015,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 5,
-      "slowPeriod": 13,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm4:ema5-13",
-      "minimumSpreadRatio": 0.0015,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 5,
-      "slowPeriod": 13,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm3:ema5-13",
-      "minimumSpreadRatio": 0.002,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 5,
-      "slowPeriod": 13,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm4:ema5-13",
-      "minimumSpreadRatio": 0.002,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 5,
-      "slowPeriod": 13,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3:ema13-34",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 13,
-      "slowPeriod": 34,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm4:ema13-34",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 13,
-      "slowPeriod": 34,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm3:ema13-34",
-      "minimumSpreadRatio": 0.0015,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 13,
-      "slowPeriod": 34,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.0015:confidence0.6:range16:noise0.05:confirm4:ema13-34",
-      "minimumSpreadRatio": 0.0015,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 13,
-      "slowPeriod": 34,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm3:ema13-34",
-      "minimumSpreadRatio": 0.002,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 13,
-      "slowPeriod": 34,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "trend",
-      "key": "spread0.002:confidence0.6:range16:noise0.05:confirm4:ema13-34",
-      "minimumSpreadRatio": 0.002,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 4,
-      "fastPeriod": 13,
-      "slowPeriod": 34,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range16:noise0.1:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.1,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range24:noise0.05:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 24,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range24:noise0.1:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 24,
-      "breakNoisePct": 0.1,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range32:noise0.05:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 32,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range32:noise0.1:confirm3",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 32,
-      "breakNoisePct": 0.1,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 1
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range16:noise0.05:confirm3:breakConfirm2",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 2
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range16:noise0.1:confirm3:breakConfirm2",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 16,
-      "breakNoisePct": 0.1,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 2
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range24:noise0.05:confirm3:breakConfirm2",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 24,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 2
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range24:noise0.1:confirm3:breakConfirm2",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 24,
-      "breakNoisePct": 0.1,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 2
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range32:noise0.05:confirm3:breakConfirm2",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 32,
-      "breakNoisePct": 0.05,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 2
-    },
-    {
-      "kind": "break",
-      "key": "spread0.001:confidence0.6:range32:noise0.1:confirm3:breakConfirm2",
-      "minimumSpreadRatio": 0.001,
-      "minimumConfidence": 0.6,
-      "breakRange": 32,
-      "breakNoisePct": 0.1,
-      "confirmationBars": 3,
-      "fastPeriod": 8,
-      "slowPeriod": 21,
-      "breakConfirmationBars": 2
-    }
-  ],
   "extra": {
     "release": "ab1133226744e93864f4ad51f26152cd920a259e",
     "soak": {
@@ -1956,7 +1564,6 @@
             "auto",
             "signal",
             "trend",
-            "break",
             "common"
           ],
           "missingTypes": [],
@@ -2125,21 +1732,7 @@
                 "activeSituations": 2,
                 "combinedStepVariants": 3
               },
-              "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
-            },
-            {
-              "type": "break",
-              "label": "Break",
-              "group": "additional",
-              "storage": "independent_set",
-              "possibleSets": 96,
-              "evaluationConfigurations": 48,
-              "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
-              "params": {
-                "timeframes": 4,
-                "range": 16
-              },
-              "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+              "description": "Native EMA, spread, and confirmation trend evaluation."
             },
             {
               "type": "common",
@@ -2839,7 +2432,7 @@
       334
     ],
     "limitations": [
-      "No new independent 14-day Trend/Break profitability study",
+      "No new independent 14-day Trend profitability study",
       "Blocked browser statistics endpoint not bypassed",
       "VST25 r2 failed; own cleanup confirmed, foreign baseline changed",
       "r3 post-cooldown own-order reconciliation passed; full 25-symbol test did not pass"
@@ -3016,7 +2609,6 @@
             "auto",
             "signal",
             "trend",
-            "break",
             "common"
           ],
           "missingTypes": [],
@@ -3185,21 +2777,7 @@
                 "activeSituations": 2,
                 "combinedStepVariants": 3
               },
-              "description": "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows."
-            },
-            {
-              "type": "break",
-              "label": "Break",
-              "group": "additional",
-              "storage": "independent_set",
-              "possibleSets": 96,
-              "evaluationConfigurations": 48,
-              "formula": "4 timeframes × 12 range/noise tuples × 2 directions",
-              "params": {
-                "timeframes": 4,
-                "range": 16
-              },
-              "description": "CTS-G close beyond the prior range with independent direction and noise validation."
+              "description": "Native EMA, spread, and confirmation trend evaluation."
             },
             {
               "type": "common",
@@ -3664,7 +3242,6 @@
       "lossWindow": 12,
       "autoDeactivateEnabled": true,
       "trendMultipleEnabled": true,
-      "breakMultipleEnabled": true,
       "deactivatedConfigs": 0,
       "configOutcomeRows": 0
     },

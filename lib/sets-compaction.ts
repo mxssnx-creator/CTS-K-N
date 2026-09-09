@@ -57,7 +57,6 @@ export type SetCompactionType =
   | "indication.special"
   | "indication.signal"
   | "indication.trend"
-  | "indication.break"
   | "indication.common"
   // Strategy-sets pools (per `lib/strategy-sets-processor.ts`)
   | "strategy.base"

@@ -826,7 +826,7 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
               <CardHeader>
                 <CardTitle>Trend Indication Settings</CardTitle>
                 <CardDescription>
-                  CTS-G EMA 8/21 Trend and independent structure Break, with shared DCA and protection coordination
+                  Coordinate multi-window trend, drawdown, recent and active market situations in independent Sets
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -842,32 +842,6 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
                     onCheckedChange={(checked) => handleSettingChange("trendEnabled", checked)}
                   />
                 </div>
-
-                <div className="flex items-center justify-between">
-                  <div><Label>CTS-G Trend model</Label><p className="text-xs text-muted-foreground">EMA relationships, confirmed bars and independent direction evidence. Disable to use the situation model below.</p></div>
-                  <Switch checked={settings.ctsGTrendEnabled !== false} onCheckedChange={(value) => handleSettingChange("ctsGTrendEnabled", value)} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><Label>Enable Break indication</Label><p className="text-xs text-muted-foreground">Close beyond the previous range, validated separately in each direction.</p></div>
-                  <Switch checked={settings.breakEnabled !== false} onCheckedChange={(value) => handleSettingChange("breakEnabled", value)} />
-                </div>
-                <div className="flex items-center justify-between">
-                  <div><Label>Expanded Trend / Break configurations</Label><p className="text-xs text-muted-foreground">Trend: up to three EMA pairs × three spread thresholds × two confirmation lengths. Break: three ranges × two noise thresholds × two confirmation lengths. Up to 18 Trend and 12 Break candidates per timeframe; identical tuples count once. Historical qualification selects candidates; this is not a guaranteed profitable default.</p></div>
-                  <Switch checked={settings.ctsGConfigMode !== "single"} onCheckedChange={(value) => handleSettingChange("ctsGConfigMode", value ? "expanded" : "single")} />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <Label>Compare EMA 8/21, 5/13 and 13/34</Label>
-                  <Switch checked={settings.ctsGTrendMultiplePeriods !== false && settings.ctsGTrendMultiplePeriods !== "false"} onCheckedChange={value => handleSettingChange("ctsGTrendMultiplePeriods", value)} />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <Label>Compare one- and two-bar Break confirmations</Label>
-                  <Switch checked={settings.ctsGBreakMultipleConfirmations !== false && settings.ctsGBreakMultipleConfirmations !== "false"} onCheckedChange={value => handleSettingChange("ctsGBreakMultipleConfirmations", value)} />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div><Label htmlFor="break-range">Break range (bars)</Label><Input id="break-range" type="number" min={8} max={240} value={settings.breakRange ?? 16} onChange={(event) => handleSettingChange("breakRange", Math.max(8, Math.min(240, Number(event.target.value) || 16)))} /></div>
-                  <div><Label htmlFor="break-noise">Break noise (%)</Label><Input id="break-noise" type="number" min={0} max={10} step={0.01} value={settings.breakNoisePct ?? 0.05} onChange={(event) => handleSettingChange("breakNoisePct", Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></div>
-                </div>
-                <p className="text-xs text-muted-foreground">Trend and Break parents are processed before their DCA additions. Existing exposure and protection limits apply to every configuration.</p>
 
                 <div className="flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3">
                   <div>

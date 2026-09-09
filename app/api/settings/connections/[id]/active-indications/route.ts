@@ -49,7 +49,6 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       common:    main.common.enabled,
       signal:    main.signal.enabled,
       trend:     main.trend.enabled,
-      break:     main.break.enabled,
       // Structured channel shape — for the redesigned dialog.
       channels: { main, preset },
     })
@@ -58,7 +57,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     return NextResponse.json(
       {
         error: "Failed to fetch active indications",
-        direction: true, move: true, active: true, trend: true, break: true,
+        direction: true, move: true, active: true, trend: true,
         optimal: true, auto: true, common: true, signal: true,
         channels: { main: DEFAULT_MAIN_INDICATION_PROFILE, preset: DEFAULT_PRESET_INDICATION_PROFILE },
       },

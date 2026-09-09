@@ -6,8 +6,8 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 5 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(40_114)
-    expect(result.totalEvaluationConfigurations).toBe(13_788)
+    expect(result.totalPossibleSets).toBe(39_976)
+    expect(result.totalEvaluationConfigurations).toBe(13_717)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
@@ -19,8 +19,7 @@ describe("indication configuration counts", () => {
       optimal: 156,
       auto: 0,
       signal: 12_312,
-      trend: 144,
-      break: 96,
+      trend: 102,
       common: 15_192,
     })
     expect(result.types.find((type) => type.type === "active")).toMatchObject({
@@ -62,7 +61,7 @@ describe("indication configuration counts", () => {
     const common = result.types.find((type) => type.type === "common")
 
     expect(trend?.params.timeframes).toBe(4)
-    expect(trend?.possibleSets).toBe(144)
+    expect(trend?.possibleSets).toBe(12)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(common?.params.timeframes).toBe("1/5/15/30")
   })
@@ -100,7 +99,7 @@ describe("indication configuration counts", () => {
       },
     )
 
-    expect(result.totalPossibleSets).toBe(12_542)
+    expect(result.totalPossibleSets).toBe(12_446)
     expect(result.types.find((type) => type.type === "auto")).toMatchObject({
       storage: "runtime",
       possibleSets: 0,

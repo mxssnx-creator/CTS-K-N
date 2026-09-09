@@ -1,5 +1,3 @@
-import { coordinateCtsGExit, type CtsGExitResult } from "./cts-g-exit"
-import { evaluateCtsGTrend, evaluateCtsGBreak, coordinateCtsGEntry } from "./cts-g-indications"
 import {
   calculateDcaAddQuantity,
   calculateDcaTakeProfitPrice,
@@ -7,7 +5,7 @@ import {
   type DcaProfile,
 } from "./dca-strategy"
 
-export type DcaBacktestEntry = "momentum" | "mean_reversion" | "breakout" | "relative" | "trend" | "break" | "trend_break"
+export type DcaBacktestEntry = "momentum" | "mean_reversion" | "breakout" | "relative"
 export type DcaBacktestDirection = "long" | "short"
 
 export interface DcaBacktestCandle {
@@ -29,9 +27,6 @@ export interface DcaBacktestConfig {
   roundTripCostPct?: number
   slippagePct?: number
   /** Earlier candles warm indicators without allowing entries before this time. */
-  ctsGExitCoordination?: boolean
-  requireDcaDirectionConfirmation?: boolean
-  exitOnConfirmedReversal?: boolean
   tradeStartTime?: number
 }
 
@@ -39,7 +34,7 @@ export interface DcaBacktestTrade {
   direction: DcaBacktestDirection
   entryTime: number
   exitTime: number
-  exitReason: "tp" | "sl" | "timeout" | "reversal"
+  exitReason: "tp" | "sl" | "timeout"
   initialEntryPrice: number
   averageEntryPrice: number
   exitPrice: number
@@ -49,7 +44,6 @@ export interface DcaBacktestTrade {
   holdTimeMin: number
   drawdownTimeMin: number
   maxAdversePnlPct: number
-  maxIntratradeDrawdownPct: number
 }
 
 export interface DcaBacktestResult {
@@ -109,10 +103,6 @@ function entryDirection(
   entry: DcaBacktestEntry,
 ): DcaBacktestDirection | null {
   if (index < 30) return null
-  if (["trend", "break", "trend_break"].includes(entry)) {
-    const closes = candles.slice(Math.max(0, index - 240), index + 1).map((candle) => candle.close)
-    return (entry === "trend" ? evaluateCtsGTrend(closes) : entry === "break" ? evaluateCtsGBreak(closes) : coordinateCtsGEntry(closes))?.direction || null
-  }
   const window = candles.slice(index - 30, index + 1)
   const closes = window.map((candle) => candle.close)
   const current = candles[index]
@@ -207,8 +197,8 @@ function pricePnlPct(
 ): number {
   return legs.reduce((sum, leg) => sum + leg.quantity * (
     direction === "long"
-      ? ((exitPrice - leg.price) / legs[0].price) * 100
-      : ((leg.price - exitPrice) / legs[0].price) * 100
+      ? ((exitPrice - leg.price) / leg.price) * 100
+      : ((leg.price - exitPrice) / leg.price) * 100
   ), 0)
 }
 
@@ -228,8 +218,6 @@ export function runDcaBacktest(
   const prepared = prepareDcaMarket(sourceCandles)
   const candles = prepared.candles
   const entryDirections = preparedEntryDirections(prepared, rawConfig.entry)
-  const confirmationDirections = rawConfig.requireDcaDirectionConfirmation || rawConfig.exitOnConfirmedReversal
-    ? preparedEntryDirections(prepared, "trend_break") : []
   const profile = normalizeDcaProfile(rawConfig.profile)
   const timeframeMinutes = rawConfig.timeframeMinutes
   const takeProfitPct = finitePositive(rawConfig.takeProfitPct, 0.6)
@@ -244,7 +232,6 @@ export function runDcaBacktest(
   const roundTripCostPct = Math.max(0, Number(rawConfig.roundTripCostPct ?? 0.1) || 0)
   const slippagePct = Math.max(0, Number(rawConfig.slippagePct ?? 0.02) || 0)
   const trades: DcaBacktestTrade[] = []
-  const exitHistory: CtsGExitResult[] = []
 
   let index = 30
   while (index < candles.length - 1) {
@@ -267,11 +254,9 @@ export function runDcaBacktest(
       averageEntryPrice,
       takeProfitPct,
     })
-    let stopPrice = direction === "long"
+    const stopPrice = direction === "long"
       ? initialEntryPrice * (1 - stopLossPct / 100)
       : initialEntryPrice * (1 + stopLossPct / 100)
-    let peakPrice = initialEntryPrice
-    let exitLane: CtsGExitResult["lane"] = "hard"
     let nextDcaStep = 1
     let exitPrice = entryCandle.close
     let exitReason: DcaBacktestTrade["exitReason"] = "timeout"
@@ -279,11 +264,6 @@ export function runDcaBacktest(
     let drawdownStart: number | null = null
     let longestDrawdownMs = 0
     let maxAdversePnlPct = 0
-    let markPeak = 0
-    let maxIntratradeDrawdownPct = 0
-    const feesAt = (mark: number): number => roundTripCostPct / 2 * legs.reduce(
-      (sum, leg) => sum + leg.quantity * (leg.price + mark) / initialEntryPrice, 0,
-    )
 
     for (
       let cursor = index + 1;
@@ -292,20 +272,10 @@ export function runDcaBacktest(
     ) {
       const candle = candles[cursor]
       exitIndex = cursor
-      // Only a signal known before this bar may authorize its DCA fill or exit.
-      const confirmedDirection = confirmationDirections[cursor - 1]
-      if (rawConfig.exitOnConfirmedReversal && confirmedDirection && confirmedDirection !== direction) {
-        exitPrice = candle.open * (direction === "long" ? 1 - slippagePct / 100 : 1 + slippagePct / 100)
-        exitReason = "reversal"
-        break
-      }
-      const adverseMark = direction === "long"
-        ? Math.max(candle.low, Math.min(stopPrice, candle.open))
-        : Math.min(candle.high, Math.max(stopPrice, candle.open))
-      const adversePnl = pricePnlPct(direction, legs, adverseMark) - feesAt(adverseMark)
+      const adverseMark = direction === "long" ? candle.low : candle.high
+      const adversePnl = pricePnlPct(direction, legs, adverseMark)
       maxAdversePnlPct = Math.min(maxAdversePnlPct, adversePnl)
-      maxIntratradeDrawdownPct = Math.max(maxIntratradeDrawdownPct, markPeak - adversePnl)
-      const closePnl = pricePnlPct(direction, legs, candle.close) - feesAt(candle.close)
+      const closePnl = pricePnlPct(direction, legs, candle.close)
       if (closePnl < 0) {
         drawdownStart ??= candle.time
         longestDrawdownMs = Math.max(longestDrawdownMs, candle.time - drawdownStart)
@@ -315,7 +285,7 @@ export function runDcaBacktest(
 
       const stopped = direction === "long" ? candle.low <= stopPrice : candle.high >= stopPrice
       if (stopped) {
-        exitPrice = (direction === "long" ? Math.min(stopPrice, candle.open) : Math.max(stopPrice, candle.open)) * (direction === "long"
+        exitPrice = stopPrice * (direction === "long"
           ? 1 - slippagePct / 100
           : 1 + slippagePct / 100)
         exitReason = "sl"
@@ -332,8 +302,7 @@ export function runDcaBacktest(
         break
       }
 
-      markPeak = Math.max(markPeak, closePnl)
-      if (nextDcaStep <= profile.maxSteps && (!rawConfig.requireDcaDirectionConfirmation || confirmedDirection === direction)) {
+      if (nextDcaStep <= profile.maxSteps) {
         const distance = profile.stepDistancesPct[nextDcaStep - 1]
         const triggerPrice = direction === "long"
           ? initialEntryPrice * (1 - distance / 100)
@@ -365,14 +334,6 @@ export function runDcaBacktest(
         }
       }
 
-      if (rawConfig.ctsGExitCoordination) {
-        peakPrice = direction === "long" ? Math.max(peakPrice, candle.close) : Math.min(peakPrice, candle.close)
-        const next = coordinateCtsGExit({ direction, entryPrice: averageEntryPrice, markPrice: candle.close, peakPrice,
-          hardStopPrice: stopPrice, ageSeconds: (candle.time - entryCandle.time) / 1000,
-          positionCostPct: roundTripCostPct + slippagePct * 2, history: exitHistory })
-        if (next.lane !== "hard") { stopPrice = next.stopPrice; exitLane = next.lane }
-      }
-
       if (cursor - index >= maxHoldCandles || cursor === candles.length - 1) {
         exitPrice = candle.close * (direction === "long"
           ? 1 - slippagePct / 100
@@ -384,9 +345,7 @@ export function runDcaBacktest(
 
     const volumeRatio = legs.reduce((sum, leg) => sum + leg.quantity, 0)
     const grossPnlPct = pricePnlPct(direction, legs, exitPrice)
-    const pnlPctOfInitialNotional = grossPnlPct - feesAt(exitPrice)
-    exitHistory.push({ lane: exitLane, netMovePct: pnlPctOfInitialNotional / volumeRatio })
-    if (exitHistory.length > 80) exitHistory.shift()
+    const pnlPctOfInitialNotional = grossPnlPct - roundTripCostPct * volumeRatio
     trades.push({
       direction,
       entryTime: entryCandle.time,
@@ -404,7 +363,6 @@ export function runDcaBacktest(
       ),
       drawdownTimeMin: longestDrawdownMs / 60_000,
       maxAdversePnlPct,
-      maxIntratradeDrawdownPct,
     })
     index = Math.max(index + 1, exitIndex + 1)
   }
@@ -417,7 +375,6 @@ export function runDcaBacktest(
   for (const trade of trades) {
     if (trade.pnlPctOfInitialNotional > 0) grossProfitPct += trade.pnlPctOfInitialNotional
     else grossLossPct += Math.abs(trade.pnlPctOfInitialNotional)
-    maxEquityDrawdownPct = Math.max(maxEquityDrawdownPct, equityPeak - (equity + trade.maxAdversePnlPct), trade.maxIntratradeDrawdownPct)
     equity += trade.pnlPctOfInitialNotional
     equityPeak = Math.max(equityPeak, equity)
     maxEquityDrawdownPct = Math.max(maxEquityDrawdownPct, equityPeak - equity)

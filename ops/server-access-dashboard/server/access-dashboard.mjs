@@ -32,11 +32,6 @@ const DEFAULT_SERVICE_NAMES = [
   "cts-kn.service",
   "cts-kn-direct-trade.service",
   "cts-kn-scheduler.service",
-  "cts-g-desk.service",
-  "cts-g-pulse-http.service",
-  "cts-g-pulse@bingx-x01.service",
-  "cts-g-pulse@bingx-x02.service",
-  "grok-desk.service",
 ];
 
 const DEFAULT_PROJECT_DEFINITIONS = [
@@ -49,17 +44,6 @@ const DEFAULT_PROJECT_DEFINITIONS = [
     port: 3002,
     connectionCatalogPath: "/api/connections",
     serviceIds: ["cts-kn.service", "cts-kn-direct-trade.service", "cts-kn-scheduler.service"],
-  },
-  {
-    id: "cts-g",
-    name: "CTS-G",
-    role: "independent project / desk",
-    kind: "cts-g",
-    baseUrl: "http://127.0.0.1:3102",
-    statsBaseUrl: "http://127.0.0.1:3015",
-    port: 3102,
-    connectionIds: ["bingx-x01", "bingx-x02"],
-    serviceIds: ["cts-g-desk.service", "cts-g-pulse-http.service", "cts-g-pulse@bingx-x01.service", "cts-g-pulse@bingx-x02.service"],
   },
 ];
 
@@ -180,9 +164,9 @@ function normalizeProjectDefinition(value) {
   const serviceIds = Array.isArray(value.serviceIds)
     ? [...new Set(value.serviceIds.map(safeServiceName).filter(Boolean))].slice(0, 24)
     : [];
-  const kind = ["cts-kn", "cts-g", "generic"].includes(String(value.kind || ""))
+  const kind = ["cts-kn", "generic"].includes(String(value.kind || ""))
     ? String(value.kind)
-    : id === "cts-kn" ? "cts-kn" : id === "cts-g" ? "cts-g" : "generic";
+    : id === "cts-kn" ? "cts-kn" : "generic";
   const connectionIds = Array.isArray(value.connectionIds)
     ? [...new Set(value.connectionIds.map((entry) => safeProjectId(entry)).filter(Boolean))].slice(0, 12)
     : [];
@@ -689,7 +673,7 @@ async function discoverServiceNames() {
       "--no-legend",
       "--no-pager",
     ], { timeout: 2_000, maxBuffer: 128 * 1024 });
-    const prefixes = String(process.env.SERVER_DASHBOARD_SERVICE_PREFIXES || "server-access-dashboard,nginx,redis-server,chisel-server,cts-,grok-")
+    const prefixes = String(process.env.SERVER_DASHBOARD_SERVICE_PREFIXES || "server-access-dashboard,nginx,redis-server,chisel-server,cts-")
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
@@ -998,8 +982,8 @@ function projectActivity(id, state, error = "") {
 
 function projectDefinition(id) {
   const base = DEFAULT_PROJECT_DEFINITIONS.find((definition) => definition.id === id) || DEFAULT_PROJECT_DEFINITIONS[0];
-  const envBase = id === "cts-kn" ? process.env.CTS_KN_BASE_URL : process.env.CTS_G_BASE_URL;
-  const envPort = id === "cts-kn" ? process.env.CTS_KN_PORT : process.env.CTS_G_PORT;
+  const envBase = process.env.CTS_KN_BASE_URL;
+  const envPort = process.env.CTS_KN_PORT;
   return {
     ...base,
     baseUrl: String(envBase || base.baseUrl).replace(/\/$/, ""),
@@ -1091,108 +1075,6 @@ async function readCtsKnProject(definition = projectDefinition("cts-kn")) {
   };
 }
 
-async function readCtsGProject(definition = projectDefinition("cts-g")) {
-  const started = performance.now();
-  const health = await fetchWithTimeout(endpoint(definition, "healthPath"), 1_800);
-  const ids = definition.connectionIds || [];
-  const connections = definition.statsBaseUrl
-    ? await Promise.all(ids.map(async (id) => {
-      const result = await fetchWithTimeout(
-        definition.statsBaseUrl + replaceTemplate(definition.connectionStatsPath, id),
-        2_000,
-      );
-      const stats = result.ok && result.data && typeof result.data === "object" ? result.data : {};
-      const closed = Array.isArray(stats.closed) ? stats.closed : [];
-      const pf8 = profitFactorWindow(closed, 8);
-      const pf25 = profitFactorWindow(closed, 25);
-      const pf75 = profitFactorWindow(closed, 75);
-      const settings = stats.sets || {};
-      const progress = settings.progress || {};
-      return {
-        id,
-        name: id === "bingx-x01" ? "CTS-G Mainnet" : id === "bingx-x02" ? "CTS-G VST" : id,
-        exchange: stats.exchange || "BingX",
-        assigned: result.ok,
-        processingEnabled: result.ok,
-        status: result.ok && stats.running && !stats.halted ? "running" : result.ok ? "inactive" : "unavailable",
-        heartbeatFresh: result.ok,
-        progress: {
-          percent: clamp(progress.pct, 0, 100),
-          processed: finiteNumber(progress.symbolsDone, 0),
-          total: finiteNumber(progress.symbolsTotal, 0),
-          configCompleted: finiteNumber(progress.setsDone, 0),
-          configTotal: finiteNumber(progress.setsTotal, 0),
-          phase: sanitizeText(progress.phase, stats.mode || "unknown"),
-          cycles: finiteNumber(progress.cycle, 0),
-          complete: Boolean(progress.ready),
-        },
-        runtime: {
-          generation: {},
-          realtime: { realtimeCycles: finiteNumber(stats.cycle, 0) },
-          settingsRecoordination: {},
-          statsRecalculation: {},
-          telemetry: { scanMs: finiteNumber(stats.scanMs, 0), rssMb: finiteNumber(stats.rssMb, 0) },
-        },
-        stats: {
-          realValid: finiteNumber(settings.validatedCount, 0),
-          realActive: finiteNumber(settings.activeCount, 0),
-          baseValid: finiteNumber(settings.setCount, 0),
-          basePfMinimum: 0.8,
-          liveOpen: finiteNumber(stats.openCount, 0),
-          exchangeOpen: finiteOrNull(stats.exchangeOpenCount),
-          exchangeOpenSource: "cts-g-stats",
-          unrealizedPnl: finiteNumber(stats.unrealized, 0),
-          pf: { last8: pf8, last25: pf25, last75: pf75 },
-          averageDdt: {
-            overallMinutes: finiteOrNull(stats.avgDrawdownMin ?? stats.avgDrawdownTime),
-            setsMinutes: finiteOrNull(settings.avgDrawdownMin ?? settings.avgDrawdownTime),
-            liveOutcomeMinutes: null,
-            samples: { realSets: finiteNumber(settings.setCount, 0), liveOutcomes: closed.length },
-          },
-          accounting: { complete: stats.accountingComplete === true, coveragePercent: finiteOrNull(stats.accountingCoveragePercent), pending: finiteOrNull(stats.accountingPending) },
-          stageCoverage: null,
-        },
-        upstream: { runtime: result.ok, pnl: result.ok, overview: result.ok, errors: result.ok ? [] : [result.error || "unavailable"] },
-      };
-    }))
-    : [];
-  if (health.ok) {
-    const activity = projectActivity(definition.id, "up");
-    return {
-      ...publicProjectDefinition(definition),
-      status: "up",
-      httpStatus: health.status,
-      latencyMs: performance.now() - started,
-      error: "",
-      health: {
-        status: sanitizeText(health.data?.status, "healthy"),
-        uptimeS: finiteNumber(health.data?.uptimeS ?? health.data?.uptime),
-      },
-      engine: { running: connections.some((connection) => connection.status === "running"), status: "available", connections: connections.length, ids },
-      progress: [],
-      connections,
-      activity,
-      links: [{ label: "port " + definition.port, port: definition.port }],
-    };
-  }
-  const root = await fetchWithTimeout(definition.baseUrl + "/", 1_800, "html");
-  const state = root.ok ? "up" : "down";
-  const activity = projectActivity(definition.id, state, root.ok ? "" : root.error || health.error || "unhealthy");
-  return {
-    ...publicProjectDefinition(definition),
-    status: state,
-    httpStatus: root.status || health.status,
-    latencyMs: performance.now() - started,
-    error: root.ok ? "" : root.error || health.error || "unhealthy",
-    health: { status: root.ok ? "healthy" : "unreachable" },
-    engine: { running: connections.some((connection) => connection.status === "running"), status: "not_reported", connections: connections.length, ids },
-    progress: [],
-    connections,
-    activity,
-    links: [{ label: "port " + definition.port, port: definition.port }],
-  };
-}
-
 async function readGenericProject(definition) {
   const started = performance.now();
   const health = await fetchWithTimeout(endpoint(definition, "healthPath"), 1_800);
@@ -1218,7 +1100,6 @@ async function readProjects() {
   const definitions = await projectDefinitions();
   return Promise.all(definitions.map((definition) => {
     if (definition.kind === "cts-kn") return readCtsKnProject(definition);
-    if (definition.kind === "cts-g") return readCtsGProject(definition);
     return readGenericProject(definition);
   }));
 }

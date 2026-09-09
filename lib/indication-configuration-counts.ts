@@ -1,4 +1,3 @@
-import { buildCtsGConfigurations } from "./cts-g-indications"
 import {
   COMMON_INDICATOR_DEFINITIONS,
   DEFAULT_COMMON_INDICATION_SETTINGS,
@@ -44,7 +43,6 @@ export type IndicationConfigurationType =
   | "auto"
   | "signal"
   | "trend"
-  | "break"
   | "common"
 
 export interface IndicationConfigurationCount {
@@ -538,9 +536,9 @@ export function calculateIndicationConfigurationCounts(
       label: "Trend",
       group: "additional",
       storage: "independent_set",
-      possibleSets: settings.trendEnabled === false ? 0 : settings.ctsGTrendEnabled === false ? setCount(trendGrid, trendCombinedSetVariants) : trendTimeframes.length * buildCtsGConfigurations("trend", settings).length * 2,
-      evaluationConfigurations: settings.trendEnabled === false ? 0 : settings.ctsGTrendEnabled === false ? trendGrid + trendCombinedEvaluations : trendTimeframes.length * buildCtsGConfigurations("trend", settings).length,
-      formula: settings.ctsGTrendEnabled === false ? `${trendTimeframes.length} timeframes × ${trendDrawdowns.length} drawdowns × ${trendLast.length} last × ${trendActive.length} active` : `${trendTimeframes.length} timeframes × ${buildCtsGConfigurations("trend", settings).length} EMA spread/confirmation tuples × 2 directions`,
+      possibleSets: setCount(trendGrid, trendCombinedSetVariants),
+      evaluationConfigurations: trendGrid + trendCombinedEvaluations,
+      formula: `${trendTimeframes.length} timeframes × ${trendDrawdowns.length} drawdowns × ${trendLast.length} last × ${trendActive.length} active`,
       params: {
         timeframes: trendTimeframes.length,
         drawdowns: trendDrawdowns.length,
@@ -548,14 +546,7 @@ export function calculateIndicationConfigurationCounts(
         activeSituations: trendActive.length,
         combinedStepVariants: trendCombinedSetVariants,
       },
-      description: "CTS-G EMA 8/21 with three-bar confirmation, or configured legacy situation windows.",
-    },
-    {
-      type: "break", label: "Break", group: "additional", storage: "independent_set",
-      possibleSets: settings.breakEnabled === false ? 0 : trendTimeframes.length * buildCtsGConfigurations("break", settings).length * 2, evaluationConfigurations: settings.breakEnabled === false ? 0 : trendTimeframes.length * buildCtsGConfigurations("break", settings).length,
-      formula: `${trendTimeframes.length} timeframes × ${buildCtsGConfigurations("break", settings).length} range/noise tuples × 2 directions`,
-      params: { timeframes: trendTimeframes.length, range: Number(settings.breakRange) || 16 },
-      description: "CTS-G close beyond the prior range with independent direction and noise validation.",
+      description: "Trend-only 1/5/15/30-minute situations plus the optional combined higher-range result.",
     },
     {
       type: "common",
