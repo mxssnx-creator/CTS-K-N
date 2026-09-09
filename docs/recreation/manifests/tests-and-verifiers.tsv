@@ -8,7 +8,6 @@ integration	__tests__/integration/main-engine-live-dispatch.test.ts
 integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
 operator-tool	__tests__/diagnostic-cleanup.ts
-operator-tool	__tests__/fixtures/cts-g-trend-break.json
 operator-tool	components/test-dashboard.tsx
 operator-tool	components/test-live-orders.tsx
 operator-tool	scripts/autotest-drift.mjs
@@ -90,11 +89,6 @@ unit	__tests__/unit/connector-log-retention.test.ts
 unit	__tests__/unit/control-order-capacity.test.ts
 unit	__tests__/unit/cooperative-task-timeout.test.ts
 unit	__tests__/unit/cron-generate-indications-eligibility.test.ts
-unit	__tests__/unit/cts-g-configuration-matrix.test.ts
-unit	__tests__/unit/cts-g-exit.test.ts
-unit	__tests__/unit/cts-g-history-cache.test.ts
-unit	__tests__/unit/cts-g-timeframes.test.ts
-unit	__tests__/unit/cts-g-trend-break.test.ts
 unit	__tests__/unit/dashboard-event-polling.test.ts
 unit	__tests__/unit/dashboard-main-connections.test.ts
 unit	__tests__/unit/database-validator-migration-contract.test.ts

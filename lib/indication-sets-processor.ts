@@ -1,5 +1,3 @@
-import { buildCtsGConfigurations, ctsGConfigurationKey, evaluateCtsGTrend, evaluateCtsGBreak, type CtsGIndicationSettings } from "@/lib/cts-g-indications"
-import { compactCtsGMinuteCloses, ctsGTimeframeCloses, ctsGLegacyTimeframeCloses } from "@/lib/cts-g-timeframes"
 /**
  * Independent Indication Sets Processor
  *
@@ -127,7 +125,6 @@ const DEFAULT_LIMITS = {
   special: 250,
   signal: 250,
   trend: 250,
-  break: 250,
   common: 250,
 }
 
@@ -820,7 +817,6 @@ export interface IndicationSetLimits {
   special: number
   signal: number
   trend: number
-  break: number
   common: number
 }
 
@@ -830,7 +826,7 @@ export interface PositionLimits {
 }
 
 export interface IndicationSet {
-  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "special" | "signal" | "trend" | "break" | "common"
+  type: "direction" | "move" | "active" | "optimal" | "active_advanced" | "special" | "signal" | "trend" | "common"
   connectionId: string
   symbol: string
   configKey: string // Unique key for this configuration combination
@@ -902,7 +898,6 @@ export class IndicationSetsProcessor {
     special: DEFAULT_INDICATION_TIMEOUT_MS,
     optimal: DEFAULT_INDICATION_TIMEOUT_MS,
     trend: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
-    break: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
     signal: DEFAULT_INDICATION_TIMEOUT_MS,
   }
   private indicationIntervalMsByType: Record<string, number> = {
@@ -913,7 +908,6 @@ export class IndicationSetsProcessor {
     special: DEFAULT_INDICATION_TIMEOUT_MS,
     optimal: DEFAULT_INDICATION_TIMEOUT_MS,
     trend: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
-    break: DEFAULT_TREND_INDICATION_TIMEOUT_MS,
     common: 1_000,
     signal: DEFAULT_INDICATION_TIMEOUT_MS,
   }
@@ -955,10 +949,6 @@ export class IndicationSetsProcessor {
   private optimalEnabled = true
   private commonEnabled = true
   private trendEnabled = true
-  private ctsGTrendEnabled = true
-  private breakEnabled = true
-  private ctsGMatrixSettings: Record<string, any> = {}
-  private ctsGSettings: CtsGIndicationSettings = {}
   private trendTimeframesMinutes: number[] = [...DEFAULT_TREND_TIMEFRAMES_MINUTES]
   private trendDrawdownFactors: number[] = [...DEFAULT_TREND_DRAWDOWN_FACTORS]
   private trendLastSituationRatios: number[] = [...DEFAULT_TREND_LAST_SITUATION_RATIOS]
@@ -1082,7 +1072,6 @@ export class IndicationSetsProcessor {
         special: Math.round(activeProfile.active.timeout * 1_000),
         optimal: Math.round(activeProfile.optimal.timeout * 1_000),
         trend: Math.round(activeProfile.trend.timeout * 1_000),
-        break: Math.round(activeProfile.break.timeout * 1_000),
         signal: Math.round(activeProfile.signal.timeout * 1_000),
       }
       this.indicationIntervalMsByType = {
@@ -1093,7 +1082,6 @@ export class IndicationSetsProcessor {
         special: Math.round(activeProfile.active.interval * 1_000),
         optimal: Math.round(activeProfile.optimal.interval * 1_000),
         trend: Math.round(activeProfile.trend.interval * 1_000),
-        break: Math.round(activeProfile.break.interval * 1_000),
         common: Math.round(activeProfile.common.interval * 1_000),
         signal: Math.round(activeProfile.signal.interval * 1_000),
       }
@@ -1247,15 +1235,6 @@ export class IndicationSetsProcessor {
           settings.trendEnabled !== false &&
           settings.trendEnabled !== "false" &&
           activeProfile.trend.enabled
-        this.ctsGTrendEnabled = settings.ctsGTrendEnabled !== false && settings.ctsGTrendEnabled !== "false"
-        this.breakEnabled = settings.breakEnabled !== false && settings.breakEnabled !== "false" && activeProfile.break.enabled
-        this.ctsGMatrixSettings = settings
-        this.ctsGSettings = {
-          minimumSpreadRatio: Math.max(0.00001, Number(settings.ctsGTrendMinimumSpreadRatio) || 0.001),
-          minimumConfidence: Math.max(0, Math.min(1, Number(settings.ctsGMinimumConfidence ?? 0.6))),
-          breakRange: Math.max(8, Math.min(240, Number(settings.breakRange) || 16)),
-          breakNoisePct: Math.max(0, Number(settings.breakNoisePct ?? 0.05)),
-        }
         this.trendTimeframesMinutes = this.parseTrendTimeframes(
           settings.trendTimeframesMinutes,
           this.trendTimeframesMinutes,
@@ -1327,7 +1306,6 @@ export class IndicationSetsProcessor {
             special: limit,
             signal: limit,
             trend: limit,
-            break: limit,
             common: limit,
           }
         }
@@ -1803,9 +1781,6 @@ export class IndicationSetsProcessor {
       const activeResults = this.activeEnabled
         ? await runType("active", () => this.processActiveSet(symbol, marketData))
         : disabledResult("active")
-      const breakResults = this.breakEnabled
-        ? await runType("break", () => this.processCtsGSet(symbol, marketData, "break"))
-        : disabledResult("break")
       // Trend is intentionally the final completion barrier, not merely the
       // final element in a Promise array.
       const trendResults = this.trendEnabled
@@ -1847,7 +1822,7 @@ export class IndicationSetsProcessor {
         (specialResults?.qualified || 0) +
         (optimalResults?.qualified || 0) +
         (commonResults?.qualified || 0) +
-        (trendResults?.qualified || 0) + (breakResults?.qualified || 0)
+        (trendResults?.qualified || 0)
       const directionalQualified = {
         direction: directionResults?.byDirection || { long: 0, short: 0 },
         move: moveResults?.byDirection || { long: 0, short: 0 },
@@ -1857,7 +1832,6 @@ export class IndicationSetsProcessor {
         optimal: optimalResults?.byDirection || { long: 0, short: 0 },
         common: commonResults?.byDirection || { long: 0, short: 0 },
         trend: trendResults?.byDirection || { long: 0, short: 0 },
-        break: breakResults?.byDirection || { long: 0, short: 0 },
       }
       const longQualified = Object.values(directionalQualified)
         .reduce((sum, counts) => sum + Number(counts.long || 0), 0)
@@ -1902,8 +1876,6 @@ export class IndicationSetsProcessor {
           [`${symbol}:common:evaluated`]: String(commonResults?.evaluated ?? 0),
           [`${symbol}:trend`]:           String(trendResults?.qualified     ?? 0),
           [`${symbol}:trend:evaluated`]: String(trendResults?.evaluated ?? 0),
-          [`${symbol}:break`]: String(breakResults?.qualified ?? 0),
-          [`${symbol}:break:evaluated`]: String(breakResults?.evaluated ?? 0),
           [`${symbol}:long`]:            String(longQualified),
           [`${symbol}:short`]:           String(shortQualified),
         }
@@ -2005,7 +1977,6 @@ export class IndicationSetsProcessor {
             optimal: optimalResults,
             common: commonResults,
             trend: trendResults,
-            break: breakResults,
             duration,
           })
         }
@@ -3145,45 +3116,8 @@ export class IndicationSetsProcessor {
    * independent Set. The adaptive TP ladder is calculated once per symbol
    * cycle and carried in config + metadata for Base/Strategy consumers.
    */
-  private async processCtsGSet(symbol: string, marketData: any, type: "trend" | "break") {
-    const prices = this.normalizePriceHistory(marketData)
-    const minutes = marketData.ctsGMinuteCandles ?? compactCtsGMinuteCloses(marketData.candles || [])
-    const asOfMs = Number(marketData.ctsGAsOfMs ?? marketData.__indicationSnapshotAsOfMs ?? Date.now())
-    const candidates: IndicationCandidate[] = []
-    let evaluated = 0
-    let warmingUp = 0
-    for (const timeframeMinutes of this.trendTimeframesMinutes) {
-      const bars = minutes.length
-        ? ctsGTimeframeCloses(minutes, timeframeMinutes, asOfMs)
-        : ctsGLegacyTimeframeCloses(prices, timeframeMinutes)
-      for (const variant of buildCtsGConfigurations(type, this.ctsGMatrixSettings)) {
-      const requiredBars = type === "trend"
-        ? Math.max(30, (variant.slowPeriod ?? 21) + 9)
-        : Math.floor(variant.breakRange || 16) + (variant.breakConfirmationBars ?? 1) + 1
-      if (bars.length < requiredBars) { warmingUp++; continue }
-      evaluated++
-      const signal = type === "trend" ? evaluateCtsGTrend(bars, variant) : evaluateCtsGBreak(bars, variant)
-      if (!signal) continue
-      const tpRange = buildAdaptiveTrendTpRange({ pricesOldestFirst: prices,
-        positionCostPct: this.trendPositionCostPct, minMultiplier: this.trendTpMinMultiplier,
-        maxFactor: this.trendTpMaxFactor, step: this.trendTpStep, averageWindowMinutes: timeframeMinutes })
-      const config = { model: signal.metadata.model, timeframeMinutes, ...variant,
-        positionCostPct: this.trendPositionCostPct, tpFactors: tpRange.factors, tpRange }
-      const key = `indication_set:${this.connectionId}:${symbol}:${type}:${signal.direction}:cts-g:tf${timeframeMinutes}`
-        + `:${ctsGConfigurationKey(variant)}`
-      candidates.push({ setKey: key, config, indication: { direction: signal.direction, profitFactor: 0,
-        signalScore: 1 + signal.strength, rawSignalStrength: signal.strength, confidence: signal.confidence,
-        metadata: { ...signal.metadata, agreement: signal.agreement, adaptiveTpRange: tpRange } } })
-      }
-    }
-    const pending = await this.attachQualifiedCandidates(symbol, marketData, candidates)
-    if (pending.length) await this.batchSaveIndications(pending, type)
-    return { ...directionalProcessingResult(type, candidates.length, pending, evaluated), warmingUp }
-  }
-
   private async processTrendSet(symbol: string, marketData: any): Promise<any> {
     if (!this.trendEnabled) return { type: "trend", total: 0, qualified: 0, configs: 0, disabled: true }
-    if (this.ctsGTrendEnabled) return this.processCtsGSet(symbol, marketData, "trend")
 
     const prices = this.normalizePriceHistory(marketData)
     const adaptiveTp = buildAdaptiveTrendTpRange({
@@ -4717,9 +4651,7 @@ export class IndicationSetsProcessor {
       ...this.directionMoveRanges.map((range) => range * 2),
       ...this.optimalRanges.map((range) => range * 3),
       this.specialSettings.maxStep + 1,
-      // CTS-G has its own timestamped 30-bar / Break-range gate per
-      // timeframe. It must not block unrelated families' 90-minute grid.
-      ...(this.ctsGTrendEnabled ? [] : this.trendTimeframesMinutes.map((minutes) => minutes + 1)),
+      ...this.trendTimeframesMinutes.map((minutes) => minutes + 1),
     )
   }
 

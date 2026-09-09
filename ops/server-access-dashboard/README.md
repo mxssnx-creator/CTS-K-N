@@ -18,7 +18,7 @@ It reports:
 - load average, exact network byte totals and transfer rates;
 - dashboard and systemd process RSS, virtual memory, threads, CPU time,
   task counts, restart counts, exit status, and activation time;
-- CTS-K-N and CTS-G health/probe status, Redis health when reported, engine
+- CTS-K-N health/probe status, Redis health when reported, engine
   connection IDs, progression lanes, cycle counts, latency, and per-project
   failure/state-change activity;
 - dashboard request rates, status distribution, p50/p95/max latency, recent
@@ -44,7 +44,7 @@ environment files or credentials into this directory.
 
 The service binds to 127.0.0.1:3004; nginx maps / and /__server/ to it.
 Project base URLs and the service list are configurable with
-CTS_KN_BASE_URL, CTS_G_BASE_URL, and SERVER_DASHBOARD_SERVICES.
+CTS_KN_BASE_URL and SERVER_DASHBOARD_SERVICES.
 
 ## Persistent 18 GiB swap
 

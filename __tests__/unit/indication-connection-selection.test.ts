@@ -13,7 +13,6 @@ describe("connection-scoped indication selection", () => {
         auto: "false",
         signal: "false",
         trend: "true",
-        break: "false",
       },
       "active_indications:conn-b": {
         direction: "true",
@@ -23,7 +22,6 @@ describe("connection-scoped indication selection", () => {
         auto: "false",
         signal: "true",
         trend: "false",
-        break: "true",
       },
     }
     const redis = {
@@ -42,11 +40,6 @@ describe("connection-scoped indication selection", () => {
         optimalEnabled: true,
         autoEnabled: true,
         trendEnabled: true,
-        ctsGTrendEnabled: "false",
-        ctsGTrendMinimumSpreadRatio: 0.002,
-        ctsGMinimumConfidence: 0.7,
-        breakRange: 24,
-        breakNoisePct: 0.1,
       }),
       getSettings: jest.fn(async (key: string) => profiles[key] ?? null),
     }))
@@ -64,19 +57,12 @@ describe("connection-scoped indication selection", () => {
       moveEnabled: true,
       signalSettings: expect.objectContaining({ enabled: false }),
       trendEnabled: true,
-      breakEnabled: false,
-      ctsGTrendEnabled: false,
-      ctsGTrendMinimumSpreadRatio: 0.002,
-      ctsGMinimumConfidence: 0.7,
-      breakRange: 24,
-      breakNoisePct: 0.1,
     }))
     expect(second).toEqual(expect.objectContaining({
       directionEnabled: true,
       moveEnabled: false,
       signalSettings: expect.objectContaining({ enabled: true }),
       trendEnabled: false,
-      breakEnabled: true,
     }))
     expect(redis.get).toHaveBeenCalledTimes(4)
   })
@@ -107,7 +93,6 @@ describe("connection-scoped indication selection", () => {
     const defaultB = await __indicationProcessorTestUtils.getSettingsCachedModule("conn-b")
     expect(beforeA.signalSettings.enabled).toBe(false)
     expect(defaultB.signalSettings.enabled).toBe(true)
-    expect(defaultB).toMatchObject({ breakEnabled: true, ctsGTrendEnabled: true, breakRange: 16 })
 
     signalA = true
     __indicationProcessorTestUtils.invalidateIndicationSettingsCache("conn-a")

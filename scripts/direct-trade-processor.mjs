@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import blockVolume from "../lib/block-volume-ratio.cjs"
-import ctsGExit from "../lib/cts-g-exit-core.cjs"
 const { advanceBlockCountLifecycle, normalizeBlockIncrementSteps, blockEffectiveIncrementStep, blockVolumeMultiplier: canonicalBlockVolumeMultiplier, BLOCK_INCREMENT_STEPS_DEFAULT } = blockVolume
 /**
  * Direct-Trade Continuous Processor
@@ -98,7 +97,7 @@ const DIRECT_TRADE_LIVE_EXECUTION_READY = true
 const DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON =
   "canonical Direct-Trade live execution is unavailable"
 const DIRECT_TRADE_RECALC_STALE_GRACE_MS = 30 * 60 * 1_000
-const DIRECT_TRADE_ENTRY_TACTICS = ["trend", "break", "trend_break", "momentum", "mean_reversion", "breakout", "relative"]
+const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"]
 function normalizeBlockProfitFactorRatio(value, fallback = 1.1) {
   const parsed = Number(value)
   const fallbackParsed = Number(fallback)
@@ -237,10 +236,7 @@ function normalizeLoadedDirectTradePosition(position) {
     const normalizedStop = next.direction === "short"
       ? entry * (1 + protection.stoploss / 100)
       : entry * (1 - protection.stoploss / 100)
-    const priorStop = Number(next.currentSlPrice)
-    next.currentSlPrice = next.ctsGExitEnabled && priorStop > 0
-      ? next.direction === "short" ? Math.min(priorStop, normalizedStop) : Math.max(priorStop, normalizedStop)
-      : normalizedStop
+    next.currentSlPrice = normalizedStop
   }
   log("warn", `Normalized Direct-Trade protection for ${next.symbol || "unknown"}`, {
     takeprofit: protection.takeprofit,
@@ -1605,7 +1601,6 @@ async function openPosition(config) {
     entrySignalKey: config.entrySignalKey || null,
     entryTactic: config.entryTactic || null,
     indicationType: config.entryTactic || null,
-    ctsGExitEnabled: ["trend", "break", "trend_break"].includes(config.entryTactic),
     blockAddedCount: 0,
     blockLastPulseAt: 0,
     blockRealizedVolumeMultiplier: 1,
@@ -2003,13 +1998,6 @@ async function addDirectTradeDcaLeg(position, currentPrice) {
   const hasPendingControl = pendingControlStep > 0 && Boolean(position.dcaPendingControlId)
   if ((!state.enabled && !hasPendingControl) || position.status !== "open" || position.strategyType !== "dca") return false
   if (!(Number(currentPrice) > 0) && !hasPendingControl) return false
-  if (!hasPendingControl && ["trend", "break", "trend_break"].includes(position.entryTactic)) {
-    // A retry must always reconcile its original control, even after the
-    // signal expires. Only genuinely new exposure requires a fresh pulse.
-    if (!position.entrySignalKey || !activeSignalKeys.has(position.entrySignalKey)
-      || !lastSignalPulseAt || Date.now() - lastSignalPulseAt > 90_000) return false
-  }
-
   const profile = normalizeDirectDcaProfile(position.dcaProfile || state.dcaProfile)
   position.dcaProfile = profile
   if (!hasPendingControl) {
@@ -2477,23 +2465,6 @@ async function checkAndClosePositions() {
     // flip the venue position.
     if (pos.blockPendingControlId || pos.dcaPendingControlId) continue
     if (!currentPrice || !pos.entryPrice) continue
-    if (pos.ctsGExitEnabled === true) {
-      const peakPrice = pos.direction === "long"
-        ? Math.max(Number(pos.highWatermark) || pos.entryPrice, currentPrice)
-        : Math.min(Number(pos.lowWatermark) || pos.entryPrice, currentPrice)
-      const exit = ctsGExit.coordinateCtsGExit({
-        direction: pos.direction, entryPrice: Number(pos.averageEntryPrice || pos.entryPrice),
-        markPrice: currentPrice, peakPrice, hardStopPrice: Number(pos.currentSlPrice),
-        ageSeconds: Math.max(0, Date.now() - new Date(pos.openedAt).getTime()) / 1000,
-        positionCostPct: Number(pos.positionCostPercent ?? state.positionCostPercent ?? 0.1),
-      })
-      if (exit.lane !== "hard") {
-        pos.currentSlPrice = exit.stopPrice
-        pos.ctsGExitLane = exit.lane
-        stateDirty = true
-      }
-    }
-
     // A hard DCA stop always has priority over an accumulation fill. When the
     // processor is stopped, existing positions are still closed/protected but
     // no new DCA exposure is added.

@@ -55,7 +55,6 @@ TEMPLATE_LAYOUT_FIXES.md
 TEST-SUITE-SESSION-37.md
 __tests__/diagnostic-cleanup.ts
 __tests__/e2e/progression-flow.test.ts
-__tests__/fixtures/cts-g-trend-break.json
 __tests__/integration/live-order-service.test.ts
 __tests__/integration/main-engine-live-dispatch.test.ts
 __tests__/integration/preset-optimizer-store.test.ts
@@ -106,11 +105,6 @@ __tests__/unit/connector-log-retention.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
-__tests__/unit/cts-g-configuration-matrix.test.ts
-__tests__/unit/cts-g-exit.test.ts
-__tests__/unit/cts-g-history-cache.test.ts
-__tests__/unit/cts-g-timeframes.test.ts
-__tests__/unit/cts-g-trend-break.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
 __tests__/unit/database-validator-migration-contract.test.ts
@@ -1059,12 +1053,9 @@ docs/reports/20260909-order-counter-fix/report.html
 docs/reports/20260909-order-counter-fix/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
-docs/verification/dca-20d-20260905.json
-docs/verification/dca-candidate-defaults-20260905.json
 docs/verification/older-change-integration-20260906.json
 docs/verification/redis-memory-recovery-20260905.md
 docs/verification/runtime-memory-20260906.md
-docs/verification/strategy-dca-20260905.md
 drizzle.config.ts
 eslint.config.mjs
 fix-bun-permissions.sh
@@ -1173,10 +1164,6 @@ lib/core/entity-types.ts
 lib/correlation-tracking.ts
 lib/cron-auth.ts
 lib/cron-engine-eligibility.ts
-lib/cts-g-exit-core.cjs
-lib/cts-g-exit.ts
-lib/cts-g-indications.ts
-lib/cts-g-timeframes.ts
 lib/dashboard-events.ts
 lib/dashboard-metrics.ts
 lib/dashboard-poll-utils.ts
@@ -1615,7 +1602,6 @@ scripts/next-fs-rm-compat.cjs
 scripts/normalize-next-env.mjs
 scripts/npm-redis-service.mjs
 scripts/optimize-dca-14d.ts
-scripts/optimize-dca-20d.ts
 scripts/optimize-dca-42d.ts
 scripts/optimize-dca-7d.ts
 scripts/post-deploy-verify.sh
@@ -1638,7 +1624,6 @@ scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
-scripts/replay-dca-complete-14d.ts
 scripts/resolve-instance-redis-url.mjs
 scripts/restart.sh
 scripts/retire-unsubmitted-live-records.mjs

@@ -1,4 +1,3 @@
-import { evaluateCtsGTrend, evaluateCtsGBreak, coordinateCtsGEntry } from "./cts-g-indications"
 /**
  * Direct-Trade historical coordination.
  *
@@ -53,7 +52,7 @@ function normalizeDirectTradePositionCostPercent(value: unknown): number {
 }
 
 export const DIRECT_TRADE_TIMEFRAMES = ["5m", "15m", "30m"] as const
-export const DIRECT_TRADE_ENTRY_TACTICS = ["trend", "break", "trend_break", "momentum", "mean_reversion", "breakout", "relative"] as const
+export const DIRECT_TRADE_ENTRY_TACTICS = ["momentum", "mean_reversion", "breakout", "relative"] as const
 export const DIRECT_TRADE_EXIT_TACTICS = ["bracket", "momentum_reversal", "relative", "time"] as const
 // Direct-Trade protection is expressed in PositionCost multiples, not as an
 // unrelated fixed price percentage. With the default PositionCost of 0.1%,
@@ -643,11 +642,6 @@ function entrySignal(
 ): boolean {
   const effective = entryTiming === "last_confirmed" ? index - 1 : index
   if (effective < 14) return false
-  if (["trend", "break", "trend_break"].includes(tactic)) {
-    const closes = candles.slice(Math.max(0, effective - 240), effective + 1).map(c => c.close)
-    const signal = tactic === "trend" ? evaluateCtsGTrend(closes) : tactic === "break" ? evaluateCtsGBreak(closes) : coordinateCtsGEntry(closes)
-    return signal?.direction === direction
-  }
   const history = candles.slice(effective - 14, effective)
   const closes = history.map((candle) => candle.close)
   const current = candles[effective]

@@ -28,7 +28,7 @@ export type BaseIndicationType =
   | "optimal"
   | "active_advanced"
   | "signal"
-  | "trend" | "break"
+  | "trend"
   | "common"
 
 export interface BasePositionConfig {

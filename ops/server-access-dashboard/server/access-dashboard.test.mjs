@@ -77,14 +77,14 @@ test("keeps percentile, bounds and progression summaries deterministic", () => {
 
 test("parses only safe loopback project manifests and keeps paths bounded", () => {
   const projects = parseProjectManifest(JSON.stringify({ projects: [
-    { id: "cts-g", baseUrl: "http://127.0.0.1:3102", port: 3102, kind: "cts-g", serviceIds: ["cts-g.service"] },
+    { id: "cts-secondary", baseUrl: "http://127.0.0.1:3102", port: 3102, kind: "generic", serviceIds: ["cts-secondary.service"] },
     { id: "bad space", baseUrl: "http://127.0.0.1:9999" },
     { id: "external", baseUrl: "https://example.com:443" },
   ] }));
   assert.equal(projects.length, 1);
-  assert.equal(projects[0].id, "cts-g");
+  assert.equal(projects[0].id, "cts-secondary");
   assert.equal(projects[0].baseUrl, "http://127.0.0.1:3102");
-  assert.equal(projects[0].serviceIds[0], "cts-g.service");
+  assert.equal(projects[0].serviceIds[0], "cts-secondary.service");
   assert.equal(projects[0].connectionCatalogPath, "/api/connections");
 });
 

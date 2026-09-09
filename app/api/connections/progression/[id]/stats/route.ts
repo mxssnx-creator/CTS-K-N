@@ -834,7 +834,7 @@ function aggregateOrdersBySymbol(
     return Math.round(x * m) / m
   }
 
-  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend", "break"] as const
+  const INDICATION_TYPES = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
 
   function aggregateIndicationSnapshot(
     hash: Record<string, string> | null | undefined,
@@ -845,13 +845,13 @@ function aggregateOrdersBySymbol(
     activeSets: Record<string, number>
   } {
     const counts: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, break: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const evaluated: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, break: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeSets: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, break: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const fields = hash && typeof hash === "object" ? hash : {}
 
@@ -862,7 +862,7 @@ function aggregateOrdersBySymbol(
     // data does not show false zeroes until the next cron tick rewrites scoped
     // fields.
     const hasScopedField: Record<string, boolean> = {
-      direction: false, move: false, active: false, active_advanced: false, special: false, optimal: false, auto: false, common: false, signal: false, trend: false, break: false,
+      direction: false, move: false, active: false, active_advanced: false, special: false, optimal: false, auto: false, common: false, signal: false, trend: false,
     }
     for (const field of Object.keys(fields)) {
       const firstColon = field.indexOf(":")
@@ -2247,7 +2247,7 @@ export async function GET(
     //   - its own cumulative counter `indications_{type}_count` on progression:{id}
     //   - its own per-cycle increment via hincrby in EngineManager.startIndicationProcessor
     // `auto` is a synthetic legacy alias retained for back-compat with old runs.
-    const indTypes = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend", "break"] as const
+    const indTypes = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
     const indCounts: Record<string, number> = {}
     await Promise.all(
       indTypes.map(async (type) => {
@@ -2281,10 +2281,10 @@ export async function GET(
     // and all activeCounts come back zero — exactly the right "nothing
     // alive" semantic for the UI.
     const activeIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, break: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeIndEvaluatedByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, break: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0,
     }
     const activeStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -2302,7 +2302,7 @@ export async function GET(
     // nothing qualified that cycle) are excluded so the number tracks
     // currently-progressing pools, not all-ever-touched pools.
     const activeSetsIndByType: Record<string, number> = {
-      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, auto: 0, common: 0, signal: 0, trend: 0, break: 0,
+      direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, common: 0, signal: 0, trend: 0,
     }
     const activeSetsStratByStage: Record<string, number> = {
       base: 0, main: 0, real: 0, live: 0,
@@ -4390,7 +4390,6 @@ export async function GET(
       ["optimal", "Optimal", "optimal"],
       ["auto", "Auto", "auto"],
       ["trend", "Trend", "trend"],
-      ["break", "Break", "break"],
     ] as const
     const mainIndicationTypes = Object.fromEntries(
       mainIndicationDefinitions.map(([publicKey, label, storageKey]) => [
@@ -4639,7 +4638,6 @@ export async function GET(
           common:         indCounts.common         || 0,
           signal:         indCounts.signal         || 0,
           trend:          indCounts.trend          || 0,
-          break:          indCounts.break          || 0,
           total:          indTotal,
         },
         strategies: {
@@ -4703,7 +4701,6 @@ export async function GET(
           common:         activeIndByType.common           || 0,
           signal:         activeIndByType.signal           || 0,
           trend:          activeIndByType.trend            || 0,
-          break:          activeIndByType.break            || 0,
           total:          activeIndTotal,
         },
         indicationsEvaluated: {
@@ -4717,7 +4714,6 @@ export async function GET(
           common:         activeIndEvaluatedByType.common           || 0,
           signal:         activeIndEvaluatedByType.signal           || 0,
           trend:          activeIndEvaluatedByType.trend            || 0,
-          break:          activeIndEvaluatedByType.break            || 0,
           total:          activeIndEvaluatedTotal,
         },
         strategies: {
@@ -4774,7 +4770,6 @@ export async function GET(
           common:         { sets: activeSetsIndByType.common          || 0, trackings: indCounts.common          || 0, positions: activeIndByType.common           || 0 },
           signal:         { sets: activeSetsIndByType.signal          || 0, trackings: indCounts.signal          || 0, positions: activeIndByType.signal           || 0 },
           trend:          { sets: activeSetsIndByType.trend           || 0, trackings: indCounts.trend           || 0, positions: activeIndByType.trend            || 0 },
-          break:          { sets: activeSetsIndByType.break           || 0, trackings: indCounts.break           || 0, positions: activeIndByType.break            || 0 },
           total:          { sets: activeSetsIndTotal,                       trackings: indTotal,                       positions: activeIndTotal },
         },
         strategies: (() => {

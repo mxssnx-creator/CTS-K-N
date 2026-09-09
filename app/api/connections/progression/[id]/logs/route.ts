@@ -74,7 +74,6 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
       auto:      toNumber(progHashForLogs["indications_auto_count"]),
       signal:    toNumber(progHashForLogs["indications_signal_count"]),
       trend:     toNumber(progHashForLogs["indications_trend_count"]),
-      break:     toNumber(progHashForLogs["indications_break_count"]),
       common:    toNumber(progHashForLogs["indications_common_count"]),
       special:   toNumber(progHashForLogs["indications_special_count"]),
     }
