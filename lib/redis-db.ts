@@ -684,7 +684,8 @@ export class InlineLocalRedis implements RedisClientLike {
     handle: { writeFile(data: string, options?: any): Promise<void> },
     snapshotVersion: number,
   ): Promise<void> {
-    // Keep the buffered string deliberately small. A dense runtime can have
+    tail: error writing 'standard output': Broken pipe
+// Keep the buffered string deliberately small. A dense runtime can have
     // tens of thousands of JSON rows; accumulating a 1 MiB rope before the
     // next async write made the minute checkpoint monopolise the Node turn.
     const maxChunkBytes = 64 * 1024
@@ -1391,7 +1392,8 @@ export class InlineLocalRedis implements RedisClientLike {
     // trade-engine coordinator; if ANY engine is active, skip the reload.
     const globalCtx = globalThis as any
     const coordinator = globalCtx.__tradeEngineCoordinator
-    const coordinatorHasEngines =
+  tail: error writing 'standard output': Broken pipe
+  const coordinatorHasEngines =
       coordinator &&
       typeof coordinator.getActiveEngineCount === "function" &&
       Number(coordinator.getActiveEngineCount()) > 0
@@ -2012,7 +2014,8 @@ export class InlineLocalRedis implements RedisClientLike {
       ? Math.max(1, Math.floor(limit))
       : Number.MAX_SAFE_INTEGER
     let iterator: Iterator<[string, number]>
-    if (bounded === Number.MAX_SAFE_INTEGER) {
+    if (bounded === Numtail: error writing 'standard output': Broken pipe
+ber.MAX_SAFE_INTEGER) {
       iterator = ttlMap.entries()
       this.ttlCleanupIterator = null
       this.ttlCleanupRemaining = 0
@@ -2705,6 +2708,8 @@ export class InlineLocalRedis implements RedisClientLike {
     // step, a hot-reload or cold-start resurrects the deleted runtime data.
     await this.saveToDisk()
     return { deleted, protected: protectedCount, buckets }
+tail: error writing 'standard output': Broken pipe
+tail: error writing 'standard output': Broken pipe
   }
 
   /**
@@ -4034,7 +4039,8 @@ export async function ensureCoreRedis(): Promise<void> {
           globalForRedis.__redis_load_promise.finally(() => {
             globalForRedis.__redis_load_promise = undefined
           })
-        }
+    tail: error writing 'standard output': Broken pipe
+    }
         await globalForRedis.__redis_load_promise
       }
     }
@@ -4714,7 +4720,9 @@ async function readIndexedHashes(client: RedisClientLike, indexKey: string, keyP
   return records
 }
 
-async function updatePositionIndexes(client: RedisClientLike, id: string, position: Record<string, any>): Promise<void> {
+async function updatePositionIndexes(client: RedisClientLike, id: string, position: Record<string, any>): Promise<voitail: error writing 'standard output': Broken pipe
+tail: error writing 'standard output': Broken pipe
+d> {
   const key = `position:${id}`
   const previous = await client.hgetall(key).catch(() => ({} as Record<string, string>))
   const previousConnectionId = getRecordConnectionId(previous)
@@ -5183,7 +5191,60 @@ export async function setSettings(key: string, value: any): Promise<void> {
   await initRedis()
   const client = getClient()
   const data = flattenForHmset(value)
-  await client.hset(`settings:${key}`, data)
+  const writes: Promise<unknown>[] = [client.hset(`settings:${key}`, data)]
+
+  // Engine state has two live namespaces during rolling deploys:
+  // `settings:trade_engine_state:{id}` is the compatibility mirror used by
+  // startup/heartbeat writers, while the scoped Main hash is read by the
+  // progression/status routes.  Writing only the legacy hash leaves lifecycle
+  // fields (especially prehistoric gates) stranded in an older scoped session;
+  // that made the UI report "queued/gated" even while the same worker was
+  // running with a complete historic hand-off.  Mirror the unscoped Main
+  // state at the persistence boundary so every lifecycle update reaches both
+  // readers.  Direct scoped writes remain untouched and engine-type-specific.
+  const match = /^trade_engine_state:(.+)$/.exec(String(key))
+  if (match && match[1] && !match[1].includes(":")) {
+    const safeConnectionId = match[1].replace(/[^A-Za-z0-9._-]/g, "_") || match[1]
+    const scopedKey = `settings:trade_engine_state:${safeConnectionId}:main`
+    writes.push(client.hset(scopedKey, data))
+
+    // A running lifecycle checkpoint supersedes pause metadata left by an
+    // older global pause.  Remove it from all compatibility mirrors once a
+    // real processor contract (not merely a heartbeat) is published; leaving
+    // those fields behind makes read-only status pages show a contradictory
+    // "running + paused" state after a clean reinstall.
+    const lifecycleFields = [
+      "engine_ready",
+      "entry_processors_gated",
+      "prehistoric_bootstrap_status",
+      "prehistoric_data_loaded",
+      "all_phases_started",
+      "indications_started",
+      "strategies_started",
+      "realtime_started",
+      "live_trading_started",
+    ]
+    const publishesRunningContract =
+      String(data.status || "").toLowerCase() === "running" &&
+      lifecycleFields.some((field) => Object.prototype.hasOwnProperty.call(data, field))
+    if (publishesRunningContract) {
+      const stalePauseFields = [
+        "pause_requested",
+        "pause_reason",
+        "pause_requested_at",
+        "paused_at",
+        "paused_by",
+      ]
+      writes.push(client.hdel(`settings:${key}`, ...stalePauseFields))
+      writes.push(client.hdel(scopedKey, ...stalePauseFields))
+      // The raw hash is a legacy read surface outside the `settings:` helper;
+      // clear only this same connection's stale pause marker as part of the
+      // scoped lifecycle transition.
+      writes.push(client.hdel(`trade_engine_state:${safeConnectionId}`, ...stalePauseFields))
+    }
+  }
+
+  await Promise.all(writes)
 }
 
 export async function persistNow(): Promise<boolean> {
@@ -6216,7 +6277,8 @@ export async function createConnection(data: any): Promise<any> {
   // trying to express before it was accidentally left outside the
   // function body (which broke the build with "Return statement is
   // not allowed here" at the module top level).
-  const existingConnection = await client.hgetall(`connection:${id}`)
+  contail: error writing 'standard output': Broken pipe
+st existingConnection = await client.hgetall(`connection:${id}`)
   if (existingConnection && Object.keys(existingConnection).length > 0) {
     console.log(`[v0] [Redis] Connection already exists with id ${id}, updating instead of creating duplicate`)
     const merged = {
