@@ -171,6 +171,30 @@ describe("live-order-service integration accounting", () => {
     expect(calls).toEqual(["order"])
   })
 
+  test("submits the entire FIL close on its decimal venue grid without a residual lot", async () => {
+    const { placeLiveOrder } = await import("@/lib/live-order-service")
+    hashStore.set("settings:trading_pair:conn-fil-close:FILUSDT", {
+      quantityStep: "0.1", quantityPrecision: "1", minQuantity: "0.1",
+    })
+    let submitted = 0
+    const connector = {
+      placeOrder: jest.fn(async (_symbol: string, _side: string, quantity: number) => {
+        submitted = quantity
+        return { success: true, orderId: "fil-grid-close", status: "filled", filledQty: quantity, filledPrice: 0.8608 }
+      }),
+    }
+    const result = await placeLiveOrder({
+      connectionId: "conn-fil-close", symbol: "FILUSDT", side: "sell", positionDirection: "long",
+      quantity: 4.8, price: 0.8608, reduceOnly: true, connector,
+      connection: { id: "conn-fil-close", position_mode: "one_way" },
+    })
+    expect(result.success).toBe(true)
+    expect(submitted).toBe(4.8)
+    expect(result.fill?.filledQty).toBe(4.8)
+    expect(4.8 - submitted).toBe(0)
+    expect(connector.placeOrder).toHaveBeenCalledTimes(1)
+  })
+
   test("aggregates every authoritative venue row before applying the remaining exposure ceiling", async () => {
     const { resolveLiveOrderExposureCeiling } = await import("@/lib/live-order-service")
     const priorConfirmation = process.env.BINGX_VST_SOAK_CONFIRM
