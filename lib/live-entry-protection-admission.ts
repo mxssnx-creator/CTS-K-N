@@ -118,6 +118,7 @@ export function auditLiveEntryProtectionAdmission(input: {
   direction: ProtectionAdmissionDirection
   positions: readonly Record<string, any>[]
   venuePositions: readonly Record<string, any>[]
+  overallControlOrdersOnly?: boolean
   liveOrderIds: ReadonlySet<string>
 }): LiveEntryProtectionAdmissionAudit {
   const violations: string[] = []
@@ -150,6 +151,11 @@ export function auditLiveEntryProtectionAdmission(input: {
   }
 
   for (const row of executed) {
+    if (input.overallControlOrdersOnly !== undefined &&
+      (row.controlOrderScope === "symbol_direction") !== input.overallControlOrdersOnly) {
+      violations.push("owned_control_scope_transition_pending")
+    }
+    if (row.controlOrderScope === "symbol_direction") continue
     const expected = quantityOf(row)
     const tolerance = quantityTolerance(row)
     const stopLossOrderId = text(row.stopLossOrderId)
@@ -189,6 +195,26 @@ export function auditLiveEntryProtectionAdmission(input: {
     bySlot.set(key, rows)
   }
   for (const rows of bySlot.values()) {
+    if (rows.some((row) => row.controlOrderScope === "symbol_direction")) {
+      const leaders = rows.filter((row) => row.aggregateProtectionOwner === true)
+      if (leaders.length !== 1 || rows.some((row) => row.controlOrderScope !== "symbol_direction")) {
+        violations.push("owned_shared_control_owner_mismatch")
+      } else {
+        const leader = leaders[0]
+        const quantity = rows.reduce((sum, row) => sum + quantityOf(row), 0)
+        const tolerance = Math.max(...rows.map(quantityTolerance), 1e-10)
+        for (const leg of ["stopLoss", "takeProfit"] as const) {
+          const id = text(leader[`${leg}OrderId`])
+          if (!id || !input.liveOrderIds.has(id)) violations.push(`owned_shared_${leg}_missing`)
+          if (!armedQuantityMatches(quantity, leader[`${leg}ArmedQuantity`], tolerance)) {
+            violations.push(`owned_shared_${leg}_quantity_mismatch`)
+          }
+          if (rows.some((row) => row.id !== leader.id && text(row[`${leg}OrderId`]))) {
+            violations.push("owned_shared_child_control_present")
+          }
+        }
+      }
+    }
     const orderIds = new Set<string>()
     for (const row of rows) {
       for (const id of protectionOrderIds(row)) {
@@ -242,6 +268,8 @@ export function auditLiveEntryProtectionAdmission(input: {
     physicalSlotAlreadyExists: physicalRows.length > 0,
     // Every new independent row owns SL + TP. A brand-new physical slot also
     // needs its single aggregate security stop.
-    requiredNewControlOrders: physicalRows.length > 0 ? 2 : 3,
+    requiredNewControlOrders: physicalRows.length > 0
+      ? (input.overallControlOrdersOnly ?? physicalRows.every((row) => row.controlOrderScope === "symbol_direction")) ? 0 : 2
+      : 3,
   }
 }

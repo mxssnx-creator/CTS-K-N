@@ -230,6 +230,8 @@ __tests__/unit/orchestrated-verifier-safety.test.ts
 __tests__/unit/order-quantity.test.ts
 __tests__/unit/orders-market-notional.test.ts
 __tests__/unit/orders-route-concurrency.test.ts
+__tests__/unit/overall-control-lifecycle.test.ts
+__tests__/unit/overall-control-orders.test.ts
 __tests__/unit/overview-poller.test.ts
 __tests__/unit/performance-profiler.test.ts
 __tests__/unit/persistent-paths.test.ts
@@ -896,10 +898,12 @@ components/settings/install-manager.tsx
 components/settings/logging-settings.tsx
 components/settings/logs-viewer.tsx
 components/settings/margin-call-panel.tsx
+components/settings/overall-control-orders-setting.tsx
 components/settings/overall-settings.tsx
 components/settings/preset-connection-manager.tsx
 components/settings/settings-editor-dialog.tsx
 components/settings/settings-file-manager.tsx
+components/settings/settings-protection-panel.tsx
 components/settings/signal-indication-settings.tsx
 components/settings/statistics-overview.tsx
 components/settings/strategy-coordination-section.tsx
@@ -1078,6 +1082,7 @@ lib/active-outbreak-indication.ts
 lib/additional/chat-history.ts
 lib/adjust-strategy-statistics.ts
 lib/admin-auth.ts
+lib/aggregate-control-fill.ts
 lib/aggregate-protection-coordination.ts
 lib/alerting-system.ts
 lib/analytics.ts
@@ -1334,6 +1339,7 @@ lib/multi-range-coordination.ts
 lib/orchestrated-verifier-safety.ts
 lib/order-executor.ts
 lib/order-quantity.ts
+lib/overall-control-orders.ts
 lib/overview-poller.ts
 lib/performance-dashboard.ts
 lib/performance-profiler.ts

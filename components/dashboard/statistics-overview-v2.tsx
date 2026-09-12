@@ -124,6 +124,8 @@ interface CompactStats {
   liveControlOrderSets: number
   liveProtectedControlOrderSets: number
   liveUnprotectedControlOrderSets: number
+  liveOverallControlSlots: number
+  livePerOrderControlRows: number
   liveSecurityStopsRequired: number
   liveSecurityStopsArmed: number
   liveSecurityStopsMissing: number
@@ -304,6 +306,8 @@ const EMPTY: CompactStats = {
   liveControlOrderSets: 0,
   liveProtectedControlOrderSets: 0,
   liveUnprotectedControlOrderSets: 0,
+  liveOverallControlSlots: 0,
+  livePerOrderControlRows: 0,
   liveSecurityStopsRequired: 0,
   liveSecurityStopsArmed: 0,
   liveSecurityStopsMissing: 0,
@@ -962,6 +966,8 @@ export function StatisticsOverviewV2() {
           liveControlOrderSets: Number(opLive.aggregate?.controlOrderSets) || 0,
           liveProtectedControlOrderSets: Number(opLive.aggregate?.protectedControlOrderSets) || 0,
           liveUnprotectedControlOrderSets: Number(opLive.aggregate?.unprotectedControlOrderSets) || 0,
+          liveOverallControlSlots: Number(opLive.aggregate?.overallControlSlots) || 0,
+          livePerOrderControlRows: Number(opLive.aggregate?.perOrderControlRows) || 0,
           liveSecurityStopsRequired: Number(opLive.aggregate?.securityStopsRequired) || 0,
           liveSecurityStopsArmed: Number(opLive.aggregate?.securityStopsArmed) || 0,
           liveSecurityStopsMissing: Number(opLive.aggregate?.securityStopsMissing) || 0,
@@ -1685,6 +1691,7 @@ export function StatisticsOverviewV2() {
               title={`${stats.liveSecurityStopsArmed}/${stats.liveSecurityStopsRequired} physical symbol/direction slots have the required farther close-all security stop armed.`}
             >
               <span className="text-muted-foreground">Security stops</span>
+              <span className="text-[10px] text-muted-foreground">{fmt(stats.liveOverallControlSlots)} overall slots · {fmt(stats.livePerOrderControlRows)} per-order rows</span>
               <span className={`font-semibold tabular-nums ${stats.liveSecurityStopsMissing > 0 ? "text-red-600" : "text-emerald-600"}`}>
                 {fmt(stats.liveSecurityStopsArmed)}/{fmt(stats.liveSecurityStopsRequired)}
               </span>

@@ -38,6 +38,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import type { LivePositionView, ProtectionUpdate } from "@/components/live-trading/live-trading-types"
+import { resolveEffectiveControlOrders } from "@/lib/overall-control-orders"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import {
   absoluteStopLoss,
@@ -368,6 +369,7 @@ export function LivePositionTable({
                           <span className="text-sky-500">SEC</span><span>{formatPrice(security.price)}</span>
                         </div>
                         <div className="mt-0.5 flex gap-1">
+                          {position.controlOrderScope === "symbol_direction" && <Badge variant="outline" className="h-4 px-1 text-[8px]">Overall controls</Badge>}
                           {trailing ? <Badge variant="outline" className="h-4 border-sky-500/30 px-1 text-[8px]">Trail {positionTrailingDistancePercent(position)}%</Badge> : null}
                           {position.manualProtectionOverride ? <Badge variant="outline" className="h-4 border-amber-500/30 px-1 text-[8px]">Manual</Badge> : null}
                           <Badge
@@ -443,7 +445,7 @@ export function LivePositionTable({
               {protectionPosition?.symbol} protection
             </DialogTitle>
             <DialogDescription className="text-xs">
-              Values are persisted as exact-quantity row controls. A separate farther slot security stop is coordinated automatically and is not loosened here.
+              Each position retains its own strategy exits. With Overall Control Orders only enabled, venue controls use the outermost ranges for the symbol and direction. The farther security stop is coordinated automatically.
             </DialogDescription>
           </DialogHeader>
 
@@ -457,17 +459,18 @@ export function LivePositionTable({
 
               {(() => {
                 const security = resolveEffectiveSecurityStop(protectionPosition)
+                const controls = resolveEffectiveControlOrders(protectionPosition)
                 return (
                   <div className="grid gap-1.5 rounded-md border bg-muted/10 p-2 text-[10px] sm:grid-cols-3">
                     <div>
-                      <span className="text-muted-foreground">Row stop order</span>
-                      <div className="truncate font-mono" title={protectionPosition.stopLossOrderId || ""}>{protectionPosition.stopLossOrderId || "missing"}</div>
-                      <div className="text-[9px] text-muted-foreground">Qty {formatQuantity(protectionPosition.stopLossArmedQuantity)}</div>
+                      <span className="text-muted-foreground">{controls.shared ? "Overall stop order" : "Row stop order"}</span>
+                      <div className="truncate font-mono" title={controls.stopLossOrderId || ""}>{controls.stopLossOrderId || "missing"}</div>
+                      <div className="text-[9px] text-muted-foreground">Qty {formatQuantity(controls.stopLossArmedQuantity)}</div>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">Row target order</span>
-                      <div className="truncate font-mono" title={protectionPosition.takeProfitOrderId || ""}>{protectionPosition.takeProfitOrderId || "missing"}</div>
-                      <div className="text-[9px] text-muted-foreground">Qty {formatQuantity(protectionPosition.takeProfitArmedQuantity)}</div>
+                      <span className="text-muted-foreground">{controls.shared ? "Overall target order" : "Row target order"}</span>
+                      <div className="truncate font-mono" title={controls.takeProfitOrderId || ""}>{controls.takeProfitOrderId || "missing"}</div>
+                      <div className="text-[9px] text-muted-foreground">Qty {formatQuantity(controls.takeProfitArmedQuantity)}</div>
                     </div>
                     <div>
                       <span className="text-muted-foreground">Slot security</span>
@@ -489,7 +492,7 @@ export function LivePositionTable({
                 <div className="space-y-1.5">
                   <Label htmlFor="live-take-profit" className="flex items-center gap-1 text-xs"><ArrowUpFromLine className="size-3 text-emerald-500" /> Take profit price</Label>
                   <Input id="live-take-profit" type="number" min="0" step="any" value={takeProfitPrice} onChange={(event) => setTakeProfitPrice(event.target.value)} className="h-8 font-mono text-xs" placeholder="Required" />
-                  <p className="text-[9px] text-muted-foreground">Every live row retains an exact-quantity target. Use Restore strategy defaults to recover the assigned target.</p>
+                  <p className="text-[9px] text-muted-foreground">This position retains its own target. Overall venue targets follow the outermost individual ranges.</p>
                 </div>
               </div>
 

@@ -3,6 +3,7 @@ import {
   isBingXVirtualFundsDemo,
   type RealTradeReadiness,
 } from "@/lib/real-trade-gates"
+import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 
 /**
  * Direct-Trade now delegates every venue mutation to the canonical Live stage,
@@ -105,5 +106,21 @@ export function directTradeLiveExecutionReadiness(
     virtualFundsOnly: true,
     blockCode: runtime.canPlaceRealOrders ? null : runtime.blockCode || DIRECT_TRADE_LIVE_EXECUTION_BLOCK_CODE,
     blockReason: runtime.canPlaceRealOrders ? null : runtime.blockReason || DIRECT_TRADE_LIVE_EXECUTION_BLOCK_REASON,
+  }
+}
+
+/** Include the same connection-scoped runtime admission guard as canonical Live. */
+export async function readDirectTradeLiveExecutionReadiness(
+  client: { get(key: string): Promise<unknown> },
+  connection: Record<string, any> | null | undefined,
+  connectionId: string,
+) {
+  const configured = directTradeLiveExecutionReadiness(connection, connectionId)
+  const runtime = await readLiveEntryReadiness(client, connectionId, evaluateDirectTradeLiveReadiness(connection, connectionId))
+  return {
+    ...configured,
+    ready: configured.ready && runtime.canPlaceRealOrders,
+    blockCode: runtime.canPlaceRealOrders ? null : runtime.blockCode,
+    blockReason: runtime.canPlaceRealOrders ? null : runtime.blockReason,
   }
 }

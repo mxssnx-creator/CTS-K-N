@@ -4,6 +4,8 @@ export type ProtectionSlotDirection = "long" | "short"
 
 export interface ProtectionSlotMemberSnapshot {
   id: string
+  controlOrderScope?: "per_order" | "symbol_direction"
+  aggregateProtectionOwner?: boolean
   symbol: string
   direction?: ProtectionSlotDirection
   side?: string
@@ -238,7 +240,7 @@ export function auditProtectionSlotOrders(input: {
   symbol: string
   direction: ProtectionSlotDirection
   members: readonly ProtectionSlotMemberSnapshot[]
-  plan: Pick<AggregateProtectionPlan, "venueQuantity" | "quantityTolerance" | "securityStopPrice">
+  plan: Pick<AggregateProtectionPlan, "venueQuantity" | "quantityTolerance" | "securityStopPrice"> & Partial<Pick<AggregateProtectionPlan, "desiredStopLoss" | "desiredTakeProfit">>
   openOrders: readonly Record<string, any>[]
 }): ProtectionSlotOrderAudit {
   const symbol = normalizeProtectionSlotSymbol(input.symbol)
@@ -251,10 +253,16 @@ export function auditProtectionSlotOrders(input: {
   let exactSecurityOrders = 0
 
   const orders = input.openOrders.map((order) => order as Record<string, any>)
+  const ordersById = new Map<string, { order: Record<string, any>; index: number }[]>()
+  orders.forEach((order, index) => {
+    for (const id of protectionOrderIdentifiers(order)) {
+      const entries = ordersById.get(id) || []
+      entries.push({ order, index })
+      ordersById.set(id, entries)
+    }
+  })
   const findExpectedOrder = (identifier: string): { order: Record<string, any>; index: number } | null => {
-    const matches = orders
-      .map((order, index) => ({ order, index }))
-      .filter(({ order }) => protectionOrderIdentifiers(order).has(identifier))
+    const matches = ordersById.get(identifier) || []
     if (matches.length !== 1) return null
     return matches[0]
   }
@@ -325,6 +333,11 @@ export function auditProtectionSlotOrders(input: {
     return valid
   }
 
+  const shared = input.members.some((member) => member.controlOrderScope === "symbol_direction")
+  const sharedOwners = input.members.filter((member) => member.aggregateProtectionOwner === true)
+  if (shared && (sharedOwners.length !== 1 || input.members.some((member) => member.controlOrderScope !== "symbol_direction"))) {
+    addViolation(violations, "shared_control_owner_mismatch")
+  }
   for (const member of input.members) {
     if (
       normalizeProtectionSlotSymbol(member.symbol) !== symbol
@@ -334,13 +347,17 @@ export function auditProtectionSlotOrders(input: {
       addViolation(violations, "member_slot_mismatch")
       continue
     }
-    const quantity = memberQuantity(member)
+    if (shared && member !== sharedOwners[0]) {
+      if (member.stopLossOrderId || member.takeProfitOrderId) addViolation(violations, "shared_child_control_present")
+      continue
+    }
+    const quantity = shared ? finite(input.plan.venueQuantity) : memberQuantity(member)
     if (validateExpected({
       identifier: member.stopLossOrderId,
       kind: "stop_loss",
       expectedQuantity: quantity,
       armedQuantity: Math.abs(finite(member.stopLossArmedQuantity)),
-      expectedTrigger: finite(member.stopLossPrice),
+      expectedTrigger: finite(shared ? input.plan.desiredStopLoss : member.stopLossPrice),
       priceTick: finite(member.priceTick),
       violationPrefix: "row_stop_loss",
     })) exactStopLossOrders++
@@ -349,7 +366,7 @@ export function auditProtectionSlotOrders(input: {
       kind: "take_profit",
       expectedQuantity: quantity,
       armedQuantity: Math.abs(finite(member.takeProfitArmedQuantity)),
-      expectedTrigger: finite(member.takeProfitPrice),
+      expectedTrigger: finite(shared ? input.plan.desiredTakeProfit : member.takeProfitPrice),
       priceTick: finite(member.priceTick),
       violationPrefix: "row_take_profit",
     })) exactTakeProfitOrders++
@@ -393,10 +410,11 @@ export function auditProtectionSlotOrders(input: {
     orphanOrders.push({ orderId, clientOrderId, order })
   }
 
-  const expectedControlOrderCount = input.members.length * 2 + 1
+  const expectedPairs = shared ? 1 : input.members.length
+  const expectedControlOrderCount = expectedPairs * 2 + 1
   const expectedComplete = violations.length === 0
-    && exactStopLossOrders === input.members.length
-    && exactTakeProfitOrders === input.members.length
+    && exactStopLossOrders === expectedPairs
+    && exactTakeProfitOrders === expectedPairs
     && exactSecurityOrders === 1
     && matchedOrderIndexes.size === expectedControlOrderCount
 

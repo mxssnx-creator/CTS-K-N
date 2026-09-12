@@ -1,3 +1,4 @@
+import { resolveEffectiveControlOrders, summarizeControlOrderScopes } from "@/lib/overall-control-orders"
 import { type NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings, getConnection, getAppSettings } from "@/lib/redis-db"
 import { VolumeCalculator } from "@/lib/volume-calculator"
@@ -486,6 +487,7 @@ async function responseFromVolatileStatsSnapshot(
         setKey,
         protected: coverage.protected === true,
         protectionMode: String(coverage.protectionMode || "unknown"),
+        controlOrderScope: String(coverage.controlOrderScope || "per_order"),
         aggregateProtectionOwner: coverage.aggregateProtectionOwner === true,
         ...(coverage.aggregateProtectionLeaderId
           ? { aggregateProtectionLeaderId: String(coverage.aggregateProtectionLeaderId) }
@@ -516,6 +518,7 @@ async function responseFromVolatileStatsSnapshot(
         const row = position as Record<string, any>
         const id = String(row.id || "")
         const coverage = freshCoverage(row)
+        const controls = resolveEffectiveControlOrders(row)
         const security = resolveEffectiveSecurityStop({ ...row, controlOrderSetCoverage: coverage })
         return {
           ...(previousById.get(id) || {}),
@@ -525,8 +528,9 @@ async function responseFromVolatileStatsSnapshot(
           status: String(row.status || "").toLowerCase(),
           quantity: resolveConfirmedPositionQuantity(row) ?? 0,
           orderId: row.orderId ? String(row.orderId) : undefined,
-          stopLossOrderId: row.stopLossOrderId ? String(row.stopLossOrderId) : undefined,
-          takeProfitOrderId: row.takeProfitOrderId ? String(row.takeProfitOrderId) : undefined,
+          controlOrderScope: row.controlOrderScope || "per_order",
+          stopLossOrderId: controls.stopLossOrderId || undefined,
+          takeProfitOrderId: controls.takeProfitOrderId || undefined,
           securityStopOrderId: security.orderId || undefined,
           securityStopPrice: security.price,
           securityStopRequired: security.required,
@@ -539,6 +543,7 @@ async function responseFromVolatileStatsSnapshot(
         }
       })
       if (liveOverlay.aggregate && typeof liveOverlay.aggregate === "object") {
+        Object.assign(liveOverlay.aggregate, summarizeControlOrderScopes(activeLiveRows))
         liveOverlay.aggregate.controlOrderSets = currentCoverageRows.length
         liveOverlay.aggregate.protectedControlOrderSets = currentCoverageRows.filter(
           (entry) => entry.protected,
@@ -1788,6 +1793,7 @@ export async function GET(
     // exposure), giving the UI everything it needs to render a
     // "which Set does this live position belong to?" tooltip without
     // extra API round-trips.
+    const liveProtectionRows: Record<string, any>[] = []
     const liveOrderRelations: Array<{
       status?: string
       orderId?: string
@@ -1823,6 +1829,7 @@ export async function GET(
       securityStopPrice: number
       securityStopRequired: boolean
       securityStopStatus: string
+      controlOrderScope: string
       // ── Exchange order references ─────────────────────────��──────────
       orderId?: string
       stopLossOrderId?: string
@@ -1844,6 +1851,7 @@ export async function GET(
         setKey: string
         protected: boolean
         protectionMode: string
+        controlOrderScope: string
         aggregateProtectionOwner: boolean
         aggregateProtectionLeaderId?: string
         stopLossOrderId?: string
@@ -1890,6 +1898,7 @@ export async function GET(
             })
             if (!isOpenLiveExposureStatus(status)) continue
             if (!isExecutedRealExchangePosition(pos)) continue
+            liveProtectionRows.push(pos)
 
             const sym = String(pos.symbol || "").trim().toUpperCase()
             const dir = String(pos.direction || "").trim().toLowerCase()
@@ -1979,6 +1988,7 @@ export async function GET(
             }
 
             const security = resolveEffectiveSecurityStop(pos)
+            const controls = resolveEffectiveControlOrders(pos)
 
             livePositionSetRelations.push({
               id: String(pos.id || ""),
@@ -2008,9 +2018,10 @@ export async function GET(
               securityStopPrice: Math.round(security.price * 1e8) / 1e8,
               securityStopRequired: security.required,
               securityStopStatus: security.status,
+              controlOrderScope: controls.shared ? "symbol_direction" : "per_order",
               orderId:            pos.orderId            ? String(pos.orderId)            : undefined,
-              stopLossOrderId:    pos.stopLossOrderId    ? String(pos.stopLossOrderId)    : undefined,
-              takeProfitOrderId:  pos.takeProfitOrderId  ? String(pos.takeProfitOrderId)  : undefined,
+              stopLossOrderId: controls.stopLossOrderId || undefined,
+              takeProfitOrderId: controls.takeProfitOrderId || undefined,
               securityStopOrderId: security.orderId || undefined,
               status,
               createdAt: Number(pos.createdAt) || 0,
@@ -2028,6 +2039,7 @@ export async function GET(
                   setKey,
                   protected: coverage.protected === true,
                   protectionMode: String(coverage.protectionMode || "unknown"),
+                  controlOrderScope: String(coverage.controlOrderScope || "per_order"),
                   aggregateProtectionOwner: coverage.aggregateProtectionOwner === true,
                   ...(coverage.aggregateProtectionLeaderId
                     ? { aggregateProtectionLeaderId: String(coverage.aggregateProtectionLeaderId) }
@@ -5111,6 +5123,7 @@ export async function GET(
             securityStopPrice: p.securityStopPrice,
             securityStopRequired: p.securityStopRequired,
             securityStopStatus: p.securityStopStatus,
+            controlOrderScope: p.controlOrderScope,
             // Exchange references
             orderId:            p.orderId,
             stopLossOrderId:    p.stopLossOrderId,
@@ -5205,6 +5218,7 @@ export async function GET(
               nearLiquidation:    liveAggNearLiquidation,
               staleSync:          liveAggStaleSync,
               consolidatedSetsTotal: liveAggConsolidatedSets,
+              ...summarizeControlOrderScopes(liveProtectionRows),
               controlOrderSets: liveControlOrderSets,
               protectedControlOrderSets: liveProtectedControlOrderSets,
               unprotectedControlOrderSets: Math.max(0, liveControlOrderSets - liveProtectedControlOrderSets),

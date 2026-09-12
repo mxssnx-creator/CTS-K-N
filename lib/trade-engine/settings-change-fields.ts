@@ -136,6 +136,7 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
 // stuck.  Keep the classification deliberately narrow: mixed changes retain
 // the normal immediate strategy re-evaluation path.
 const LIVE_SIZING_ONLY_SETTING_FIELDS = new Set([
+  "overallControlOrdersOnly", "overall_control_orders_only",
   "volume_factor",
   "live_volume_factor",
   "preset_volume_factor",

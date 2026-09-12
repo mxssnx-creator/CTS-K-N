@@ -6,6 +6,7 @@ jest.mock("@/lib/redis-db", () => ({
   getConnection: (...args: unknown[]) => mockConnection(...args),
   getRedisClient: () => ({ hgetall: mockHash, hset: mockWrite }),
   getSettings: jest.fn().mockResolvedValue({}),
+  getAppSettings: jest.fn().mockResolvedValue({}),
 }))
 jest.mock("@/lib/system-logger", () => ({ SystemLogger: { logError: jest.fn() } }))
 jest.mock("@/lib/redis-operations", () => ({

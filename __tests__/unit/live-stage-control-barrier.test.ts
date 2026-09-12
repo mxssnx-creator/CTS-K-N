@@ -1430,3 +1430,141 @@ describe("executing Live-stage control barriers", () => {
     expect(exchange.placeOrder).not.toHaveBeenCalled()
   })
 })
+
+
+describe("shared controls and partial execution recovery", () => {
+  const aggregateResult = () => ({ plans: [], changedPositions: 0, rearmedLeaders: 0, ownershipMismatches: 0, closedMemberIds: new Set<string>() })
+
+  test("retains a partial shared order and applies increasing cumulative fills exactly once", async () => {
+    const owner = livePosition({ id: "a", controlOrderScope: "symbol_direction", executedQuantity: 0.4, quantity: 0.4, totalExecutedQuantity: 0.4, stopLossOrderId: "shared-sl" })
+    const child = livePosition({ id: "b", controlOrderScope: "symbol_direction", executedQuantity: 0.6, quantity: 0.6, totalExecutedQuantity: 0.6, stopLossOrderId: undefined })
+    const exchange = connector()
+    const persisted: any[] = []
+    const persist = async (row: any) => { persisted.push(JSON.parse(JSON.stringify(row))) }
+    const result = aggregateResult()
+    const observe = (filledQty: number) => __liveStageTest.settleSharedControlAcrossMembers(
+      owner.connectionId, exchange, [owner, child], owner,
+      { orderId: "shared-sl", status: "partially_filled", filledQty, filledPrice: 95 },
+      "shared-sl", result, "stopLoss", persist,
+    )
+    await observe(0.25)
+    expect(owner.executedQuantity).toBeCloseTo(0.3)
+    expect(child.executedQuantity).toBeCloseTo(0.45)
+    expect(persisted[0].aggregateControlFills["shared-sl"].members).toEqual({ a: 0.4, b: 0.6 })
+    expect(persisted[0].executedQuantity).toBe(0.4) // Snapshot precedes the first reduction.
+    await observe(0.5)
+    await observe(0.5)
+    expect(owner.executedQuantity).toBeCloseTo(0.2)
+    expect(child.executedQuantity).toBeCloseTo(0.3)
+    expect(owner.stopLossOrderId).toBe("shared-sl")
+    expect(owner.partialOrderExecutions).toHaveLength(1)
+    expect(exchange.placeOrder).not.toHaveBeenCalled()
+    expect(exchange.cancelOrder).not.toHaveBeenCalled()
+  })
+
+  test("restarts after one member was saved without reallocating the shared fill", async () => {
+    const owner = livePosition({ id: "a", controlOrderScope: "symbol_direction", executedQuantity: 0.4, quantity: 0.4, totalExecutedQuantity: 0.4, stopLossOrderId: "shared-sl" })
+    const child = livePosition({ id: "b", controlOrderScope: "symbol_direction", executedQuantity: 0.6, quantity: 0.6, totalExecutedQuantity: 0.6, stopLossOrderId: undefined })
+    const durable = new Map([owner, child].map((row) => [row.id, JSON.parse(JSON.stringify(row))]))
+    const exchange = connector()
+    const order = { status: "partially_filled", filledQty: 0.5, filledPrice: 95 }
+    await expect(__liveStageTest.settleSharedControlAcrossMembers(owner.connectionId, exchange, [owner, child], owner,
+      order, "shared-sl", aggregateResult(), "stopLoss", async (row: any) => {
+        if (row.id === "b") throw new Error("process interrupted")
+        durable.set(row.id, JSON.parse(JSON.stringify(row)))
+      })).rejects.toThrow("process interrupted")
+    const recoveredOwner = durable.get("a")
+    const recoveredChild = durable.get("b")
+    expect(recoveredOwner.executedQuantity).toBeCloseTo(0.2)
+    expect(recoveredChild.executedQuantity).toBeCloseTo(0.6)
+    await __liveStageTest.settleSharedControlAcrossMembers(owner.connectionId, exchange, [recoveredOwner, recoveredChild], recoveredOwner,
+      order, "shared-sl", aggregateResult(), "stopLoss", async () => {})
+    expect(recoveredOwner.executedQuantity).toBeCloseTo(0.2)
+    expect(recoveredChild.executedQuantity).toBeCloseTo(0.3)
+    expect(recoveredOwner.partialOrderExecutions).toHaveLength(1)
+    expect(recoveredChild.partialOrderExecutions).toHaveLength(1)
+  })
+
+  test("a partial security fill never implies a full-slot close", async () => {
+    const owner = livePosition({ id: "a", securityStopOrderId: "security", stopLossOrderId: undefined })
+    const child = livePosition({ id: "b", stopLossOrderId: undefined })
+    const exchange = connector()
+    await __liveStageTest.settleSharedControlAcrossMembers(owner.connectionId, exchange, [owner, child], owner,
+      { status: "partially_filled", filledQty: 0.4, filledPrice: 90 }, "security", aggregateResult(), "securityStop", async () => {})
+    expect(owner.executedQuantity).toBeCloseTo(0.8)
+    expect(child.executedQuantity).toBeCloseTo(0.8)
+    expect(owner.securityStopOrderId).toBe("security")
+    expect(exchange.placeOrder).not.toHaveBeenCalled()
+    expect(exchange.cancelOrder).not.toHaveBeenCalled()
+  })
+
+  test("row partial fills retain their ID and use the original cumulative quantity", async () => {
+    let filledQty = 0.4
+    const row = livePosition()
+    const exchange = connector({ getOrder: jest.fn(async () => ({ status: "partially_filled", filledQty, filledPrice: 95 })) })
+    const result = aggregateResult()
+    const observe = () => __liveStageTest.settleFilledRowControlsAcrossMembers(row.connectionId, exchange, [row], new Set(), result, async () => {})
+    await observe()
+    expect(row.executedQuantity).toBeCloseTo(0.6)
+    filledQty = 0.8
+    await observe()
+    await observe()
+    expect(row.executedQuantity).toBeCloseTo(0.2)
+    expect(row.stopLossOrderId).toBe("sl-1")
+    expect(row.partialOrderExecutions[0].cumulativeFilledQuantity).toBeCloseTo(0.8)
+  })
+
+  test("a fill racing cancellation keeps the order ID for attribution before switching modes", async () => {
+    let read = 0
+    const row = livePosition()
+    const exchange = connector({ getOrder: jest.fn(async () => ++read === 1
+      ? { status: "open", filledQty: 0 }
+      : { status: "filled", filledQty: 1, filledPrice: 95 }) })
+    expect(await __liveStageTest.settleSlotControlsWithoutGuess(exchange, row, true, new Set(["sl-1"]), "ScopeTest")).toBe(false)
+    expect(row.stopLossOrderId).toBe("sl-1")
+    expect(exchange.placeOrder).not.toHaveBeenCalled()
+  })
+})
+
+
+describe("cumulative reduction settlement accounting", () => {
+  test("reconciles changing cumulative prices and fees, then accepts late fee corrections without replaying size", () => {
+    const row = livePosition({ entryAccountingComplete: true, entryTradingFee: 0, realizedPnL: 0, tradingFees: 0 })
+    const observe = (quantity: number, gross: number, fee: number) => {
+      const existing = row.partialOrderExecutions?.find((item: any) => item.id === "close")
+      return __liveStageTest.applyReductionObservation(row, {
+        executionId: "close", source: "control_order", status: "partially_filled", requestedQuantity: 1,
+        reportedFilledQuantity: quantity, previouslyAppliedQuantity: existing?.cumulativeFilledQuantity || 0,
+        authoritativeQuantity: null, orderId: "close-order",
+        settlement: { orderId: "close-order", filledQuantity: quantity, averageFillPrice: 100 + gross / quantity,
+          grossRealizedPnl: gross, netRealizedPnl: gross - fee, tradingFee: fee, netIncludesEntryFee: true, fills: [] } as any,
+      })
+    }
+    observe(0.2, 2, 0.1)
+    expect(row.realizedPnL).toBeCloseTo(1.9)
+    observe(0.5, 8, 0.3)
+    expect(row.executedQuantity).toBeCloseTo(0.5)
+    expect(row.realizedPnL).toBeCloseTo(7.7)
+    expect(row.tradingFees).toBeCloseTo(0.3)
+    observe(0.5, 8, 0.4)
+    observe(0.5, 8, 0.4)
+    expect(row.executedQuantity).toBeCloseTo(0.5)
+    expect(row.realizedPnL).toBeCloseTo(7.6)
+    expect(row.tradingFees).toBeCloseTo(0.4)
+    expect(row.realizedPnlComplete).toBe(true)
+  })
+
+  test("replaces a provisional fill-price contribution when the settlement arrives", () => {
+    const row = livePosition({ entryAccountingComplete: true })
+    const input = { executionId: "close", source: "control_order" as const, status: "partially_filled", requestedQuantity: 1,
+      reportedFilledQuantity: 0.2, orderId: "close-order", authoritativeQuantity: null, price: 110 }
+    __liveStageTest.applyReductionObservation(row, input)
+    expect(row.realizedPnL).toBeCloseTo(2)
+    __liveStageTest.applyReductionObservation(row, { ...input, previouslyAppliedQuantity: 0.2,
+      settlement: { orderId: "close-order", filledQuantity: 0.2, averageFillPrice: 111, grossRealizedPnl: 2.2,
+        netRealizedPnl: 2.1, tradingFee: 0.1, netIncludesEntryFee: true, fills: [] } as any })
+    expect(row.executedQuantity).toBeCloseTo(0.8)
+    expect(row.realizedPnL).toBeCloseTo(2.1)
+    expect(row.realizedPnlComplete).toBe(true)
+  })
+})

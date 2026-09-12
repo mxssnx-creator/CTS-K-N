@@ -1,3 +1,4 @@
+import { normalizeOverallControlOrders } from "@/lib/overall-control-orders"
 import {
   DEFAULT_BASE_MIN_STEP,
   DEFAULT_VOLUME_STEP_RATIO,
@@ -157,7 +158,7 @@ function flattenSpecialSettings(settings: object): Record<string, unknown> {
 }
 
 function normalizePositionCostSettings<T extends Record<string, any>>(settings: T): T {
-  const normalized: Record<string, any> = { ...settings }
+  const normalized: Record<string, any> = normalizeOverallControlOrders({ ...settings })
   if (normalized.liveConfigLossWindow !== undefined) {
     normalized.liveConfigLossWindow = normalizeLiveConfigLossWindow(normalized.liveConfigLossWindow)
   }
@@ -230,6 +231,8 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
 
 function getDefaultSettings(): Record<string, any> {
   return {
+    overallControlOrdersOnly: false,
+    overall_control_orders_only: false,
     liveConfigAutoDeactivateEnabled: true,
     liveConfigLossWindow: 12,
     ...flattenSpecialSettings(DEFAULT_SPECIAL_STRATEGY_SETTINGS),
@@ -558,7 +561,7 @@ async function handlePut(request: Request) {
     // semantics stay correct even if a setting currently lives only in the
     // legacy hash.
     const existingSettings = (await getAppSettings({ bypassCache: true })) || {}
-    const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...incoming })
+    const mergedSettings = normalizePositionCostSettings({ ...existingSettings, ...normalizeOverallControlOrders(incoming) })
 
     const putChangedKeys = changedSettingKeys(
       existingSettings,

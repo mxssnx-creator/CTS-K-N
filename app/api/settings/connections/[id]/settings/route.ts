@@ -1,6 +1,7 @@
+import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
-import { initRedis, getConnection, getRedisClient, getSettings } from "@/lib/redis-db"
+import { initRedis, getConnection, getRedisClient, getSettings, getAppSettings } from "@/lib/redis-db"
 import { RedisTrades, RedisPositions } from "@/lib/redis-operations"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
 import { getTradeEngine } from "@/lib/trade-engine"
@@ -185,6 +186,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "signal_volume_factor",
   "volume_step_ratio",
   "block_volume_step_ratio",
+  "overallControlOrdersOnly", "overall_control_orders_only",
   "control_orders",
   "variantTrailingEnabled",
   "variantBlockEnabled",
@@ -617,6 +619,9 @@ export async function GET(
 
     const effectiveSymbols = resolveCanonicalSymbols(connection, settings)
     const safeSettings = maskConnectionSettings(settings)
+    const overall = overallControlOrdersOnly(await getAppSettings(), jsonSettings, connSettingsHashRaw, connSettingsPrefixedRaw)
+    safeSettings.overallControlOrdersOnly = overall
+    safeSettings.overall_control_orders_only = overall
     // Live switches are owned by the versioned connection record. The flat
     // settings mirrors can predate a switch, and returning their stale value
     // makes reopening/saving the dialog appear to undo the operator's choice.
@@ -1282,6 +1287,10 @@ export async function PATCH(
     }
     if (merged.control_orders !== undefined && merged.control_orders !== null) {
       flatKnobs.control_orders = merged.control_orders === true || merged.control_orders === "1" || merged.control_orders === "true" ? "1" : "0"
+    }
+    if (merged.overallControlOrdersOnly !== undefined) {
+      flatKnobs.overallControlOrdersOnly = String(merged.overallControlOrdersOnly)
+      flatKnobs.overall_control_orders_only = String(merged.overallControlOrdersOnly)
     }
     const lev = Number(merged.leveragePercentage)
     if (Number.isFinite(lev) && lev > 0) flatKnobs.leveragePercentage = String(Math.max(1, Math.min(100, lev)))

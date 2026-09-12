@@ -261,6 +261,8 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     aggregateProtectionOwner: pos.aggregateProtectionOwner,
     aggregateProtectionKey: pos.aggregateProtectionKey,
     aggregateProtectionMemberCount: pos.aggregateProtectionMemberCount,
+    aggregateProtectionQuantity: pos.aggregateProtectionQuantity,
+    controlOrderScope: pos.controlOrderScope || "per_order",
     controlOrderSetCoverage: pos.controlOrderSetCoverage,
     protectionMode: pos.protectionMode,
     systemProtectionLegs: pos.systemProtectionLegs,

@@ -25,7 +25,7 @@ route	dynamic_segments	imported_components	source
 /presets		page-header,ui/button,ui/card,ui/input,ui/label,ui/slider,ui/switch	app/presets/page.tsx
 /register		ui/button,ui/card,ui/input,ui/label	app/register/page.tsx
 /sets		page-scaffold,ui/badge,ui/button,ui/card,ui/dialog,ui/input,ui/label,ui/select,ui/slider,ui/switch,ui/textarea	app/sets/page.tsx
-/settings		auth-guard,page-header,settings/auto-indication-settings,settings/connection-settings-header,settings/exchange-connection-manager,settings/install-manager,settings/logs-viewer,settings/statistics-overview,settings/tabs/exchange-tab,settings/tabs/indication-tab,settings/tabs/overall-tab,settings/tabs/special-tab,settings/tabs/strategy-tab,settings/tabs/system-tab,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/select,ui/separator,ui/slider,ui/switch,ui/tabs	app/settings/page.tsx
+/settings		auth-guard,page-header,settings/auto-indication-settings,settings/connection-settings-header,settings/exchange-connection-manager,settings/install-manager,settings/logs-viewer,settings/overall-control-orders-setting,settings/statistics-overview,settings/tabs/exchange-tab,settings/tabs/indication-tab,settings/tabs/overall-tab,settings/tabs/special-tab,settings/tabs/strategy-tab,settings/tabs/system-tab,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/select,ui/separator,ui/slider,ui/switch,ui/tabs	app/settings/page.tsx
 /settings/connections			app/settings/connections/page.tsx
 /settings/indications/auto		ui/button,ui/card,ui/input,ui/label,ui/switch	app/settings/indications/auto/page.tsx
 /settings/indications/common		ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/common/page.tsx
