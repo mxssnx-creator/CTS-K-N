@@ -1,4 +1,6 @@
 "use client"
+import { OverallControlOrdersSetting } from "@/components/settings/overall-control-orders-setting"
+import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 
 import {
   DEFAULT_BASE_MIN_STEP,
@@ -222,6 +224,7 @@ interface OverviewSettings {
    * crossed. Existing control orders on open positions are swept on the
    * next cycle after the flag flips on.
    */
+  overallControlOrdersOnly: boolean
   useSystemCloseOnly: boolean
 }
 
@@ -243,6 +246,7 @@ const DEFAULT_OVERVIEW_SETTINGS: OverviewSettings = {
   positionMode: "one_way",
   leveragePercentage: 100,
   useMaximalLeverage: true,
+  overallControlOrdersOnly: false,
   useSystemCloseOnly: false,
 }
 
@@ -395,6 +399,8 @@ export function ConnectionSettingsDialog({
         position_mode:        overview.positionMode,
         leveragePercentage:   overview.leveragePercentage,
         useMaximalLeverage:   overview.useMaximalLeverage,
+        overallControlOrdersOnly: overview.overallControlOrdersOnly,
+        overall_control_orders_only: overview.overallControlOrdersOnly,
         use_system_close_only: overview.useSystemCloseOnly,
         symbol_order:         symbolsCfg.symbolOrder,
         symbol_count:         symbolsCfg.symbolCount,
@@ -456,6 +462,7 @@ export function ConnectionSettingsDialog({
         positionMode:      (p.position_mode  as "one_way" | "hedge") || prev.positionMode,
         leveragePercentage: Number(p.leveragePercentage)   || prev.leveragePercentage,
         useMaximalLeverage: parseStoredBoolean(p.useMaximalLeverage, true),
+        overallControlOrdersOnly: overallControlOrdersOnly(p),
         useSystemCloseOnly: parseStoredBoolean(p.use_system_close_only ?? p.useSystemCloseOnly, false),
       }))
 
@@ -599,6 +606,7 @@ export function ConnectionSettingsDialog({
           positionMode: (settings.position_mode || conn.position_mode || "one_way") as "one_way" | "hedge",
           leveragePercentage: Number(settings.leveragePercentage) || 100,
           useMaximalLeverage: parseStoredBoolean(settings.useMaximalLeverage, true),
+          overallControlOrdersOnly: overallControlOrdersOnly(settings),
           useSystemCloseOnly: parseStoredBoolean(settings.use_system_close_only ?? settings.useSystemCloseOnly, false),
         })
         setSymbolsCfg({
@@ -800,6 +808,8 @@ export function ConnectionSettingsDialog({
         position_mode: overview.positionMode,
         leveragePercentage: overview.leveragePercentage,
         useMaximalLeverage: overview.useMaximalLeverage,
+        overallControlOrdersOnly: overview.overallControlOrdersOnly,
+        overall_control_orders_only: overview.overallControlOrdersOnly,
         use_system_close_only: overview.useSystemCloseOnly,
         useSystemCloseOnly:    overview.useSystemCloseOnly, // backwards-compat alias
         // Symbols
@@ -1234,6 +1244,12 @@ export function ConnectionSettingsDialog({
 
             {!loading && (
               <>
+                <OverallControlOrdersSetting
+                  checked={overview.overallControlOrdersOnly}
+                  onCheckedChange={(checked) => setOverview((current) => ({ ...current, overallControlOrdersOnly: checked }))}
+                  systemCloseOnly={overview.useSystemCloseOnly}
+                  disabled={saving}
+                />
                 {/* OVERVIEW ──────────────────────────────────────── */}
                 <TabsContent value="overview" className="mt-0 space-y-5">
 
@@ -1761,7 +1777,7 @@ export function ConnectionSettingsDialog({
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-2 text-[11px]">
-                        <div className="rounded-md border bg-muted/30 p-2"><div className="text-muted-foreground">Control orders</div><div className="font-semibold">{overview.useSystemCloseOnly ? "Disabled" : "Enabled"}</div></div>
+                        <div className="rounded-md border bg-muted/30 p-2"><div className="text-muted-foreground">Control orders</div><div className="font-semibold">{overview.useSystemCloseOnly ? "Disabled" : overview.overallControlOrdersOnly ? "Overall per symbol/direction" : "Per order"}</div></div>
                         <div className="rounded-md border bg-muted/30 p-2"><div className="text-muted-foreground">Close verification</div><div className="font-semibold">Every sync tick</div></div>
                       </div>
                     </div>

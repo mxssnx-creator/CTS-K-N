@@ -93,6 +93,8 @@ export interface LivePositionView {
   blockCount?: number
   dcaStep?: number
   orderId?: string
+  controlOrderScope?: "per_order" | "symbol_direction"
+  aggregateProtectionQuantity?: number
   stopLossOrderId?: string
   takeProfitOrderId?: string
   securityStopOrderId?: string

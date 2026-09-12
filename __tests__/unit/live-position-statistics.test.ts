@@ -657,3 +657,17 @@ describe("complete live position/order/statistics relations", () => {
     ]))
   })
 })
+
+
+test("counts shared controls once per connection/slot while retaining all strategy rows", () => {
+  const make = (connectionId: string, leader: boolean) => ({
+    id: `${connectionId}-${leader}`, connectionId, symbol: "BTCUSDT", direction: "long", status: "filled",
+    executedQuantity: 0.5, quantity: 0.5, totalExecutedQuantity: 0.5, averageExecutionPrice: 100,
+    fills: [{ quantity: 0.5, price: 100 }], controlOrderScope: "symbol_direction", aggregateProtectionQuantity: 1,
+    aggregateProtectionOwner: leader, systemProtectionLegs: ["stop_loss", "take_profit"], protectionMode: "hybrid_control_system",
+    ...(leader ? { stopLossOrderId: "sl", takeProfitOrderId: "tp", securityStopOrderId: "sec", stopLossArmedQuantity: 1, takeProfitArmedQuantity: 1 } : {}),
+  })
+  const statistics = calculateLivePositionStatistics([make("x02", true), make("x02", false), make("paper", true), make("paper", false)])
+  expect(statistics.protection).toMatchObject({ overallControlSlots: 2, overallControlRows: 4, perOrderControlRows: 0,
+    venueControlOrders: 6, venueLegsQuantityCovered: 4, venueLegsQuantityDrifted: 0 })
+})

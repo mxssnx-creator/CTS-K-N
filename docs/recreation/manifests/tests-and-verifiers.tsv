@@ -214,6 +214,8 @@ unit	__tests__/unit/orchestrated-verifier-safety.test.ts
 unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
 unit	__tests__/unit/orders-route-concurrency.test.ts
+unit	__tests__/unit/overall-control-lifecycle.test.ts
+unit	__tests__/unit/overall-control-orders.test.ts
 unit	__tests__/unit/overview-poller.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/persistent-paths.test.ts

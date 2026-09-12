@@ -1,3 +1,4 @@
+import { normalizeOverallControlOrders } from "@/lib/overall-control-orders"
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
 }
@@ -25,7 +26,7 @@ export function mergeConnectionSettings<T extends Record<string, any>>(
   current: T | null | undefined,
   incoming: Record<string, any> | null | undefined,
 ): T & Record<string, any> {
-  const merged = deepMerge(current || {}, incoming || {}) as T & Record<string, any>
+  const merged = normalizeOverallControlOrders(deepMerge(current || {}, normalizeOverallControlOrders(incoming || {}))) as T & Record<string, any>
   const mutable = merged as Record<string, any>
   const coordination = isPlainObject(mutable.coordination_settings)
     ? mutable.coordination_settings

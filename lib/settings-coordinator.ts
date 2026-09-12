@@ -67,6 +67,7 @@ const PROGRESSION_RESTART_FIELDS = [
 
 // Fields that can be hot-reloaded without restart
 const HOT_RELOAD_FIELDS = [
+  "overallControlOrdersOnly", "overall_control_orders_only",
   "name", "volume_factor", "margin_type", "position_mode",
   "connection_settings", "strategies", "indications",
   "active_indications", "preset_type",

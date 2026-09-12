@@ -3,6 +3,7 @@ import path from "node:path"
 import {
   DIRECT_TRADE_LIVE_EXECUTION_READY,
   directTradeLiveExecutionReadiness,
+  readDirectTradeLiveExecutionReadiness,
 } from "@/lib/direct-trade-live-readiness"
 
 describe("Direct-Trade production live readiness", () => {
@@ -48,6 +49,18 @@ describe("Direct-Trade production live readiness", () => {
       exchange: "bingx",
       is_testnet: "0",
     }, "bingx-x01").ready).toBe(false)
+  })
+
+  test("reports a runtime protection halt even with exact X02 placement authorization", async () => {
+    process.env.DIRECT_TRADE_LIVE_ORDER_PLACEMENT = "1"
+    process.env.DIRECT_TRADE_LIVE_CONNECTION_IDS = "bingx-x02"
+    process.env.FORCE_SIMULATED = "1"
+    process.env.REDIS_URL = "redis://127.0.0.1:6379"
+    const connection = { id: "bingx-x02", exchange: "bingx", is_testnet: "1", api_key: "valid-api-key-123", api_secret: "valid-api-secret-123" }
+    const client = { get: jest.fn(async (key: string) => key.includes("protection-halt") ? "halt" : null) }
+    expect(await readDirectTradeLiveExecutionReadiness(client, connection, "bingx-x02")).toMatchObject({ ready: false, capabilityReady: true, blockCode: "entry_protection_halt" })
+    client.get.mockResolvedValue(null)
+    expect((await readDirectTradeLiveExecutionReadiness(client, connection, "bingx-x02")).ready).toBe(true)
   })
 
   test("guards the settings route, canonical gateway, processor, and operator switch", () => {

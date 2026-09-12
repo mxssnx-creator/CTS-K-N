@@ -1,4 +1,6 @@
 "use client"
+import { OverallControlOrdersSetting } from "@/components/settings/overall-control-orders-setting"
+import { overallControlOrdersOnly, parseProtectionBoolean } from "@/lib/overall-control-orders"
 
 import {
   DEFAULT_VOLUME_STEP_RATIO,
@@ -505,6 +507,7 @@ const specialInitialSettings: Record<string, unknown> = Object.fromEntries(
 )
 
 const initialSettings: Settings = {
+  overallControlOrdersOnly: false,
   ...specialInitialSettings,
   ...defaultStrategyIndicationVariantSettings(),
   // Overall / Main
@@ -2274,6 +2277,12 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+        <OverallControlOrdersSetting
+          checked={overallControlOrdersOnly(settings)}
+          systemCloseOnly={parseProtectionBoolean(settings.useSystemCloseOnly ?? settings.use_system_close_only)}
+          onCheckedChange={(checked) => setSettings((current) => ({ ...current, overallControlOrdersOnly: checked, overall_control_orders_only: checked }))}
+          disabled={saving}
+        />
         <Tabs value={activeTab} onValueChange={changeActiveTab}>
           <div className="sticky top-0 z-10 overflow-x-auto border-b bg-background/95 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80">
             <TabsList className="grid w-full min-w-[760px] grid-cols-6 rounded-xl">

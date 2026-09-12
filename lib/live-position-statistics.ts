@@ -1,3 +1,4 @@
+import { summarizeControlOrderScopes } from "@/lib/overall-control-orders"
 import {
   isRealizedPnlAccountingPending,
   resolveConfirmedPositionQuantity,
@@ -41,6 +42,10 @@ export interface LivePositionStatistics extends LivePositionStatisticsLane {
   byVariant: Record<string, LivePositionStatisticsLane>
   byIndicationType: Record<string, LivePositionStatisticsLane>
   protection: {
+    overallControlSlots: number
+    overallControlRows: number
+    perOrderControlRows: number
+    venueControlOrders: number
     exchangeControl: number
     hybridControlSystem: number
     systemClose: number
@@ -228,11 +233,14 @@ function effectiveSystemProtectionLegs(position: Record<string, any>): Set<Prote
 function venueProtectionQuantityState(
   position: Record<string, any>,
   leg: ProtectionLeg,
+  sharedQuantity?: number,
 ): ProtectionQuantityState | null {
   if (!isLiveOpenStatus(position.status)) return null
   const orderId = leg === "stop_loss" ? position.stopLossOrderId : position.takeProfitOrderId
   if (!String(orderId || "").trim()) return null
-  const expected = Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
+  const expected = position.controlOrderScope === "symbol_direction"
+    ? Math.max(0, sharedQuantity ?? finite(position.aggregateProtectionQuantity))
+    : Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
   if (!(expected > 0)) return null
   const specific = leg === "stop_loss"
     ? position.stopLossArmedQuantity
@@ -258,7 +266,7 @@ function effectiveSecurityProtection(position: Record<string, any>): {
   return resolveEffectiveSecurityStop(position)
 }
 
-function positionRelationMismatches(position: Record<string, any>, index: number): string[] {
+function positionRelationMismatches(position: Record<string, any>, index: number, sharedQuantity?: number): string[] {
   const id = String(position.id || `index-${index}`)
   const label = `${id}/${String(position.symbol || "missing")}/${String(position.direction || position.side || "missing")}`
   const mismatches: string[] = []
@@ -331,7 +339,7 @@ function positionRelationMismatches(position: Record<string, any>, index: number
       mismatches.push(`${label}: take-profit has neither venue order nor system handling`)
     }
     for (const leg of ["stop_loss", "take_profit"] as const) {
-      const quantityState = venueProtectionQuantityState(position, leg)
+      const quantityState = venueProtectionQuantityState(position, leg, sharedQuantity)
       const legLabel = leg === "stop_loss" ? "stop-loss" : "take-profit"
       if (quantityState === "unknown") {
         mismatches.push(`${label}: ${legLabel} venue order has no authoritative armed quantity`)
@@ -378,6 +386,7 @@ export function calculateLivePositionStatistics(
   const byIndicationType: Record<string, LivePositionStatisticsLane> = {}
   const mismatches: string[] = []
   const protection = {
+    ...summarizeControlOrderScopes(positions),
     exchangeControl: 0,
     hybridControlSystem: 0,
     systemClose: 0,
@@ -412,6 +421,15 @@ export function calculateLivePositionStatistics(
   let breakeven = 0
   let realizedRoiSum = 0
   let realizedRoiCount = 0
+  const slotKey = (position: Record<string, any>) => `${String(position.connectionId || position.connection_id || "")}|${String(position.symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "")}|${String(position.direction || position.side || "").toLowerCase()}`
+  const slotQuantities = new Map<string, number>()
+  for (const position of positions) {
+    if (!isLiveOpenStatus(position.status)) continue
+    const quantity = Math.max(0, resolveConfirmedPositionQuantity(position) ?? 0)
+    if (!(quantity > 0)) continue
+    const slot = slotKey(position)
+    slotQuantities.set(slot, (slotQuantities.get(slot) || 0) + quantity)
+  }
   positions.forEach((position, index) => {
     const measures = positionMeasures(position)
     addLane(aggregate, measures)
@@ -421,7 +439,7 @@ export function calculateLivePositionStatistics(
     // Pending/rejected intents stay in the record count. They have no
     // executed Set membership, position outcome, or protection coverage yet.
     if (measures.filled === 0) return
-    mismatches.push(...positionRelationMismatches(position, index))
+    mismatches.push(...positionRelationMismatches(position, index, slotQuantities.get(slotKey(position))))
     const rowLabel = String(position.id || `index-${index}`)
     for (const [kind, value] of [
       ["entry", position.orderId],
@@ -454,7 +472,7 @@ export function calculateLivePositionStatistics(
     if (mode === "system_close_fallback") protection.systemCloseFallback++
     protection.missingVenueLegsHandledBySystem += systemLegs.size
     for (const leg of ["stop_loss", "take_profit"] as const) {
-      const quantityState = venueProtectionQuantityState(position, leg)
+      const quantityState = venueProtectionQuantityState(position, leg, slotQuantities.get(slotKey(position)))
       if (quantityState === "covered") protection.venueLegsQuantityCovered++
       if (quantityState === "unknown") protection.venueLegsQuantityUnknown++
       if (quantityState === "drifted") protection.venueLegsQuantityDrifted++
@@ -463,7 +481,7 @@ export function calculateLivePositionStatistics(
       const security = effectiveSecurityProtection(position)
       const symbol = String(position.symbol || "").toUpperCase().replace(/[-/_:]/g, "")
       const direction = String(position.direction || position.side || "").toLowerCase()
-      const key = `${symbol}|${direction}`
+      const key = slotKey(position)
       const prior = securitySlots.get(key) || {
         symbol,
         direction,

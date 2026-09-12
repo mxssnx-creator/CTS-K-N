@@ -2726,12 +2726,12 @@ describe("requested regression guardrails", () => {
     const cacheEnd = liveStage.indexOf("async function updateProtectionOrders", cacheStart)
     const cacheBlock = liveStage.slice(cacheStart, cacheEnd)
 
-    expect(cacheBlock).toContain("systemCloseCacheByConnection")
+    expect(cacheBlock).toContain("protectionPolicyCache")
     expect(cacheBlock).toContain("function parseSystemCloseFlag")
     expect(cacheBlock).toContain("getCachedSystemCloseOnly(connectionId: string)")
     expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
     expect(cacheBlock).toContain("connection_settings:${connectionId}")
-    expect(cacheBlock).toContain("Per-connection settings win over global app settings")
+    expect(cacheBlock).toContain("overallControlOrdersOnly(...scopes)")
     expect(liveStage).toContain("getCachedSystemCloseOnly(pos.connectionId)")
     expect(liveStage).toContain("parseSystemCloseFlag((pos as any)?.use_system_close_only)")
   })
@@ -3025,15 +3025,14 @@ describe("requested regression guardrails", () => {
     const protectionEnd = liveStage.indexOf("async function", protectionStart + 1)
     const protectionBlock = liveStage.slice(protectionStart, protectionEnd)
 
-    expect(cacheBlock).toContain("systemCloseCacheByConnection")
+    expect(cacheBlock).toContain("protectionPolicyCache")
     expect(cacheBlock).toContain("Promise.all")
-    expect(cacheBlock).toContain("getAppSettings().catch")
+    expect(cacheBlock).toContain("getAppSettings()")
     expect(cacheBlock).toContain("settings:connection_settings:${connectionId}")
     expect(cacheBlock).toContain("connection_settings:${connectionId}")
-    expect(cacheBlock).toContain("const merged = {")
-    expect(cacheBlock).toContain("...(appSettings || {}),")
-    expect(cacheBlock).toContain("...(connSettings || {}),")
-    expect(cacheBlock).toContain("...(prefixedConnSettings || {}),")
+    expect(cacheBlock).toContain("const scopes = [appSettings, legacy, canonical]")
+    expect(cacheBlock).toContain("[...scopes].reverse()")
+    expect(cacheBlock).toContain("available: false")
     expect(cacheBlock).not.toContain("_systemCloseCacheValue")
     expect(cacheBlock).not.toContain("_systemCloseInflight")
 
@@ -3710,12 +3709,10 @@ describe("requested regression guardrails", () => {
     expect(manager).toContain("canonical settings mirror must win")
     expect(progression).toContain("getCanonicalConnectionSettingsOverlay(connectionId)")
 
-    const mergeBlock = liveStage.slice(
-      liveStage.indexOf("const merged = {"),
-      liveStage.indexOf("const value = parseSystemCloseFlag"),
-    )
-    expect(mergeBlock.indexOf("...(connSettings || {})")).toBeLessThan(mergeBlock.indexOf("...(prefixedConnSettings || {})"))
-    expect(mergeBlock).toContain("stale legacy defaults cannot re-enable")
+    const cacheBlock = liveStage.slice(liveStage.indexOf("async function getCachedProtectionPolicy"), liveStage.indexOf("function setSystemProtectionLeg"))
+    expect(cacheBlock).toContain("const scopes = [appSettings, legacy, canonical]")
+    expect(cacheBlock).toContain("[...scopes].reverse()")
+
   })
 
 
@@ -4099,7 +4096,7 @@ describe("requested regression guardrails", () => {
     }
   })
 
-  test("each row SL/TP stays fill-bounded while the separate security stop follows the slot", () => {
+  test("row controls stay fill-bounded and overall controls use the fully owned slot", () => {
     const liveStage = read("lib/trade-engine/stages/live-stage.ts")
     const reconcileStart = liveStage.indexOf("async function reconcileAggregateProtectionBook(")
     const reconcileEnd = liveStage.indexOf("async function finalizeQueuedAggregateProtection", reconcileStart)
@@ -4109,8 +4106,10 @@ describe("requested regression guardrails", () => {
       "const rawEffectiveQty = pos.executedQuantity > 0 ? pos.executedQuantity : (pos.quantity ?? 0)",
     )
     expect(reconcileBlock).toContain('"row_exact_guard"')
-    expect(reconcileBlock).toContain("{ allowPendingAccumulation: true }")
-    expect(reconcileBlock).not.toContain("allowQuantityOverrideAbovePosition: true")
+    expect(reconcileBlock).toContain("allowPendingAccumulation: true,")
+    expect(reconcileBlock).toContain("...(overall ? {")
+    expect(reconcileBlock).toContain("quantityOverride: plan.systemQuantity")
+    expect(reconcileBlock).toContain("if (!plan.ownershipMatches)")
     expect(reconcileBlock).toContain('"SecurityStop"')
     expect(reconcileBlock).toContain("plan.venueQuantity")
     expect(liveStage).toContain('reduceOnly: true,')
@@ -4152,7 +4151,7 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("settleSlotControlsWithoutGuess(")
     expect(liveStage).toContain('"QuantityMutation"')
     expect(liveStage).toContain('"OwnershipMismatch"')
-    expect(liveStage).toContain("row SL/TP remain independent")
+    expect(liveStage).toContain("settleSharedControlAcrossMembers(")
     expect(liveStage).toContain("settleSecurityStopAcrossMembers(")
     expect(liveStage).toContain("await rearmProtectionAfterQuantityMutation(")
     expect(liveStage).toContain("const initialProtection = computeDesiredProtectionPrices(livePosition)")

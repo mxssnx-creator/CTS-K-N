@@ -10,7 +10,7 @@ import {
   directTradeKeyspace,
   normalizeDirectTradeConnectionId,
 } from "@/lib/direct-trade-keyspace"
-import { directTradeLiveExecutionReadiness } from "@/lib/direct-trade-live-readiness"
+import { readDirectTradeLiveExecutionReadiness } from "@/lib/direct-trade-live-readiness"
 import { normalizeMarketType } from "@/lib/market-types"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 
@@ -282,7 +282,7 @@ export async function GET(request: Request) {
         ? state.enabledIndicationTypes
         : [],
     })
-    const liveExecutionReadiness = directTradeLiveExecutionReadiness(connection as any, connectionId)
+    const liveExecutionReadiness = await readDirectTradeLiveExecutionReadiness(client, connection as any, connectionId)
     const responseStats = {
       ...(stats || {}),
       ...rollingStats,
