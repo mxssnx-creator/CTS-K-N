@@ -6,6 +6,7 @@ import {
   calculateDirectTradePositionCostRatio,
   averageDirectTradeTakeProfitRatio,
   evaluateDirectTradeSets,
+  evaluateDirectTradeEntrySignals,
   normaliseDirectTradeTakeProfitRatioRange,
   normaliseDirectTradeTakeProfitRatioStep,
   normaliseDirectTradeTrailingMinTakeProfitRatio,
@@ -33,6 +34,62 @@ function upwardMinuteSeries(size = 80): DirectTradeCandle[] {
 }
 
 describe("Direct-Trade independent historical coordination", () => {
+  test.each(["long", "short"] as const)("accounts for %s Block additions as quantities at their actual prices", direction => {
+    const sign = direction === "long" ? 1 : -1
+    const prices = [1, 1.2, 1.4, 2].map(move => 100 + sign * move)
+    const candles = Array.from({ length: 18 }, (_, i) => {
+      const close = i < 14 ? 100 : prices[i - 14]
+      return { time: i * 300_000, open: close, high: close, low: close, close, volume: 100 }
+    })
+    const row = evaluateDirectTradeSets({
+      symbol: "SOLUSDT", direction, candlesByTimeframe: { "5m": candles }, timeframeSet: ["5m"], historyHours: 2,
+      volumeRatio: 0.5, tpRange: [10], slRatios: [0.5], trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" }],
+      entryTactics: ["breakout"], exitTactics: ["time"], entryTiming: "current", activityVolumeRatio: 0,
+      maxHoldMinutes: 15, positionCostPercent: 0.1, blockRange: [1, 2], blockIncrementSteps: 2,
+      minProfitFactor: 1.1, maxDrawdownTimeMin: 300,
+    })[0]
+    const [entry, add1, add2, exit] = prices
+    const quotePnl = sign * ((exit - entry) + 0.5 * (exit - add1) + 0.5 * (exit - add2))
+    const tradedEntryNotional = entry + 0.5 * add1 + 0.5 * add2
+    const expected = (quotePnl - tradedEntryNotional * 0.001) / entry * 100
+    expect(row.totalTrades).toBe(1)
+    expect(row.blockEvaluations[1].blockRealizedVolumeMultiplier).toBe(2)
+    expect(row.blockEvaluations[1].blockTotalPnl).toBeCloseTo(expected, 4)
+    expect(row.totalPnl).toBeCloseTo(sign * (exit - entry) / entry * 100 - 0.1, 4)
+  })
+
+  test("waits for a higher-timeframe close in history while preserving current live snapshots", () => {
+    const series = (count: number, minutes: number): DirectTradeCandle[] => Array.from({ length: count }, (_, i) => ({
+      time: i * minutes * 60_000, open: 100, close: 100, high: 100, low: 100, volume: 100,
+    }))
+    const short = series(92, 5)
+    short[90] = { ...short[90], close: 102, high: 102 }
+    short[91] = { ...short[91], close: 103, high: 103 }
+    const large = series(16, 30)
+    large[15] = { ...large[15], close: 110, high: 110 }
+    const input = {
+      symbol: "BTCUSDT", direction: "long" as const, candlesByTimeframe: { "5m": short, "30m": large },
+      timeframeSet: ["5m", "30m"] as Array<"5m" | "30m">, historyHours: 8, volumeRatio: 0.1,
+      tpRange: [0.5], slRatios: [0.5], trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" as const }],
+      entryTactics: ["breakout" as const], exitTactics: ["bracket" as const], entryTiming: "current" as const,
+      activityVolumeRatio: 1, maxHoldMinutes: 120, positionCostPercent: 0.1, blockRange: [0, 0] as [number, number],
+      minProfitFactor: 1.1, maxDrawdownTimeMin: 300,
+    }
+    // At minute 460 the minute-450 30m candle has not closed. Its eventual
+    // breakout must not create minute-455 entries or earlier historical fills.
+    expect(evaluateDirectTradeSets(input)[0]).toMatchObject({ activeEntry: false, totalTrades: 0 })
+    const changedFuture = large.map((c, i) => i === 15 ? { ...c, close: 90, low: 90 } : c)
+    expect(evaluateDirectTradeSets({ ...input, candlesByTimeframe: { "5m": short, "30m": changedFuture } })[0])
+      .toMatchObject({ activeEntry: false, totalTrades: 0 })
+    const completed = series(96, 5)
+    completed[95] = { ...completed[95], close: 103, high: 103 }
+    expect(evaluateDirectTradeSets({ ...input, candlesByTimeframe: { "5m": completed, "30m": large } })[0].activeEntry).toBe(true)
+    // The live API receives a current partial candle, whose observed close is
+    // already known. It must retain the explicitly selected current-bar mode.
+    const live = evaluateDirectTradeEntrySignals({ ...input, timeframeSets: [input.timeframeSet], strategyTypes: ["standard"] })
+    expect(live.some(signal => signal.active)).toBe(true)
+  })
+
   test("keeps classic realised PF separate from the PositionCost admission coordinate", () => {
     expect(calculateDirectTradeProfitFactor(3, 1)).toMatchObject({ profitFactor: 3 })
     expect(calculateDirectTradePositionCostRatio(0, 0.1, 1)).toBe(1)
@@ -340,6 +397,47 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(defaultCost.positionCostPercent).toBe(0.1)
     expect(defaultCost.totalPnl).toBeCloseTo(lowCost.totalPnl - lowCost.totalTrades * 0.08, 3)
     expect(defaultCost.recentTotalPnl).toBeCloseTo(lowCost.recentTotalPnl - lowCost.recentPositionCount * 0.08, 3)
+  })
+
+  test("changes only recent admission when the last-position window changes", () => {
+    const candles = upwardMinuteSeries(220)
+    const common = {
+      symbol: "SOLUSDT", direction: "long" as const,
+      candlesByTimeframe: { "5m": candles }, timeframeSet: ["5m"] as const,
+      historyHours: 336, volumeRatio: 0.5, tpRange: [0.3], slRatios: [0.5],
+      trailOptions: [{ trailing: false, trailStart: 0, trailStop: 0, mode: "none" as const }],
+      entryTactics: ["breakout"] as const, exitTactics: ["bracket"] as const,
+      entryTiming: "current" as const, activityVolumeRatio: 0, maxHoldMinutes: 20,
+      positionCostPercent: 0.1, blockRange: [1, 6] as [number, number],
+      minProfitFactor: 1.1, minRecentProfitFactor: 1.1, maxDrawdownTimeMin: 300,
+    }
+    const baseline = evaluateDirectTradeSets({ ...common, recentPositionWindow: 12 })[0]
+    expect(baseline.totalTrades).toBeGreaterThanOrEqual(48)
+    for (const window of [3, 6, 12, 24, 48]) {
+      const set = evaluateDirectTradeSets({ ...common, recentPositionWindow: window, minRecentPositions: window })[0]
+      expect(set).toMatchObject({
+        totalTrades: baseline.totalTrades, totalPnl: baseline.totalPnl,
+        netProfit: baseline.netProfit, netLoss: baseline.netLoss,
+        profitFactor: baseline.profitFactor, recentPositionCount: window,
+      })
+      expect(set.recentTotalPnl / window).toBeCloseTo(baseline.recentTotalPnl / 12, 4)
+      for (const [i, lane] of set.blockEvaluations.entries()) {
+        expect(lane).toMatchObject({
+          blockRecentPositionCount: window, blockProfitFactorWindow: window,
+          blockTotalPnl: baseline.blockEvaluations[i].blockTotalPnl,
+          blockNetProfit: baseline.blockEvaluations[i].blockNetProfit,
+          blockNetLoss: baseline.blockEvaluations[i].blockNetLoss,
+          blockRealizedProfitFactor: baseline.blockEvaluations[i].blockRealizedProfitFactor,
+        })
+      }
+    }
+    const shortSample = evaluateDirectTradeSets({ ...common,
+      candlesByTimeframe: { "5m": candles.slice(0, 45) }, recentPositionWindow: 48, minRecentPositions: 48,
+    })[0]
+    expect(shortSample.totalTrades).toBeGreaterThan(3)
+    expect(shortSample.recentPositionCount).toBe(shortSample.totalTrades)
+    expect(shortSample).toMatchObject({ valid: false, deactivationReason: "recent_warming" })
+    expect(shortSample.blockEvaluations.every(lane => !lane.valid && lane.deactivationReason === "recent_warming")).toBe(true)
   })
 
   test("keeps the configured PositionCost TP multiplier in each exact set identity", () => {

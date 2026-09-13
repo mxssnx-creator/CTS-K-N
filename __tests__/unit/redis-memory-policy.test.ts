@@ -3,6 +3,22 @@ const { MIB, calculateRedisMemoryPolicy, calculateRedisMaintenanceAdmission } = 
 describe("Redis host-relative memory policy", () => {
   const totalBytes = 16 * 1024 * MIB
 
+  test("compacts oversized AOF growth before six hours while preserving fork and retry guards", () => {
+    const now = 12 * 60 * 60 * 1000
+    const input = {
+      policy: { state: "normal", overBudget: false }, availableBytes: 8 * 1024 * MIB,
+      usedBytes: 900 * MIB, rssBytes: 1000 * MIB, now,
+      lastAofAttemptAt: now - 20 * 60 * 1000,
+      persistence: { aof_current_size: String(34 * 1024 * MIB) },
+    }
+    expect(calculateRedisMaintenanceAdmission(input)).toMatchObject({ aofGrowthPressure: true, aofRewriteAllowed: true })
+    expect(calculateRedisMaintenanceAdmission({ ...input, lastAofAttemptAt: now - 5 * 60 * 1000 }).aofRewriteAllowed).toBe(false)
+    expect(calculateRedisMaintenanceAdmission({ ...input, availableBytes: 512 * MIB }).aofRewriteAllowed).toBe(false)
+    expect(calculateRedisMaintenanceAdmission({ ...input, persistence: { ...input.persistence, aof_rewrite_in_progress: "1" } }).aofRewriteAllowed).toBe(false)
+    expect(calculateRedisMaintenanceAdmission({ ...input, persistence: { aof_current_size: String(2 * 1024 * MIB) } }))
+      .toMatchObject({ aofGrowthPressure: false, aofRewriteAllowed: false })
+  })
+
   test("uses a 25% normal target with a no-OOM used-memory floor", () => {
     expect(calculateRedisMemoryPolicy({
       totalBytes,
