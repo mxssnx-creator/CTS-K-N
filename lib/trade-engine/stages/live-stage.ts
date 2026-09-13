@@ -210,6 +210,7 @@ import {
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import {
   auditProtectionSlotOrders,
+  classifyConnectionOwnedProtectionBook,
   isConnectionOwnedProtectionOrderForSlot,
   isProtectionControlOrderForSlot,
   normalizeProtectionSlotSymbol,
@@ -933,6 +934,51 @@ function setCachedPositions(connId: string, positions: any[]): void {
     return Array.isArray(exchangeData.clientOrderIds) && exchangeData.clientOrderIds.length > 0
   }
 
+  /**
+   * A pending reservation is not an exchange position.  If a worker dies
+   * before submitting the entry, the reservation can remain in Redis and
+   * block every later entry for that physical slot.  It is safe to retire
+   * only an old, zero-fill row with no submission, order, protection, or
+   * exchange handle.  Filled/placed/unconfirmed rows are intentionally never
+   * matched here; their delivery must be reconciled from the venue instead.
+   */
+  function isStaleUnsubmittedPendingLivePosition(
+    position: Partial<LivePosition> & Record<string, any>,
+    now = Date.now(),
+    graceMs = 15 * 60_000,
+  ): boolean {
+    if (String(position.status || "").trim().toLowerCase() !== "pending") return false
+    if (String(position.submissionState || "").trim()) return false
+    const quantities = [
+      position.executedQuantity,
+      position.totalExecutedQuantity,
+      position.closedQuantity,
+      position.remainingQuantity,
+    ].map((value) => Number(value || 0))
+    if (quantities.some((value) => !Number.isFinite(value) || Math.abs(value) > 1e-12)) return false
+    if (hasLiveExchangeHandle(position)) return false
+    const directHandles = [
+      position.stopLossOrderId,
+      position.takeProfitOrderId,
+      position.securityStopOrderId,
+      position.pendingAccumulation,
+      position.pendingReduction,
+      position.pendingSystemAction,
+      position.pendingQuantityMutation,
+      position.pendingProtectionOrders,
+      position.exchangeQuantityAdjustments,
+      position.fills,
+    ]
+    if (directHandles.some((value) => Array.isArray(value) ? value.length > 0 : Boolean(value))) return false
+    const lastActivity = Math.max(
+      Number(position.updatedAt || 0),
+      Number(position.lastUpdate || 0),
+      Number(position.timestamp || 0),
+      Number(position.createdAt || 0),
+    )
+    return lastActivity > 0 && Number.isFinite(lastActivity) && now - lastActivity > Math.max(0, graceMs)
+  }
+
   function shouldPersistCanonicalLivePosition(position: Record<string, any>): boolean {
     const status = String(position.status || "").trim().toLowerCase()
     if (status !== "rejected" && status !== "error") return true
@@ -1351,7 +1397,7 @@ export interface LivePosition {
     trailingEnabled?: boolean
     trailingDistancePct?: number
     updatedAt: number
-    source: "operator"
+    source: "operator" | "exchange_recovery"
   }
   status?: "open" | "closed" | "filled" | "partially_filled" | "placed" | "pending_fill" | "placed_unconfirmed" | "rejected" | "cancelled" | "error" | "simulated" | "pending" | "closing" | "closing_partial"
   statusReason?: string
@@ -19297,7 +19343,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       } catch { /* best-effort self-heal */ }
     }
     const invalidDirectionPositions: LivePosition[] = []
-    const allOpen = allOpenRaw.filter((p) => {
+    let allOpen = allOpenRaw.filter((p) => {
       if (TERMINAL_SYNC_STATUSES.has(String(p.status))) return false
       const direction = resolveLivePositionDirection(p)
       if (!direction) {
@@ -19321,7 +19367,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
       ).catch(() => {})
     }
 
-    const openPositions = allOpen.filter(
+    let openPositions = allOpen.filter(
       (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled" || p.status === "placed" || p.status === "pending" || p.status === "pending_fill" || p.status === "placed_unconfirmed" || p.status === "closing" || p.status === "closing_partial",
     )
 
@@ -19371,6 +19417,34 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         } catch { /* best-effort */ }
       })(),
     ])
+
+    // A fresh authoritative venue snapshot is the required checkpoint before
+    // removing old pre-submission reservations. This repairs a crash/stop
+    // window without ever deleting a row that could represent a submitted
+    // order, and it keeps foreign venue state completely outside the write
+    // set. The same guard is deliberately retained in every future tick.
+    if (exchangePositionsSnapshotOk && liveOrderIdsSync !== null) {
+      const stalePending = allOpen.filter((position) =>
+        isSystemTrackedLivePosition(position, connectionId)
+        && isStaleUnsubmittedPendingLivePosition(position),
+      )
+      if (stalePending.length > 0) {
+        await Promise.all(stalePending.map((position) =>
+          discardTransientLivePosition(client, position).catch((error) => {
+            console.warn(
+              `${LOG_PREFIX} stale pending recovery failed for ${position.id}:`,
+              error instanceof Error ? error.message : String(error),
+            )
+          }),
+        ))
+        const removedIds = new Set(stalePending.map((position) => position.id))
+        allOpen = allOpen.filter((position) => !removedIds.has(position.id))
+        openPositions = openPositions.filter((position) => !removedIds.has(position.id))
+        console.log(
+          `${LOG_PREFIX} retired ${stalePending.length} stale zero-fill pending reservation(s) for ${connectionId} after authoritative venue snapshots`,
+        )
+      }
+    }
 
     // ── Observability heartbeat ───────���────────────────────────���──────
     // Previously this function ran silently when there were zero
@@ -19526,12 +19600,22 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             if (Number.isFinite(tpRaw) && tpRaw > 0) defaultTpPct = tpRaw
           } catch { /* use defaults */ }
 
+          const observedOrderRows = liveOrderIdsSync
+            ? [...new Set(Array.from((liveOrderIdsSync as LiveOrderIdSet).observedOrdersById?.values() || []))]
+            : []
+          const overallControlsOnly = await getCachedOverallControlOrdersOnly(connectionId).catch(() => false)
+          const recoveredSlotKeys = new Set<string>()
+          const orderTrigger = (order: Record<string, any> | null): number => finitePositive(
+            order?.stopPrice ?? order?.triggerPrice ?? order?.trigger_price ?? order?.price,
+          )
+
           for (const exPos of exchangePositionsForAdoption) {
             try {
               // Do not adopt or mutate manual/foreign exchange positions.
-              // Adoption is only safe for positions carrying this app's
-              // system id AND the matching connection id.
-              if (!isSystemTrackedLivePosition(exPos, connectionId)) continue
+              // A position with an explicit CTS watermark may be recovered
+              // directly.  A position without one requires a complete,
+              // connection-owned three-order physical protection book below.
+              const explicitlyTracked = isSystemTrackedLivePosition(exPos, connectionId)
 
               const rawSym = String(exPos.symbol || (exPos as any).Symbol || "")
               const sym = normSym(rawSym)
@@ -19555,6 +19639,52 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                 String(exPos.entryPrice ?? (exPos as any).avgPrice ?? exPos.markPrice ?? "0"),
               ) || parseFloat(String(exPos.markPrice ?? "0")) || 0
               if (!entryPrice || entryPrice <= 0) continue
+
+              let recoveryProof: ReturnType<typeof classifyConnectionOwnedProtectionBook> | null = null
+              if (!explicitlyTracked) {
+                if (liveOrderIdsSync === null || observedOrderRows.length === 0) continue
+                recoveryProof = classifyConnectionOwnedProtectionBook({
+                  connectionId,
+                  symbol: sym,
+                  direction,
+                  venueQuantity: size,
+                  entryPrice,
+                  openOrders: observedOrderRows,
+                })
+                if (!recoveryProof.safe) {
+                  logRuntimeWarning(
+                    `live-adoption:${connectionId}:${mapKey}`,
+                    60_000,
+                    `${LOG_PREFIX} preserving unwatermarked exchange position ${sym} ${direction}; protection book proof failed (${recoveryProof.reason})`,
+                  )
+                  continue
+                }
+              }
+
+              const instrumentRules = recoveryProof
+                ? await loadExchangeQuantityRules(sym, exchangeConnector, connectionId)
+                : null
+              if (recoveryProof && (
+                !(Number(instrumentRules?.quantityStep || 0) > 0)
+                || !(Number(instrumentRules?.priceTick || 0) > 0)
+              )) {
+                logRuntimeWarning(
+                  `live-adoption-rules:${connectionId}:${mapKey}`,
+                  60_000,
+                  `${LOG_PREFIX} preserving unwatermarked exchange position ${sym} ${direction}; exact instrument rules unavailable for recovery`,
+                )
+                continue
+              }
+
+              const recoveryStopLossPrice = orderTrigger(recoveryProof?.stopLossOrder || null)
+              const recoveryTakeProfitPrice = orderTrigger(recoveryProof?.takeProfitOrder || null)
+              const recoverySecurityStopPrice = orderTrigger(recoveryProof?.securityStopOrder || null)
+              const recoveryStopLossPct = recoveryStopLossPrice > 0
+                ? Math.abs(entryPrice - recoveryStopLossPrice) / entryPrice * 100
+                : defaultSlPct
+              const recoveryTakeProfitPct = recoveryTakeProfitPrice > 0
+                ? Math.abs(recoveryTakeProfitPrice - entryPrice) / entryPrice * 100
+                : defaultTpPct
               const markPrice = parseFloat(String(exPos.markPrice ?? entryPrice)) || entryPrice
               const leverage = Math.max(1, parseFloat(String(exPos.leverage ?? "1")) || 1)
               const notional = size * entryPrice
@@ -19565,27 +19695,74 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
               const adopted: LivePosition = {
                 id: adoptedId,
                 connectionId,
-                system_tracking_id: String(exPos.system_tracking_id ?? (exPos as any).systemTrackingId ?? ""),
-                connection_tracking_id: String(exPos.connection_tracking_id ?? (exPos as any).connectionTrackingId ?? ""),
+                system_tracking_id: explicitlyTracked
+                  ? String(exPos.system_tracking_id ?? (exPos as any).systemTrackingId ?? makeSystemTrackingId(connectionId))
+                  : makeSystemTrackingId(connectionId),
+                connection_tracking_id: explicitlyTracked
+                  ? String(exPos.connection_tracking_id ?? (exPos as any).connectionTrackingId ?? makeConnectionTrackingId(connectionId))
+                  : makeConnectionTrackingId(connectionId),
                 symbol: sym,
                 direction,
                 realPositionId: adoptedId, // self-reference — no Real-stage parent
                 quantity: size,
                 executedQuantity: size,
                 remainingQuantity: 0,
+                totalExecutedQuantity: size,
+                initialExecutedQuantity: size,
+                closedQuantity: 0,
                 entryPrice,
                 averageExecutionPrice: entryPrice,
                 volumeUsd: notional,
+                ...(instrumentRules ? {
+                  quantityStep: instrumentRules.quantityStep,
+                  quantityPrecision: instrumentRules.quantityPrecision,
+                  minNotionalUsdt: instrumentRules.minNotionalUsdt,
+                  pricePrecision: instrumentRules.pricePrecision,
+                  priceTick: instrumentRules.priceTick,
+                } : {}),
                 leverage,
                 marginType,
-                stopLoss: defaultSlPct,
-                takeProfit: defaultTpPct,
-                assignedStopLoss: defaultSlPct,
-                assignedTakeProfit: defaultTpPct,
+                stopLoss: recoveryStopLossPct,
+                takeProfit: recoveryTakeProfitPct,
+                assignedStopLoss: recoveryStopLossPct,
+                assignedTakeProfit: recoveryTakeProfitPct,
+                ...(recoveryProof ? {
+                  stopLossPrice: recoveryStopLossPrice,
+                  takeProfitPrice: recoveryTakeProfitPrice,
+                  stopLossOrderId: protectionOrderVenueId(recoveryProof.stopLossOrder!),
+                  takeProfitOrderId: protectionOrderVenueId(recoveryProof.takeProfitOrder!),
+                  securityStopOrderId: protectionOrderVenueId(recoveryProof.securityStopOrder!),
+                  securityStopPrice: recoverySecurityStopPrice,
+                  stopLossArmedQuantity: size,
+                  takeProfitArmedQuantity: size,
+                  securityStopArmedQuantity: size,
+                  protectionArmedQuantity: size,
+                  securityStopRequired: true,
+                  securityStopStatus: "armed" as const,
+                  controlOrderScope: overallControlsOnly ? "symbol_direction" as const : "per_order" as const,
+                  aggregateProtectionOwner: true,
+                  aggregateProtectionKey: aggregateProtectionSlot(sym, direction),
+                  aggregateProtectionMemberCount: 1,
+                  aggregateProtectionQuantity: size,
+                  protectionMode: "exchange_control" as const,
+                  systemProtectionLegs: [],
+                  manualProtectionOverride: {
+                    stopLossPrice: recoveryStopLossPrice,
+                    takeProfitPrice: recoveryTakeProfitPrice,
+                    updatedAt: Date.now(),
+                    source: "exchange_recovery" as const,
+                  },
+                } : {}),
                 status: "open", // exchange confirms the fill — start in "open"
-                statusReason: "adopted_from_exchange",
+                statusReason: recoveryProof ? "adopted_from_exchange_control_book" : "adopted_from_exchange",
+                executionMode: "live",
+                executionIntent: "direct",
+                setKey: `exchange-recovery:${sym}:${direction}`,
+                setVariant: "default",
+                indicationType: "exchange_recovery",
                 fills: [
                   {
+                    id: recoveryProof ? protectionOrderVenueId(recoveryProof.stopLossOrder!) : undefined,
                     timestamp: Date.now(),
                     quantity: size,
                     price: entryPrice,
@@ -19597,6 +19774,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                   markPrice,
                   liquidationPrice: parseRedisFiniteNumber(exPos.liquidationPrice),
                   unrealizedPnL: parseRedisFiniteNumber(exPos.unrealizedProfit ?? exPos.unrealizedPnl),
+                  ...(exPos.positionId !== undefined || exPos.positionID !== undefined ? {
+                    positionId: String(exPos.positionId ?? exPos.positionID),
+                  } : {}),
+                  ...(recoveryProof ? {
+                    recoveredProtection: true,
+                    recoveredControlPositionIdentity: recoveryProof.positionIdentity,
+                  } : {}),
                   syncedAt: Date.now(),
                 },
                 progression: [
@@ -19604,23 +19788,47 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                     step: "adopt",
                     timestamp: Date.now(),
                     success: true,
-                    details: `Adopted system-tracked exchange position size=${size} @ ${entryPrice} (default SL=${defaultSlPct}% TP=${defaultTpPct}%)`,
+                    details: recoveryProof
+                      ? `Adopted connection-owned exchange control book size=${size} @ ${entryPrice} (SL=${recoveryStopLossPrice} TP=${recoveryTakeProfitPrice} security=${recoverySecurityStopPrice})`
+                      : `Adopted system-tracked exchange position size=${size} @ ${entryPrice} (default SL=${defaultSlPct}% TP=${defaultTpPct}%)`,
                   },
                 ],
                 createdAt: Date.now(),
                 updatedAt: Date.now(),
               } as LivePosition
 
+              if (recoveryProof) refreshControlOrderSetCoverage(adopted)
+
               await savePosition(adopted)
+              if (recoveryProof && !recoveredSlotKeys.has(mapKey)) {
+                recoveredSlotKeys.add(mapKey)
+                const recoveryDecision = await verifyConnectionProtectionAndPersistHalt({
+                  connectionId,
+                  symbol: sym,
+                  direction,
+                  connector: exchangeConnector,
+                  reason: "exchange_control_book_recovery",
+                })
+                if (!recoveryDecision.safe) {
+                  logRuntimeWarning(
+                    `live-adoption-audit:${connectionId}:${mapKey}`,
+                    60_000,
+                    `${LOG_PREFIX} recovered ${sym} ${direction} but retained entry halt until the complete post-recovery audit is clean: ${recoveryDecision.violations.join(",")}`,
+                  )
+                }
+              }
               adoptedCount++
               await incrementMetric(connectionId, "live_positions_adopted_count")
               await logProgressionEvent(
                 connectionId,
                 "live_trading",
                 "warning",
-                `Adopted system-tracked exchange position ${sym} ${direction} — applying default SL=${defaultSlPct}% TP=${defaultTpPct}%`,
-                { positionId: adoptedId, size, entryPrice, markPrice, leverage },
+                recoveryProof
+                  ? `Adopted connection-owned exchange control book ${sym} ${direction} — preserving exact venue controls`
+                  : `Adopted system-tracked exchange position ${sym} ${direction} — applying default SL=${defaultSlPct}% TP=${defaultTpPct}%`,
+                { positionId: adoptedId, size, entryPrice, markPrice, leverage, recoveredProtection: Boolean(recoveryProof) },
               )
+              trackedKeys.add(mapKey)
               // Push adopted position into openPositions so the per-position
               // loop below arms SL/TP on it RIGHT NOW (don't wait for the
               // next 5 s sync tick — the operator's stranded position
@@ -20985,6 +21193,7 @@ export const __liveStageTest = {
   resolvePseudoProtectionPercents,
   isTrailingStopTightening,
   isPreFillWithoutExchangeHandle,
+  isStaleUnsubmittedPendingLivePosition,
   hasLiveExchangeHandle,
   shouldPersistCanonicalLivePosition,
   isEmptyBookProtectionSafe,
