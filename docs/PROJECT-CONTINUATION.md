@@ -1,5 +1,13 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Managed transport reconstruction attempt — 2026-09-13 23:37 UTC
+
+The approved recovery plan was executed through the non-secret transport gate. Canonical `/workspace/CTS-K-N` is clean on merged GitHub `main` `73ee7278857ba594fee1d07a82c22027189b87e5`; existing source checkpoints remain verified, and a pre-note checkpoint was created at `/workspace/backups/CTS-K-N/20260913T233748Z-before-transport-recovery-note`.
+
+The managed bundle cannot be reconstructed in this VM: `/workspace/.network-clients`, `activate-cts.sh`, `/workspace/.ssh`, `/etc/chisel`, and the Chisel binary are absent; no `CTS_CHISEL_ENDPOINT`, fingerprint, auth, process-local proxy, pinned SSH key, or pinned `known_hosts` is available. The only project runtime credential name present is `PRIVATE_KEY`, which is not a substitute for the managed transport. Candidate local listeners were checked: port `2222` is closed, while `23456`, `4444`, `7681`, and `7682` return HTTP/ttyd responses rather than an SSH banner. No direct public SSH or chat-attached credential was used, and no remote, service, Redis, exchange, deployment, or order mutation occurred.
+
+Remote reinstall, reconciliation, and any systemwide live-trading change remain blocked at the transport prerequisite. Preserve the existing X02 protection halt and external orders; do not bypass the managed path or claim production readiness.
+
 ## Read-only continuation verification — 2026-09-14
 
 The active v0 branch is `7658b7ae07abb88294523a20f5f63e8c5f374497`, with no source-code delta beyond merged GitHub `main` `73ee7278857ba594fee1d07a82c22027189b87e5`; the remaining branch delta is documentation-only. Rechecked six targeted readiness/monitoring suites: 248 tests passed; TypeScript and ESLint passed. The 393×591 preview loaded the dashboard and progression control without a UI/runtime error.
