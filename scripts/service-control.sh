@@ -246,6 +246,14 @@ case "$RUNTIME" in
       if [[ -f "/etc/systemd/system/$APP_NAME-recovery.timer" ]]; then
         run_root systemctl start "$APP_NAME-recovery.timer"
       fi
+      # A failed installer stops maintenance timers too. Recovering only the
+      # app leaves the native Redis AOF unbounded (automatic rewriting is
+      # intentionally delegated to this host-aware governor).
+      if [[ -f "/etc/systemd/system/$APP_NAME-redis-governor.timer" ]]; then
+        run_root systemctl start "$APP_NAME-redis-governor.service" "$APP_NAME-redis-governor.timer"
+      elif [[ -f "/etc/systemd/system/$APP_NAME-redis-memory.timer" ]]; then
+        run_root systemctl start "$APP_NAME-redis-memory.service" "$APP_NAME-redis-memory.timer"
+      fi
       echo "${ACTION^}ed $APP_NAME on port $APP_PORT"
     fi
     ;;

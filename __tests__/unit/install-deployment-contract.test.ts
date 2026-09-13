@@ -829,6 +829,46 @@ describe("production installation and Kilo deployment contract", () => {
     }
   })
 
+  it("restores the configured Redis maintenance timer with start and restart", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "cts-governor-control-"))
+    const scriptsDir = path.join(root, "scripts")
+    const runtimeDir = path.join(root, ".cts-runtime")
+    const units = path.join(root, "units")
+    const bin = path.join(root, "bin")
+    const calls = path.join(root, "calls")
+    try {
+      await Promise.all([scriptsDir, runtimeDir, units, bin].map(dir => mkdir(dir, { recursive: true })))
+      const controller = (await readFile(path.join(process.cwd(), "scripts/service-control.sh"), "utf8"))
+        .replaceAll("/etc/systemd/system", units)
+      await Promise.all([
+        writeFile(path.join(scriptsDir, "service-control.sh"), controller),
+        writeFile(path.join(runtimeDir, "install-values.env"), [
+          "CTS_INSTALLED_APP_NAME=desk-test", "CTS_INSTALLED_APP_PORT=4312", "CTS_INSTALLED_RUNTIME=systemd",
+          `CTS_INSTALLED_SERVICE_USER=${userInfo().username}`, `CTS_INSTALLED_PROJECT_ROOT=${root}`,
+          `CTS_INSTALLED_ENV_FILE=${root}/production.env`, `CTS_INSTALLED_STATE_DIR=${root}/state`, "",
+        ].join("\n")),
+        writeFile(path.join(bin, "systemctl"), '#!/bin/bash\nprintf "%s\\n" "$*" >> "$CTS_TEST_CALLS"\n', { mode: 0o755 }),
+        writeFile(path.join(bin, "sudo"), '#!/bin/bash\nexec "$@"\n', { mode: 0o755 }),
+      ])
+      for (const timer of ["redis-governor", "redis-memory"]) {
+        const timerFile = path.join(units, `desk-test-${timer}.timer`)
+        await writeFile(timerFile, "fixture")
+        for (const action of ["start", "restart"]) {
+          await writeFile(calls, "")
+          execFileSync("bash", [path.join(scriptsDir, "service-control.sh"), action], {
+            env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CTS_TEST_CALLS: calls }, stdio: "pipe",
+          })
+          const commands = (await readFile(calls, "utf8")).trim().split("\n")
+          expect(commands).toContain(`${action} desk-test`)
+          expect(commands).toContain(`start desk-test-${timer}.service desk-test-${timer}.timer`)
+        }
+        await rm(timerFile)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("rejects direct identity relocation and service control without saved metadata", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "cts-install-identity-"))
     const scriptsDir = path.join(root, "scripts")

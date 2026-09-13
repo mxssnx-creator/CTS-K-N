@@ -213,12 +213,13 @@ interface DirectTradeSimulationMetricsBase {
   totalDrawdownTimeMin: number
   maxDrawdownTimeMin: number
   totalVolumeMultiplier: number
+  totalCostExposureMultiplier: number
   maxVolumeMultiplier: number
   // A fixed, tiny window keeps fresh-position diagnostics available without
   // retaining full simulated trade arrays for every independent set.
   recentPositions: Array<Pick<DirectTradeSimTrade,
     "pnlPercent" | "bestMarketExitPnlPercent" | "drawdownTimeMin" | "exitReason"
-  > & { volumeMultiplier: number }>
+  > & { volumeMultiplier: number; costExposureMultiplier: number }>
 }
 
 interface DirectTradeSimulationMetrics extends DirectTradeSimulationMetricsBase {
@@ -492,16 +493,16 @@ export function calculateDirectTradeProfitFactor(
 
 /**
  * Convert a complete net-PnL ledger into the canonical selection coordinate.
- * PnL and cost are both measured against the immutable base quantity, so Block
- * and DCA ledgers divide by their realised volume multiplier exactly once.
+ * PnL and cost share the immutable initial notional. Block and DCA costs
+ * follow each filled leg's notional, independently of its quantity ratio.
  */
 export function calculateDirectTradePositionCostRatio(
   netPnlPercent: unknown,
   positionCostPercent: unknown,
-  totalVolumeMultiplier: unknown,
+  totalCostExposureMultiplier: unknown,
 ): number {
   const costExposure = Math.max(0, finite(positionCostPercent, 0))
-    * Math.max(0, finite(totalVolumeMultiplier, 0))
+    * Math.max(0, finite(totalCostExposureMultiplier, 0))
   const signedResultR = costExposure > 0
     ? finite(netPnlPercent, 0) / costExposure
     : 0
@@ -691,6 +692,7 @@ function buildCompositeSignals(
   tactic: DirectTradeEntryTactic,
   entryTiming: DirectTradeEntryTiming,
   activityVolumeRatio: number,
+  liveSnapshot = false,
 ): { candles: DirectTradeCandle[]; signals: boolean[]; minutes: number } | null {
   // Entry indicators need exactly fourteen prior candles plus the current
   // causal candle. Requiring thirty silently disabled every 30m pulse despite
@@ -721,10 +723,18 @@ function buildCompositeSignals(
   const cursors = new Map<DirectTradeTimeframe, number>()
   const lastSignals = new Map<DirectTradeTimeframe, boolean>()
   const signals = primary.map((candle) => {
+    const decisionAt = candle.time + timeframeMinutes(primaryFrame) * 60_000
     for (const frame of ordered) {
       const candles = candlesByTimeframe[frame] || []
       let cursor = cursors.get(frame) || 0
-      while (cursor < candles.length && candles[cursor].time <= candle.time) {
+      // Historical candles contain their final OHLC values. A higher-frame
+      // close is unknowable until that frame ends, even when its open time is
+      // before the primary candle. The live pulse instead receives values
+      // observed so far and deliberately supports the current partial candle.
+      // last_confirmed already shifts to the previous, completed frame.
+      const closeDelay = !liveSnapshot && entryTiming === "current" ? timeframeMinutes(frame) * 60_000 : 0
+      while (cursor < candles.length && candles[cursor].time <= candle.time
+        && candles[cursor].time + closeDelay <= decisionAt) {
         lastSignals.set(frame, signalByFrame.get(frame)?.get(candles[cursor].time) === true)
         cursor++
       }
@@ -795,6 +805,7 @@ export function evaluateDirectTradeEntrySignals(input: {
             entryTactic,
             input.entryTiming,
             input.activityVolumeRatio,
+            true,
           )
           const active = composed?.signals.at(-1) === true
           result.push({
@@ -919,6 +930,7 @@ function simulateTrades(
     totalDrawdownTimeMin: 0,
     maxDrawdownTimeMin: 0,
     totalVolumeMultiplier: 0,
+    totalCostExposureMultiplier: 0,
     maxVolumeMultiplier: 0,
     recentPositions: [],
   })
@@ -936,17 +948,23 @@ function simulateTrades(
     exitReason: DirectTradeSimTrade["exitReason"],
   ) => {
     const totalLegWeight = legs.reduce((sum, leg) => sum + leg.weight, 0)
+    // Leg weights are quantities relative to the immutable first fill, not
+    // equal-notional investments. Normalize every quote PnL to that same
+    // initial notional; dividing by each later leg's price changes the units.
+    const initialPrice = legs[0].price
+    const costExposureMultiplier = legs.reduce((sum, leg) => sum + leg.weight * leg.price / initialPrice, 0)
     const grossPnlPercent = legs.reduce((sum, leg) => sum + leg.weight * (direction === "long"
-      ? ((currentExitPrice - leg.price) / leg.price) * 100
-      : ((leg.price - currentExitPrice) / leg.price) * 100), 0)
+      ? ((currentExitPrice - leg.price) / initialPrice) * 100
+      : ((leg.price - currentExitPrice) / initialPrice) * 100), 0)
     const grossBestMarketExitPnlPercent = legs.reduce((sum, leg) => sum + leg.weight * (direction === "long"
-      ? ((currentBestMarketExitPrice - leg.price) / leg.price) * 100
-      : ((leg.price - currentBestMarketExitPrice) / leg.price) * 100), 0)
-    const pnlPercent = grossPnlPercent - positionCostPercent * totalLegWeight
-    const bestMarketExitPnlPercent = grossBestMarketExitPnlPercent - positionCostPercent * totalLegWeight
+      ? ((currentBestMarketExitPrice - leg.price) / initialPrice) * 100
+      : ((leg.price - currentBestMarketExitPrice) / initialPrice) * 100), 0)
+    const pnlPercent = grossPnlPercent - positionCostPercent * costExposureMultiplier
+    const bestMarketExitPnlPercent = grossBestMarketExitPnlPercent - positionCostPercent * costExposureMultiplier
     const drawdownTimeMin = currentDrawdownTimeMin
     target.totalTrades++
     target.totalVolumeMultiplier += totalLegWeight
+    target.totalCostExposureMultiplier += costExposureMultiplier
     target.maxVolumeMultiplier = Math.max(target.maxVolumeMultiplier, totalLegWeight)
     target.totalPnl += pnlPercent
     target.bestMarketExitPnl += bestMarketExitPnlPercent
@@ -964,6 +982,7 @@ function simulateTrades(
       drawdownTimeMin,
       exitReason,
       volumeMultiplier: totalLegWeight,
+      costExposureMultiplier,
     })
     if (target.recentPositions.length > recentPositionWindow) target.recentPositions.shift()
   }
@@ -1213,8 +1232,8 @@ function summarizeRecentPositions(
   const profitFactor = recentPf.profitFactor
   const wins = recent.filter((position) => position.pnlPercent > 0).length
   const recentTotalPnl = recent.reduce((sum, position) => sum + position.pnlPercent, 0)
-  const recentVolumeMultiplier = recent.reduce(
-    (sum, position) => sum + Math.max(0, finite(position.volumeMultiplier, 1)),
+  const recentCostExposureMultiplier = recent.reduce(
+    (sum, position) => sum + Math.max(0, finite(position.costExposureMultiplier, 1)),
     0,
   )
   return {
@@ -1228,7 +1247,7 @@ function summarizeRecentPositions(
     recentPositionCostRatio: round(calculateDirectTradePositionCostRatio(
       recentTotalPnl,
       positionCostPercent,
-      recentVolumeMultiplier,
+      recentCostExposureMultiplier,
     ), 6),
     recentWinRate: recent.length > 0 ? round((wins / recent.length) * 100, 1) : 0,
     recentTotalPnl: round(recentTotalPnl),
@@ -1399,7 +1418,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
             const positionCostRatio = calculateDirectTradePositionCostRatio(
               simulation.totalPnl,
               positionCostPercent,
-              simulation.totalVolumeMultiplier,
+              simulation.totalCostExposureMultiplier,
             )
             const recent = summarizeRecentPositions(simulation, positionCostPercent)
             const hasSample = simulation.totalTrades >= minTrades
@@ -1441,7 +1460,7 @@ export function evaluateDirectTradeSets(input: DirectTradeEvaluationInput): Dire
                   const blockPositionCostRatio = calculateDirectTradePositionCostRatio(
                     blockSimulation.totalPnl,
                     positionCostPercent,
-                    blockSimulation.totalVolumeMultiplier,
+                    blockSimulation.totalCostExposureMultiplier,
                   )
                   const blockRecent = summarizeRecentPositions(blockSimulation, positionCostPercent)
                   const blockHasSample = blockSimulation.totalTrades >= minTrades

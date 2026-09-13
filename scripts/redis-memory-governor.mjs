@@ -153,7 +153,8 @@ async function main() {
     }
 
     const aofBytes = Number(persistence.aof_current_size) || 0
-    const aofRewriteDue = now - Number(previous.lastAofRewriteAt || 0) >= SIX_HOURS_MS
+    const aofRewriteDue = maintenance.aofGrowthPressure
+      || now - Number(previous.lastAofRewriteAt || 0) >= SIX_HOURS_MS
     let lastAofRewriteAt = Number(previous.lastAofRewriteAt || 0)
     let lastAofAttemptAt = Number(previous.lastAofAttemptAt || previous.lastAofRewriteAt || 0)
     if (
@@ -185,6 +186,7 @@ async function main() {
       lastAofAttemptAt,
       forkAllowed: maintenance.forkAllowed,
       forkReserveBytes: maintenance.forkReserveBytes,
+      aofGrowthPressure: maintenance.aofGrowthPressure,
     }
     await writeState(statePath, nextState)
     if (stateChanged || actions.length > 0 || heartbeatDue || policy.overBudget) {

@@ -1057,6 +1057,8 @@ docs/reports/20260909-order-counter-fix/raw/trade-engine_status-all.json
 docs/reports/20260909-order-counter-fix/remote-monitor-10m.jsonl
 docs/reports/20260909-order-counter-fix/report.html
 docs/reports/20260909-order-counter-fix/summary.json
+docs/reports/20260913-sol-windows/protocol.json
+docs/reports/20260913-sol-windows/results.json
 docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json
@@ -1679,6 +1681,8 @@ scripts/test-runtime-recovery.sh
 scripts/test-tp-sl-ranges.mjs
 scripts/update.sh
 scripts/validate-comprehensive.mjs
+scripts/validate-direct-trade-history.cjs
+scripts/validate-direct-trade-windows.cjs
 scripts/verify-block-native-redis.ts
 scripts/verify-deployment-contract.mjs
 scripts/verify-direct-trade-config-lifecycle.ts

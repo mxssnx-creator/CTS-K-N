@@ -1,0 +1,27 @@
+{
+  "definedBeforeValidation": true,
+  "symbol": "SOL-USDT",
+  "trainingPeriod": [
+    "2026-08-01",
+    "2026-08-15"
+  ],
+  "untouchedValidationPeriod": [
+    "2026-08-15",
+    "2026-08-29"
+  ],
+  "previouslyInspectedDiagnosticPeriod": [
+    "2026-08-29",
+    "2026-09-12"
+  ],
+  "recentPositionWindows": [
+    3,
+    6,
+    12,
+    24,
+    48
+  ],
+  "selection": "At most 25 candidates per window on training net cost-stress (0.2%) results, sorted by lower trade time underwater then effective net PnL; freeze exact configuration, Block count and window before validation.",
+  "validation": "No retuning. Same frozen lane must have at least 42 closes, positive effective net PnL, effective realized PF >=1.1 or positive profit without losses, recent-window admission and max time underwater <=300min at both costs over all 14 days and each of two seven-day halves; every half at least 12 closes. Compare shared production defaults on same data. No global default promotion from a sole-symbol profile; only a supported SOL-scoped default if robust, otherwise preserve defaults and publish rejections.",
+  "limitations": "Historical OHLC cannot validate venue fills; dynamic loss/recovery Block stages require separate lifecycle tests. Previous diagnostic period is not independent.",
+  "outcome": "No training candidate satisfied cost stress plus at least 42 closes. No frozen candidate reached validation, no defaults changed; reserved holdout has no performance result."
+}

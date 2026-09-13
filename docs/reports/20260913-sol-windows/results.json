@@ -1,0 +1,423 @@
+{
+  "diagnostic": {
+    "windows": [
+      3,
+      6,
+      12,
+      24,
+      48
+    ],
+    "rows": [
+      {
+        "window": 3,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 3072,
+        "validBlockLanes": 10986,
+        "positiveEffective": 15760,
+        "qualifiedNetProfit": 11766.666800000043,
+        "qualifiedNetLoss": 7058.313300000017,
+        "reasons": {
+          "pf": 80965,
+          "warming": 33920,
+          "recent_pf": 701,
+          "win_rate": 62
+        },
+        "qualifiedAggregateEffectivePf": 1.6670649629565202,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 4708.353500000026
+      },
+      {
+        "window": 3,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 580,
+        "validBlockLanes": 1816,
+        "positiveEffective": 5253,
+        "qualifiedNetProfit": 1782.2572000000027,
+        "qualifiedNetLoss": 982.2336000000004,
+        "reasons": {
+          "pf": 84182,
+          "warming": 33920,
+          "recent_pf": 38
+        },
+        "qualifiedAggregateEffectivePf": 1.814494230293081,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 800.0236000000024
+      },
+      {
+        "window": 6,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 2391,
+        "validBlockLanes": 8766,
+        "positiveEffective": 15760,
+        "qualifiedNetProfit": 11026.638300000068,
+        "qualifiedNetLoss": 6634.978699999989,
+        "reasons": {
+          "pf": 75527,
+          "warming": 33920,
+          "recent_pf": 474,
+          "recent_warming": 6407,
+          "win_rate": 1
+        },
+        "qualifiedAggregateEffectivePf": 1.6618950562720098,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 4391.659600000079
+      },
+      {
+        "window": 6,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 240,
+        "validBlockLanes": 878,
+        "positiveEffective": 5253,
+        "qualifiedNetProfit": 929.0993999999997,
+        "qualifiedNetLoss": 494.19080000000116,
+        "reasons": {
+          "pf": 78121,
+          "warming": 33920,
+          "recent_warming": 6407,
+          "recent_pf": 32
+        },
+        "qualifiedAggregateEffectivePf": 1.8800418785618784,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 434.90859999999856
+      },
+      {
+        "window": 12,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 1010,
+        "validBlockLanes": 3212,
+        "positiveEffective": 15760,
+        "qualifiedNetProfit": 7824.378000000005,
+        "qualifiedNetLoss": 5035.110599999992,
+        "reasons": {
+          "pf": 60141,
+          "warming": 33920,
+          "recent_pf": 98,
+          "recent_warming": 23551
+        },
+        "qualifiedAggregateEffectivePf": 1.553963481954104,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 2789.2674000000134
+      },
+      {
+        "window": 12,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 14,
+        "validBlockLanes": 14,
+        "positiveEffective": 5253,
+        "qualifiedNetProfit": 134.19599999999997,
+        "qualifiedNetLoss": 113.72139999999996,
+        "reasons": {
+          "pf": 61235,
+          "warming": 33920,
+          "recent_warming": 23551
+        },
+        "qualifiedAggregateEffectivePf": 1.1800417511567745,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 20.47460000000001
+      },
+      {
+        "window": 24,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 358,
+        "validBlockLanes": 1184,
+        "positiveEffective": 15760,
+        "qualifiedNetProfit": 3595.416799999999,
+        "qualifiedNetLoss": 2170.4348000000023,
+        "reasons": {
+          "pf": 40734,
+          "warming": 33920,
+          "recent_pf": 90,
+          "recent_warming": 43618
+        },
+        "qualifiedAggregateEffectivePf": 1.6565421822392432,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 1424.9819999999968
+      },
+      {
+        "window": 24,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 5253,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "pf": 41182,
+          "warming": 33920,
+          "recent_warming": 43618
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      },
+      {
+        "window": 48,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 18,
+        "validBlockLanes": 42,
+        "positiveEffective": 15760,
+        "qualifiedNetProfit": 402.09479999999996,
+        "qualifiedNetLoss": 251.50820000000002,
+        "reasons": {
+          "pf": 16837,
+          "recent_warming": 67935,
+          "warming": 33920,
+          "recent_pf": 10
+        },
+        "qualifiedAggregateEffectivePf": 1.5987343553808582,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 150.58659999999995
+      },
+      {
+        "window": 48,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 5253,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "pf": 16865,
+          "recent_warming": 67935,
+          "warming": 33920
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      }
+    ],
+    "frozenCandidates": [],
+    "validation": [],
+    "defaultsPromoted": false,
+    "note": "Effective PF is summed positive net PnL divided by absolute negative net PnL for the selected Block lane (or Base/DCA). Cross-config aggregates overlap and are not portfolio results.",
+    "fullLedgerInvariantHash": "e4e419387517ad68b0ab2295643af5a6a1ca2307cf2e8fa122c794f8a24e4df0"
+  },
+  "training": {
+    "windows": [
+      3,
+      6,
+      12,
+      24,
+      48
+    ],
+    "rows": [
+      {
+        "window": 3,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 1796,
+        "validBlockLanes": 6520,
+        "positiveEffective": 12918,
+        "qualifiedNetProfit": 2050.2814,
+        "qualifiedNetLoss": 925.6643000000213,
+        "reasons": {
+          "pf": 80615,
+          "warming": 36040,
+          "recent_pf": 269
+        },
+        "qualifiedAggregateEffectivePf": 2.214929753691433,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 1124.6170999999786
+      },
+      {
+        "window": 3,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 5008,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "pf": 82680,
+          "warming": 36040
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      },
+      {
+        "window": 6,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 286,
+        "validBlockLanes": 852,
+        "positiveEffective": 12918,
+        "qualifiedNetProfit": 641.0691999999998,
+        "qualifiedNetLoss": 373.6901999999995,
+        "reasons": {
+          "pf": 76034,
+          "warming": 36040,
+          "recent_warming": 6360
+        },
+        "qualifiedAggregateEffectivePf": 1.7155097992936412,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 267.3790000000003
+      },
+      {
+        "window": 6,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 18,
+        "validBlockLanes": 46,
+        "positiveEffective": 5008,
+        "qualifiedNetProfit": 44.38820000000001,
+        "qualifiedNetLoss": 30.652199999999997,
+        "reasons": {
+          "pf": 76302,
+          "warming": 36040,
+          "recent_warming": 6360
+        },
+        "qualifiedAggregateEffectivePf": 1.4481244413125327,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 13.736000000000015
+      },
+      {
+        "window": 12,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 72,
+        "validBlockLanes": 210,
+        "positiveEffective": 12918,
+        "qualifiedNetProfit": 294.39620000000014,
+        "qualifiedNetLoss": 218.64060000000015,
+        "reasons": {
+          "pf": 65900,
+          "warming": 36040,
+          "recent_warming": 16702,
+          "recent_pf": 6
+        },
+        "qualifiedAggregateEffectivePf": 1.3464845961820446,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 75.75559999999999
+      },
+      {
+        "window": 12,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 5008,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "pf": 65978,
+          "warming": 36040,
+          "recent_warming": 16702
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      },
+      {
+        "window": 24,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 12918,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "pf": 38888,
+          "warming": 36040,
+          "recent_warming": 43792
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      },
+      {
+        "window": 24,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 5008,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "pf": 38888,
+          "warming": 36040,
+          "recent_warming": 43792
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      },
+      {
+        "window": 48,
+        "cost": 0.1,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 12918,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "recent_warming": 71036,
+          "warming": 36040,
+          "pf": 11644
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      },
+      {
+        "window": 48,
+        "cost": 0.2,
+        "evaluated": 118720,
+        "valid": 0,
+        "validBlockLanes": 0,
+        "positiveEffective": 5008,
+        "qualifiedNetProfit": 0,
+        "qualifiedNetLoss": 0,
+        "reasons": {
+          "recent_warming": 71036,
+          "warming": 36040,
+          "pf": 11644
+        },
+        "qualifiedAggregateEffectivePf": null,
+        "qualifiedAggregateEffectivePfInfinite": false,
+        "qualifiedAggregateEffectivePnl": 0
+      }
+    ],
+    "frozenCandidates": [],
+    "validation": [],
+    "defaultsPromoted": false,
+    "note": "Effective PF is summed positive net PnL divided by absolute negative net PnL for the selected Block lane (or Base/DCA). Cross-config aggregates overlap and are not portfolio results.",
+    "fullLedgerInvariantHash": "4a7600319094a8df33299e2c602cdc312afef9242cc7a33f2a044735d6f54292",
+    "validationSummary": {
+      "candidates": 0,
+      "passed": 0,
+      "independentChronologicalPeriod": [
+        1786752000000,
+        1787961600000
+      ],
+      "noRetuning": true,
+      "performanceEvaluated": false,
+      "reason": "No eligible training candidate; no holdout performance evaluated"
+    }
+  },
+  "sourceHashes": {
+    "diagnostic": "12d1276221e378c7f5e7dc0ce2aded158b07e651337db2086ffd703b7634f3da",
+    "training": "c701c5cc1df6f7238c93daa865ef9b610155f885db0f38e60af4052beaad78e7",
+    "reservedHoldout": "ab30f6d350c3681afcd75bf54de46d9bc703fddfdfe46d3c2669f7dd235ad4fc"
+  },
+  "gates": {
+    "suites": 304,
+    "tests": 2127,
+    "fullLedgerWindowInvariance": true,
+    "defaultsChanged": false
+  }
+}
