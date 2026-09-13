@@ -768,14 +768,31 @@ function setCachedPositions(connId: string, positions: any[]): void {
   }
 
   function isEmptyBookProtectionSafe(input: {
+    connectionId: string
     localOpenPositionCount: number
     venuePositions: readonly Record<string, any>[]
-    liveOrderIds: Set<string> | null
+    liveOrderIds: LiveOrderIdSet | null
   }): boolean {
+    const observed = input.liveOrderIds?.observedOrdersById
+    let systemOrderCount = 0
+    if (observed instanceof Map) {
+      for (const order of observed.values()) {
+        const clientOrderId = order?.clientOrderId
+          ?? order?.clientOrderID
+          ?? order?.client_oid
+          ?? order?.clOrdId
+        if (isConnectionOwnedClientOrderId(clientOrderId, input.connectionId)) {
+          systemOrderCount++
+        }
+      }
+    } else if (input.liveOrderIds instanceof Set) {
+      // Without venue order objects, numeric ids cannot be classified safely.
+      systemOrderCount = input.liveOrderIds.size
+    }
     return input.localOpenPositionCount === 0
-      && isAuthoritativeVenueBookFlat(input.venuePositions)
       && input.liveOrderIds instanceof Set
-      && input.liveOrderIds.size === 0
+      && Array.isArray(input.venuePositions)
+      && systemOrderCount === 0
   }
 
   function emptyBookProtectionFingerprint(
@@ -817,6 +834,7 @@ function setCachedPositions(connId: string, positions: any[]): void {
     }
 
     const safe = isEmptyBookProtectionSafe({
+      connectionId,
       localOpenPositionCount: localOpenPositions.length,
       venuePositions,
       liveOrderIds,
@@ -18198,9 +18216,10 @@ export async function reconcileLivePositions(
     const liveOrderIds = await fetchLiveOrderIdSet(exchangeConnector)
     // A previous response-lost entry can leave the connection-wide
     // entry-protection halt sticky even after its row was safely retired. Do
-    // not clear it on one empty response: require two fresh, identical,
-    // authoritative position + open-order snapshots with no owned local rows.
-    // The helper also resets its observation when any exposure/order appears.
+    // not clear it on one response: require two fresh, identical,
+    // authoritative position + open-order snapshots with no CTS-owned local
+    // rows or client-order ids. Foreign account exposure is deliberately not
+    // treated as CTS ownership and is never mutated by this recovery path.
     await reconcileEmptyBookProtectionHalt({
       connectionId,
       localOpenPositions: [...openPositions, ...invalidDirectionPositions].filter((position) =>
