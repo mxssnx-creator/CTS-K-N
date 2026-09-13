@@ -1,7 +1,7 @@
 /**
  * CONNECTION HIERARCHY:
  * 1. PREDEFINED TEMPLATES (11 total): All connections seeded by migrations
- * 2. BASE CONNECTIONS (4): Primary exchanges with is_inserted=1, is_enabled=1
+ * 2. BASE CONNECTIONS (5): Primary exchanges with is_inserted=1, is_enabled=1
  *    - These are the working base connections that appear in Settings and Dashboard
  * 3. TEMPLATE-ONLY (5): Secondary exchanges (gateio, kucoin, mexc, bitget, huobi)
  *    - Just informational templates, not active unless user explicitly enables them
@@ -10,7 +10,7 @@
  *    - Trade engine processes ONLY active connections
  */
 
-// The 4 primary/base exchanges that are inserted in Settings by default.
+// The 5 primary/base exchange identities that are inserted in Settings by default.
 // Dashboard activation remains OFF until explicitly enabled.
 // Main/default exchange set for dashboard assignment handling.
 // Keep this limited to bybit + bingx to avoid auto-reassignment drift.
@@ -20,7 +20,7 @@ export const BASE_EXCHANGES = ["bybit", "bingx"]
 export const ALL_EXCHANGES = ["bybit", "bingx", "binance", "okx", "pionex", "orangex", "gateio", "kucoin", "mexc", "bitget", "huobi", "instaforex"]
 
 /**
- * Check if a connection is a BASE connection (one of the 4 primary exchanges)
+ * Check if a connection is a BASE connection (one of the 5 primary exchanges)
  * Uses the `exchange` field for reliable matching regardless of is_inserted state
  */
 export function isBaseConnection(connection: any): boolean {
@@ -62,7 +62,7 @@ export function isConnectionActiveDashboard(connection: any): boolean {
 }
 
 /**
- * Filter connections to only base connections (the 4 primary exchanges)
+ * Filter connections to only base connections (the 5 primary exchanges)
  */
 export function filterBaseConnections(connections: any[]): any[] {
   return connections.filter(isBaseConnection)

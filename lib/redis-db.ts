@@ -4947,6 +4947,21 @@ function mergeConnectionHashes(
   return merged
 }
 
+function attachIndexedConnectionIdentity(
+  connection: Record<string, any> | null,
+  indexedId: string,
+): Record<string, any> | null {
+  if (!connection) return null
+  // The Redis key/set member is the authoritative identity for a connection.
+  // Older partial writes sometimes omitted the embedded `id`, which otherwise
+  // makes the row disappear from getAllConnections() or fail the scoped live
+  // order allow-list even though connection:{id} exists.
+  if (!hasConnectionValue(connection.id) && indexedId.trim()) {
+    return { ...connection, id: indexedId }
+  }
+  return connection
+}
+
 export async function getConnection(id: string): Promise<any | null> {
   await initRedis()
   const client = getClient()
@@ -4956,7 +4971,7 @@ export async function getConnection(id: string): Promise<any | null> {
   ])
   const rawConnection = parseHash(rawHash)
   const settingsConnection = parseHash(settingsHash)
-  return mergeConnectionHashes(rawConnection, settingsConnection)
+  return attachIndexedConnectionIdentity(mergeConnectionHashes(rawConnection, settingsConnection), id)
 }
 
 // ──────────�������─────────────────────────────────────────────��───────────────────
@@ -5024,7 +5039,10 @@ export async function getAllConnections(): Promise<any[]> {
               client.hgetall(`connection:${id}`),
               client.hgetall(`settings:connection:${id}`),
             ])
-            return mergeConnectionHashes(parseHash(rawHash), parseHash(settingsHash))
+            return attachIndexedConnectionIdentity(
+              mergeConnectionHashes(parseHash(rawHash), parseHash(settingsHash)),
+              id,
+            )
           } catch (err) {
             console.warn(
               `[v0] [redis-db] getAllConnections: hgetall failed for ${id}`,

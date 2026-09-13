@@ -32,9 +32,10 @@ export interface ActiveConnection {
  * - ANY connection with is_enabled_dashboard=1 -- user-activated connections
  * isActive = is_enabled_dashboard (the active toggle, independent from Settings)
  */
-// Only bingx is shown in main connections by default.
-// Bybit can still be added manually but is no longer auto-default.
-const MAIN_DEFAULT_EXCHANGES = ["bingx"]
+// BingX and Bybit are the canonical primary exchanges shown in Main by
+// default. Processing/live trading still requires the independent dashboard
+// and live-order gates.
+const MAIN_DEFAULT_EXCHANGES = ["bingx", "bybit"]
 
 export async function loadActiveConnections(): Promise<ActiveConnection[]> {
   try {
@@ -52,7 +53,7 @@ export async function loadActiveConnections(): Promise<ActiveConnection[]> {
       const isBase = BASE_EXCHANGES.includes(exchange)
       const isMainDefault = MAIN_DEFAULT_EXCHANGES.includes(exchange)
 
-      // Show if: it's a main default exchange (bingx), OR it's dashboard-active (user added)
+      // Show if: it's a main default exchange, OR it's dashboard-active (user added)
       if ((isBase && isMainDefault) || isDashboardActive) {
         const canonId = conn.id.replace(/^conn-/, "")
         if (seenIds.has(canonId)) continue

@@ -13,11 +13,13 @@ type BaseSeedConfig = {
   environment?: "prod-live" | "prod-vst"
 }
 
-// Bybit is intentionally NOT a canonical base connection. Users can add Bybit
-// manually as a regular connection — it is no longer auto-seeded.
+// BingX X01/X02 and Bybit X03 are the canonical exchange identities used by
+// the production connection allow-list. Pionex/OrangeX remain available as
+// explicit read-only base connections unless their own adapters are enabled.
 const CANONICAL_BASE_CONNECTIONS: BaseSeedConfig[] = [
   { id: "bingx-x01", exchange: "bingx", name: "BingX X01", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
   { id: "bingx-x02", exchange: "bingx", name: "BingX X02 (Prod-VST Demo)", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native", environment: "prod-vst" },
+  { id: "bybit-x03", exchange: "bybit", name: "Bybit X03 (Unified)", apiType: "unified", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
   { id: "pionex-x01", exchange: "pionex", name: "Pionex X01", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
   { id: "orangex-x01", exchange: "orangex", name: "OrangeX X01", apiType: "perpetual_futures", contractType: "usdt-perpetual", connectionMethod: "library", connectionLibrary: "native" },
 ]
@@ -29,9 +31,6 @@ const LEGACY_CONNECTION_IDS = [
   "okx-base",
   "bybit-default-disabled",
   "bingx-default-disabled",
-  // bybit-x03 was previously seeded as a canonical base connection. It is no
-  // longer auto-created; existing rows must be removed on the next seed run.
-  "bybit-x03",
 ]
 
 // Module-level flag to prevent re-seeding
@@ -109,12 +108,13 @@ export async function ensureDefaultExchangesExist() {
           base_url: BINGX_PROD_VST_ORIGIN,
         } : {}),
         is_predefined: true,
-        // ONLY bybit and bingx are inserted (shown on Main Connections by default)
-        // All others (pionex, orangex) are disabled and hidden
+        // Only BingX and Bybit are inserted (shown on Main Connections by
+        // default). Pionex and OrangeX remain disabled and hidden.
         is_inserted: cfg.exchange === "bybit" || cfg.exchange === "bingx" ? "1" : "0",
-        // PRESERVE existing is_active_inserted — only set "1" for brand-new bingx-x01 connections.
-        // Bybit should NOT be auto-inserted. Never override user deletions or manual toggles.
-        is_active_inserted: cfg.exchange === "bingx" ? "1" : "0",
+        // Preserve existing is_active_inserted — BingX and Bybit are visible
+        // in the Active panel by default. Never override user deletions/toggles.
+        is_active_inserted: cfg.exchange === "bingx" || cfg.exchange === "bybit" ? "1" : "0",
+        is_dashboard_inserted: cfg.exchange === "bingx" || cfg.exchange === "bybit" ? "1" : "0",
         // ONLY bybit and bingx are enabled by default in settings
         is_enabled: cfg.exchange === "bybit" || cfg.exchange === "bingx" ? "1" : "0",
         is_enabled_dashboard: "0",
@@ -126,8 +126,11 @@ export async function ensureDefaultExchangesExist() {
       if (!existing) {
         // Only the connection's own alias resolver can provide credentials.
         // A missing X01 credential must stay blank even when X02 is configured.
-        normalizedBase.api_key = hasConfiguredCreds && cfg.id === "bingx-x01" ? apiKey : ""
-        normalizedBase.api_secret = hasConfiguredCreds && cfg.id === "bingx-x01" ? apiSecret : ""
+        // Seed only credentials belonging to this exact canonical identity.
+        // The installer/API injection pass also repairs existing rows, but a
+        // fresh Bybit X03 row must be usable immediately after first boot.
+        normalizedBase.api_key = hasConfiguredCreds ? apiKey : ""
+        normalizedBase.api_secret = hasConfiguredCreds ? apiSecret : ""
         await createConnection(normalizedBase)
         created++
       } else {
@@ -137,8 +140,17 @@ export async function ensureDefaultExchangesExist() {
         // volumes, strategies, and existing credentials).
         const repairPatch: Record<string, any> = {}
         for (const [field, value] of Object.entries(normalizedBase)) {
-          if (field === "updated_at" || field === "created_at" || field === "id") continue
-          if (existing[field] === undefined || existing[field] === null) repairPatch[field] = value
+          if (field === "updated_at" || field === "created_at") continue
+          if (field === "id") {
+            // Redis hash keys are authoritative, but consumers also require
+            // the embedded id for connection-scoped live gates. Repair old
+            // rows that were written without it (or with a wrong value).
+            if (String(existing.id || "").trim() !== cfg.id) repairPatch.id = cfg.id
+            continue
+          }
+          if (existing[field] === undefined || existing[field] === null || existing[field] === "") {
+            repairPatch[field] = value
+          }
         }
         if (!existing.created_at) repairPatch.created_at = now
         // X02 has one immutable safety property: it is always Prod-VST. An

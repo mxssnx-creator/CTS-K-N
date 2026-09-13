@@ -300,9 +300,8 @@ export async function checkProductionReadiness(
       // AND explicitly enabled AND has the dashboard toggle turned on. A
       // connection that is merely "inserted into the active panel" but has
       // its dashboard toggle OFF (is_enabled_dashboard=0) is dormant — skip
-      // the hard credential check for it. This correctly skips bybit-x03
-      // which appears in the Active panel (is_active_inserted=1) but has
-      // is_enabled_dashboard=0 and no API keys.
+      // the hard credential check for it. This also keeps a credentialless
+      // canonical Bybit X03 card dormant until the operator enables it.
       if (!hasCreds && !isDashboardEnabled) {
         continue
       }

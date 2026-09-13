@@ -5,7 +5,7 @@ import { ensureDefaultExchangesExist } from "@/lib/default-exchanges-seeder"
 
 /**
  * POST /api/system/initialize-defaults
- * Initialize system with default disabled exchanges (BingX)
+ * Initialize system with canonical default exchange connections.
  * These are pre-configured but disabled until user provides credentials
  */
 export const dynamic = "force-dynamic"
@@ -54,19 +54,23 @@ export async function GET(request: NextRequest) {
     const connections = await getAllConnections()
 
     const bingx = connections.find((c) => c.id === "bingx-x01")
+    const bybit = connections.find((c) => c.id === "bybit-x03")
+
+    const summarize = (connection: any) => connection
+      ? {
+          id: connection.id,
+          enabled: connection.is_enabled,
+          active: connection.is_active,
+          has_api_key: !!(connection.api_key && String(connection.api_key).length > 10),
+        }
+      : null
 
     return NextResponse.json(
       {
         status: "ready",
         defaults: {
-          bingx: bingx
-            ? {
-                id: bingx.id,
-                enabled: bingx.is_enabled,
-                active: bingx.is_active,
-                has_api_key: !!(bingx.api_key && String(bingx.api_key).length > 10),
-              }
-            : null,
+          bingx: summarize(bingx),
+          bybit: summarize(bybit),
         },
       },
       { status: 200 }

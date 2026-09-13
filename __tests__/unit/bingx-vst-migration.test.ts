@@ -160,4 +160,48 @@ describe("BingX environment migration safety", () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  test("seeds canonical Bybit X03 and repairs legacy connection identity fields", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "canonical-bybit-seed-"))
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "test",
+      V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
+      BYBIT_API_KEY: "bybit-api-key-long-enough",
+      BYBIT_API_SECRET: "bybit-api-secret-long-enough",
+    }
+    delete process.env.BINGX_API_KEY
+    delete process.env.BINGX_API_SECRET
+    delete process.env.BINGX_X02_API_KEY
+    delete process.env.BINGX_X02_API_SECRET
+    resetRedisGlobals()
+    jest.resetModules()
+
+    try {
+      const redisDb = await import("@/lib/redis-db")
+      await redisDb.ensureCoreRedis()
+      const client = redisDb.getRedisClient()
+      await client.flushDb()
+      await client.sadd("connections", "bingx-x01")
+      await client.hset("connection:bingx-x01", {
+        name: "BingX X01",
+        is_live_trade: "1",
+        is_enabled_dashboard: "1",
+      })
+
+      const seeder = await import("@/lib/default-exchanges-seeder")
+      seeder.resetSeedingFlag()
+      await expect(seeder.ensureDefaultExchangesExist()).resolves.toMatchObject({ success: true })
+
+      expect(await client.hget("connection:bingx-x01", "id")).toBe("bingx-x01")
+      expect(await client.hget("connection:bingx-x01", "exchange")).toBe("bingx")
+      expect(await client.hget("connection:bybit-x03", "id")).toBe("bybit-x03")
+      expect(await client.hget("connection:bybit-x03", "exchange")).toBe("bybit")
+      expect(await client.hget("connection:bybit-x03", "api_type")).toBe("unified")
+      expect(await client.hget("connection:bybit-x03", "api_key")).toBe("bybit-api-key-long-enough")
+      expect(await client.hget("connection:bybit-x03", "api_secret")).toBe("bybit-api-secret-long-enough")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

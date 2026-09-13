@@ -259,6 +259,7 @@ unit	__tests__/unit/real-position-durability.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
 unit	__tests__/unit/realtime-rotation-progress.test.ts
 unit	__tests__/unit/realtime-trailing-update.test.ts
+unit	__tests__/unit/redis-connection-identity.test.ts
 unit	__tests__/unit/redis-db-network-client.test.ts
 unit	__tests__/unit/redis-db-write-budget.test.ts
 unit	__tests__/unit/redis-memory-policy.test.ts

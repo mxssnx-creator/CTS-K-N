@@ -20,7 +20,7 @@ export async function POST() {
     await initRedis()
     const client = getRedisClient()
     
-    const baseConnections = ["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"] as const
+    const baseConnections = ["bingx-x01", "bingx-x02", "bybit-x03", "pionex-x01", "orangex-x01"] as const
     
     const results: Record<string, any> = {}
     
@@ -30,6 +30,19 @@ export async function POST() {
       
       // Build update data
       const updateData: Record<string, string> = {
+        id: conn,
+        name: conn === "bingx-x01"
+          ? "BingX X01"
+          : conn === "bingx-x02"
+            ? "BingX X02 (Prod-VST Demo)"
+            : conn === "bybit-x03"
+              ? "Bybit X03 (Unified)"
+              : conn === "pionex-x01"
+                ? "Pionex X01"
+                : "OrangeX X01",
+        exchange: conn === "bybit-x03" ? "bybit" : conn.startsWith("bingx-") ? "bingx" : conn.split("-")[0],
+        api_type: conn === "bybit-x03" ? "unified" : "perpetual_futures",
+        contract_type: "usdt-perpetual",
         is_inserted: "1",
         is_enabled: "1",
         is_active_inserted: "1",
@@ -37,6 +50,7 @@ export async function POST() {
         is_active: "0",
         is_predefined: "1",
         connection_method: "library",
+        connection_library: "native",
         ...(conn === "bingx-x02" ? { is_testnet: "1" } : {}),
         updated_at: new Date().toISOString(),
       }
@@ -87,7 +101,7 @@ export async function GET() {
     await initRedis()
     const client = getRedisClient()
     
-    const baseIds = ["bingx-x01", "bingx-x02", "pionex-x01", "orangex-x01"]
+    const baseIds = ["bingx-x01", "bingx-x02", "bybit-x03", "pionex-x01", "orangex-x01"]
     const status: Record<string, any> = {}
     
     for (const id of baseIds) {

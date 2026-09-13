@@ -188,6 +188,9 @@ owner-only SSH-key requirements as the Work procedure.
 Chisel transport authorization does not authorize unrelated server mutation.
 Create the required project checkpoint before an authorized deployment or
 other material change. Preserve the remote environment, Redis persistence,
-systemd configuration, and rollback artifacts. X01/Mainnet and Bybit remain
-read-only; only separately authorized X02 VST tests may submit minimum-volume
-orders.
+systemd configuration, and rollback artifacts. Main/Preset/Signal exchange
+writes are limited to the explicit `LIVE_ORDER_CONNECTION_IDS` allow-list and
+all credential, operator, lease, and runtime gates. The current production
+allow-list covers BingX X01/X02 and Bybit X03; Direct Trade remains scoped to
+the X02 Prod-VST path. X02 lifecycle tests may submit only minimum-volume
+virtual-funds orders with the documented ownership and cleanup checks.
