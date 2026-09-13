@@ -1,5 +1,11 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Read-only continuation verification — 2026-09-14
+
+The active v0 branch is `7658b7ae07abb88294523a20f5f63e8c5f374497`, with no source-code delta beyond merged GitHub `main` `73ee7278857ba594fee1d07a82c22027189b87e5`; the remaining branch delta is documentation-only. Rechecked six targeted readiness/monitoring suites: 248 tests passed; TypeScript and ESLint passed. The 393×591 preview loaded the dashboard and progression control without a UI/runtime error.
+
+The managed remote prerequisite is still absent: `/workspace/.network-clients/activate-cts.sh` and `/workspace/.ssh` are unavailable. No remote, service, Redis, exchange, deployment, or order mutation was performed. The official reinstall, post-deploy reconciliation, and production-readiness claim remain blocked until the managed Chisel path is restored. Source checkpoint: `/workspace/backups/CTS-K-N/20260913T232602Z-before-continuation-verification`.
+
 ## Continuation check — 2026-09-13 23:17 UTC
 
 The current source of truth is clean merged GitHub `main` at `73ee7278857ba594fee1d07a82c22027189b87e5` (`fix: repair complete migration tree payload`). The active v0 branch `v0/automated-trading-monitor-dd825f75` now contains only the documentation-only handoff commit `3609024` on top of that source; no unpublished source-code delta remains. Recent main history includes guarded X01/Bybit lifecycle enablement (`7aeb6dfb`), canonical Bybit seeding (`7eb4d443`), and the complete Redis migration payload repair (`73ee7278`). Local branch/PR inventory found no open pull requests; stale local remote refs in the active clone do not override the GitHub API result that `main` is `73ee7278`.
