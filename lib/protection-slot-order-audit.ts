@@ -46,6 +46,22 @@ export interface ProtectionSlotOrderAudit {
   violations: string[]
 }
 
+/**
+ * A proof that an already-open venue position is protected by one complete
+ * CTS-owned physical slot.  This is deliberately stricter than the normal
+ * row audit: it is used only when Redis lost the local position lineage and
+ * the engine must decide whether it may safely recover the venue state.
+ */
+export interface ConnectionOwnedProtectionBook {
+  safe: boolean
+  reason: string
+  quantity: number
+  positionIdentity?: string
+  stopLossOrder: Record<string, any> | null
+  takeProfitOrder: Record<string, any> | null
+  securityStopOrder: Record<string, any> | null
+}
+
 function finite(value: unknown): number {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : 0
@@ -202,6 +218,128 @@ export function isConnectionOwnedProtectionOrderForSlot(
       { requireExplicitPositionSide: true },
     )
     && protectionOrderKind(order) !== null
+}
+
+/**
+ * Classify the exact open protection book for one physical venue slot.
+ *
+ * Recovery is allowed only when the slot contains exactly three controls:
+ * one TP and two CTS-owned stops (the row stop plus the farther security
+ * stop).  Any extra, foreign, implicit-side, wrong-quantity, or ambiguous
+ * control makes the proof fail closed.  The caller must preserve every
+ * order when this returns false; this helper never authorizes cancellation.
+ *
+ * BingX can return very large position IDs as JavaScript numbers.  We only
+ * require all control orders to agree with one another; comparing them to a
+ * separately parsed position ID would reject valid books after numeric
+ * precision has already been lost by the connector.
+ */
+export function classifyConnectionOwnedProtectionBook(input: {
+  connectionId: string
+  symbol: string
+  direction: ProtectionSlotDirection
+  venueQuantity: number
+  entryPrice: number
+  openOrders: readonly Record<string, any>[]
+}): ConnectionOwnedProtectionBook {
+  const empty = (reason: string): ConnectionOwnedProtectionBook => ({
+    safe: false,
+    reason,
+    quantity: Math.abs(finite(input.venueQuantity)),
+    stopLossOrder: null,
+    takeProfitOrder: null,
+    securityStopOrder: null,
+  })
+  const symbol = normalizeProtectionSlotSymbol(input.symbol)
+  const quantity = Math.abs(finite(input.venueQuantity))
+  const entryPrice = finite(input.entryPrice)
+  if (!symbol || !["long", "short"].includes(input.direction) || !(quantity > 0) || !(entryPrice > 0)) {
+    return empty("invalid_slot_inputs")
+  }
+
+  const slotOrders = input.openOrders
+    .map((order) => order as Record<string, any>)
+    .filter((order) => orderMatchesSlot(order, symbol, input.direction))
+  if (slotOrders.length !== 3) return empty("exact_slot_control_count_mismatch")
+
+  const owned = slotOrders.filter((order) => isConnectionOwnedProtectionOrderForSlot(
+    order,
+    input.connectionId,
+    symbol,
+    input.direction,
+  ))
+  if (owned.length !== slotOrders.length) return empty("foreign_or_unknown_slot_control_present")
+  if (owned.some((order) => protectionOrderKind(order) === null)) return empty("non_protection_slot_control_present")
+
+  const takeProfitOrders = owned.filter((order) => protectionOrderKind(order) === "take_profit")
+  const stopLossOrders = owned.filter((order) => protectionOrderKind(order) === "stop_loss")
+  if (takeProfitOrders.length !== 1 || stopLossOrders.length !== 2) {
+    return empty("protection_leg_count_mismatch")
+  }
+
+  const quantityTolerance = Math.max(1e-10, quantity * 1e-8)
+  if (owned.some((order) => !quantitiesMatch(protectionOrderQuantity(order), quantity, quantityTolerance))) {
+    return empty("protection_quantity_mismatch")
+  }
+
+  const takeProfitOrder = takeProfitOrders[0]
+  const takeProfitTrigger = protectionOrderTrigger(takeProfitOrder)
+  const stopTriggers = stopLossOrders.map((order) => ({
+    order,
+    trigger: protectionOrderTrigger(order),
+  }))
+  if (!(takeProfitTrigger > 0) || stopTriggers.some(({ trigger }) => !(trigger > 0))) {
+    return empty("protection_trigger_missing")
+  }
+  if (input.direction === "long") {
+    if (!(takeProfitTrigger > entryPrice) || stopTriggers.some(({ trigger }) => trigger >= entryPrice)) {
+      return empty("long_protection_range_invalid")
+    }
+  } else if (!(takeProfitTrigger < entryPrice) || stopTriggers.some(({ trigger }) => trigger <= entryPrice)) {
+    return empty("short_protection_range_invalid")
+  }
+
+  const stopIdentity = (order: Record<string, any>): string => firstText(
+    order?.positionID,
+    order?.positionId,
+    order?.position_id,
+  )
+  const positionIdentities = [...new Set(stopLossOrders.concat(takeProfitOrders).map(stopIdentity).filter(Boolean))]
+  if (positionIdentities.length > 1) return empty("control_position_identity_mismatch")
+
+  const taggedSecurity = stopTriggers.filter(({ order }) => {
+    const clientId = protectionOrderClientId(order).toLowerCase()
+    return clientId.includes("security") || clientId.includes("sec")
+  })
+  if (taggedSecurity.length > 1) return empty("multiple_security_stop_candidates")
+
+  const sortedStops = [...stopTriggers].sort((left, right) => input.direction === "long"
+    ? left.trigger - right.trigger
+    : right.trigger - left.trigger)
+  const securityStop = taggedSecurity[0]?.order || sortedStops[0]?.order
+  const rowStop = sortedStops.find(({ order }) => order !== securityStop)?.order || null
+  if (!securityStop || !rowStop) return empty("security_stop_selection_failed")
+
+  const triggerTolerance = Math.max(1e-12, entryPrice * 1e-10)
+  const securityTrigger = protectionOrderTrigger(securityStop)
+  const rowTrigger = protectionOrderTrigger(rowStop)
+  if (Math.abs(securityTrigger - rowTrigger) <= triggerTolerance) {
+    return empty("security_stop_range_ambiguous")
+  }
+  const securityIsFarther = input.direction === "long"
+    ? securityTrigger < rowTrigger
+    : securityTrigger > rowTrigger
+  if (!securityIsFarther) return empty("security_stop_not_farther_than_row_stop")
+
+  return {
+    safe: true,
+    reason: "ok",
+    quantity,
+    ...(positionIdentities[0] ? { positionIdentity: positionIdentities[0] } : {}),
+    stopLossOrder: rowStop,
+    takeProfitOrder,
+    securityStopOrder: securityStop,
+  }
 }
 
 function quantitiesMatch(actual: number, expected: number, tolerance: number): boolean {
