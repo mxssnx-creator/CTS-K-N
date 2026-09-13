@@ -512,7 +512,12 @@ async function buildLivePositionsResponse(request: Request) {
         positionOrderRelationIntegrity: realExchangeStatistics.relationIntegrity,
         lifetimeStatisticsComplete: lifetimeSummary.coverage.complete,
         lifetimeStatisticsCoverage: lifetimeSummary.coverage,
-        realExchangeDataComplete: realPositions.length > 0 || !liveTradeEnabled,
+        // A requested-but-blocked live connection has not provided an
+        // authoritative current exchange position snapshot.  Historical
+        // ledger rows must not make this look complete; that hid the exact
+        // Real-vs-Live discrepancy the dashboard is meant to expose.
+        realExchangeDataComplete:
+          !liveTradeRequested || (liveTradeEnabled && realPositions.length > 0),
         message: liveTradeEnabled
           ? "Real exchange positions are separated from simulated/paper positions and use exchange-synced order/position identifiers when available."
           : liveTradeRequested
