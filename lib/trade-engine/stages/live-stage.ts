@@ -792,6 +792,7 @@ function setCachedPositions(connId: string, positions: any[]): void {
     return input.localOpenPositionCount === 0
       && input.liveOrderIds instanceof Set
       && Array.isArray(input.venuePositions)
+      && isAuthoritativeVenueBookFlat(input.venuePositions)
       && systemOrderCount === 0
   }
 
