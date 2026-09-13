@@ -243,3 +243,16 @@ Die Read-only-Rekonstruktion des dauerhaften X02-Live-Positionsledgers (149 Zeil
 Das anschließende Read-only-Monitoring lief mit 11 Samples im Abstand von durchschnittlich 61,2 Sekunden (07:00:29–07:10:41 UTC). Alle Health-/Status-/Stats-/Live-Endpunkte waren HTTP 200, alle drei Dienste active ohne Neustart, Lifetime-Zähler blieben unverändert, `failedToOpen` und aktuelle `errored` blieben 0, eigene offene Orders/Positionen blieben 0. Redis stieg kontrolliert von 0,826 auf 0,948 GiB bei 3,937 GiB MaxMemory (historischer Peak 19,97 GiB); die vollständige Messreihe und Diagramme stehen in `docs/reports/20260909-order-counter-fix/report.html` und `summary.json`.
 
 Live ist für X02 weiterhin angefordert/eingeschaltet und die Credentials-/Koordinationsprüfung ist gültig. Neue Venue-Eintritte bleiben absichtlich durch `entry_protection_halt` gesperrt, bis eine frische eigentumsgebundene Schutzprüfung einen sicheren Slot beweist; es wurden keine fremden Venue-Orders/Positionen mutiert. Die alten per-symbolischen Fehlerfelder bleiben als getrennte Forensik markiert und werden nicht als aktuelle Orderfehler gezählt.
+
+
+## 2026-09-13 Direct-Trade recalculation race correction
+
+Continuation of main `fb51ea03` on `codex/recalc-invalidation-20260913`. GitHub main unchanged and no open PRs at inspection. Existing earlier branches remain preserved; this delta changes only processor invalidation and regression coverage.
+
+Five reproduced failures: repeated persisted acknowledgements revived invalidated settings/mode calculations, and symbol count, symbol order, and Block range changes did not invalidate the grid. Invalidation now remains pending until an exact successful replacement; input identity is checked again after asynchronous hydration and includes execution mode. Status-only updates retain the current grid. Eight new regression cases exercise actual processor functions without network/exchange access.
+
+Validation: 304 suites / 2,135 tests passed; focused post-review rerun passed. TypeScript, targeted ESLint, source syntax, security (1,729 files / zero findings), and preflight (37 checks, schema 108) passed. Build/publication/deployment are pending at this source checkpoint.
+
+Remote read-only sample 01:04:59 UTC: installed fd531f18; all three units active, zero restarts, governor timer active; root free 26.9 GiB; 2,667 progression cycles / zero failures; Direct 360,192 evaluations / 367 valid configs and fresh progress. Signed X02 read at 01:07:58 UTC: 3 positions, 3 external orders, both reads successful. Entry-protection halt, six historical relationship mismatches across eight rows and incomplete lifetime accounting remain unresolved. No external orders were cancelled, no fill/lineage history was fabricated, and no new authenticated lifecycle pass is claimed. Default settings remain unchanged.
+
+Pre-edit verified source checkpoint: `/workspace/backups/CTS-K-N/20260913T010538Z-before-recalc-invalidation-fix`. Latest remote source backup from previous release remains `/var/backups/cts-kn/20260913T004617Z-final-sol-release`; fresh checkpoint required before deployment.
