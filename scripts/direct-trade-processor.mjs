@@ -521,6 +521,9 @@ let stats = {
 }
 
 let lastRecalcAt = 0
+// Invalidation is sticky until an exact replacement is applied. Persisted
+// timestamps describe the old grid and cannot acknowledge changed inputs.
+let calculationInvalidated = false
 let nextRecalcAttemptAt = 0
 let recalcRequestInFlight = null
 let completedRecalcRequest = null
@@ -868,6 +871,7 @@ function evaluateConfigPerformance(key) {
 
 function calculationInputsSignature(input = state, historyHoursOverride = null) {
   return JSON.stringify({
+    liveMode: input.liveMode,
     symbolCount: input.symbolCount,
     symbolOrder: input.symbolOrder,
     minVolFactor: input.minVolFactor,
@@ -978,6 +982,7 @@ async function applyCompletedConfigRecalculation() {
   completedRecalcRequest = null
   const { result, requestedHistoryHours, configuredHistoryHours, calculationInputs } = completed
   if (!result?.success || !processorLeaseHeld) {
+    calculationInvalidated = true
     lastRecalcAt = 0
     nextRecalcAttemptAt = Date.now() + 2_000
     return false
@@ -986,6 +991,7 @@ async function applyCompletedConfigRecalculation() {
     // A settings acknowledgement arrived while this long historical grid was
     // evaluating. The API snapshot is retained for audit, but no live entry
     // may consume it; a replacement is scheduled from the exact new inputs.
+    calculationInvalidated = true
     lastRecalcAt = 0
     nextRecalcAttemptAt = 0
     log("info", "Direct-Trade settings changed during calculation; scheduling an exact replacement grid")
@@ -995,6 +1001,7 @@ async function applyCompletedConfigRecalculation() {
   calculationHistoryHours = Number(result.summary?.historyHours) || requestedHistoryHours
   lastHistoryPolicy = assessCalculationHistory(result.summary, calculationHistoryHours)
   if (!lastHistoryPolicy.canProceed) {
+    calculationInvalidated = true
     adaptiveHistoryHours = lastHistoryPolicy.nextHistoryHours
     lastRecalcAt = 0
     nextRecalcAttemptAt = 0
@@ -1017,7 +1024,14 @@ async function applyCompletedConfigRecalculation() {
   // Apply only at this serialized lifecycle boundary. No background publisher
   // can race position management, settings hydration or processor persistence.
   await loadState()
+  if (calculationInputs !== calculationInputsSignature(state, requiredCalculationHistoryHours())) {
+    calculationInvalidated = true
+    lastRecalcAt = 0
+    nextRecalcAttemptAt = 0
+    return false
+  }
   const appliedAt = Date.now()
+  calculationInvalidated = false
   lastRecalcAt = appliedAt
   nextRecalcAttemptAt = 0
   log(
@@ -3022,7 +3036,7 @@ function applyRemoteState(nextState, source = "load") {
     dcaProfile: normalizeDirectDcaProfile(nextState.dcaProfile || state.dcaProfile),
   }
   const persistedRecalcAt = Date.parse(nextState.lastRecalcAt || "")
-  if (Number.isFinite(persistedRecalcAt) && persistedRecalcAt > 0) {
+  if (!calculationInvalidated && Number.isFinite(persistedRecalcAt) && persistedRecalcAt > 0) {
     lastRecalcAt = persistedRecalcAt
   }
   if (state.liveMode !== prev.liveMode) {
@@ -3030,6 +3044,7 @@ function applyRemoteState(nextState, source = "load") {
     // baseline calculation (plus a bounded sufficiency expansion if needed)
     // and a new causal pulse before any entry can be considered.
     resetAdaptiveHistory(state.liveMode ? "entered live mode" : "returned to paper mode")
+    calculationInvalidated = true
     lastRecalcAt = 0
     calculationHistoryHours = null
     lastSignalPulseAt = 0
@@ -3044,6 +3059,9 @@ function applyRemoteState(nextState, source = "load") {
   // A persisted acknowledgement is an event from the state owner. Compare
   // only calculation inputs: UI-only status updates never cause a rebuild.
   const evaluationInputsChanged = JSON.stringify({
+    symbolCount: prev.symbolCount,
+    symbolOrder: prev.symbolOrder,
+    blockRange: prev.blockRange,
     minVolFactor: normalizeDirectTradeVolumeFactor(prev.minVolFactor),
     positionCostPercent: prev.positionCostPercent,
     keepEnabledPosCount: prev.keepEnabledPosCount,
@@ -3072,6 +3090,9 @@ function applyRemoteState(nextState, source = "load") {
     trailingEnabled: prev.trailingEnabled,
     dcaProfile: normalizeDirectDcaProfile(prev.dcaProfile),
   }) !== JSON.stringify({
+    symbolCount: state.symbolCount,
+    symbolOrder: state.symbolOrder,
+    blockRange: state.blockRange,
     minVolFactor: normalizeDirectTradeVolumeFactor(state.minVolFactor),
     positionCostPercent: state.positionCostPercent,
     keepEnabledPosCount: state.keepEnabledPosCount,
@@ -3105,6 +3126,7 @@ function applyRemoteState(nextState, source = "load") {
     // Settings are authoritative immediately. Rebuild the entire historic
     // grid on the next owned tick instead of trading stale configurations.
     resetAdaptiveHistory(`calculation inputs changed by ${source}`)
+    calculationInvalidated = true
     lastRecalcAt = 0
   }
   return evaluationInputsChanged

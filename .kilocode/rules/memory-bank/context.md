@@ -3944,3 +3944,16 @@ PR #337 `fix: keep live order failure counters coherent` ist nach erfolgreichem 
 X02-Live-Ledger-Rebuild (Wartungsmarker, Dienste aus, keine Exchange-Mutation) hat aus 149 Ledgerzeilen `attempted=4`, `placed=4`, `filled=4`, `failed=0`, `positionsCreated=5`, `positionsClosed=5`, `volumeUsd=42.17197` hergestellt; vorher standen dort 349649/5/6/349645. Backup-Key: `progression:counter_rebuild_backup:bingx-x02:2026-09-09T06-58-20-279Z`. 10-Minuten-Read-only-Monitoring: 11 Samples, Ø61,2s, alle APIs HTTP200, drei Dienste active/NRestarts0, Lifetime stabil, aktuelle `failedToOpen`/`errored` 0, eigene Orders/Positionen 0, Redis 0,826→0,948 GiB bei 3,937 GiB MaxMemory. HTML/JSON: `docs/reports/20260909-order-counter-fix/report.html` und `summary.json`.
 
 Live intent/enabled bleibt true; `canPlaceRealOrders=false` bleibt wegen des bestehenden `entry_protection_halt` fail-closed. Fremde Venue-Bestände sind ausgeschlossen und unangetastet. Per-symbolische alte Fehlerwerte sind als Forensik getrennt zu behandeln; aktuelle UI-/Stats-Fehlerfelder kommen aus dem korrigierten globalen Ledger und frischen DispatchOutcome-Zeilen.
+
+
+## 2026-09-13 Direct-Trade recalculation race correction
+
+Continuation of main `fb51ea03` on `codex/recalc-invalidation-20260913`. GitHub main unchanged and no open PRs at inspection. Existing earlier branches remain preserved; this delta changes only processor invalidation and regression coverage.
+
+Five reproduced failures: repeated persisted acknowledgements revived invalidated settings/mode calculations, and symbol count, symbol order, and Block range changes did not invalidate the grid. Invalidation now remains pending until an exact successful replacement; input identity is checked again after asynchronous hydration and includes execution mode. Status-only updates retain the current grid. Eight new regression cases exercise actual processor functions without network/exchange access.
+
+Validation: 304 suites / 2,135 tests passed; focused post-review rerun passed. TypeScript, targeted ESLint, source syntax, security (1,729 files / zero findings), and preflight (37 checks, schema 108) passed. Build/publication/deployment are pending at this source checkpoint.
+
+Remote read-only sample 01:04:59 UTC: installed fd531f18; all three units active, zero restarts, governor timer active; root free 26.9 GiB; 2,667 progression cycles / zero failures; Direct 360,192 evaluations / 367 valid configs and fresh progress. Signed X02 read at 01:07:58 UTC: 3 positions, 3 external orders, both reads successful. Entry-protection halt, six historical relationship mismatches across eight rows and incomplete lifetime accounting remain unresolved. No external orders were cancelled, no fill/lineage history was fabricated, and no new authenticated lifecycle pass is claimed. Default settings remain unchanged.
+
+Pre-edit verified source checkpoint: `/workspace/backups/CTS-K-N/20260913T010538Z-before-recalc-invalidation-fix`. Latest remote source backup from previous release remains `/var/backups/cts-kn/20260913T004617Z-final-sol-release`; fresh checkpoint required before deployment.
