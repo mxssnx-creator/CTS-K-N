@@ -1,5 +1,13 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Continuation check — 2026-09-13 23:17 UTC
+
+The current source of truth is clean merged GitHub `main` at `73ee7278857ba594fee1d07a82c22027189b87e5` (`fix: repair complete migration tree payload`). The active v0 branch `v0/automated-trading-monitor-dd825f75` points to the same tree and has no unpublished source delta. Recent main history includes guarded X01/Bybit lifecycle enablement (`7aeb6dfb`), canonical Bybit seeding (`7eb4d443`), and the complete Redis migration payload repair (`73ee7278`). Local branch/PR inventory found no open pull requests; stale local remote refs in the active clone do not override the GitHub API result that `main` is `73ee7278`.
+
+A verified owner-only source checkpoint was created at `/workspace/backups/CTS-K-N/20260913T231735Z-before-context-handoff`; it contains the complete Git bundle, binary worktree/index patches, HEAD/status/ref records, classified untracked-file record, SHA-256 verification, and `git bundle verify`. It excludes credentials, environment files, Redis data, and account payloads. Focused live/readiness regression passed 6 suites / 59 tests; TypeScript and ESLint passed; deployment-contract verification remains blocked only because no deployment URL is configured locally.
+
+No remote, service, Redis, exchange, deployment, or order mutation was performed. The required managed Chisel activation, pinned localhost SSH forward, and `/workspace/.ssh` are absent, so remote inspection/reinstallation and any systemwide live enablement remain blocked. Preserve the existing X02 protection halt and external orders; do not clear the halt or claim production readiness until managed access, authoritative reconciliation, and the full post-deploy contract are available.
+
 ## Final remote handoff — 2026-09-13 00:46 UTC
 
 This entry supersedes all earlier pending-release statements. Runtime release: merged PR348 `fd531f18badfcd3e9fee903571f38d56588ecf64`, exact checked application tree `d5413ac4cc96e93c96a13d5742ac61be37e6e9fd`. Canonical checkout `/workspace/CTS-K-N`; final handoff branch `codex/sol-remote-handoff-20260913` changes documentation/evidence only. Its later GitHub main commit does not require a second application reinstall: compare production files against fd531f18. Earlier local source commits68140439 and7f4978eb are preserved in their original branch; the connector-published tree matched exactly. PR348 and merged-main GitHub smoke passed; both corresponding CTS-K-N Vercel deployments reached READY. The unrelated CTS-V status is not claimed green.
