@@ -65,6 +65,29 @@ describe("overall venue control lifecycle", () => {
     expect(mockValues.has(key)).toBe(false)
   })
 
+  test("foreign venue exposure does not keep the CTS protection halt stuck", async () => {
+    const key = "live:entry-protection-halt:bingx-x02"
+    mockValues.set(key, JSON.stringify({ reason: "entry_protection_rollback_unconfirmed" }))
+    const exchange = {
+      getPositions: jest.fn(async () => [
+        { symbol: "ETHUSDT", positionSide: "LONG", positionAmt: "3" },
+      ]),
+      getOpenOrders: jest.fn(async () => [
+        { symbol: "ETHUSDT", orderId: "operator-order", clientOrderId: "manual-eth", type: "LIMIT" },
+      ]),
+      getLastPositionsSnapshotStatus: () => ({ ok: true }),
+      getLastOpenOrdersSnapshotStatus: () => ({ ok: true }),
+    }
+    const reconcile = () => reconcileLivePositions("bingx-x02", exchange, { skipSimulatedSweep: true, skipOrphanAdoption: true })
+    await reconcile()
+    const observationKey = "live:entry-protection-halt-observation:bingx-x02"
+    const observation = JSON.parse(mockValues.get(observationKey))
+    mockValues.set(observationKey, JSON.stringify({ ...observation, observedAt: Date.now() - 2_000 }))
+    await reconcile()
+    expect(mockValues.has(key)).toBe(false)
+    expect(exchange.getOpenOrders).toHaveBeenCalled()
+  })
+
   test("canonical false overrides global and legacy true, with concurrent policy reads deduplicated", async () => {
     mockHashes.set("connection_settings:bingx-x02", { overallControlOrdersOnly: "true", useSystemCloseOnly: "true" })
     mockHashes.set("settings:connection_settings:bingx-x02", { overall_control_orders_only: "false", use_system_close_only: "false" })
