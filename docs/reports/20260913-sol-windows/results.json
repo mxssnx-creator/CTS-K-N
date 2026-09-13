@@ -419,5 +419,664 @@
     "tests": 2127,
     "fullLedgerWindowInvariance": true,
     "defaultsChanged": false
+  },
+  "remote": {
+    "release": "fd531f18badfcd3e9fee903571f38d56588ecf64",
+    "pr": 348,
+    "remoteTests": {
+      "suites": 304,
+      "tests": 2127,
+      "passed": true
+    },
+    "build": {
+      "pages": 42,
+      "traces": 350,
+      "passed": true
+    },
+    "installerExit": 1,
+    "installerFinalBlock": "entry_protection_halt",
+    "canonicalRecovery": true,
+    "postDeployContractExit": 0,
+    "samples": [
+      {
+        "at": "2026-09-13T00:36:37.918821+00:00",
+        "source": "fd531f18badfcd3e9fee903571f38d56588ecf64",
+        "services": {
+          "cts-kn.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-scheduler.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-direct-trade.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-redis-governor.timer": {
+            "ActiveState": "active",
+            "SubState": "waiting"
+          }
+        },
+        "rootFreeGiB": 27.85,
+        "maintenance": false,
+        "checks": {
+          "health": {
+            "http": 200,
+            "status": "healthy"
+          },
+          "engines": {
+            "http": 200,
+            "engineRunning": true,
+            "runtimeEvidence": {
+              "reason": "fresh-heartbeat",
+              "status": "running",
+              "heartbeatAt": 1789259797519,
+              "heartbeatAgeMs": 475,
+              "heartbeatFresh": true,
+              "globalIntent": "running",
+              "operatorStopped": false
+            },
+            "modes": {
+              "mainTrade": {
+                "flag": true,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders.",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              },
+              "presetTrade": {
+                "flag": false,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "simulation",
+                "blockCode": "disabled",
+                "blockReason": "Preset exchange trading is disabled by the operator",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              },
+              "signalTrade": {
+                "flag": true,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders.",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              }
+            },
+            "live": {
+              "flag": true,
+              "effective": false,
+              "executionMode": "blocked",
+              "blockCode": "entry_protection_halt"
+            }
+          },
+          "direct": {
+            "http": 200,
+            "processorHealthy": true,
+            "openPositions": 0,
+            "openingPositions": 0,
+            "closedPositions": 0,
+            "accountingPending": 0,
+            "validConfigs": 233,
+            "evaluatedConfigs": 360192,
+            "processor": {
+              "lastHeartbeatAt": "2026-09-13T00:36:37.997Z",
+              "lastProgressAt": "2026-09-13T00:36:37.644Z",
+              "tickCount": 168,
+              "errorsLast5min": 0,
+              "heartbeatHealthy": true,
+              "progressHealthy": true
+            },
+            "admission": {
+              "ready": false,
+              "virtualFundsOnly": true,
+              "blockCode": "entry_protection_halt"
+            },
+            "calculationProgress": {
+              "status": "ready",
+              "completedSymbols": 8,
+              "totalSymbols": 8,
+              "evaluatedSets": 360192
+            }
+          },
+          "overview": {
+            "http": 200,
+            "symbolsActive": 25,
+            "indicationsCalculated": 2,
+            "strategiesEvaluated": 21960,
+            "baseSetsCreated": true,
+            "mainSetsCreated": true,
+            "realSetsCreated": true,
+            "liveSetsCreated": true,
+            "liveExchangePositions": 0
+          },
+          "progression": {
+            "http": 200,
+            "runningEngines": 1,
+            "keys": [
+              "connectionId",
+              "engineType",
+              "connectionName",
+              "exchange",
+              "isEnabled",
+              "isActive",
+              "isLiveTrading",
+              "isEngineRunning",
+              "engineState",
+              "runtimeReason",
+              "heartbeatFresh",
+              "heartbeatAgeMs",
+              "engineProgression",
+              "tradeCount",
+              "pseudoPositionCount",
+              "prehistoricDataLoaded",
+              "lastUpdate",
+              "progression"
+            ],
+            "progression": {
+              "cyclesCompleted": 2627,
+              "successfulCycles": 2627,
+              "failedCycles": 0,
+              "cycleSuccessRate": 100,
+              "totalTrades": 0,
+              "successfulTrades": 0,
+              "totalProfit": 0,
+              "tradeSuccessRate": 0,
+              "indicationsDirectionCount": 50,
+              "indicationsMoveCount": 38,
+              "indicationsActiveCount": 0,
+              "indicationsActiveAdvancedCount": 0,
+              "indicationsOptimalCount": 0,
+              "indicationsAutoCount": 0,
+              "indicationsSignalCount": 42,
+              "indicationsTrendCount": 0,
+              "strategiesBaseTotal": 15784776,
+              "strategiesMainTotal": 30456876,
+              "strategiesRealTotal": 63819436,
+              "strategyEvaluatedBase": 15784776,
+              "strategyEvaluatedMain": 30456876,
+              "strategyEvaluatedReal": 27785645,
+              "indicationCycleCount": 3,
+              "strategyCycleCount": 3,
+              "realtimeCycleCount": 3,
+              "indicationsCount": 176,
+              "strategiesCount": 12727
+            },
+            "engineProgression": {
+              "testPassed": true,
+              "sub_current": false,
+              "needs_reconcile": false,
+              "sub_total": false,
+              "status": "running",
+              "orphan_cleanup_pending": false,
+              "phase": "live_trading",
+              "testSkipped": false,
+              "progress": 100
+            }
+          },
+          "positions": {
+            "http": 200,
+            "liveExecutionMode": "blocked",
+            "liveTradeEnabled": false,
+            "liveTradeRequested": true,
+            "liveTradeBlockCode": "entry_protection_halt",
+            "lifetimeStatisticsComplete": false,
+            "positionOrderRelationIntegrity": {
+              "success": false,
+              "checkedPositions": 8,
+              "mismatchCount": 6
+            }
+          }
+        }
+      },
+      {
+        "at": "2026-09-13T00:39:05.805191+00:00",
+        "source": "fd531f18badfcd3e9fee903571f38d56588ecf64",
+        "services": {
+          "cts-kn.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-scheduler.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-direct-trade.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-redis-governor.timer": {
+            "ActiveState": "active",
+            "SubState": "waiting"
+          }
+        },
+        "rootFreeGiB": 27.53,
+        "maintenance": false,
+        "checks": {
+          "health": {
+            "http": 200,
+            "status": "healthy"
+          },
+          "engines": {
+            "http": 200,
+            "engineRunning": true,
+            "runtimeEvidence": {
+              "reason": "fresh-heartbeat",
+              "status": "running",
+              "heartbeatAt": 1789259797519,
+              "heartbeatAgeMs": 475,
+              "heartbeatFresh": true,
+              "globalIntent": "running",
+              "operatorStopped": false
+            },
+            "modes": {
+              "mainTrade": {
+                "flag": true,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders.",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              },
+              "presetTrade": {
+                "flag": false,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "simulation",
+                "blockCode": "disabled",
+                "blockReason": "Preset exchange trading is disabled by the operator",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              },
+              "signalTrade": {
+                "flag": true,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders.",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              }
+            },
+            "live": {
+              "flag": true,
+              "effective": false,
+              "executionMode": "blocked",
+              "blockCode": "entry_protection_halt"
+            }
+          },
+          "direct": {
+            "http": 200,
+            "processorHealthy": true,
+            "openPositions": 0,
+            "openingPositions": 0,
+            "closedPositions": 0,
+            "accountingPending": 0,
+            "validConfigs": 233,
+            "evaluatedConfigs": 360192,
+            "processor": {
+              "lastHeartbeatAt": "2026-09-13T00:39:04.941Z",
+              "lastProgressAt": "2026-09-13T00:39:04.600Z",
+              "tickCount": 597,
+              "errorsLast5min": 0,
+              "heartbeatHealthy": true,
+              "progressHealthy": true
+            },
+            "admission": {
+              "ready": false,
+              "virtualFundsOnly": true,
+              "blockCode": "entry_protection_halt"
+            },
+            "calculatedAt": "2026-09-12T23:34:56.147Z",
+            "calculationProgress": {
+              "status": "ready",
+              "completedSymbols": 8,
+              "totalSymbols": 8,
+              "evaluatedSets": 360192
+            }
+          },
+          "overview": {
+            "http": 200,
+            "symbolsActive": 25,
+            "indicationsCalculated": 5,
+            "strategiesEvaluated": 66880,
+            "baseSetsCreated": true,
+            "mainSetsCreated": true,
+            "realSetsCreated": true,
+            "liveSetsCreated": true,
+            "liveExchangePositions": 0
+          },
+          "progression": {
+            "http": 200,
+            "runningEngines": 1,
+            "keys": [
+              "connectionId",
+              "engineType",
+              "connectionName",
+              "exchange",
+              "isEnabled",
+              "isActive",
+              "isLiveTrading",
+              "isEngineRunning",
+              "engineState",
+              "runtimeReason",
+              "heartbeatFresh",
+              "heartbeatAgeMs",
+              "engineProgression",
+              "tradeCount",
+              "pseudoPositionCount",
+              "prehistoricDataLoaded",
+              "lastUpdate",
+              "progression"
+            ],
+            "progression": {
+              "cyclesCompleted": 2630,
+              "successfulCycles": 2630,
+              "failedCycles": 0,
+              "cycleSuccessRate": 100,
+              "totalTrades": 0,
+              "successfulTrades": 0,
+              "totalProfit": 0,
+              "tradeSuccessRate": 0,
+              "indicationsDirectionCount": 125,
+              "indicationsMoveCount": 94,
+              "indicationsActiveCount": 0,
+              "indicationsActiveAdvancedCount": 0,
+              "indicationsOptimalCount": 0,
+              "indicationsAutoCount": 0,
+              "indicationsSignalCount": 188,
+              "indicationsTrendCount": 0,
+              "strategiesBaseTotal": 15843072,
+              "strategiesMainTotal": 30570324,
+              "strategiesRealTotal": 64028876,
+              "strategyEvaluatedBase": 15843072,
+              "strategyEvaluatedMain": 30570324,
+              "strategyEvaluatedReal": 27889639,
+              "indicationCycleCount": 6,
+              "strategyCycleCount": 6,
+              "realtimeCycleCount": 6,
+              "indicationsCount": 453,
+              "strategiesCount": 56111
+            },
+            "engineProgression": {
+              "testPassed": true,
+              "sub_current": false,
+              "needs_reconcile": false,
+              "sub_total": false,
+              "status": "running",
+              "orphan_cleanup_pending": false,
+              "phase": "live_trading",
+              "testSkipped": false,
+              "progress": 100
+            }
+          },
+          "positions": {
+            "http": 200,
+            "liveExecutionMode": "blocked",
+            "liveTradeEnabled": false,
+            "liveTradeRequested": true,
+            "liveTradeBlockCode": "entry_protection_halt",
+            "lifetimeStatisticsComplete": false,
+            "positionOrderRelationIntegrity": {
+              "success": false,
+              "checkedPositions": 8,
+              "mismatchCount": 6
+            }
+          }
+        }
+      },
+      {
+        "at": "2026-09-13T00:43:23.199976+00:00",
+        "source": "fd531f18badfcd3e9fee903571f38d56588ecf64",
+        "services": {
+          "cts-kn.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-scheduler.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-direct-trade.service": {
+            "NRestarts": "0",
+            "ActiveState": "active",
+            "SubState": "running"
+          },
+          "cts-kn-redis-governor.timer": {
+            "ActiveState": "active",
+            "SubState": "waiting"
+          }
+        },
+        "rootFreeGiB": 27.07,
+        "maintenance": false,
+        "governor": {
+          "state": "normal",
+          "lastRunAt": 1789260179044,
+          "lastHeartbeatAt": 1789259568183,
+          "forkAllowed": true,
+          "overBudget": false,
+          "aofGrowthPressure": false,
+          "aofRewriteRequested": null,
+          "lastAofRewriteAt": 1789259568183
+        },
+        "checks": {
+          "health": {
+            "http": 200,
+            "status": "healthy"
+          },
+          "engines": {
+            "http": 200,
+            "engineRunning": true,
+            "runtimeEvidence": {
+              "reason": "fresh-heartbeat",
+              "status": "running",
+              "heartbeatAt": 1789259945681,
+              "heartbeatAgeMs": 199,
+              "heartbeatFresh": true,
+              "globalIntent": "running",
+              "operatorStopped": false
+            },
+            "modes": {
+              "mainTrade": {
+                "flag": true,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders.",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              },
+              "presetTrade": {
+                "flag": false,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "simulation",
+                "blockCode": "disabled",
+                "blockReason": "Preset exchange trading is disabled by the operator",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              },
+              "signalTrade": {
+                "flag": true,
+                "effective": false,
+                "running": true,
+                "inSync": true,
+                "executionMode": "blocked",
+                "blockCode": "entry_protection_halt",
+                "blockReason": "Entry protection reconciliation is required before new orders.",
+                "credentialsValid": true,
+                "durableCoordinationReady": true
+              }
+            },
+            "live": {
+              "flag": true,
+              "effective": false,
+              "executionMode": "blocked",
+              "blockCode": "entry_protection_halt"
+            }
+          },
+          "direct": {
+            "http": 200,
+            "processorHealthy": true,
+            "openPositions": 0,
+            "openingPositions": 0,
+            "closedPositions": 0,
+            "accountingPending": 0,
+            "validConfigs": 367,
+            "evaluatedConfigs": 360192,
+            "processor": {
+              "lastHeartbeatAt": "2026-09-13T00:43:22.664Z",
+              "lastProgressAt": "2026-09-13T00:43:21.831Z",
+              "tickCount": 1353,
+              "errorsLast5min": 0,
+              "heartbeatHealthy": true,
+              "progressHealthy": true
+            },
+            "admission": {
+              "ready": false,
+              "virtualFundsOnly": true,
+              "blockCode": "entry_protection_halt"
+            },
+            "calculatedAt": "2026-09-13T00:42:12.877Z",
+            "calculationProgress": {
+              "status": "ready",
+              "completedSymbols": 8,
+              "totalSymbols": 8,
+              "evaluatedSets": 360192
+            }
+          },
+          "overview": {
+            "http": 200,
+            "symbolsActive": 25,
+            "indicationsCalculated": 9,
+            "strategiesEvaluated": 61988,
+            "baseSetsCreated": true,
+            "mainSetsCreated": true,
+            "realSetsCreated": true,
+            "liveSetsCreated": true,
+            "liveExchangePositions": 0
+          },
+          "progression": {
+            "http": 200,
+            "runningEngines": 1,
+            "keys": [
+              "connectionId",
+              "engineType",
+              "connectionName",
+              "exchange",
+              "isEnabled",
+              "isActive",
+              "isLiveTrading",
+              "isEngineRunning",
+              "engineState",
+              "runtimeReason",
+              "heartbeatFresh",
+              "heartbeatAgeMs",
+              "engineProgression",
+              "tradeCount",
+              "pseudoPositionCount",
+              "prehistoricDataLoaded",
+              "lastUpdate",
+              "progression"
+            ],
+            "progression": {
+              "cyclesCompleted": 2634,
+              "successfulCycles": 2634,
+              "failedCycles": 0,
+              "cycleSuccessRate": 100,
+              "totalTrades": 0,
+              "successfulTrades": 0,
+              "totalProfit": 0,
+              "tradeSuccessRate": 0,
+              "indicationsDirectionCount": 225,
+              "indicationsMoveCount": 158,
+              "indicationsActiveCount": 0,
+              "indicationsActiveAdvancedCount": 0,
+              "indicationsOptimalCount": 0,
+              "indicationsAutoCount": 0,
+              "indicationsSignalCount": 349,
+              "indicationsTrendCount": 0,
+              "strategiesBaseTotal": 15905820,
+              "strategiesMainTotal": 30691740,
+              "strategiesRealTotal": 64253900,
+              "strategyEvaluatedBase": 15905820,
+              "strategyEvaluatedMain": 30691740,
+              "strategyEvaluatedReal": 28000937,
+              "indicationCycleCount": 10,
+              "strategyCycleCount": 10,
+              "realtimeCycleCount": 10,
+              "indicationsCount": 778,
+              "strategiesCount": 104016
+            },
+            "engineProgression": {
+              "testPassed": true,
+              "sub_current": false,
+              "needs_reconcile": false,
+              "sub_total": false,
+              "status": "running",
+              "orphan_cleanup_pending": false,
+              "phase": "live_trading",
+              "testSkipped": false,
+              "progress": 100
+            }
+          },
+          "positions": {
+            "http": 200,
+            "liveExecutionMode": "blocked",
+            "liveTradeEnabled": false,
+            "liveTradeRequested": true,
+            "liveTradeBlockCode": "entry_protection_halt",
+            "lifetimeStatisticsComplete": false,
+            "positionOrderRelationIntegrity": {
+              "success": false,
+              "checkedPositions": 8,
+              "mismatchCount": 6
+            }
+          }
+        }
+      }
+    ],
+    "account": {
+      "at": "2026-09-13T00:44:07.705679+00:00",
+      "positionCount": 2,
+      "openOrderCount": 3,
+      "ordersByOwner": [
+        {
+          "key": "external",
+          "count": 3
+        }
+      ],
+      "duplicateGroupCount": 1,
+      "positionsReadOk": true,
+      "ordersReadOk": true
+    },
+    "independentNewLiveOrdersTested": false
   }
 }
