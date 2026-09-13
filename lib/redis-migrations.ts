@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 107895)
-Total output lines: 9683
-
 /**
  * Redis Migration Runner - Complete System
  * Handles schema initialization and data migrations for all system components
@@ -4387,7 +4384,793 @@ const migrations: Migration[] = [
           "volume_factor_signal",
         ]) {
           const raw = values[field]
-          if (raw == null || raw ==…7895 tokens truncated…           changed = replaceLegacyList(
+          if (raw == null || raw === "" || Number(raw) === 0.1) {
+            patch[field] = "1"
+            volumeRatioUpdates++
+          }
+        }
+        if (includePosCountRatio && (values.posCountsVolumeRatio == null || values.posCountsVolumeRatio === "")) {
+          patch.posCountsVolumeRatio = "0.05"
+          posCountRatioSeeds++
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key, true)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key, true)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        position_cost_default_percent: "0.1",
+        live_volume_ratio_baseline: "1",
+        live_volume_ratio_semantics: "exchange-minimum-times-ratio",
+        pos_counts_volume_ratio_default: "0.05",
+        position_cost_fields_updated: String(positionCostUpdates),
+        volume_ratio_fields_updated: String(volumeRatioUpdates),
+        pos_count_ratio_fields_seeded: String(posCountRatioSeeds),
+        schema_version: "82",
+        updated_at: new Date().toISOString(),
+      }).catch(() => 0)
+      console.log(
+        `[v0] Migration 082: positionCost=${positionCostUpdates}, volumeRatio=${volumeRatioUpdates}, posCounts=${posCountRatioSeeds}`,
+      )
+    },
+    down: async (client: any) => {
+      // Operator-visible sizing values are intentionally preserved on rollback.
+      await client.set("_schema_version", "81")
+    },
+  },
+  {
+    version: 83,
+    name: "083-enforce-identity-live-volume-ratios",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const ratioFields = [
+        "base_volume_factor",
+        "volume_factor",
+        "live_volume_factor",
+        "volume_factor_live",
+        "mainTradeVolumeFactor",
+        "main_trade_volume_factor",
+        "preset_volume_factor",
+        "volume_factor_preset",
+        "presetTradeVolumeFactor",
+        "preset_trade_volume_factor",
+        "signal_volume_factor",
+        "volume_factor_signal",
+        "signalTradeVolumeFactor",
+        "signal_trade_volume_factor",
+        "signalVolumeFactor",
+      ] as const
+      let normalized = 0
+      let seeded = 0
+
+      const normalizeHash = async (
+        key: string,
+        requiredFields: readonly string[] = [],
+      ): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        for (const field of ratioFields) {
+          const raw = values[field]
+          if (raw == null || raw === "") continue
+          const parsed = Number(raw)
+          if (!Number.isFinite(parsed) || parsed < 1) {
+            patch[field] = "1"
+            normalized++
+          } else if (parsed > 10) {
+            patch[field] = "10"
+            normalized++
+          }
+        }
+        for (const field of requiredFields) {
+          if (values[field] == null || values[field] === "") {
+            patch[field] = "1"
+            seeded++
+          }
+        }
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key, [
+          "mainTradeVolumeFactor",
+          "presetTradeVolumeFactor",
+          "signalTradeVolumeFactor",
+        ])
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        live_volume_ratio_baseline: "1",
+        live_volume_ratio_range: "1-10",
+        signal_volume_ratio_semantics: "main-channel-times-signal-ratio-once",
+        identity_volume_fields_normalized: String(normalized),
+        identity_volume_fields_seeded: String(seeded),
+        schema_version: "83",
+        updated_at: new Date().toISOString(),
+      }).catch(() => 0)
+      console.log(
+        `[v0] Migration 083: normalized=${normalized}, identity defaults seeded=${seeded}`,
+      )
+    },
+    down: async (client: any) => {
+      // Operator-visible sizing values are intentionally preserved on rollback.
+      await client.set("_schema_version", "82")
+    },
+  },
+  {
+    version: 84,
+    name: "084-freeze-base-volume-coordination-at-identity",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const baseFields = [
+        "base_volume_factor",
+        "volume_factor",
+        "baseVolumeFactor",
+      ] as const
+      let normalized = 0
+      let seeded = 0
+      let nestedNormalized = 0
+
+      const normalizeHash = async (
+        key: string,
+        requiredFields: readonly string[] = [],
+        requireNestedBase = false,
+      ): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+
+        for (const field of baseFields) {
+          const raw = values[field]
+          if (raw == null || raw === "") continue
+          if (Number(raw) !== 1) {
+            patch[field] = "1"
+            normalized++
+          }
+        }
+        for (const field of requiredFields) {
+          if (values[field] == null || values[field] === "") {
+            patch[field] = "1"
+            seeded++
+          }
+        }
+
+        const nestedRaw = values.connection_settings
+        if (typeof nestedRaw === "string" && nestedRaw.trim().startsWith("{")) {
+          try {
+            const nested = JSON.parse(nestedRaw) as Record<string, unknown>
+            let changed = false
+            for (const field of baseFields) {
+              if (!(field in nested)) continue
+              if (Number(nested[field]) !== 1) {
+                nested[field] = 1
+                nestedNormalized++
+                changed = true
+              }
+            }
+            if (requireNestedBase && nested.baseVolumeFactor == null) {
+              nested.baseVolumeFactor = 1
+              nestedNormalized++
+              changed = true
+            }
+            if (changed) patch.connection_settings = JSON.stringify(nested)
+          } catch {
+            // Malformed legacy JSON remains operator-visible. Canonical flat
+            // hashes are still repaired and all current write paths reject or
+            // overwrite malformed settings before engine use.
+          }
+        }
+
+        if (Object.keys(patch).length > 0) await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key, ["base_volume_factor", "volume_factor"])
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        await normalizeHash(`connection:${id}`, ["volume_factor"], true)
+        await normalizeHash(`settings:connection:${id}`, ["volume_factor"], true)
+        await normalizeHash(`connection_settings:${id}`, ["volume_factor", "baseVolumeFactor"])
+        await normalizeHash(`settings:connection_settings:${id}`, ["volume_factor", "baseVolumeFactor"])
+        await normalizeHash(`trade_engine_state:${id}`, ["volume_factor"])
+        await normalizeHash(`settings:trade_engine_state:${id}`, ["volume_factor"])
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        base_volume_ratio: "1",
+        base_volume_ratio_semantics: "immutable-coordination-identity",
+        base_volume_fields_normalized: String(normalized),
+        base_volume_fields_seeded: String(seeded),
+        nested_base_volume_fields_normalized: String(nestedNormalized),
+        schema_version: "84",
+        updated_at: new Date().toISOString(),
+      }).catch(() => 0)
+      console.log(
+        `[v0] Migration 084: base normalized=${normalized}, seeded=${seeded}, nested=${nestedNormalized}`,
+      )
+    },
+    down: async (client: any) => {
+      // Base identity is a safety invariant and intentionally remains at one.
+      await client.set("_schema_version", "83")
+    },
+  },
+  {
+    version: 85,
+    name: "085-main-trade-position-cost-ratio-four-stage",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const stages = ["base", "main", "real", "live"] as const
+      const fieldNames = {
+        base: ["baseProfitFactor", "base_min_profit_factor"],
+        main: ["mainProfitFactor", "main_min_profit_factor"],
+        real: ["realProfitFactor", "real_min_profit_factor"],
+        live: ["liveProfitFactor", "live_min_profit_factor"],
+      } as const
+      let normalized = 0
+      let nestedNormalized = 0
+
+      const migrateStageValue = (
+        stage: typeof stages[number],
+        value: unknown,
+        legacySemantics: boolean,
+      ): number => {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        if (legacySemantics) {
+          const legacyDefaults = stage === "base"
+            ? new Set([0.4, 0.7, 0.9, 1])
+            : new Set([0.7, 0.9, 1, 1.2])
+          if (legacyDefaults.has(parsed)) return MAIN_TRADE_STAGE_PF_DEFAULTS[stage]
+        }
+        return normalizeMainTradeStagePfRatio(stage, parsed)
+      }
+
+      const normalizeNested = (
+        nested: Record<string, any>,
+        legacySemantics: boolean,
+      ): boolean => {
+        let changed = false
+        for (const stage of stages) {
+          const aliases = fieldNames[stage]
+          const current = aliases.map((field) => nested[field]).find((value) => value != null)
+          const next = migrateStageValue(stage, current, legacySemantics)
+          for (const field of aliases) {
+            if (Number(nested[field]) !== next) {
+              nested[field] = next
+              changed = true
+            }
+          }
+          for (const channelName of ["main", "preset"]) {
+            const stageRow = nested?.strategies?.[channelName]?.[stage]
+            if (!stageRow || typeof stageRow !== "object") continue
+            if (Number(stageRow.min_profit_factor) !== next) {
+              stageRow.min_profit_factor = next
+              changed = true
+            }
+          }
+        }
+        if (nested.mainTradePfRatioSemantics !== "position-cost-v2") {
+          nested.mainTradePfRatioSemantics = "position-cost-v2"
+          changed = true
+        }
+        return changed
+      }
+
+      const normalizeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const legacySemantics =
+          values.mainTradePfRatioSemantics !== "position-cost-v2" &&
+          values._main_trade_pf_ratio_semantics !== "position-cost-v2"
+        const patch: Record<string, string> = {
+          mainTradePfRatioSemantics: "position-cost-v2",
+          _main_trade_pf_ratio_semantics: "position-cost-v2",
+        }
+        for (const stage of stages) {
+          const aliases = fieldNames[stage]
+          const current = aliases.map((field) => values[field]).find((value) => value != null && value !== "")
+          const next = migrateStageValue(stage, current, legacySemantics)
+          for (const field of aliases) {
+            if (Number(values[field]) !== next) {
+              patch[field] = String(next)
+              normalized++
+            }
+          }
+        }
+        for (const jsonField of ["connection_settings", "coordination_settings"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const nested = JSON.parse(raw) as Record<string, any>
+            if (normalizeNested(nested, legacySemantics)) {
+              patch[jsonField] = JSON.stringify(nested)
+              nestedNormalized++
+            }
+          } catch {
+            // Preserve malformed legacy payloads; canonical flat fields still
+            // repair runtime behavior and the next settings save rewrites JSON.
+          }
+        }
+        await client.hset(key, patch)
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+      await client.hset("system:database:coordination:performance", {
+        main_trade_pf_semantics: "position-cost-v2",
+        main_trade_pf_range: "0.08-2.70",
+        main_trade_pf_step: "0.02",
+        main_trade_pf_base_default: String(MAIN_TRADE_STAGE_PF_DEFAULTS.base),
+        main_trade_pf_downstream_default: String(MAIN_TRADE_STAGE_PF_DEFAULTS.main),
+        main_trade_pf_fields_normalized: String(normalized),
+        main_trade_pf_nested_normalized: String(nestedNormalized),
+        schema_version: "85",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      // Ratio values are operator-visible and remain valid on rollback.
+      await client.set("_schema_version", "84")
+    },
+  },
+  {
+    version: 86,
+    name: "086-exhaustive-indication-base-and-block-only-defaults",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let hashesUpdated = 0
+      let commonProfilesUpdated = 0
+
+      const normalizeHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        if (values.indicationTimeoutMs == null || [1000, 15000].includes(Number(values.indicationTimeoutMs))) {
+          patch.indicationTimeoutMs = "250"
+        }
+        if (values.positionCooldownMs == null || Number(values.positionCooldownMs) !== 3000) {
+          patch.positionCooldownMs = "3000"
+        }
+        if (
+          values.positionCooldownTimeout == null ||
+          [10, 15, 30].includes(Number(values.positionCooldownTimeout))
+        ) {
+          patch.positionCooldownTimeout = "3"
+        }
+        if (values.maxActiveBasePseudoPositionsPerDirection !== "1") {
+          patch.maxActiveBasePseudoPositionsPerDirection = "1"
+        }
+        if (values.maxPositionsPerConfigDirection !== "1") {
+          patch.maxPositionsPerConfigDirection = "1"
+        }
+        if (
+          values.posCountsVolumeRatio == null ||
+          values.posCountsVolumeRatio === "" ||
+          Number(values.posCountsVolumeRatio) === 0.05
+        ) {
+          patch.posCountsVolumeRatio = String(POS_COUNT_VOLUME_RATIO_DEFAULT)
+        }
+        if (values.blockOnly == null && values.variantBlockOnly == null) {
+          patch.blockOnly = "true"
+          patch.variantBlockOnly = "true"
+        }
+        const rawCoord = values.coordination_settings
+        if (typeof rawCoord === "string" && rawCoord.trim().startsWith("{")) {
+          try {
+            const coordination = JSON.parse(rawCoord) as Record<string, any>
+            let changed = false
+            if (coordination.blockOnly == null) {
+              coordination.blockOnly = true
+              changed = true
+            }
+            if (
+              coordination.posCountsVolumeRatio == null ||
+              Number(coordination.posCountsVolumeRatio) === 0.05
+            ) {
+              coordination.posCountsVolumeRatio = POS_COUNT_VOLUME_RATIO_DEFAULT
+              changed = true
+            }
+            if (changed) patch.coordination_settings = JSON.stringify(coordination)
+          } catch {
+            // Flat fields remain authoritative for malformed legacy JSON.
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          hashesUpdated++
+        }
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeHash(key)
+      }
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+        ]) {
+          await normalizeHash(key)
+        }
+      }
+
+      const commonRaw = await client.get("indications:common").catch(() => null)
+      if (typeof commonRaw === "string" && commonRaw.trim().startsWith("{")) {
+        try {
+          const common = JSON.parse(commonRaw) as Record<string, any>
+          for (const profile of Object.values(common)) {
+            if (!profile || typeof profile !== "object" || Array.isArray(profile)) continue
+            if ("timeout" in profile && Number(profile.timeout) !== 3) {
+              profile.timeout = 3
+              commonProfilesUpdated++
+            }
+          }
+          await client.set("indications:common", JSON.stringify(common))
+        } catch {
+          // The settings route repairs malformed JSON using canonical defaults.
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        indication_exact_lane_timeout_ms: "250",
+        common_indication_exact_lane_timeout_ms: "3000",
+        base_exact_lane_cooldown_ms: "3000",
+        base_open_positions_per_exact_lane: "1",
+        pos_counts_volume_ratio_default: String(POS_COUNT_VOLUME_RATIO_DEFAULT),
+        block_only_default: "true",
+        exhaustive_configuration_space: "true",
+        settings_hashes_updated: String(hashesUpdated),
+        common_profiles_updated: String(commonProfilesUpdated),
+        schema_version: "86",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "85")
+    },
+  },
+  {
+    version: 87,
+    name: "087-signal-bootstrap-direction-lanes-and-strategy-rows",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      let signalSourcesUpdated = 0
+      let stageCapsUpdated = 0
+      const signalRaw = await client.get("indications:signal").catch(() => null)
+      if (typeof signalRaw === "string" && signalRaw.trim().startsWith("{")) {
+        try {
+          const signal = JSON.parse(signalRaw) as Record<string, any>
+          if (signal.directExecutionEnabled == null) signal.directExecutionEnabled = true
+          if (signal.maxPositionsTotal == null || Number(signal.maxPositionsTotal) === 24 || Number(signal.maxPositionsTotal) === 120) {
+            signal.maxPositionsTotal = 350
+          }
+          if (signal.sources && typeof signal.sources === "object") {
+            for (const source of Object.values(signal.sources) as Array<Record<string, any>>) {
+              if (!source || typeof source !== "object") continue
+              if (!Array.isArray(source.disabledSymbols)) source.disabledSymbols = []
+              if (!Array.isArray(source.disabledLanes)) {
+                source.disabledLanes = []
+                signalSourcesUpdated++
+              }
+            }
+          }
+          await client.set("indications:signal", JSON.stringify(signal))
+        } catch {
+          // Canonical Signal normalization repairs malformed payloads on load.
+        }
+      }
+
+      const normalizeStageCaps = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        const legacyRealCaps = new Set(["", "25", "50", "100"])
+        const legacyLiveCaps = new Set(["", "90"])
+        if (legacyRealCaps.has(String(values.strategyRealSetsSafetyCeiling ?? ""))) {
+          patch.strategyRealSetsSafetyCeiling = "5000"
+        }
+        if (legacyRealCaps.has(String(values.maxRealSets ?? ""))) {
+          patch.maxRealSets = "5000"
+        }
+        if (legacyLiveCaps.has(String(values.strategyLiveSetsCeiling ?? ""))) {
+          patch.strategyLiveSetsCeiling = "500"
+        }
+        for (const jsonField of ["connection_settings", "coordination_settings"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const nested = JSON.parse(raw) as Record<string, any>
+            const channel = nested?.strategies?.main
+            let changed = false
+            if (channel && typeof channel === "object") {
+              if (channel.base && Number(channel.base.max_positions) !== 0) {
+                channel.base.max_positions = 0
+                changed = true
+              }
+              if (channel.main && Number(channel.main.max_positions) !== 0) {
+                channel.main.max_positions = 0
+                changed = true
+              }
+              if (
+                channel.real &&
+                legacyRealCaps.has(String(channel.real.max_positions ?? ""))
+              ) {
+                channel.real.max_positions = 5000
+                changed = true
+              }
+              if (
+                channel.live &&
+                legacyLiveCaps.has(String(channel.live.max_positions ?? ""))
+              ) {
+                channel.live.max_positions = 500
+                changed = true
+              }
+            }
+            if (changed) patch[jsonField] = JSON.stringify(nested)
+          } catch {
+            // Flat fields remain authoritative for malformed legacy JSON.
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await client.hset(key, patch)
+          stageCapsUpdated++
+        }
+      }
+
+      for (const key of ["app_settings", "settings:app_settings", "settings:all_settings"]) {
+        await normalizeStageCaps(key)
+      }
+
+      for (const connection of connections) {
+        const id = String(connection.id || "")
+        if (!id) continue
+        for (const key of [
+          `connection:${id}`,
+          `settings:connection:${id}`,
+          `connection_settings:${id}`,
+          `settings:connection_settings:${id}`,
+          `trade_engine_state:${id}`,
+          `settings:trade_engine_state:${id}`,
+        ]) {
+          await normalizeStageCaps(key)
+        }
+        for (const [stage, defaults] of [
+          ["base", { row_total: "0", row_valid: "0", row_total_open: "0", row_valid_open: "0" }],
+          ["main", { row_valid: "0", row_overall: "0", row_valid_open: "0", row_overall_open: "0" }],
+          ["real", { row_valid: "0", row_active: "0", row_active_exact: "0" }],
+          ["live", { row_total: "0", row_mirrored: "0", row_active: "0" }],
+        ] as const) {
+          const key = `strategy_detail:${id}:${stage}`
+          const existing = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+          const patch: Record<string, string> = {}
+          for (const [field, value] of Object.entries(defaults)) {
+            if (existing[field] == null) patch[field] = value
+          }
+          if (Object.keys(patch).length > 0) await client.hset(key, patch)
+        }
+      }
+
+      await client.hset("system:database:coordination:performance", {
+        signal_direct_bootstrap_default: "true",
+        signal_source_window: "12",
+        signal_symbol_direction_window: "10",
+        signal_max_open_positions_long_short_total: "350",
+        signal_manual_lane_identity: "source-symbol-direction",
+        strategy_row_snapshot_semantics: "current-open-row-snapshot",
+        base_configuration_index: "exact-hash-lazy-v2",
+        signal_sources_direction_lists_seeded: String(signalSourcesUpdated),
+        strategy_real_sets_default: "5000",
+        strategy_live_sets_default: "500",
+        strategy_base_main_sets: "unlimited",
+        strategy_stage_caps_updated: String(stageCapsUpdated),
+        schema_version: "87",
+        updated_at: new Date().toISOString(),
+      })
+    },
+    down: async (client: any) => {
+      await client.set("_schema_version", "86")
+    },
+  },
+  {
+    version: 88,
+    name: "088-repair-exhaustive-indications-signal-capacity-and-stage-caps",
+    up: async (client: any) => {
+      const connections = await loadConnectionsForMaintenanceMigration(client)
+      const exhaustiveRanges = Array.from({ length: 29 }, (_, index) => index + 2)
+      const exhaustiveFactors = [0.9, 1, 1.1]
+      const exhaustiveThresholds = [0.5, 1, 1.5, 2, 2.5]
+      const exhaustiveActivity = [0.5, 1, 1.5, 2, 2.5, 3]
+      const trendTimeframes = [1, 5, 15, 30]
+      const legacyTrendTimeframes = [1, 3, 5, 10, 15, 30]
+      const legacyCommonTimeframes = [1, 3, 5, 15]
+      const legacyRanges = [2, 5, 10, 20, 30]
+      const legacyFactors = [1]
+      const legacyThresholds = [0.5, 1.5, 2.5]
+      const legacyActivity = [0.5, 1.5, 3]
+      const legacyRealCaps = new Set(["", "25", "50", "100"])
+      const legacyLiveCaps = new Set(["", "90"])
+      const legacyMainEvalCounts = new Set(["", "3", "15"])
+      const legacyRealEvalCounts = new Set(["", "3", "10"])
+      let settingsHashesUpdated = 0
+      let mainDocumentUpdated = 0
+      let commonProfilesUpdated = 0
+      let signalSettingsUpdated = 0
+
+      const parseNumberList = (value: unknown): number[] => {
+        let source: unknown[] = []
+        if (Array.isArray(value)) {
+          source = value
+        } else if (typeof value === "string" && value.trim()) {
+          try {
+            const parsed = JSON.parse(value)
+            source = Array.isArray(parsed) ? parsed : value.split(/[\s,|]+/)
+          } catch {
+            source = value.split(/[\s,|]+/)
+          }
+        }
+        return source.map(Number).filter(Number.isFinite)
+      }
+      const sameNumberList = (value: unknown, expected: readonly number[]): boolean => {
+        const parsed = parseNumberList(value)
+        return parsed.length === expected.length &&
+          parsed.every((entry, index) => Math.abs(entry - expected[index]) <= Number.EPSILON)
+      }
+      const replaceLegacyList = (
+        target: Record<string, any>,
+        field: string,
+        legacy: readonly number[],
+        next: readonly number[],
+      ): boolean => {
+        if (target[field] == null || sameNumberList(target[field], legacy)) {
+          target[field] = [...next]
+          return true
+        }
+        return false
+      }
+      const replaceLegacyRange = (section: Record<string, any>): boolean => {
+        const range = section?.range
+        if (
+          !range ||
+          (Number(range.from) === 3 && Number(range.to) === 30 && Number(range.step) === 1)
+        ) {
+          section.range = { from: 2, to: 30, step: 1 }
+          return true
+        }
+        return false
+      }
+
+      const normalizeSettingsHash = async (key: string): Promise<void> => {
+        const values = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+        const patch: Record<string, string> = {}
+        const replaceFlatList = (
+          field: string,
+          legacy: readonly number[],
+          next: readonly number[],
+        ) => {
+          if (values[field] == null || sameNumberList(values[field], legacy)) {
+            patch[field] = JSON.stringify(next)
+          }
+        }
+        replaceFlatList("indicationSampleRanges", legacyRanges, exhaustiveRanges)
+        replaceFlatList("optimalSampleRanges", legacyRanges, exhaustiveRanges)
+        replaceFlatList("indicationFactorMultipliers", legacyFactors, exhaustiveFactors)
+        replaceFlatList("activeThresholds", legacyThresholds, exhaustiveThresholds)
+        replaceFlatList("activeAdvancedActivityRatios", legacyActivity, exhaustiveActivity)
+        replaceFlatList("trendTimeframesMinutes", legacyTrendTimeframes, trendTimeframes)
+
+        if (values.indicationTimeoutMs == null || [1_000, 3_000, 15_000].includes(Number(values.indicationTimeoutMs))) {
+          patch.indicationTimeoutMs = "250"
+        }
+        if (values.positionCooldownMs == null || Number(values.positionCooldownMs) !== 3_000) {
+          patch.positionCooldownMs = "3000"
+        }
+        if (values.maxActiveBasePseudoPositionsPerDirection !== "1") {
+          patch.maxActiveBasePseudoPositionsPerDirection = "1"
+        }
+        if (values.maxPositionsPerConfigDirection !== "1") {
+          patch.maxPositionsPerConfigDirection = "1"
+        }
+        if (values.minStep !== "2") {
+          patch.minStep = "2"
+        }
+        if (legacyMainEvalCounts.has(String(values.mainEvalPosCount ?? ""))) {
+          patch.mainEvalPosCount = "25"
+        }
+        if (legacyRealEvalCounts.has(String(values.realEvalPosCount ?? ""))) {
+          patch.realEvalPosCount = "20"
+        }
+        if (legacyRealCaps.has(String(values.strategyRealSetsSafetyCeiling ?? ""))) {
+          patch.strategyRealSetsSafetyCeiling = "5000"
+        }
+        if (legacyRealCaps.has(String(values.maxRealSets ?? ""))) {
+          patch.maxRealSets = "5000"
+        }
+        if (legacyLiveCaps.has(String(values.strategyLiveSetsCeiling ?? ""))) {
+          patch.strategyLiveSetsCeiling = "500"
+        }
+
+        for (const jsonField of ["connection_settings", "coordination_settings"]) {
+          const raw = values[jsonField]
+          if (typeof raw !== "string" || !raw.trim().startsWith("{")) continue
+          try {
+            const nested = JSON.parse(raw) as Record<string, any>
+            let changed = false
+            changed = replaceLegacyList(
+              nested,
+              "indicationSampleRanges",
+              legacyRanges,
+              exhaustiveRanges,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "optimalSampleRanges",
+              legacyRanges,
+              exhaustiveRanges,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "indicationFactorMultipliers",
+              legacyFactors,
+              exhaustiveFactors,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "activeThresholds",
+              legacyThresholds,
+              exhaustiveThresholds,
+            ) || changed
+            changed = replaceLegacyList(
+              nested,
+              "activeAdvancedActivityRatios",
+              legacyActivity,
+              exhaustiveActivity,
+            ) || changed
+            changed = replaceLegacyList(
               nested,
               "trendTimeframesMinutes",
               legacyTrendTimeframes,
