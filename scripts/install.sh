@@ -125,7 +125,8 @@ file, never as command-line arguments. The installer generates ADMIN_SECRET,
 CRON_SECRET, ENCRYPTION_KEY, and JWT_SECRET when they are absent. The guarded
 live path is enabled by default, but actual exchange placement still requires
 valid credentials, durable order coordination, persisted live-control state,
-and the exact LIVE_ORDER_CONNECTION_IDS=bingx-x02 allow-list. Direct Trade has
+and the exact LIVE_ORDER_CONNECTION_IDS=bingx-x01,bingx-x01-futures,bingx-x02,
+bingx-x02-vst-futures,bybit-x03,bybit-x03-unified allow-list. Direct Trade has
 an additional independent DIRECT_TRADE_LIVE_ORDER_PLACEMENT=1 plus
 DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02 gate. Verification never submits an
 order.
@@ -1394,7 +1395,7 @@ configure_environment_and_redis() {
     upsert_env ALLOW_LIVE_ORDER_PLACEMENT 0
     upsert_env CTS_REQUIRE_LIVE_TRADE_READY 0
     upsert_env DISABLE_BINGX_SDK_ORDERS 1
-    upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x02
+    upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x01,bingx-x01-futures,bingx-x02,bingx-x02-vst-futures,bybit-x03,bybit-x03-unified
   else
     upsert_env ALLOW_INLINE_REDIS_LIVE_TRADING 1
     # A long-lived Linux install is the authoritative live-order owner. Do not
@@ -1407,9 +1408,10 @@ configure_environment_and_redis() {
     upsert_env ALLOW_LIVE_ORDER_PLACEMENT 1
     upsert_env CTS_REQUIRE_LIVE_TRADE_READY 1
     upsert_env DISABLE_BINGX_SDK_ORDERS 0
-    # The server may hold read-only credentials for X01 and other venues, but
-    # only X02 virtual funds is authorized for Main/Preset/Signal writes.
-    upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x02
+    # Main/Preset/Signal writes are enabled only for the explicitly supported
+    # BingX X01/X02 and Bybit X03 connection identities. Credentials, operator
+    # toggles, leases, and every per-request safety gate remain mandatory.
+    upsert_env LIVE_ORDER_CONNECTION_IDS bingx-x01,bingx-x01-futures,bingx-x02,bingx-x02-vst-futures,bybit-x03,bybit-x03-unified
   fi
   configure_cpu_parallelism
   configure_memory_watchdog
@@ -1469,7 +1471,7 @@ configure_environment_and_redis() {
   if ! placeholder_secret "$bingx_key" && ! placeholder_secret "$bingx_secret"; then
     upsert_env BINGX_API_KEY "$bingx_key"
     upsert_env BINGX_API_SECRET "$bingx_secret"
-    credential_venues+=("BingX X01 (read-only by connection policy)")
+    credential_venues+=("BingX X01 (write-eligible after all runtime gates)")
   fi
   if ! placeholder_secret "$bingx_vst_key" && ! placeholder_secret "$bingx_vst_secret"; then
     upsert_env BINGX_X02_API_KEY "$bingx_vst_key"
@@ -1479,7 +1481,7 @@ configure_environment_and_redis() {
   if ! placeholder_secret "$bybit_key" && ! placeholder_secret "$bybit_secret"; then
     upsert_env BYBIT_API_KEY "$bybit_key"
     upsert_env BYBIT_API_SECRET "$bybit_secret"
-    credential_venues+=("Bybit (read-only by connection policy)")
+    credential_venues+=("Bybit X03 (write-eligible after all runtime gates)")
   fi
   if ! placeholder_secret "$pionex_key" && ! placeholder_secret "$pionex_secret"; then
     upsert_env PIONEX_API_KEY "$pionex_key"
@@ -1521,7 +1523,7 @@ configure_environment_and_redis() {
       ok "Safe simulation mode is active; preserved exchange credentials cannot place orders"
     fi
   elif (( ${#credential_venues[@]} > 0 )); then
-    ok "Authenticated account connectivity is configured for ${credential_venues[*]}; exchange writes remain allow-listed to bingx-x02 and readiness is verified without submitting an order"
+    ok "Authenticated account connectivity is configured for ${credential_venues[*]}; Main/Preset/Signal writes remain allow-listed to BingX X01/X02 and Bybit X03 identities and readiness is verified without submitting an order"
   else
     fatal "Production server installation requires valid credentials for at least one supported exchange; supply them via --seed-env-file or the existing environment file"
   fi
@@ -2403,5 +2405,5 @@ info "Redis namespace: logical DB $REDIS_DB; npm fallback port $REDIS_PORT"
 if (( SAFE_SIMULATION == 1 || LIVE_OPT_IN == 0 )); then
   info "Safe simulation is active; live exchange execution remains disabled by explicit override."
 else
-  info "The guarded live path is active; exchange writes remain restricted to bingx-x02 and still require every persisted runtime/control gate."
+  info "The guarded live path is active; Main/Preset/Signal writes remain restricted to the configured BingX X01/X02 and Bybit X03 identities and still require every persisted runtime/control gate."
 fi

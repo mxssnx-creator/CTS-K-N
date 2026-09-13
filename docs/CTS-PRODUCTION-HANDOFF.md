@@ -208,10 +208,14 @@ sequence guards, adaptive freshness, and canonical recoordination events.
 
 ## Exchange safety and X02 verification
 
-Live capability is restricted by `LIVE_ORDER_CONNECTION_IDS=bingx-x02`.
+Main/Preset/Signal live capability is restricted by the explicit
+`LIVE_ORDER_CONNECTION_IDS=bingx-x01,bingx-x01-futures,bingx-x02,bingx-x02-vst-futures,bybit-x03,bybit-x03-unified`
+allow-list.
 
-- BingX X02 uses Prod-VST virtual funds and is the only authorized write target.
-- BingX X01/Mainnet, Bybit, InstaForex, and every other venue are read-only.
+- BingX X01, BingX X02 Prod-VST, and Bybit X03 are the supported guarded write
+  identities. X02 continues to use Prod-VST virtual funds.
+- InstaForex and every other venue remain read-only unless their own explicit
+  execution adapter and safety contract is selected.
 - Existing external orders and pre-existing positions must be snapshotted and
   left unchanged.
 - Controlled X02 tests require maintenance mode and inactive app, scheduler, and

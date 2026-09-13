@@ -323,7 +323,7 @@ describe("Main Trade Engine live execution readiness", () => {
     }
   })
 
-  test("production connection allow-list keeps X01 read-only while authorizing X02 virtual funds", () => {
+  test("production connection allow-list authorizes BingX X01/X02 and Bybit X03 identities", () => {
     const previousNodeEnv = process.env.NODE_ENV
     try {
       Object.defineProperty(process.env, "NODE_ENV", {
@@ -334,7 +334,7 @@ describe("Main Trade Engine live execution readiness", () => {
       })
       process.env.REDIS_URL = "redis://shared-test"
       process.env.ALLOW_LIVE_ORDER_PLACEMENT = "1"
-      process.env.LIVE_ORDER_CONNECTION_IDS = "bingx-x02"
+      process.env.LIVE_ORDER_CONNECTION_IDS = "bingx-x01,bingx-x01-futures,bingx-x02,bingx-x02-vst-futures,bybit-x03,bybit-x03-unified"
 
       const base = {
         ...credentialed,
@@ -343,11 +343,21 @@ describe("Main Trade Engine live execution readiness", () => {
         live_trade_requested: "1",
       }
       expect(evaluateRealTradeReadiness({ ...base, id: "bingx-x01", is_testnet: "0" })).toMatchObject({
-        canPlaceRealOrders: false,
-        executionMode: "blocked",
-        blockCode: "connection_not_allowed",
+        canPlaceRealOrders: true,
+        executionMode: "live",
+        blockCode: null,
       })
       expect(evaluateRealTradeReadiness({ ...base, id: "bingx-x02", is_testnet: "1" })).toMatchObject({
+        canPlaceRealOrders: true,
+        executionMode: "live",
+        blockCode: null,
+      })
+      expect(evaluateRealTradeReadiness({ ...base, id: "bybit-x03", exchange: "bybit", is_testnet: "0" })).toMatchObject({
+        canPlaceRealOrders: true,
+        executionMode: "live",
+        blockCode: null,
+      })
+      expect(evaluateRealTradeReadiness({ ...base, id: "bybit-x03-unified", exchange: "bybit", is_testnet: "0" })).toMatchObject({
         canPlaceRealOrders: true,
         executionMode: "live",
         blockCode: null,

@@ -78,6 +78,66 @@ describe("Bybit V5 connector contract", () => {
     expect(orders[0]).toMatchObject({ orderId: "open-1", status: "pending", filledQty: 0 })
   })
 
+  test("retains native conditional metadata and marks the open-order snapshot authoritative", async () => {
+    global.fetch = jest.fn(async () => bybitResponse({ list: [{
+      orderId: "conditional-1",
+      orderLinkId: "ctsbybitx03sl-1",
+      symbol: "BTCUSDT",
+      side: "Sell",
+      orderType: "Market",
+      stopOrderType: "StopLoss",
+      orderStatus: "Untriggered",
+      qty: "0.1",
+      triggerPrice: "59000",
+      triggerDirection: 2,
+      triggerBy: "LastPrice",
+      positionIdx: 1,
+      reduceOnly: true,
+      closeOnTrigger: true,
+    }] })) as typeof fetch
+
+    const connector = new BybitConnector(credentials())
+    const orders = await connector.getOpenOrders("BTCUSDT")
+
+    expect(orders[0]).toMatchObject({
+      orderId: "conditional-1",
+      clientOrderId: "ctsbybitx03sl-1",
+      type: "market",
+      orderType: "Market",
+      stopOrderType: "StopLoss",
+      triggerPrice: 59000,
+      triggerDirection: 2,
+      triggerBy: "LastPrice",
+      positionSide: "LONG",
+      positionIdx: 1,
+      reduceOnly: true,
+      closeOnTrigger: true,
+    })
+    expect(connector.getLastOpenOrdersSnapshotStatus()).toMatchObject({ ok: true })
+  })
+
+  test("selects the requested Bybit hedge leg instead of the first symbol position", async () => {
+    global.fetch = jest.fn(async () => bybitResponse({ list: [
+      { symbol: "BTCUSDT", side: "Buy", positionIdx: 1, size: "0.1" },
+      { symbol: "BTCUSDT", side: "Sell", positionIdx: 2, size: "0.2" },
+    ] })) as typeof fetch
+
+    const connector = new BybitConnector(credentials())
+    await expect(connector.getPosition("BTCUSDT", "short")).resolves.toMatchObject({
+      side: "Sell",
+      positionIdx: 2,
+      size: "0.2",
+    })
+  })
+
+  test("marks an API error as a non-authoritative open-order snapshot", async () => {
+    global.fetch = jest.fn(async () => bybitResponse({}, 10006, "Invalid request")) as typeof fetch
+
+    const connector = new BybitConnector(credentials())
+    await expect(connector.getOpenOrders("BTCUSDT")).resolves.toEqual([])
+    expect(connector.getLastOpenOrdersSnapshotStatus()).toMatchObject({ ok: false })
+  })
+
   test("falls back from realtime to authoritative history for terminal orders", async () => {
     const requests: string[] = []
     global.fetch = jest.fn(async (input: string | URL | Request) => {

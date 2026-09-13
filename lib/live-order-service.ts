@@ -1845,9 +1845,10 @@ export async function createLiveOrderConnector(connection: any, payload: Record<
   }
   if (resolvedWillUseRealExchange) {
     assertDirectTradeExecutionContract(connection, payload, resolvedWillUseRealExchange)
-    // The global placement switch remains OFF for Main/X01/Bybit while the
-    // independently leased Direct owner is allowed to use exact X02 VST.
-    // Keep per-request confirmation mandatory even inside that narrow scope.
+    // Direct Trade has an independent scope: Main/Preset/Signal may use their
+    // own guarded live connections, while Direct's exchange mutation lane is
+    // still restricted to the explicitly leased X02 Prod-VST owner. Keep
+    // per-request confirmation mandatory even inside that narrow scope.
     const safetyFailure = directScopedOverride
       ? hasLiveOrderConfirmation(payload)
         ? null

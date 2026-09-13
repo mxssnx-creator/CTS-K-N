@@ -14,6 +14,12 @@ import {
 import { aggregateTradesTo1sOHLCV } from "./aggregate-1s"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 
+type BybitSnapshotStatus = {
+  ok: boolean
+  at: number
+  error?: string
+}
+
 /**
  * Bybit V5 Exchange Connector
  *
@@ -50,6 +56,22 @@ export class BybitConnector extends BaseExchangeConnector {
   private static sharedSyncPromise: Promise<void> | null = null
   private static lastSyncFailLogTs: number = 0
 
+  private lastPositionsSnapshotStatus: BybitSnapshotStatus = {
+    ok: false,
+    at: 0,
+    error: "not_fetched",
+  }
+  private lastOpenOrdersSnapshotStatus: BybitSnapshotStatus = {
+    ok: false,
+    at: 0,
+    error: "not_fetched",
+  }
+  private lastOrderHistorySnapshotStatus: BybitSnapshotStatus = {
+    ok: false,
+    at: 0,
+    error: "not_fetched",
+  }
+
   private get  timeOffset(): number                { return BybitConnector.sharedTimeOffset }
   private set  timeOffset(v: number)               { BybitConnector.sharedTimeOffset = v }
   private get  lastTimeSync(): number              { return BybitConnector.sharedLastSync }
@@ -73,6 +95,18 @@ export class BybitConnector extends BaseExchangeConnector {
     // Kick off the first time-sync in the background so the offset is
     // ready before the first signed request fires.
     this.syncPromise = this.syncServerTime().catch(() => { this.syncPromise = null })
+  }
+
+  getLastPositionsSnapshotStatus(): BybitSnapshotStatus {
+    return { ...this.lastPositionsSnapshotStatus }
+  }
+
+  getLastOpenOrdersSnapshotStatus(): BybitSnapshotStatus {
+    return { ...this.lastOpenOrdersSnapshotStatus }
+  }
+
+  getLastOrderHistorySnapshotStatus(): BybitSnapshotStatus {
+    return { ...this.lastOrderHistorySnapshotStatus }
   }
 
   private getBaseUrl(): string {
@@ -330,6 +364,9 @@ export class BybitConnector extends BaseExchangeConnector {
       "cross_margin",
       "isolated_margin",
       "reduce_only",
+      // Bybit conditional orders are quantity-scoped, so one exact full-slot
+      // security stop can be reconciled in overall-control mode.
+      "position_close_all_stop",
     ]
   }
 
@@ -714,12 +751,38 @@ export class BybitConnector extends BaseExchangeConnector {
       rawStatus === "UNTRIGGERED"      ? "pending" :
       rawStatus === "TRIGGERED"        ? "pending" : "pending"
 
+    const nativeOrderType = String(raw.orderType ?? raw.order_type ?? raw.type ?? "").trim()
+    const nativeStopOrderType = String(
+      raw.stopOrderType
+      ?? raw.stop_order_type
+      ?? raw.conditionalOrderType
+      ?? raw.conditional_order_type
+      ?? "",
+    ).trim()
+    const triggerPrice = Number(raw.triggerPrice ?? raw.trigger_price ?? raw.stopPrice ?? raw.stop_price)
+    const triggerDirection = Number(raw.triggerDirection ?? raw.trigger_direction)
+    const positionIdx = Number(raw.positionIdx ?? raw.position_idx)
+    const rawPositionSide = String(raw.positionSide ?? raw.position_side ?? "").trim().toUpperCase()
+    const positionSide = rawPositionSide === "LONG" || rawPositionSide === "SHORT" || rawPositionSide === "BOTH"
+      ? rawPositionSide
+      : positionIdx === 1
+        ? "LONG"
+        : positionIdx === 2
+          ? "SHORT"
+          : ""
+    const optionalBoolean = (value: unknown): boolean | undefined => {
+      if (value === undefined || value === null || value === "") return undefined
+      return value === true || value === 1 || String(value).trim().toLowerCase() === "true"
+    }
+    const reduceOnly = optionalBoolean(raw.reduceOnly ?? raw.reduce_only)
+    const closeOnTrigger = optionalBoolean(raw.closeOnTrigger ?? raw.close_on_trigger)
+
     return {
       orderId:     String(raw.orderId    ?? raw.orderLinkId ?? ""),
       clientOrderId: String(raw.orderLinkId ?? raw.clientOrderId ?? "") || undefined,
       symbol:      String(raw.symbol     ?? ""),
       side:        String(raw.side       ?? "").toLowerCase() === "buy" ? "buy" : "sell",
-      type:        raw.orderType === "Limit" ? "limit" : "market",
+      type:        nativeOrderType.toLowerCase() === "limit" ? "limit" : "market",
       quantity:    parseFloat(String(raw.qty         ?? "0")),
       price:       parseFloat(String(raw.price       ?? raw.avgPrice ?? "0")),
       status:      normalizedStatus as ExchangeOrder["status"],
@@ -730,16 +793,27 @@ export class BybitConnector extends BaseExchangeConnector {
       filledPrice: parseFloat(String(raw.avgPrice    ?? raw.execPrice ?? "0")),
       timestamp:   Number(raw.createdTime ?? Date.now()),
       updateTime:  Number(raw.updatedTime ?? raw.createdTime ?? Date.now()),
+      ...(nativeOrderType ? { orderType: nativeOrderType } : {}),
+      ...(nativeStopOrderType ? { stopOrderType: nativeStopOrderType } : {}),
+      ...(Number.isFinite(triggerPrice) && triggerPrice > 0 ? { triggerPrice } : {}),
+      ...(Number.isFinite(triggerDirection) ? { triggerDirection } : {}),
+      ...(raw.triggerBy || raw.trigger_by ? { triggerBy: String(raw.triggerBy ?? raw.trigger_by) } : {}),
+      ...(positionSide ? { positionSide } : {}),
+      ...(Number.isFinite(positionIdx) ? { positionIdx } : {}),
+      ...(reduceOnly !== undefined ? { reduceOnly } : {}),
+      ...(closeOnTrigger !== undefined ? { closeOnTrigger } : {}),
+      ...(raw.orderFilter || raw.order_filter ? { orderFilter: String(raw.orderFilter ?? raw.order_filter) } : {}),
     }
   }
 
   // ── Open orders ───────────────────────────────────────────────────────────
 
   async getOpenOrders(symbol?: string): Promise<ExchangeOrder[]> {
+    this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
       this.log(`Fetching open orders${symbol ? ` for ${symbol}` : ""}`)
       const category = this.getTradingCategory()
-      const { data } = await this.signedRequestV5WithTimestampRetry<any>({
+      const { ok, data, status } = await this.signedRequestV5WithTimestampRetry<any>({
         method: "GET",
         path: "/v5/order/realtime",
         query: {
@@ -751,10 +825,28 @@ export class BybitConnector extends BaseExchangeConnector {
           ...(symbol ? { symbol } : category === "linear" ? { settleCoin: "USDT" } : {}),
         },
       })
-      if (data?.retCode !== 0) return []
-      const list = data.result?.list || []
-      return list.map((o: any) => this.normalizeOrder(o))
-    } catch {
+      if (!ok || data?.retCode !== 0) {
+        this.lastOpenOrdersSnapshotStatus = {
+          ok: false,
+          at: Date.now(),
+          error: `code=${data?.retCode ?? status}:${data?.retMsg || "request_failed"}`,
+        }
+        return []
+      }
+      const list = data.result?.list
+      if (!Array.isArray(list)) {
+        this.lastOpenOrdersSnapshotStatus = { ok: false, at: Date.now(), error: "invalid_order_list" }
+        return []
+      }
+      const normalized = list.map((o: any) => this.normalizeOrder(o))
+      this.lastOpenOrdersSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      return normalized
+    } catch (error) {
+      this.lastOpenOrdersSnapshotStatus = {
+        ok: false,
+        at: Date.now(),
+        error: error instanceof Error ? error.message : "request_failed",
+      }
       return []
     }
   }
@@ -762,10 +854,11 @@ export class BybitConnector extends BaseExchangeConnector {
   // ── Order history ─────────────────────────────────────────────────────────
 
   async getOrderHistory(symbol?: string, limit: number = 50): Promise<ExchangeOrder[]> {
+    this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
       this.log(`Fetching order history${symbol ? ` for ${symbol}` : ""} (limit: ${limit})`)
       const category = this.getTradingCategory()
-      const { data } = await this.signedRequestV5WithTimestampRetry<any>({
+      const { ok, data, status } = await this.signedRequestV5WithTimestampRetry<any>({
         method: "GET",
         path: "/v5/order/history",
         query: {
@@ -774,10 +867,28 @@ export class BybitConnector extends BaseExchangeConnector {
           ...(symbol ? { symbol } : category === "linear" ? { settleCoin: "USDT" } : {}),
         },
       })
-      if (data?.retCode !== 0) return []
-      const list = data.result?.list || []
-      return list.map((o: any) => this.normalizeOrder(o))
-    } catch {
+      if (!ok || data?.retCode !== 0) {
+        this.lastOrderHistorySnapshotStatus = {
+          ok: false,
+          at: Date.now(),
+          error: `code=${data?.retCode ?? status}:${data?.retMsg || "request_failed"}`,
+        }
+        return []
+      }
+      const list = data.result?.list
+      if (!Array.isArray(list)) {
+        this.lastOrderHistorySnapshotStatus = { ok: false, at: Date.now(), error: "invalid_order_list" }
+        return []
+      }
+      const normalized = list.map((o: any) => this.normalizeOrder(o))
+      this.lastOrderHistorySnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      return normalized
+    } catch (error) {
+      this.lastOrderHistorySnapshotStatus = {
+        ok: false,
+        at: Date.now(),
+        error: error instanceof Error ? error.message : "request_failed",
+      }
       return []
     }
   }
@@ -915,11 +1026,13 @@ export class BybitConnector extends BaseExchangeConnector {
   async getPositions(symbol?: string): Promise<any[]> {
     if (this.credentials.apiType === "spot") {
       this.log("Positions not available for spot trading")
+      this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "spot_not_supported" }
       return []
     }
+    this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: "request_in_progress" }
     try {
       this.log(`Fetching positions${symbol ? ` for ${symbol}` : ""}`)
-      const { data } = await this.signedRequestV5WithTimestampRetry<any>({
+      const { ok, data, status } = await this.signedRequestV5WithTimestampRetry<any>({
         method: "GET",
         path: "/v5/position/list",
         query: {
@@ -927,18 +1040,36 @@ export class BybitConnector extends BaseExchangeConnector {
           ...(symbol ? { symbol } : { settleCoin: "USDT" }),
         },
       })
-      if (data?.retCode !== 0) return []
-      return data.result?.list || []
+      if (!ok || data?.retCode !== 0) {
+        this.lastPositionsSnapshotStatus = {
+          ok: false,
+          at: Date.now(),
+          error: `code=${data?.retCode ?? status}:${data?.retMsg || "request_failed"}`,
+        }
+        return []
+      }
+      const list = data.result?.list
+      if (!Array.isArray(list)) {
+        this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: "invalid_position_list" }
+        return []
+      }
+      this.lastPositionsSnapshotStatus = { ok: true, at: Date.now(), error: "" }
+      return list
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
       this.logError(`Failed to fetch positions: ${errorMsg}`)
+      this.lastPositionsSnapshotStatus = { ok: false, at: Date.now(), error: errorMsg }
       return []
     }
   }
 
-  async getPosition(symbol: string, _direction?: "long" | "short"): Promise<any> {
+  async getPosition(symbol: string, direction?: "long" | "short"): Promise<any> {
     const positions = await this.getPositions(symbol)
-    return positions.find((p: any) => Number.parseFloat(p.size || "0") > 0) || positions[0] || null
+    const open = positions.filter((p: any) => Number.parseFloat(p.size || "0") > 0)
+    if (direction) {
+      return open.find((p: any) => normalizeTradeDirection(p.positionSide, p.side) === direction) || null
+    }
+    return open[0] || positions[0] || null
   }
 
   // ── Modify position ───────────────────────────────────────────────────────
@@ -974,14 +1105,14 @@ export class BybitConnector extends BaseExchangeConnector {
       const leg = positionSide
         ? positions.find(
             (p: any) =>
-              normalizeTradeDirection(p.side) === positionSide &&
+              normalizeTradeDirection(p.positionSide, p.side) === positionSide &&
               Number.parseFloat(p.size || "0") > 0,
           )
         : positions.find((p: any) => Number.parseFloat(p.size || "0") > 0)
 
       if (!leg) return { success: false, error: "No open position to close" }
 
-      const posDirection = normalizeTradeDirection(leg.side)
+      const posDirection = normalizeTradeDirection(leg.positionSide, leg.side)
       if (!posDirection) return { success: false, error: "Position has no valid Buy/Sell direction" }
       const closeSide: "buy" | "sell" = posDirection === "long" ? "sell" : "buy"
       const qty = Number.parseFloat(leg.size || "0")

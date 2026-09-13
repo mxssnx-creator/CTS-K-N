@@ -122,16 +122,61 @@ export function protectionOrderIdentifiers(order: Record<string, any>): Set<stri
   ].filter(Boolean))
 }
 
-function protectionOrderType(order: Record<string, any>): string {
-  return firstText(order?.type, order?.orderType, order?.order_type)
-    .toUpperCase()
-    .replace(/[^A-Z]/g, "_")
+function protectionOrderKindFromText(value: unknown): "stop_loss" | "take_profit" | null {
+  const type = text(value).toUpperCase().replace(/[^A-Z0-9]/g, "")
+  if (!type) return null
+  if (type.includes("TAKEPROFIT") || type === "TP") return "take_profit"
+  if (
+    type.includes("STOPLOSS")
+    || type.includes("TRAILINGSTOP")
+    || type === "STOP"
+    || type === "SL"
+    || type.includes("STOPMARKET")
+    || type.includes("STOPLIMIT")
+  ) return "stop_loss"
+  return null
 }
 
-function protectionOrderKind(order: Record<string, any>): "stop_loss" | "take_profit" | null {
-  const type = protectionOrderType(order)
-  if (type.includes("TAKE_PROFIT")) return "take_profit"
-  if (type.includes("STOP")) return "stop_loss"
+function protectionOrderKind(
+  order: Record<string, any>,
+  direction?: ProtectionSlotDirection,
+): "stop_loss" | "take_profit" | null {
+  // Bybit puts the conditional family in stopOrderType while the common
+  // connector type remains `market`. Check the native family first so a
+  // normalized conditional order is not mistaken for an ordinary market
+  // order during recovery.
+  for (const value of [
+    order?.stopOrderType,
+    order?.stop_order_type,
+    order?.conditionalOrderType,
+    order?.conditional_order_type,
+    order?.triggerOrderType,
+    order?.trigger_order_type,
+    order?.type,
+    order?.orderType,
+    order?.order_type,
+  ]) {
+    const kind = protectionOrderKindFromText(value)
+    if (kind) return kind
+  }
+
+  // Some Bybit responses expose only triggerDirection for an active
+  // conditional order. Direction 1 means price rises through the trigger and
+  // direction 2 means it falls; the TP/SL meaning depends on the hedge leg.
+  const trigger = firstPositive(
+    order?.triggerPrice,
+    order?.trigger_price,
+    order?.stopPrice,
+    order?.stop_price,
+  )
+  const triggerDirection = Number(order?.triggerDirection ?? order?.trigger_direction)
+  const resolvedDirection = direction || protectionOrderDirection(order)
+  if (trigger > 0 && (triggerDirection === 1 || triggerDirection === 2) && resolvedDirection) {
+    const isTakeProfit = resolvedDirection === "long"
+      ? triggerDirection === 1
+      : triggerDirection === 2
+    return isTakeProfit ? "take_profit" : "stop_loss"
+  }
   return null
 }
 
@@ -146,7 +191,13 @@ function protectionOrderQuantity(order: Record<string, any>): number {
 }
 
 function protectionOrderTrigger(order: Record<string, any>): number {
-  return firstPositive(order?.stopPrice, order?.triggerPrice, order?.trigger_price, order?.price)
+  return firstPositive(
+    order?.stopPrice,
+    order?.triggerPrice,
+    order?.trigger_price,
+    order?.stop_price,
+    order?.price,
+  )
 }
 
 function protectionOrderDirection(
@@ -156,8 +207,21 @@ function protectionOrderDirection(
   const positionSide = firstText(order?.positionSide, order?.position_side).toLowerCase()
   if (positionSide === "long") return "long"
   if (positionSide === "short") return "short"
-  if (options.requireExplicitPositionSide) return null
+  const rawPositionIdx = order?.positionIdx ?? order?.position_idx
+  const positionIdx = rawPositionIdx === undefined || rawPositionIdx === null || rawPositionIdx === ""
+    ? Number.NaN
+    : finite(rawPositionIdx)
+  if (positionIdx === 1) return "long"
+  if (positionIdx === 2) return "short"
   const closeSide = firstText(order?.side, order?.orderSide).toLowerCase()
+  // Bybit's one-way mode explicitly reports positionIdx=0. The close side is
+  // then the authoritative direction because no separate hedge leg exists.
+  // An explicit BOTH marker has the same semantics on other derivatives APIs.
+  if (options.requireExplicitPositionSide && (positionIdx === 0 || positionSide === "both")) {
+    if (closeSide === "sell") return "long"
+    if (closeSide === "buy") return "short"
+  }
+  if (options.requireExplicitPositionSide) return null
   if (closeSide === "sell") return "long"
   if (closeSide === "buy") return "short"
   return null
@@ -217,7 +281,7 @@ export function isConnectionOwnedProtectionOrderForSlot(
       direction,
       { requireExplicitPositionSide: true },
     )
-    && protectionOrderKind(order) !== null
+    && protectionOrderKind(order, direction) !== null
 }
 
 /**
@@ -269,10 +333,10 @@ export function classifyConnectionOwnedProtectionBook(input: {
     input.direction,
   ))
   if (owned.length !== slotOrders.length) return empty("foreign_or_unknown_slot_control_present")
-  if (owned.some((order) => protectionOrderKind(order) === null)) return empty("non_protection_slot_control_present")
+  if (owned.some((order) => protectionOrderKind(order, input.direction) === null)) return empty("non_protection_slot_control_present")
 
-  const takeProfitOrders = owned.filter((order) => protectionOrderKind(order) === "take_profit")
-  const stopLossOrders = owned.filter((order) => protectionOrderKind(order) === "stop_loss")
+  const takeProfitOrders = owned.filter((order) => protectionOrderKind(order, input.direction) === "take_profit")
+  const stopLossOrders = owned.filter((order) => protectionOrderKind(order, input.direction) === "stop_loss")
   if (takeProfitOrders.length !== 1 || stopLossOrders.length !== 2) {
     return empty("protection_leg_count_mismatch")
   }
@@ -444,7 +508,7 @@ export function auditProtectionSlotOrders(input: {
       addViolation(violations, `${options.violationPrefix}_connection_owner_mismatch`)
       valid = false
     }
-    if (protectionOrderKind(matched.order) !== options.kind) {
+    if (protectionOrderKind(matched.order, input.direction) !== options.kind) {
       addViolation(violations, `${options.violationPrefix}_kind_mismatch`)
       valid = false
     }

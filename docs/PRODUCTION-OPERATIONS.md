@@ -51,12 +51,14 @@ installation fails with a clear port-ownership error.
 
 The installed application is live-capable by default (`--enable-live` is the
 default), but capability is not permission to write everywhere. Production
-pins `LIVE_ORDER_CONNECTION_IDS=bingx-x02`.
+pins `LIVE_ORDER_CONNECTION_IDS` to the supported BingX X01/X02 and Bybit X03
+identities (`bingx-x01,bingx-x01-futures,bingx-x02,bingx-x02-vst-futures,bybit-x03,bybit-x03-unified`).
 
-- BingX X02 uses the official Prod-VST virtual-funds origin and is the only
-  connection authorized for supervised exchange writes.
-- BingX X01, Bybit, and every other configured connection remain read-only for
-  verification. Their credentials may be retained for account/status reads.
+- BingX X01, BingX X02 Prod-VST, and Bybit X03 are authorized for supervised
+  Main/Preset/Signal writes after all credentials, operator, lease, and runtime
+  gates pass. X02 still uses the official Prod-VST virtual-funds origin.
+- Every other configured connection remains read-only for verification unless
+  separately allow-listed and supported.
 - InstaForex official HTTP access remains read-only. Live Forex execution needs
   a separately configured private MT4/MT5 bridge and is outside the X02 test.
 - X02 tests use minimum valid virtual volume, CTS-owned client IDs, exact

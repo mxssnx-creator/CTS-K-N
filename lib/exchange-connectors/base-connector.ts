@@ -134,6 +134,25 @@ export interface ExchangeOrder {
   updateTime: number
   quantityUnit?: "contracts" | "lots" | "base_units"
   contractSize?: number
+  /** Native venue order family, retained for protection/recovery audits. */
+  orderType?: string
+  /** Native conditional family, e.g. Bybit StopLoss/TakeProfit. */
+  stopOrderType?: string
+  /** Native trigger level for conditional orders. */
+  triggerPrice?: number
+  /** Native trigger direction when the venue exposes one. */
+  triggerDirection?: number
+  /** Native trigger price source, e.g. Bybit LastPrice. */
+  triggerBy?: string
+  /** Explicit hedge leg, when the venue exposes one. */
+  positionSide?: string
+  /** Native hedge/one-way position index, when the venue exposes one. */
+  positionIdx?: number
+  /** Native close-only flags retained so reconciliation can fail closed. */
+  reduceOnly?: boolean
+  closeOnTrigger?: boolean
+  /** Native order filter/family, when the venue returns it. */
+  orderFilter?: string
 }
 
 /**

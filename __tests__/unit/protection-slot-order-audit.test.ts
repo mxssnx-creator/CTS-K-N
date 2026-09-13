@@ -179,4 +179,66 @@ describe("exact protection-slot venue audit", () => {
       "long",
     )).toBe(false)
   })
+
+  test("audits Bybit native conditional orders in one-way mode without losing SL/TP kind", () => {
+    const bybitMembers = [
+      {
+        ...members[0],
+        stopLossOrderId: "bybit-sl-a",
+        takeProfitOrderId: "bybit-tp-a",
+      },
+      {
+        ...members[1],
+        stopLossOrderId: "bybit-sl-b",
+        takeProfitOrderId: "bybit-tp-b",
+        securityStopOrderId: "bybit-sec-b",
+      },
+    ]
+    const bybitOrder = (
+      orderId: string,
+      kind: "StopLoss" | "TakeProfit",
+      quantity: number,
+      triggerPrice: number,
+      triggerDirection: 1 | 2,
+    ) => ({
+      orderId,
+      clientOrderId: `ctsbybitx03${orderId}`,
+      symbol: "BTCUSDT",
+      side: "sell",
+      type: "market",
+      orderType: "Market",
+      stopOrderType: kind,
+      quantity,
+      triggerPrice,
+      triggerDirection,
+      positionIdx: 0,
+      reduceOnly: true,
+      closeOnTrigger: true,
+    })
+
+    const audit = auditProtectionSlotOrders({
+      connectionId: "bybit-x03",
+      symbol: "BTCUSDT",
+      direction: "long",
+      members: bybitMembers,
+      plan,
+      openOrders: [
+        bybitOrder("bybit-sl-a", "StopLoss", 0.0001, 76_500, 2),
+        bybitOrder("bybit-tp-a", "TakeProfit", 0.0001, 79_000, 1),
+        bybitOrder("bybit-sl-b", "StopLoss", 0.0001, 76_400, 2),
+        bybitOrder("bybit-tp-b", "TakeProfit", 0.0001, 79_200, 1),
+        bybitOrder("bybit-sec-b", "StopLoss", 0.0002, 76_200, 2),
+      ],
+    })
+
+    expect(audit).toMatchObject({
+      expectedComplete: true,
+      complete: true,
+      exactStopLossOrders: 2,
+      exactTakeProfitOrders: 2,
+      exactSecurityOrders: 1,
+      connectionOwnedSlotControlOrders: 5,
+    })
+    expect(audit.violations).toEqual([])
+  })
 })
