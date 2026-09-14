@@ -40,6 +40,16 @@ async function request(path, options = {}) {
 const health = await request("/api/health")
 if (!health) throw new Error("Dev server health endpoint returned no body")
 
+const inventory = await request("/api/connections")
+const connections = Array.isArray(inventory?.connections) ? inventory.connections : []
+const requestedConnectionId = String(process.env.DIRECT_TRADE_CONNECTION_ID || "").trim()
+const selectedConnection = requestedConnectionId
+  ? connections.find((connection) => String(connection?.id || "") === requestedConnectionId)
+  : connections[0]
+const connectionId = String(selectedConnection?.id || "").trim()
+if (!connectionId) throw new Error("Direct-Trade dev soak requires an available connection")
+const connectionQuery = `?connectionId=${encodeURIComponent(connectionId)}`
+
 const calculation = await request("/api/trade-engine/direct-trade/calculate", {
   method: "POST",
   body: JSON.stringify({
@@ -78,10 +88,10 @@ const pulses = []
 for (let round = 0; round < rounds; round++) {
   const startedAt = Date.now()
   const [pulse, status, ...statistics] = await Promise.all([
-    request("/api/trade-engine/direct-trade/pulse"),
-    request("/api/trade-engine/direct-trade/status"),
+    request(`/api/trade-engine/direct-trade/pulse${connectionQuery}`),
+    request(`/api/trade-engine/direct-trade/status${connectionQuery}`),
     ...strategyTypes.map((strategyType) => request(
-      `/api/trade-engine/direct-trade?view=statistics&timeframe=all&direction=all&state=all&strategyType=${strategyType}`,
+      `/api/trade-engine/direct-trade?view=statistics&timeframe=all&direction=all&state=all&strategyType=${strategyType}&connectionId=${encodeURIComponent(connectionId)}`,
     )),
   ])
   if (!pulse?.success || !Array.isArray(pulse.activeSignalKeys)) {
