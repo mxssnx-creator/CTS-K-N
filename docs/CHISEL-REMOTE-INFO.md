@@ -10,6 +10,56 @@ This file is the short continuity record for future chats. The full operational
 background and persistent-Linux variant remain in
 [`REMOTE-CHISEL-WORKMODE.md`](./REMOTE-CHISEL-WORKMODE.md).
 
+## Port-80 fallback (agent sandboxes with outbound 80/443 only, verified 2026-09-14)
+
+Some agent environments permit only outbound HTTP(S) (80/443), never a raw
+port like `8090`. `chisel-server` itself does not need to move: nginx already
+terminates `80` on this host, so a dedicated `default_server` site forwards a
+private path to the existing Chisel listener over WebSocket.
+
+**Server-side (already applied, survives reboot — `nginx` and
+`chisel-server.service` are both `systemctl enable`d):**
+
+- `/etc/nginx/sites-available/cts-bridge` (linked in `sites-enabled`):
+  a standalone `listen 80 default_server; server_name _;` block, separate
+  from the pre-existing (broken, unrelated) `webssh2` site, so neither
+  interferes with the other. It proxies one path to Chisel:
+
+  ```nginx
+  location /cts-chisel-ws {
+      proxy_pass http://127.0.0.1:8090;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "Upgrade";
+      proxy_set_header Host $host;
+      proxy_connect_timeout 5s;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+  }
+  ```
+
+- The real `chisel-server.service` is unchanged: `--port 8090 --reverse --socks5
+  --keyfile /etc/chisel/server.key`, auth read from `/etc/chisel/auth.env`
+  (`CHISEL_AUTH=...`, root-only). That file — not this doc, not a chat
+  export — is the source of truth for the auth value.
+
+**Client-side, when only 80/443 is reachable**, connect through the bridge
+path instead of the raw port, using the same fingerprint and auth pattern
+`connect-remote-chisel.sh` already expects (auth from an owner-only file,
+never typed into a command or committed):
+
+```bash
+chisel client --fingerprint "$(cat "$CTS_CHISEL_FINGERPRINT_FILE")" \
+  --auth "$(cat "$CTS_CHISEL_AUTH_FILE")" \
+  http://152.53.114.112/cts-chisel-ws 2222:127.0.0.1:22
+```
+
+Port `443` was checked and is **not** a usable alternative: this host's own
+`sslh` correctly forwards SSH on `443`, but a network layer in front of the
+VM (outside its control) intercepts `443` first and answers with a generic
+HTTP error for both TLS and raw SSH bytes. Only `80` reaches this host's own
+services from outside.
+
 ## Binding Work-Mode procedure
 
 ChatGPT Work uses a process-local network namespace. A Chisel listener or proxy
