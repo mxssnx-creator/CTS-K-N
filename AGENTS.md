@@ -11,10 +11,23 @@ precedence over stale workspace paths in older notes.
   merge, deployment, migration, Redis mutation, or production service change.
   Local checkpoints belong under `/workspace/backups/CTS-K-N`; server
   checkpoints belong under `/var/backups/cts-kn`.
-- A source checkpoint must include a complete Git bundle, binary worktree
-  patch, untracked-file archive/list, HEAD/status records, SHA-256 manifest,
-  `sha256sum -c`, and `git bundle verify`. Protect backup directories/files
-  with owner-only permissions. Never place credentials or Redis data in Git.
+- Source checkpoints are created **only** with
+  `scripts/create-checkpoint.sh --label <purpose>`. It produces the required
+  verified layout (complete Git bundle + `git bundle verify`, binary worktree
+  and index patches, untracked-file list and archive, HEAD/status records,
+  SHA-256 manifest + `sha256sum -c`, `VERIFIED` marker, owner-only
+  permissions) and never archives ignored or secret content (`node_modules`,
+  `.next*`, caches, `.env*`, credentials, keys, Redis data). Hand-rolled
+  checkpoints that copy dependencies, build output or Redis files are
+  prohibited: they inflated `/var/backups/cts-kn` to 350 GiB and filled the
+  production disk twice (2026-09-12, 2026-09-14).
+- Checkpoint retention is automatic: after every run the checkpoint root
+  keeps the newest 5 checkpoints and at most 40 GiB in total (`--keep`,
+  `--max-total-gb`); `--prune-only` applies retention alone and
+  `--list` shows sizes. A checkpoint that must survive retention (an official
+  release rollback point) gets an empty file named `KEEP` inside it. The
+  installer's own `/var/backups/cts` rollback backups are separate and keep
+  their own retention. Never place credentials or Redis data in Git.
 - After a material source change has passed its required validation, commit it
   and push it to GitHub through the reviewed branch/PR flow before it is
   treated as a deployable result. If GitHub is temporarily unreachable, retain
