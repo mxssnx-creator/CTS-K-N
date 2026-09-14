@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
-import { loadConnections, loadSettings } from "@/lib/file-storage"
+import { getActiveConnectionsForEngine } from "@/lib/redis-db"
+import { loadSettingsAsync } from "@/lib/settings-storage"
 import { SystemLogger } from "@/lib/system-logger"
 import { getRuntimeMaintenanceState, runtimeMaintenanceJson } from "@/lib/runtime-maintenance"
 
@@ -15,23 +16,28 @@ export async function GET() {
     console.log("[v0] [DEBUG] Trade Engine Manual Startup Endpoint")
 
     const coordinator = getGlobalTradeEngineCoordinator()
-    const connections = loadConnections()
-    
-    // Ensure connections is an array
-    if (!Array.isArray(connections)) {
-      console.error("[v0] [DEBUG] Connections is not an array:", typeof connections)
+    if (!coordinator) {
+      return NextResponse.json(
+        { success: false, error: "Trade engine coordinator not initialized" },
+        { status: 503 },
+      )
+    }
+
+    // Canonical enabled set (Redis `connections:main:enabled`) — the same set
+    // the normal startup path uses. The legacy file catalog this endpoint used
+    // to read could contain stale placeholder ids, which would have started
+    // engines the canonical configuration never enabled.
+    const enabledConnections = await getActiveConnectionsForEngine()
+    if (!Array.isArray(enabledConnections)) {
+      console.error("[v0] [DEBUG] Connections is not an array:", typeof enabledConnections)
       return NextResponse.json({
         success: false,
         error: "Invalid connections data",
-        log: [`ERROR: Connections data is not an array (type: ${typeof connections})`],
+        log: [`ERROR: Connections data is not an array (type: ${typeof enabledConnections})`],
       }, { status: 500 })
     }
 
-    const enabledConnections = connections.filter(
-      (c) => c.is_enabled === true && c.is_active === true
-    )
-
-    const settings = loadSettings()
+    const settings = await loadSettingsAsync()
     const indicationInterval = settings.mainEngineIntervalMs ? settings.mainEngineIntervalMs / 1000 : 1
     const strategyInterval = settings.strategyUpdateIntervalMs ? settings.strategyUpdateIntervalMs / 1000 : 1
     const realtimeInterval = settings.realtimeIntervalMs ? settings.realtimeIntervalMs / 1000 : 0.3
@@ -51,14 +57,14 @@ export async function GET() {
 
         results.push({
           connectionId: connection.id,
-          connectionName: connection.name,
+          connectionName: connection.name ?? connection.id,
           success: true,
           message: "Engine started successfully",
         })
       } catch (error) {
         results.push({
           connectionId: connection.id,
-          connectionName: connection.name,
+          connectionName: connection.name ?? connection.id,
           success: false,
           error: error instanceof Error ? error.message : String(error),
         })
@@ -68,7 +74,6 @@ export async function GET() {
     return NextResponse.json({
       success: true,
       message: "Manual trade engine startup completed",
-      totalConnections: connections.length,
       enabledConnections: enabledConnections.length,
       results,
     })

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { loadConnections } from "@/lib/file-storage"
+import { getAllConnections, isConnectionMainEnabled } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { resolvePersistentDataDir } from "@/lib/persistent-paths"
 
@@ -14,31 +14,29 @@ export async function GET() {
       status: "success" as string,
     }
 
-    // Check 1: Load connections
+    // Check 1: Load connections from the canonical Redis catalog (the legacy
+    // file catalog is no longer the source of truth and may hold stale ids).
     try {
-      const connections = loadConnections()
-      
-      // Ensure connections is an array before filtering
+      const connections = await getAllConnections()
+
       if (!Array.isArray(connections)) {
         throw new Error(`Connections is not an array (type: ${typeof connections})`)
       }
 
-      const enabledCount = connections.filter((c) => c.is_enabled === true).length
-      const activeCount = connections.filter((c) => c.is_active === true).length
+      const enabled = connections.filter((c) => isConnectionMainEnabled(c))
 
       verification.checks.push({
         name: "Load Connections",
         status: "pass",
         details: {
+          source: "redis",
           totalConnections: connections.length,
-          enabledConnections: enabledCount,
-          activeConnections: activeCount,
+          enabledConnections: enabled.length,
           connections: connections.map((c) => ({
             id: c.id,
-            name: c.name,
-            exchange: c.exchange,
-            is_enabled: c.is_enabled,
-            is_active: c.is_active,
+            name: c.name ?? c.id,
+            exchange: c.exchange ?? null,
+            enabled: isConnectionMainEnabled(c),
           })),
         },
       })
@@ -77,7 +75,8 @@ export async function GET() {
       verification.status = "partial"
     }
 
-    // Check 3: Verify file storage
+    // Check 3: Legacy file storage is informational only. Its absence is not a
+    // failure: connections are served from Redis.
     try {
       const fs = await import("fs")
       const path = await import("path")
@@ -85,11 +84,12 @@ export async function GET() {
       const fileExists = fs.existsSync(filePath)
 
       verification.checks.push({
-        name: "File Storage",
-        status: fileExists ? "pass" : "fail",
+        name: "File Storage (legacy, informational)",
+        status: "pass",
         details: {
           filePath,
           fileExists,
+          note: "canonical connection source is Redis; this file is not authoritative",
         },
       })
     } catch (error) {
