@@ -104,6 +104,7 @@ __tests__/unit/connection-test-stored-credentials.test.ts
 __tests__/unit/connector-log-retention.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
+__tests__/unit/create-checkpoint-script.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
@@ -1583,6 +1584,7 @@ scripts/cleanup-direct-trade-orphans.ts
 scripts/compact-direct-trade-configs.ts
 scripts/configure-prod-trading.sh
 scripts/connect-remote-chisel.sh
+scripts/create-checkpoint.sh
 scripts/dev-artifact-lock.mjs
 scripts/dev-debug.js
 scripts/diagnose-stats.mjs
