@@ -1,5 +1,21 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-09-14 ~21:40 UTC (Claude-Sitzung, Server wiederhergestellt)
+
+Server war seit ca. 17:15 UTC down: Root-Platte voll (95%, 458 GiB, davon 350 GiB hausgemachte Agent-Checkpoints ohne Retention unter `/var/backups/cts-kn`) → Redis `MISCONF` → App-Start scheiterte → alle drei systemd-Units und `/opt/cts-kn` wurden von einem vorangegangenen, abgebrochenen Reinstall entfernt (viele verwaiste `/opt/.cts-kn.cts-state.*`-Verzeichnisse als Beleg).
+
+Behoben in dieser Reihenfolge:
+1. Alte Checkpoints bereinigt (Nutzer), Platte jetzt 22% (106 GiB von 503 GiB).
+2. `redis-cli bgrewriteaof`: AOF von 6.0 GB auf ~0.85 GB komprimiert, `aof_last_write_status:ok`.
+3. `bash scripts/bootstrap-install.sh` (offiziell, von grünem `main` `1c58357e`): Clone, 306/306 Jest-Suiten, Build (42 Pages), Units angelegt/aktiviert. Scheiterte am finalen Live-Init-Gate exakt am vorbestehenden X02 `entry_protection_halt` — dokumentiertes, erwartetes Verhalten (wie bereits 2026-09-12 und 2026-09-13), **kein neuer Fehler, Halt nicht angerührt**.
+4. Kanonische Recovery statt Neuinstallation: `cd /opt/cts-kn && bash scripts/service-control.sh restart` — startet alle drei Units + Redis-Governor-Timer, ohne das Live-Gate erneut zu durchlaufen.
+5. `DEPLOYMENT_URL=http://127.0.0.1:3002 bash scripts/post-deploy-verify.sh` → **READY**, alle Pflichtprüfungen (health, database, init-status, settings, trade-engine/status, functional-overview, positions, cron-auth, schema/persistence/identity/continuity) bestanden.
+6. Drei Stichproben über ~1 Minute: alle Units `active`/`NRestarts=0`, Trade-Engine `running`, AOF stabil bei ~0.85 GB, Platte 22%.
+
+Zugangsweg für dieses Recovery: der verwaltete Chisel-Dienst auf `:8090` war während der gesamten Downtime unerreichbar (App-Ausfall/Netz), daher provisorisch `nginx` auf Port 80 gestoppt und ein **temporärer** `chisel server --port 80` mit Einmal-Auth für die Sitzungsdauer genutzt; danach `nginx` wieder gestartet und der temporäre Chisel-Prozess beendet. Kein produktiver Zugangsweg dauerhaft verändert. `sites-available/default` unverändert (Bearbeitungsversuch während der Diagnose war wirkungslos, da nicht in `sites-enabled`; zurückgesetzt).
+
+Offen / nicht angefasst: X02 `entry_protection_halt` bleibt bestehen (Reconciliation mit autoritativer Exchange-Evidenz laut AGENTS.md erforderlich, nicht in dieser Sitzung durchgeführt). Progressionen/Order-Handling/X02-VST-Lifecycle-Tests aus dem ursprünglichen Auftrag stehen noch aus. `CTS-G` (unabhängiges zweites Projekt auf demselben Host, Port 3102/3015) wurde nicht berührt.
+
 ## Fortsetzungsstand — 2026-09-14 ~20:10 UTC (Claude-Sitzung, Scratch-Clone, nicht published)
 
 Dieser Block ergänzt den Handoff vom 2026-09-13 und ändert keine dortigen Aussagen. Arbeitsumgebung war ein disposabler Clone (kein `/workspace/CTS-K-N`, keine verwaltete Chisel-Aktivierung verfügbar). Basis: GitHub `origin/main` = `5d510058`. Lokaler Branch `agent/access-dashboard-redaction-20260914` mit einem Commit `29d486aa` (Credential-Redaction in `ops/server-access-dashboard/server/access-dashboard.mjs`, Regressionstest, Manifeste) — **nicht gepusht** (kein Git-Credential im Sandbox). Übergabe als Git-Bundle + Patch an den Nutzer.
