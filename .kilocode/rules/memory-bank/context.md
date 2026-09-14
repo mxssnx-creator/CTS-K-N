@@ -1,5 +1,15 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-09-14 ~23:34 UTC (Claude-Sitzung, dauerhafter Chisel-Zugang hergestellt)
+
+Der verwaltete `chisel-server` (Port 8090) war für diese Sitzung von außen nie erreichbar, weil ausgehend aus der Agent-Sandbox nur Port 80/443 erlaubt sind — kein Server-Fehler. Gelöst durch eine dauerhafte nginx-Weiterleitung: neuer eigenständiger `server { listen 80 default_server; server_name _; }`-Block in `/etc/nginx/sites-available/cts-bridge` (verlinkt in `sites-enabled`) mit `location /cts-chisel-ws { proxy_pass http://127.0.0.1:8090; ... }` (WebSocket-Upgrade, kurzes `proxy_connect_timeout`). `webssh2` (eigener, weiterhin defekter Server-Block mit `server_name ssh.example.com`, proxied auf ein totes Backend `127.0.0.1:2222`) blieb unangetastet. Der reale `chisel-server` läuft mit `--reverse --socks5`; sein Auth-Wert liegt in `/etc/chisel/auth.env` (nicht der veraltete Wert aus `tunnel.js`, der nur ein alter Dev-Test-Wert war). Damit ist künftiger Zugang über den dokumentierten, dauerhaften Dienst möglich, ohne provisorischen Bypass.
+
+Port 443 wurde geprüft und verworfen: `sslh` auf der VM ist korrekt für SSH auf 443 konfiguriert, aber eine vorgeschaltete Netzwerk-/Hoster-Ebene (vermutlich die `goodsrv.de`-Verwaltungsschicht) fängt 443 ab, bevor es die VM erreicht (`HTTP 400`/`503` für sowohl TLS- als auch rohe SSH-Bytes) — dieser Weg ist von der VM aus nicht reparierbar.
+
+Zwischenzeitlich (~00:49 UTC) wurden alle drei App-Units über den offiziellen `service-control.sh stop` sauber gestoppt (Exit 0, kein Absturz; Ursache/Urheber nicht sicher zuordenbar, evtl. paralleler Vorgang während der Netzwerk-Diagnose) und der `maintenance-stop`-Marker gesetzt. Über `bash scripts/service-control.sh restart` (Marker automatisch entfernt) erneut hochgefahren; drei Stichproben über ~1 Minute zeigen alle Units `active`/`NRestarts=0`, `/api/health` durchgehend 200.
+
+Ein während der Diagnose testweise installiertes Drittanbieter-Repo `claude-ssh-server` unter `/opt/claude-ssh-server` wurde nicht von mir verwendet oder ausgeführt; sein Einfluss auf die nginx-Konfiguration (falls vorhanden) wurde nicht weiter untersucht, da der eigentliche Bridge-Fix davon unabhängig funktioniert.
+
 ## Fortsetzungsstand — 2026-09-14 ~21:40 UTC (Claude-Sitzung, Server wiederhergestellt)
 
 Server war seit ca. 17:15 UTC down: Root-Platte voll (95%, 458 GiB, davon 350 GiB hausgemachte Agent-Checkpoints ohne Retention unter `/var/backups/cts-kn`) → Redis `MISCONF` → App-Start scheiterte → alle drei systemd-Units und `/opt/cts-kn` wurden von einem vorangegangenen, abgebrochenen Reinstall entfernt (viele verwaiste `/opt/.cts-kn.cts-state.*`-Verzeichnisse als Beleg).
