@@ -1,5 +1,19 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-09-14 ~20:10 UTC (Claude-Sitzung, Scratch-Clone, nicht published)
+
+Dieser Block ergänzt den Handoff vom 2026-09-13 und ändert keine dortigen Aussagen. Arbeitsumgebung war ein disposabler Clone (kein `/workspace/CTS-K-N`, keine verwaltete Chisel-Aktivierung verfügbar). Basis: GitHub `origin/main` = `5d510058`. Lokaler Branch `agent/access-dashboard-redaction-20260914` mit einem Commit `29d486aa` (Credential-Redaction in `ops/server-access-dashboard/server/access-dashboard.mjs`, Regressionstest, Manifeste) — **nicht gepusht** (kein Git-Credential im Sandbox). Übergabe als Git-Bundle + Patch an den Nutzer.
+
+Gates in diesem Clone: TypeScript `tsc --noEmit` 0 Fehler; Jest Unit 300 Suiten/2065 Tests bestanden; Integration 4 Suiten/76 Tests bestanden; `node --test` Ops-Dashboard 9/9. Kein Build, kein Lint-Volllauf.
+
+Remote-Befund (nur unauthentifizierte HTTP-Proben, keine Mutation): `:80/` liefert das statische Ops-Dashboard (200), `:80/api/health` und `:80/api/metrics` → **502 Bad Gateway** (nginx); `:443/*` → **503 „upstream connect error … remote connection failure"**. Die Anwendungs-Units antworten also nicht mehr; letzter dokumentierter Gesundzustand war 2026-09-13 00:43 UTC. Ursache unbekannt, nicht geprüft. Bekannter früherer Vorläufer: volle Root-Platte durch Redis-AOF-Wachstum (12.09.).
+
+Blocker (netzwerkseitig, gemäß AGENTS.md dokumentiert statt umgangen): aus dieser Umgebung sind nur 80/443 erreichbar; Port 22 und der Chisel-Endpunkt 8090 sind nicht erreichbar. Kein Ad-hoc-Fallback verwendet.
+
+Sicherheitshinweise: `tunnel.js` enthält weiterhin einen hardcodierten Chisel-Auth-Wert im Repo (zu rotieren, Datei aus Git entfernen). Die BingX-Werte in `scripts/run-prod-preview-check.mjs` sind dokumentierte Nicht-Credential-Sentinels (kein Fund).
+
+Offen: (1) Server-Ausfall diagnostizieren/recovern über kanonisches `scripts/service-control.sh` nach Checkpoint; (2) Bundle importieren, Branch pushen, PR/Merge; (3) danach erst die weiteren Prüfungen (Progressionen, Order-Handling, X02-VST-Lifecycle mit virtuellem Mindestvolumen).
+
 ## Final remote handoff — 2026-09-13 00:46 UTC
 
 This entry supersedes all earlier pending-release statements. Runtime release: merged PR348 `fd531f18badfcd3e9fee903571f38d56588ecf64`, exact checked application tree `d5413ac4cc96e93c96a13d5742ac61be37e6e9fd`. Canonical checkout `/workspace/CTS-K-N`; final handoff branch `codex/sol-remote-handoff-20260913` changes documentation/evidence only. Its later GitHub main commit does not require a second application reinstall: compare production files against fd531f18. Earlier local source commits68140439 and7f4978eb are preserved in their original branch; the connector-published tree matched exactly. PR348 and merged-main GitHub smoke passed; both corresponding CTS-K-N Vercel deployments reached READY. The unrelated CTS-V status is not claimed green.
