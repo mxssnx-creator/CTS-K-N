@@ -507,6 +507,24 @@ function parseProcStatus(text) {
   };
 }
 
+const SECRET_FLAG_PATTERN =
+  /(--?(?:auth|authfile|auth-file|password|passwd|pass|pwd|secret|token|api-?key|apikey|access-?key|secret-?key|private-?key|requirepass|masterauth|credentials?|bearer|cookie|session)(?:[=:]|\s+))(\S+)/gi;
+const SECRET_ENV_PATTERN =
+  /\b([A-Z0-9_]*(?:AUTH|PASS|PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|COOKIE|SESSION|DSN|REDIS_URL|DATABASE_URL)[A-Z0-9_]*)=(\S+)/g;
+const SECRET_URL_PATTERN = /(\b[a-z][a-z0-9+.-]*:\/\/)([^\s/@:]+)(?::([^\s/@]*))?@/gi;
+
+/**
+ * Redact credential-bearing arguments from a process command line before it
+ * leaves the host. The dashboard is public behind nginx; a raw `/proc/<pid>/cmdline`
+ * would otherwise publish tunnel auth, Redis passwords, or API keys verbatim.
+ */
+export function redactCommandLine(value) {
+  return String(value || "")
+    .replace(SECRET_URL_PATTERN, (_match, scheme, user) => scheme + user + ":<redacted>@")
+    .replace(SECRET_FLAG_PATTERN, (_match, prefix) => prefix + "<redacted>")
+    .replace(SECRET_ENV_PATTERN, (_match, name) => name + "=<redacted>");
+}
+
 async function readProcess(pid) {
   if (!pid) return null;
   const [statusText, statText, commandText] = await Promise.all([
@@ -532,7 +550,7 @@ async function readProcess(pid) {
     systemTicks,
     cpuTicks: userTicks + systemTicks,
     startTicks,
-    command: sanitizeText(commandText.replace(/\0/g, " "), ""),
+    command: sanitizeText(redactCommandLine(commandText.replace(/\0/g, " ")), ""),
   };
 }
 

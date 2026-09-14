@@ -209,7 +209,7 @@ DIRECT_TRADE_BLOCK_REPORT_FILE	test-or-operator-tool	no	no	1	scripts/test-direct
 DIRECT_TRADE_BLOCK_START_SYMBOL	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
 DIRECT_TRADE_BLOCK_SYMBOLS	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
 DIRECT_TRADE_BLOCK_VOLUME_RATIO	test-or-operator-tool	no	no	1	scripts/test-direct-trade-block-comparison.cjs
-DIRECT_TRADE_CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/direct-trade-processor.mjs
+DIRECT_TRADE_CONNECTION_ID	test-or-operator-tool	no	no	2	scripts/direct-trade-processor.mjs,scripts/test-direct-trade-dev-soak.mjs
 DIRECT_TRADE_DEV_HISTORY_HOURS	test-or-operator-tool	no	no	2	scripts/run-direct-trade-dev-soak.mjs,scripts/test-direct-trade-dev-soak.mjs
 DIRECT_TRADE_DEV_NODE_OPTIONS	test-or-operator-tool	no	no	1	scripts/run-direct-trade-dev-soak.mjs
 DIRECT_TRADE_DEV_PORT	test-or-operator-tool	no	no	1	scripts/run-direct-trade-dev-soak.mjs

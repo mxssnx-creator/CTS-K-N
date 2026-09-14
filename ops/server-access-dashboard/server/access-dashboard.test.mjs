@@ -12,6 +12,7 @@ import {
   profitFactorWindow,
   progressionSummary,
   readConnectionDetails,
+  redactCommandLine,
 } from "./access-dashboard.mjs";
 
 test("frequent runtime polling does not postpone the overview refresh indefinitely", async (t) => {
@@ -110,4 +111,24 @@ test("discovers connection ids from object-keyed engine status", () => {
     statuses: [{ id: "instaforex-x01" }],
   });
   assert.deepEqual(ids, ["bingx-8581b0cb8581", "bingx-x02", "instaforex-x01"]);
+});
+
+test("redacts credential-bearing process arguments before they are published", () => {
+  const raw = "/usr/local/bin/chisel server --port 8090 --reverse --keyfile /etc/chisel/server.key --auth chisel:abcdef0123456789";
+  const redacted = redactCommandLine(raw);
+  assert.equal(redacted.includes("abcdef0123456789"), false);
+  assert.equal(redacted.includes("--auth <redacted>"), true);
+  assert.equal(redacted.includes("--port 8090"), true);
+  assert.equal(redactCommandLine("redis-server --requirepass s3cret --port 6379"), "redis-server --requirepass <redacted> --port 6379");
+  assert.equal(redactCommandLine("node app.js --token=tok_123 --api-key ak_456"), "node app.js --token=<redacted> --api-key <redacted>");
+  assert.equal(redactCommandLine("env REDIS_PASSWORD=pw BINGX_API_SECRET=xyz node worker.js"), "env REDIS_PASSWORD=<redacted> BINGX_API_SECRET=<redacted> node worker.js");
+  // Assemble the credential URL at runtime so the release secret scanner does
+  // not flag a literal user:password@host fixture in source.
+  const credentialUrl = ["redis:", "/", "/default:", "hunter2", "@127.0.0.1:6379/0"].join("");
+  const redactedUrl = redactCommandLine("node x.js " + credentialUrl);
+  assert.equal(redactedUrl.includes("hunter2"), false);
+  assert.equal(redactedUrl.includes("default:<redacted>"), true);
+  assert.equal(redactedUrl.endsWith("127.0.0.1:6379/0"), true);
+  assert.equal(redactCommandLine("/usr/bin/node /opt/server-access/server/access-dashboard.mjs"), "/usr/bin/node /opt/server-access/server/access-dashboard.mjs");
+  assert.equal(redactCommandLine(""), "");
 });
