@@ -50,27 +50,38 @@ const connectionId = String(selectedConnection?.id || "").trim()
 if (!connectionId) throw new Error("Direct-Trade dev soak requires an available connection")
 const connectionQuery = `?connectionId=${encodeURIComponent(connectionId)}`
 
-const calculation = await request("/api/trade-engine/direct-trade/calculate", {
-  method: "POST",
-  body: JSON.stringify({
-    symbolCount,
-    historyHours,
-    timeframes: ["5m", "15m", "30m"],
-    strategyTypes,
-    entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
-    exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
-    entryTiming: "current",
-    activityVolumeRatio: 1,
-    minVolFactor: 0.1,
-    maxSlRatio: 0.75,
-    inverseMaxSlRatio: 1.25,
-    trailingEnabled: true,
-    minProfitFactor: 4,
-    maxDrawdownTimeMin: 10,
-    maxHoldMinutes: 120,
-    blockRange: [1, 12],
-  }),
-})
+const calculationPayload = {
+  symbolCount,
+  historyHours,
+  timeframes: ["5m", "15m", "30m"],
+  strategyTypes,
+  entryTactics: ["momentum", "mean_reversion", "breakout", "relative"],
+  exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
+  entryTiming: "current",
+  activityVolumeRatio: 1,
+  minVolFactor: 0.1,
+  maxSlRatio: 0.75,
+  inverseMaxSlRatio: 1.25,
+  trailingEnabled: true,
+  minProfitFactor: 4,
+  maxDrawdownTimeMin: 10,
+  maxHoldMinutes: 120,
+  blockRange: [1, 12],
+}
+
+let calculation
+for (let attempt = 0; attempt < 4; attempt++) {
+  try {
+    calculation = await request("/api/trade-engine/direct-trade/calculate", {
+      method: "POST",
+      body: JSON.stringify(calculationPayload),
+    })
+    break
+  } catch (error) {
+    if (!String(error?.message || error).includes("409") || attempt === 3) throw error
+    await sleep(10_000)
+  }
+}
 
 if (!calculation?.success || calculation?.summary?.historyHours !== historyHours) {
   throw new Error(`Direct-Trade ${historyHours}h calculation did not complete: ${JSON.stringify(calculation)}`)
@@ -107,7 +118,7 @@ for (let round = 0; round < rounds; round++) {
   // instead of presenting an intentionally absent worker as a failure.
   const processorRequired = status?.processorRequired === true
   const processorHealthy = status?.processorHealthy === true
-  if (!processorHealthy) {
+  if (processorRequired && !processorHealthy) {
     throw new Error(`Direct-Trade processor was required but unhealthy in pulse ${round + 1}`)
   }
   for (let index = 0; index < statistics.length; index++) {
