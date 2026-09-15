@@ -11609,6 +11609,15 @@ function entryProtectionAdmissionLockKeyOf(connectionId: string): string {
   return `live:entry-protection-admission:${connectionId}`
 }
 
+// After a protection rollback the same symbol/direction must not be re-entered
+// immediately: the strategy re-qualifies within a cycle and the venue state
+// that failed the audit is usually unchanged, so each retry only pays entry
+// and close costs (observed: four ATOMUSDT entries in eleven minutes).
+export const ENTRY_ROLLBACK_COOLDOWN_SECONDS = 15 * 60
+export function entryRollbackCooldownKeyOf(connectionId: string, symbol: string, direction: string): string {
+  return `live:entry-rollback-cooldown:${connectionId}:${String(symbol).toUpperCase()}:${String(direction).toLowerCase()}`
+}
+
 function entryProtectionHaltKeyOf(connectionId: string): string {
   return `live:entry-protection-halt:${connectionId}`
 }
@@ -12867,6 +12876,11 @@ export async function executeLivePosition(
       exchangeConnector,
       "entry_protection_contract_incomplete",
     ).catch(() => null)
+    await client.setex(
+      entryRollbackCooldownKeyOf(connectionId, realPosition.symbol, realPosition.direction),
+      ENTRY_ROLLBACK_COOLDOWN_SECONDS,
+      JSON.stringify({ at: Date.now(), reason, positionId: livePosition.id }),
+    ).catch(() => {})
     if (closed && String(closed.status || "") === "closed") {
       Object.assign(livePosition, closed)
       await client.del(entryProtectionHaltKey).catch(() => 0)
@@ -14141,7 +14155,21 @@ export async function executeLivePosition(
     // skips and reconciliation of an already-open partial have returned, so
     // an in-flight venue order is never left untracked by the interlock.
     if (isLiveTradeEnabled) {
-      const admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)
+      let admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)
+      if (admission.canPlaceRealOrders) {
+        const cooldownRaw = await client
+          .get(entryRollbackCooldownKeyOf(connectionId, realPosition.symbol, realPosition.direction))
+          .catch(() => null)
+        if (cooldownRaw) {
+          admission = {
+            ...admission,
+            canPlaceRealOrders: false,
+            executionMode: "blocked",
+            blockCode: "post_rollback_cooldown",
+            blockReason: `A protection rollback on ${realPosition.symbol} ${realPosition.direction} is cooling down before re-entry.`,
+          }
+        }
+      }
       if (!admission.canPlaceRealOrders) {
         livePosition.status = "rejected"
         livePosition.executionMode = admission.executionMode

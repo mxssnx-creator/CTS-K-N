@@ -32,3 +32,26 @@ describe("post-entry protection audit: read failures are retried and never rolle
     expect(src).toContain("process.env.CTS_POST_ENTRY_AUDIT_READ_DELAYS_MS")
   })
 })
+
+describe("re-entry cooldown after a protection rollback", () => {
+  test("rollback stamps a per-slot cooldown key that survives restarts", () => {
+    const rb = fn.slice(fn.indexOf("const rollbackEntryWithoutCompleteProtection = async"))
+    const close = rb.indexOf("const closed = await closeLivePosition(")
+    const stamp = rb.indexOf("entryRollbackCooldownKeyOf(connectionId, realPosition.symbol, realPosition.direction)")
+    expect(close).toBeGreaterThan(0)
+    expect(stamp).toBeGreaterThan(close)
+    expect(rb.slice(stamp - 40, stamp + 200)).toContain("ENTRY_ROLLBACK_COOLDOWN_SECONDS")
+  })
+
+  test("the new-entry interlock rejects a slot that is cooling down", () => {
+    const gate = fn.slice(fn.indexOf("let admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)"), fn.indexOf("Step 5: Place entry order with retry"))
+    expect(gate).toContain('blockCode: "post_rollback_cooldown"')
+    expect(gate).toContain(".get(entryRollbackCooldownKeyOf(connectionId, realPosition.symbol, realPosition.direction))")
+  })
+
+  test("cooldown key shape and duration", async () => {
+    const mod = await import("@/lib/trade-engine/stages/live-stage")
+    expect(mod.entryRollbackCooldownKeyOf("bingx-x02", "atomusdt", "SHORT")).toBe("live:entry-rollback-cooldown:bingx-x02:ATOMUSDT:short")
+    expect(mod.ENTRY_ROLLBACK_COOLDOWN_SECONDS).toBe(900)
+  })
+})

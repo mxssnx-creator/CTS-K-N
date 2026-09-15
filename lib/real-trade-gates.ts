@@ -23,6 +23,7 @@ export type RealTradeBlockCode =
   | "entry_protection_halt"
   | "account_snapshot_halt"
   | "runtime_admission_unavailable"
+  | "post_rollback_cooldown"
 
 export interface RealTradeReadiness {
   intent: "main" | "preset" | "signal"
