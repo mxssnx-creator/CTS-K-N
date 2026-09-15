@@ -38,6 +38,12 @@ export interface TradeHistoryRow {
   closedAt: number
   holdMinutes: number
   source: "exchange" | "local"
+  /**
+   * Whether this row is CTS-K-N's own trade ("cts") or a venue trade with no
+   * local lineage ("unattributed"). Venue history on a shared account
+   * contains other actors' trades; they are shown, never counted as ours.
+   */
+  attribution?: "cts" | "unattributed"
   environment: "exchange" | "simulated"
   marketType?: "crypto" | "forex"
   volumeKind?: "base" | "lots"
@@ -99,12 +105,24 @@ export type StatisticsHistoryTupleV1 = [
   holdMinutes: number,
 ]
 
+export const UNATTRIBUTED_EXCHANGE_STRATEGY = "unattributed-exchange"
+
+/** True for CTS-K-N's own rows; false for venue rows without local lineage. */
+export function isAttributedTradeHistoryRow(row: Pick<TradeHistoryRow, "attribution" | "source">): boolean {
+  if (row.attribution === "unattributed") return false
+  if (row.attribution === "cts") return true
+  // Rows produced before attribution existed: only merged/local rows carry
+  // lineage; a bare exchange row is unattributed.
+  return row.source !== "exchange"
+}
+
 function statisticsStrategyType(row: TradeHistoryRow): string {
+  if (!isAttributedTradeHistoryRow(row)) return UNATTRIBUTED_EXCHANGE_STRATEGY
   const explicit = String(row.setVariant || "").trim()
   if (explicit) return explicit
   if (row.presetId) return "preset"
   if (row.executionIntent) return row.executionIntent
-  return row.source === "exchange" ? "unattributed-exchange" : "live"
+  return "live"
 }
 
 export function toStatisticsHistoryTuple(row: TradeHistoryRow): StatisticsHistoryTupleV1 {
@@ -667,7 +685,7 @@ export function mergeTradeHistory(
       }
     }
     if (index < 0) {
-      merged.push(exchange)
+      merged.push({ ...exchange, attribution: "unattributed" })
       continue
     }
     const local = remainingLocal.splice(index, 1)[0]
@@ -700,9 +718,10 @@ export function mergeTradeHistory(
       source: "exchange",
       environment: "exchange",
       accountingQuality: "local",
+      attribution: "cts",
     })
   }
-  merged.push(...remainingLocal)
+  merged.push(...remainingLocal.map((row) => ({ ...row, attribution: "cts" as const })))
 
   const deduped = new Map<string, TradeHistoryRow>()
   for (const row of merged) {
