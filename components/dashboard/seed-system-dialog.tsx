@@ -350,11 +350,11 @@ export function SeedSystemDialog() {
                         <div className="text-base font-bold font-mono text-emerald-600">{stats.data.realtimeActive} Active</div>
                       </div>
                       <div className="bg-card border rounded p-2.5">
-                        <div className="text-xs text-muted-foreground">Strategy Cycles</div>
+                        <div className="text-xs text-muted-foreground">Strategy Cycles (since start)</div>
                         <div className="text-base font-bold font-mono">{stats.data.evaluationsProcessed}</div>
                       </div>
                       <div className="bg-card border rounded p-2.5">
-                        <div className="text-xs text-muted-foreground">Indication Cycles</div>
+                        <div className="text-xs text-muted-foreground">Indication Cycles (since start)</div>
                         <div className="text-base font-bold font-mono">{stats.data.cyclesCompleted}</div>
                       </div>
                     </div>

@@ -519,10 +519,10 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
                     <span className="font-medium">Symbols Active:</span> {functionalOverview.symbolsActive}
                   </div>
                   <div>
-                    <span className="font-medium">Indication Cycles:</span> {functionalOverview.counts?.indicationCycles || functionalOverview.indicationsCalculated}
+                    <span className="font-medium">Indication Cycles (since engine start):</span> {functionalOverview.counts?.indicationCycles || functionalOverview.indicationsCalculated}
                   </div>
                   <div>
-                    <span className="font-medium">Strategy Cycles:</span> {functionalOverview.counts?.strategyCycles || 0}
+                    <span className="font-medium">Strategy Cycles (since engine start):</span> {functionalOverview.counts?.strategyCycles || 0}
                   </div>
                   <div>
                     <span className="font-medium">Strategies Evaluated (this cycle):</span> {functionalOverview.strategiesEvaluated}
