@@ -135,6 +135,7 @@ CTS_STATE_DIR	test-or-operator-tool	no	yes	2	.env.example,__tests__/unit/install
 CTS_STRATEGY_GC_CRITICAL_INTERVAL_MS	test-or-operator-tool	no	yes	1	.env.example
 CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS	test-or-operator-tool	no	yes	2	.env.example,scripts/run-dev-preview-check.mjs
 CTS_STRATEGY_GC_HIGH_INTERVAL_MS	test-or-operator-tool	no	yes	1	.env.example
+CTS_STUCK_PLACEMENT_MS	application-runtime	no	no	1	lib/trade-engine/stages/live-stage.ts
 CTS_TEST_BOOTSTRAP	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_CAPTURE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_EXPECT_MODE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts

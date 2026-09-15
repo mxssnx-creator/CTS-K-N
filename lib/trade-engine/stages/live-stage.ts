@@ -17677,6 +17677,69 @@ export async function closeLivePosition(
   }
 }
 
+// ── Stuck pre-fill placement sweeper ─────────────────────────────────
+// A row in a pre-fill status with no executed quantity and no venue handle is
+// a reserved local slot whose submission never happened or never returned an
+// id. Nothing on the venue can be closed for it, but the sync keeps touching
+// it (markPrice/syncedAt) and every open-position surface counts it. Without a
+// sweeper such rows lived indefinitely (observed: two ATOMUSDT `pending`
+// rows with executedQuantity 0 and no orderId, still "open" nine hours later).
+const STUCK_PLACEMENT_MS_DEFAULT = 10 * 60_000
+function stuckPlacementThresholdMs(): number {
+  const raw = Number(process.env.CTS_STUCK_PLACEMENT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : STUCK_PLACEMENT_MS_DEFAULT
+}
+export function isStuckPreFillPlacement(
+  position: Pick<LivePosition, "status" | "executedQuantity" | "orderId" | "exchangeData" | "createdAt" | "updatedAt" | "pendingSystemAction">,
+  nowMs = Date.now(),
+  thresholdMs = stuckPlacementThresholdMs(),
+): boolean {
+  const status = String(position.status || "")
+  if (!(status === "placed" || status === "pending" || status === "pending_fill" || status === "placed_unconfirmed")) return false
+  if (Number(position.executedQuantity || 0) > 0) return false
+  if (hasSystemVenueHandle(position)) return false
+  // An in-flight durable action must settle through its own barrier first.
+  if (position.pendingSystemAction) return false
+  // createdAt is the placement time; updatedAt is refreshed by the sync and
+  // would keep a zombie perpetually "young".
+  const placedAt = Number(position.createdAt || 0)
+  if (!placedAt) return false
+  return nowMs - placedAt >= thresholdMs
+}
+export async function sweepStuckPreFillPlacements(
+  connectionId: string,
+  nowMs = Date.now(),
+): Promise<{ scanned: number; closed: number; errors: number }> {
+  const summary = { scanned: 0, closed: 0, errors: 0 }
+  const rows = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+  const threshold = stuckPlacementThresholdMs()
+  for (const position of rows) {
+    summary.scanned++
+    if (!isStuckPreFillPlacement(position, nowMs, threshold)) continue
+    try {
+      const exitPrice = Number((position.exchangeData as any)?.markPrice || position.entryPrice || 0)
+      // No connector: closeLivePosition finalizes a pre-fill row without a
+      // venue handle locally and never touches the exchange for it.
+      const closed = await closeLivePosition(connectionId, position.id, exitPrice, null, "placement_stuck_no_venue_handle")
+      if (closed?.status === "closed") {
+        summary.closed++
+        await logProgressionEvent(
+          connectionId,
+          "live_trading",
+          "warning",
+          `Stuck pre-fill placement ${position.symbol} ${position.direction} finalized locally after ${Math.round((nowMs - Number(position.createdAt || 0)) / 60_000)} min without a venue handle`,
+          { positionId: position.id, symbol: position.symbol, direction: position.direction, status: position.status },
+        ).catch(() => {})
+      }
+    } catch (error) {
+      summary.errors++
+      console.warn(`${LOG_PREFIX} stuck-placement sweep failed for ${position.id}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (summary.closed > 0) console.log(`${LOG_PREFIX} [stuck-placement] ${connectionId}: finalized ${summary.closed} pre-fill row(s) without venue handle`)
+  return summary
+}
+
 function isPreFillWithoutExchangeHandle(
   position: Pick<LivePosition, "executedQuantity">,
   originalStatus: LivePosition["status"] | undefined,
@@ -18245,6 +18308,12 @@ export async function reconcileLivePositions(
         summary.errors     += simResult.errors
       } catch { /* processSimulatedPositions is self-defensive */ }
     }
+    // ── Step 1b: Stuck pre-fill placement sweep (no connector required) ──
+    try {
+      const stuck = await sweepStuckPreFillPlacements(connectionId)
+      summary.closed += stuck.closed
+      summary.errors += stuck.errors
+    } catch { /* sweepStuckPreFillPlacements is self-defensive */ }
 
     // Load the authoritative book before accepting a connector. Direct Trade
     // has an independently authorised X02 Prod-VST lane while the normal

@@ -342,6 +342,7 @@ __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts
 __tests__/unit/strategy-stage-relations.test.ts
 __tests__/unit/strategy-volume-coordination.test.ts
+__tests__/unit/stuck-placement-sweeper.test.ts
 __tests__/unit/symbol-capacity.test.ts
 __tests__/unit/symbol-selection-ownership.test.ts
 __tests__/unit/system-inject-credentials.test.ts
