@@ -1,5 +1,17 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-09-15 ~09:00 UTC (Claude-Sitzung: intensive Gesamtprüfung, Safety-Interlock-Fix)
+
+**Schwerwiegender Befund, behoben (PR #371, deployed):** Der `entry_protection_halt` war **nur Anzeige, kein Interlock**. `readLiveEntryReadiness` (projiziert die Redis-Halt-Keys) wurde ausschließlich von Status-Routen (`status-all`, `live-positions`, `engine-states`) und dem Direct-Trade-Helper aufgerufen — nie in `executeLivePosition`, das allein auf `evaluateRealTradeReadiness` (Schalter/Credentials) entschied. Beweis in Produktion: 02:43–02:45 UTC platzierte diese Instanz vier X02-Entries (LTC/SOL/APT/BTC) mit Drei-Order-Schutzbüchern bei gesetztem Halt; Traces in `live_order_log:bingx-x02` (pre/post/final, Tracking-IDs `ctsbingxx02…` identisch mit den Venue-Orders); keine Journal-Zeile (Order-Logger schreibt nur Redis). CTS-G entlastet (markiert `Gx02…`, „Never CTS"). Auslöser war ein Verbindungs-Settings-Save (02:41:34, `changedFields: ['name']`, Refresh gequeued → Live-Sets neu materialisiert). Der letzte Entry (BTC) lief in `entry_protection_rollback_unconfirmed` und setzte den Halt um 02:45:50 selbst neu. Fix (PR #371 → korrigiert in PR #373): Die erste Fassung projizierte die Zulassung am Funktionsanfang und ließ auf dem Server drei Integrationstests scheitern (Partial-Block/DCA-Reconciliation: ein Teil-Fill setzt den Halt legitim, und der Folgeaufruf, der die noch offene Teil-Order reconcilet, wurde abgelehnt → Venue-Order wäre unbeaufsichtigt geblieben). Der Interlock sitzt jetzt unmittelbar vor „Step 5" (einziger Punkt, der eine **neue** Entry-Order abschickt), nach Accumulation/Dedup/Partial-Reconciliation; fail-closed bei Redis-Fehler. Der fehlgeschlagene Install ließ Produktion ~25 min ohne Build (Units inaktiv); mit `04497db1` neu installiert. Seit 02:46 keine weiteren Entries.
+
+**Folge des Vorfalls:** LivePositionStage hat die vier Positionen als `adopted_from_exchange_control_book` (`protectionMode: exchange_control`) importiert; auf der Börse sind sie längst geschlossen, lokal standen sie noch `open` (plus `AAVEUSDT adopted` vom 14.09. 21:39). Nach Deploy/Restart prüfen, ob die „stranded-position reconciliation" sie schließt; sonst gezielt reconcilen.
+
+**Gate-Suite im Server-Workspace (`/workspace/CTS-K-N`, `9af36f90`):** 12/13 PASS — typecheck, lint, source-/shell-syntax, security-scan, recreation-verify, kilo-preflight, unit, integration, volatile-cleanup, deployment-contract (READY), smoke-routes. `install-preflight` scheitert erwartungsgemäß („Another checkout already owns service name cts-kn: /opt/cts-kn") — Workspace ist kein Install-Ziel.
+
+**Ledger-Konsistenz:** Off-by-One aufgeklärt: pro Verbindung stimmen `tracking`, Archiv und `positions/stats` exakt (bingx-x02 28 geschlossen/24 pending + bingx-x01 1/1 = 29/25). Kein Fehler.
+
+**Offen:** stale adopted-Zeilen (s. o.); Realtime-Progression-Budget; Reset-DB prozessübergreifend; geteiltes X02-Konto (eigener API-Key für CTS-K-N empfohlen).
+
 ## Fortsetzungsstand — 2026-09-15 ~03:30 UTC (Claude-Sitzung: Seiten-, Statistik-, Dialog- und Design-Audit)
 
 **Operator-Änderung:** `bybit-x03` per Dashboard-Pfad (`DELETE /api/settings/connections/bybit-x03/active`) aus den Main Connections entfernt (Checkpoint davor; Verbindung/Konfiguration bleibt, `POST …/active` holt sie zurück). Main-enabled ist jetzt nur `bingx-x02`; `/health` `healthy 1/1`; Connector-Warnungen und `unhealthy`-Rollups entfallen.
