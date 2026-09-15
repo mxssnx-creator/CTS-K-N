@@ -1289,8 +1289,12 @@ export class RealtimeProcessor {
       // SL/TP detection and position closing must continue regardless
       // of pause state.
       try {
-        const { processSimulatedPositions } = await import("@/lib/trade-engine/stages/live-stage")
+        const { processSimulatedPositions, sweepStuckPreFillPlacements } = await import("@/lib/trade-engine/stages/live-stage")
         await processSimulatedPositions(this.connectionId)
+        // Pre-fill reservations that never obtained a venue handle are only
+        // visible to the engine that owns this connection's sync; the cron
+        // reconcile skips engine-active connections, so sweep them here.
+        await sweepStuckPreFillPlacements(this.connectionId).catch(() => undefined)
       } catch (simErr) {
         console.warn(
           `[v0] [Realtime] processSimulatedPositions error for ${this.connectionId}:`,
