@@ -12938,19 +12938,9 @@ export async function executeLivePosition(
     // of flags, credentials, and Redis checks, so production could display Live
     // ON while this branch silently created paper positions.
     const readinessIntent = readinessIntentForExecution(connSettings, executionIntent)
-    const configuredReadiness = executionIntent === "direct"
+    const liveReadiness = executionIntent === "direct"
       ? evaluateDirectTradeLiveReadiness(connSettings, connectionId)
       : evaluateRealTradeReadiness(connSettings, readinessIntent)
-    // Runtime admission is the interlock, not a display detail. The configured
-    // readiness above only reflects switches and credentials; the entry
-    // protection halt (`live:entry-protection-halt:<id>`) and the account
-    // snapshot halt live in Redis and were previously projected only onto
-    // status surfaces — the execution path still placed venue entries while
-    // every readiness surface showed "blocked". Project them here so a halted
-    // connection cannot open new exposure through any caller.
-    const liveReadiness = configuredReadiness.canPlaceRealOrders
-      ? await readLiveEntryReadiness(client, connectionId, configuredReadiness)
-      : configuredReadiness
     const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined
@@ -14115,6 +14105,45 @@ export async function executeLivePosition(
       await VolumeCalculator.logVolumeCalculation(connectionId, realPosition.symbol, volumeResult).catch(() => {})
     }
 
+    // ── Runtime admission interlock (new venue exposure only) ────────────
+    // The configured readiness checked at function entry reflects switches
+    // and credentials. The entry protection halt and the account snapshot
+    // halt live in Redis and used to be projected only onto status surfaces,
+    // so this path still submitted venue entries while every readiness
+    // surface showed "blocked". They are enforced here, at the single point
+    // that submits a NEW entry order — after accumulation merges, dedup
+    // skips and reconciliation of an already-open partial have returned, so
+    // an in-flight venue order is never left untracked by the interlock.
+    if (isLiveTradeEnabled) {
+      const admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)
+      if (!admission.canPlaceRealOrders) {
+        livePosition.status = "rejected"
+        livePosition.executionMode = admission.executionMode
+        livePosition.executionBlockCode = admission.blockCode || undefined
+        livePosition.executionBlockReason = admission.blockReason || undefined
+        livePosition.statusReason =
+          `Live exchange order blocked (${admission.blockCode || "unknown"}): ${admission.blockReason}`
+        pushStep(livePosition, "runtime_admission", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        await Promise.all([
+          incrementExecutionMetric("live_orders_blocked_count"),
+          logProgressionEvent(
+            connectionId,
+            "live_trading",
+            "warning",
+            livePosition.statusReason,
+            {
+              symbol: realPosition.symbol,
+              direction: realPosition.direction,
+              blockCode: admission.blockCode,
+              stage: "runtime_admission",
+            },
+          ),
+        ])
+        console.warn(`${LOG_PREFIX} ${livePosition.statusReason}`)
+        return livePosition
+      }
+    }
     // ── Step 5: Place entry order with retry ─────────────────────����─────────
     const exchangeSide: "buy" | "sell" = realPosition.direction === "long" ? "buy" : "sell"
 
