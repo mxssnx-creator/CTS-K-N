@@ -17,12 +17,15 @@ describe("entry protection halt is enforced at execution, not only on status sur
     const fnStart = src.indexOf("export async function executeLivePosition(")
     expect(fnStart).toBeGreaterThan(0)
     const body = src.slice(fnStart)
-    const projection = body.indexOf("await readLiveEntryReadiness(client, connectionId, configuredReadiness)")
-    const decision = body.indexOf("const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders")
+    const projection = body.indexOf("const admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)")
+    const submission = body.indexOf("Step 5: Place entry order with retry")
+    const trace = body.indexOf("const orderTrace: LiveOrderTrace = newLiveOrderTrace(")
     expect(projection).toBeGreaterThan(0)
-    expect(decision).toBeGreaterThan(projection)
-    // The configured evaluation must no longer be assigned straight to the decision variable.
-    expect(body).not.toMatch(/const liveReadiness = executionIntent === "direct"\n\s+\? evaluateDirectTradeLiveReadiness/)
+    // The interlock sits immediately before the single new-entry submission
+    // point, after accumulation/dedup/partial reconciliation have returned.
+    expect(submission).toBeGreaterThan(projection)
+    expect(trace).toBeGreaterThan(submission)
+    expect(body.slice(projection, submission)).toContain('pushStep(livePosition, "runtime_admission", false')
   })
 
   test("a present halt key turns a configured-ready connection into blocked/entry_protection_halt", async () => {
