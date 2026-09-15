@@ -1,5 +1,18 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-09-15 ~03:30 UTC (Claude-Sitzung: Seiten-, Statistik-, Dialog- und Design-Audit)
+
+**Operator-Änderung:** `bybit-x03` per Dashboard-Pfad (`DELETE /api/settings/connections/bybit-x03/active`) aus den Main Connections entfernt (Checkpoint davor; Verbindung/Konfiguration bleibt, `POST …/active` holt sie zurück). Main-enabled ist jetzt nur `bingx-x02`; `/health` `healthy 1/1`; Connector-Warnungen und `unhealthy`-Rollups entfallen.
+
+**Gemergt (PR #367, #368, #369) und deployed (`main` b0a01790):**
+- **Statistik-Attribution (#367):** `trade-history?view=statistics` für `bingx-x02` lieferte 1001 Zeilen — 1000 Venue-Trades vom geteilten Konto (`unattributed-exchange`, CTS-G) + 4 eigene — und rechnete PF/Drawdown/Order-Fenster über alle; die Statistikseite mappte `unattributed-exchange` per Schlüsselwort auf **„base"**. Jetzt explizite `attribution` (`cts`/`unattributed`) im Merge, Kennzahlen und Tabellen-Summary nur über eigene Zeilen, `unattributedExchange {rows, analytics}` separat, Seite überspringt fremde Tupel/Zeilen in Positions-/Strategie-Aggregaten.
+- **Dark-Mode (#368):** 13 Komponenten (Connection-Log-, Detailed-Logging-, Seed-System-, QuickStart-Test-Dialoge, System-Settings, Error-Panel, Onboarding, Screener, Progressionsbalken) nutzten feste Hellmodus-Farben ohne `dark:` → 212 Ersetzungen auf shadcn-Tokens; Regressionstest scannt alle Komponenten.
+- **Labels (#369):** Zyklenzähler starten bei jedem Engine-Start bei 0 (vorherige Progression nach `progression:<conn>:<type>:history:<ts>` archiviert; beobachtet 5427→20 nach Deploy) → „(since engine start)".
+
+**Live verifiziert:** Alle 43 Seiten SSR 200 ohne Fehler (<110 ms). Rekoordination auf Verbindungsebene: 6 identische Saves → 1× korrekt als Änderung (`name: null`) mit gequeuetem Refresh ohne Progressions-Reset, 5× No-Op; Engine-PID unverändert, null Fehler. `/settings/connections` ist ein Redirect auf `/settings?tab=exchange` (16 KB, korrekt).
+
+**Offen:** Realtime-Progression 30-s-Budget (Instrumentierung); Reset-DB prozessübergreifend; `entry_protection_halt` durch geteiltes X02-Konto (eigener API-Key empfohlen); kein Browser-Klicktest möglich — Dialog-Interaktionen nur über Routen/Contract-Tests geprüft.
+
 ## Fortsetzungsstand — 2026-09-15 ~03:00 UTC (Claude-Sitzung: Koordinations-/Konsistenz-Audit)
 
 **Gemergt und deployed (PR #365, `main` 9880ef5b):** `/api/trade-engine/status` zeigte `totalPositions=0/totalTrades=0` (las nie geschriebene `positions:<id>`/`trades:<id>`-Sets, `type=none` auf dem Host), während `positions/stats` und `tracking/overview` 1 offen/24 geschlossen meldeten → jetzt aus `getLiveExecutionSummary` (gleiche Quelle wie die anderen beiden), plus `openPositions`/`openOrders` je Verbindung und `totalOpenPositions`/`totalOpenOrders`. `/api/engine-progress` Sammelaufruf war prozesslokal (leer im Worker-Deployment) → kanonische Verbindungen + Redis-Rotationsfortschritt. UI: Per-Zyklus-Snapshots (`strategiesEvaluated`, Stufen-Strategien) sind per Design Trichter-Momentaufnahmen und schwanken um Tausende innerhalb von Sekunden; QuickStart-Panel und Seed-Dialog zeigten sie ohne Unterscheidung neben kumulativen Zyklenzählern, der Seed-Dialog zeigte den Indikations-Zykluszähler unter zwei Labels → „(this cycle)"-Labels, Grid zeigt Strategy Cycles/Indication Cycles.
