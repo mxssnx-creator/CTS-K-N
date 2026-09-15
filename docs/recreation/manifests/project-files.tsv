@@ -147,6 +147,7 @@ f9cb0ac1497c6491a6071203739c2b04fff709a08c8eccc601871ca792c1afc2	4254	__tests__/
 9cee814706e04bfd42594a05afb3613405a7c4307fa98e58e8986acac4152eea	6110	__tests__/unit/engine-refresh-queue-claim.test.ts
 aa3a1fac4bcd733f5789098686fd3d2f97dce5606cf54c94a14184aa052bea63	1260	__tests__/unit/engine-refresh-queue-ttl.test.ts
 a29de5fbb64091d024f7a5298a3be269e1a1ccef442e738d3010e1317358f328	2589	__tests__/unit/engine-state-mirror.test.ts
+ce3f552bbcd250cfff35a15b48ac13eb649fc14cdcf232f99a5b8270f9a5e729	5753	__tests__/unit/engine-status-canonical-connections.test.ts
 979627b3baefa2888fb9469b7e87b3457bd92eb614629d8229645e9b6804a11f	2513	__tests__/unit/engine-structured-logging.test.ts
 d3b4d82b0269501386d7399e1023314810b75c2475e29bb13a1d36b630c530f3	3581	__tests__/unit/env-credential-loading.test.ts
 8422f31eb15bd86ebbd3509624d58326e3b6ffd5a96fa16958dbc5767f28dd83	6086	__tests__/unit/event-stream-stability.test.ts
@@ -620,7 +621,7 @@ aadeba43c4033ddf80ab26abe1005548857f6707b65bce69fcb296c9f7a10826	15022	app/api/s
 057831a424ba16fb2d7d34b0f1d32d2574321d3f20f78e0baa665dd0a780df05	3690	app/api/system/verify-apis/route.ts
 cc7809f317ea6d021541b1458f7a3e8544d458bb2550b733e9ccf7c873e18fde	1402	app/api/system/verify-complete/route.ts
 2557af76353a98ba6b4f28c4e92a96f2444d0c203fe4aaee98c9422b74b24b96	7033	app/api/system/verify-engine/route.ts
-c76bb72ea0f2fefe78b20915a9e64b0ccf7c7a6556f5a8c793ec6fa5b8560960	3577	app/api/system/verify-startup/route.ts
+7b3ee613e6e168e44dca1a6cc4083f1ec3c9bf681fe75167b4fac9465021145a	3743	app/api/system/verify-startup/route.ts
 7c0c03289f688581c2e6293af4fc3bbff1afc048675f64d604f2a2a9ce94c55e	43956	app/api/test/live-orders-test/route.ts
 f21e68fae8b4936a9c4b4ea0265c4fee754165a09a41a871cf7b0af041531da4	2948	app/api/testing/connection/[test]/route.ts
 aa2c7a52a720cc0e5c5baa29711ed49390c19c711f100c6ce33829de24b594a7	4659	app/api/testing/engine/[step]/route.ts
@@ -642,7 +643,7 @@ b5a925001f03e0547737edd2c3eb680bd8786e105ed4e6b53d0179ec163fe0c3	2583	app/api/tr
 4ac98762f4070a941f623e87add8eb1dfabcf5b3e73413f577734ab8a9930b5e	2314	app/api/trade-engine/fix-testnet/route.ts
 b4919f751f9fd6a14ff87f38c0796db44f99d247c893cde3d5c30d79319ae937	10304	app/api/trade-engine/functional-overview/route.ts
 df26de4e306988076a1e9a9addf25ecce911cc351b152003aab588aa95d59279	435	app/api/trade-engine/generate-indications/route.ts
-4eb716ca20a61be88fc2f42e74e533f05ecdcc42da6a9f7a36d51193889b46a2	3510	app/api/trade-engine/health/route.ts
+619ba07bc04cbfaf73cf364cb1a712e0f7d60b4c35cb65ae7a713cd913d01813	3897	app/api/trade-engine/health/route.ts
 f9f50a0cbf67f880d46f2d0f24d65cf560d9496aa279592fcd1bb5776938ca78	1448	app/api/trade-engine/metrics/[id]/route.ts
 bd3f2535e5c183f06d1466fc6f8969a59d75ec4f3649a55ae86abf20282795e0	1582	app/api/trade-engine/metrics/route.ts
 c29971885436eb20f641a47977c41bf0bf7cf4bce8b0c560adba0ca0b1860952	4805	app/api/trade-engine/pause/route.ts
@@ -655,7 +656,7 @@ ab79199e4a3ee971f13729a5487fa9bc5298e5ea864a2154568df6f3818f30a3	12177	app/api/t
 cb788e428a303db4dd7298af9b4adfbedf4da60e6baa3a6ef536818acb73fc98	8772	app/api/trade-engine/resume/route.ts
 5c320941b53d305ba989618a17c2d48eba6259113a994d18c9ab044dfb14a2d0	5138	app/api/trade-engine/start-all/route.ts
 bdb1e2ca520f6b67d6f1fe4c3d5ea6a3e196389af23119c584219be6bba4f729	26529	app/api/trade-engine/start/route.ts
-16221484d8f5abcb97c9bda50d7d03aeb3a55ee19dde0dcd7b10df05151538c9	2974	app/api/trade-engine/startup-debug/route.ts
+9acb5b5a954f1629f1318d4593076be81bab5fcab94f6c65b520b6ee35eff494	3389	app/api/trade-engine/startup-debug/route.ts
 0fa1a42d9dc50bc9c4c210c826892c239ee6a731b13e3faf2c742bea5cabf87e	26813	app/api/trade-engine/status-all/route.ts
 f4d85e0752d21cf8e6fdae1f47f9793720bac687d6a333f11bd1714ae86f0b0e	21427	app/api/trade-engine/status/route.ts
 716864dee2e571d7acc0d00ebe11a65df29ef7c015b4470ebe5d0df8c9ab3e28	9069	app/api/trade-engine/stop/route.ts
