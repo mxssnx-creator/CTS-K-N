@@ -397,7 +397,7 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
             <Separator />
 
             {/* Logs */}
-            <ScrollArea className="h-[420px] border rounded-lg p-4 bg-slate-50/60">
+            <ScrollArea className="h-[420px] border rounded-lg p-4 bg-muted/60">
               {logs.length === 0 ? (
                 <p className="text-center text-muted-foreground py-8">No logs available</p>
               ) : (

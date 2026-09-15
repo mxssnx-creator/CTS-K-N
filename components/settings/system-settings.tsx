@@ -428,7 +428,7 @@ export function SystemSettings() {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* Preset Trade Engine */}
-            <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-slate-50 transition">
+            <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted transition">
               <div className="flex-1">
                 <Label className="font-medium text-sm cursor-pointer">Preset Trade Engine</Label>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -449,7 +449,7 @@ export function SystemSettings() {
             </div>
 
             {/* Main Trade Engine */}
-            <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-slate-50 transition">
+            <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted transition">
               <div className="flex-1">
                 <Label className="font-medium text-sm cursor-pointer">Main Trade Engine</Label>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -470,7 +470,7 @@ export function SystemSettings() {
             </div>
 
             {/* Realtime Positions Engine */}
-            <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-slate-50 transition">
+            <div className="flex items-center justify-between p-3 border rounded-lg hover:bg-muted transition">
               <div className="flex-1">
                 <Label className="font-medium text-sm cursor-pointer">Realtime Positions Engine</Label>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -491,7 +491,7 @@ export function SystemSettings() {
             </div>
 
             {/* Risk Management Engine */}
-            <div className="flex items-center justify-between p-3 border rounded-lg bg-slate-50 opacity-50 cursor-not-allowed">
+            <div className="flex items-center justify-between p-3 border rounded-lg bg-muted opacity-50 cursor-not-allowed">
               <div className="flex-1">
                 <Label className="font-medium text-sm">Risk Management Engine</Label>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -824,7 +824,7 @@ value={timings.normalizeMaxPerDirection}
                 .replace(/\bMs\b/, "(ms)")
                 .replace(/\bSeconds\b/, "(sec)")
               return (
-                <div key={key} className="space-y-2 p-3 border rounded-lg bg-slate-50/50">
+                <div key={key} className="space-y-2 p-3 border rounded-lg bg-muted/50">
                   <div className="flex items-center justify-between gap-2">
                     <Label className="text-sm font-medium leading-tight">{labelText}</Label>
                     {b.live ? (

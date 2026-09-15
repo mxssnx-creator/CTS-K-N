@@ -55,12 +55,12 @@ export function IndicationBar({ indication, onToggle, minimalProfitFactor }: Ind
       case "active":
         return "bg-orange-100 text-orange-800"
       default:
-        return "bg-gray-100 text-gray-800"
+        return "bg-muted text-foreground"
     }
   }
 
   const isProfitable = indication.profitFactor >= minimalProfitFactor
-  const barColor = isProfitable ? "bg-green-500" : "bg-gray-400"
+  const barColor = isProfitable ? "bg-green-500" : "bg-muted-foreground/30"
 
   return (
     <div className="space-y-2">
@@ -92,11 +92,11 @@ export function IndicationBar({ indication, onToggle, minimalProfitFactor }: Ind
             <div className="flex-1 space-y-1 min-w-[200px]">
               <div className="flex justify-between text-sm">
                 <span className="truncate">Avg R: {indication.profitFactor.toFixed(3)}</span>
-                <span className={`${isProfitable ? "text-green-600" : "text-gray-500"} shrink-0 ml-2`}>
+                <span className={`${isProfitable ? "text-green-600" : "text-muted-foreground"} shrink-0 ml-2`}>
                   {isProfitable ? "Profitable" : "Below Threshold"}
                 </span>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
+              <div className="w-full bg-muted-foreground/30 rounded-full h-2">
                 <div
                   className={`h-2 rounded-full ${barColor} transition-all duration-300`}
                   style={{ width: `${Math.min(Math.abs(indication.profitFactor) * 100, 100)}%` }}

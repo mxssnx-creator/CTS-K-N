@@ -172,7 +172,7 @@ export function VolatilityScreenerCard() {
                   {topThree.map((result, idx) => (
                     <div
                       key={result.symbol}
-                      className="rounded-lg p-3 border-2 border-green-300 bg-white flex items-start justify-between"
+                      className="rounded-lg p-3 border-2 border-green-300 bg-card flex items-start justify-between"
                     >
                       <div className="flex-1">
                         <div className="flex items-center gap-2 mb-2">
@@ -188,7 +188,7 @@ export function VolatilityScreenerCard() {
                             </Badge>
                           )}
                         </div>
-                        <div className="grid grid-cols-2 gap-2 text-sm text-gray-600">
+                        <div className="grid grid-cols-2 gap-2 text-sm text-foreground/80">
                           <div>Range: <span className="font-semibold text-green-700">{result.volatility}</span></div>
                           <div>Score: <span className="font-semibold">{result.score}/100</span></div>
                         </div>
@@ -223,19 +223,19 @@ export function VolatilityScreenerCard() {
             {/* Other High Volatility Symbols */}
             {otherSymbols.length > 0 && (
               <div className="space-y-2">
-                <div className="text-sm font-semibold text-gray-700">Other High Volatility Symbols</div>
+                <div className="text-sm font-semibold text-foreground/80">Other High Volatility Symbols</div>
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {otherSymbols.map((result) => (
                     <div
                       key={result.symbol}
-                      className="rounded-lg p-2 border border-gray-200 bg-gray-50 flex items-center justify-between"
+                      className="rounded-lg p-2 border border-border bg-muted flex items-center justify-between"
                     >
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
-                          <span className="font-semibold text-gray-800">{result.symbol}</span>
+                          <span className="font-semibold text-foreground">{result.symbol}</span>
                           <Badge variant="outline" className="text-xs">{result.volatility}</Badge>
                         </div>
-                        <div className="text-xs text-gray-500">Score: {result.score}/100</div>
+                        <div className="text-xs text-muted-foreground">Score: {result.score}/100</div>
                       </div>
                       <Button
                         onClick={() => toggleLiveTrading(result.symbol)}
@@ -252,7 +252,7 @@ export function VolatilityScreenerCard() {
             )}
 
             {/* Last Updated */}
-            <div className="text-xs text-gray-500 text-center pt-2 border-t">
+            <div className="text-xs text-muted-foreground text-center pt-2 border-t">
               Updated: {new Date(results.timestamp).toLocaleTimeString()}
             </div>
           </>
@@ -260,7 +260,7 @@ export function VolatilityScreenerCard() {
 
         {!results && !error && (
           <div className="text-center py-4">
-            <div className="text-sm text-gray-500">Initializing volatility screener...</div>
+            <div className="text-sm text-muted-foreground">Initializing volatility screener...</div>
           </div>
         )}
       </CardContent>

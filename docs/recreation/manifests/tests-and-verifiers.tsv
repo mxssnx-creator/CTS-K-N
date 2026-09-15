@@ -332,6 +332,7 @@ unit	__tests__/unit/system-log-overload.test.ts
 unit	__tests__/unit/system-monitoring-route.test.ts
 unit	__tests__/unit/system-order-ownership.test.ts
 unit	__tests__/unit/technical-indicators.test.ts
+unit	__tests__/unit/theme-tokens-dark-mode.test.ts
 unit	__tests__/unit/top-symbols-high-scale.test.ts
 unit	__tests__/unit/trade-direction.test.ts
 unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts

@@ -64,7 +64,7 @@ export function SystemHealthCheck() {
 
       <CardContent className="space-y-2 text-sm">
         {/* Overall Status */}
-        <div className="flex items-center justify-between p-2 bg-white rounded border">
+        <div className="flex items-center justify-between p-2 bg-card rounded border">
           <span className="font-medium">Overall Status</span>
           <Badge className={allHealthy ? "bg-green-100 text-green-900" : "bg-red-100 text-red-900"}>
             {allHealthy ? "Healthy" : "Issues Detected"}
@@ -73,7 +73,7 @@ export function SystemHealthCheck() {
 
         {/* System Components */}
         <div className="space-y-1 text-xs">
-          <div className="flex items-center justify-between p-2 rounded bg-white">
+          <div className="flex items-center justify-between p-2 rounded bg-card">
             <span className="flex items-center gap-2">
               {results.system.connectionManager ? (
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
@@ -87,7 +87,7 @@ export function SystemHealthCheck() {
             </Badge>
           </div>
 
-          <div className="flex items-center justify-between p-2 rounded bg-white">
+          <div className="flex items-center justify-between p-2 rounded bg-card">
             <span className="flex items-center gap-2">
               {results.system.tradeEngineCoordinator ? (
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
@@ -101,7 +101,7 @@ export function SystemHealthCheck() {
             </Badge>
           </div>
 
-          <div className="flex items-center justify-between p-2 rounded bg-white">
+          <div className="flex items-center justify-between p-2 rounded bg-card">
             <span className="flex items-center gap-2">
               {results.system.fileStorage ? (
                 <CheckCircle2 className="h-4 w-4 text-green-600" />
@@ -118,7 +118,7 @@ export function SystemHealthCheck() {
 
         {/* Connection Count */}
         {results.connections.count > 0 && (
-          <div className="text-xs p-2 bg-white rounded">
+          <div className="text-xs p-2 bg-card rounded">
             {results.connections.count} connection{results.connections.count !== 1 ? "s" : ""} configured
           </div>
         )}

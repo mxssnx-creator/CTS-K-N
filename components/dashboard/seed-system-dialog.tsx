@@ -231,79 +231,79 @@ export function SeedSystemDialog() {
                 <div className="space-y-4 pb-4">
                   {/* Top Summary Cards */}
                   <div className="grid grid-cols-4 gap-2">
-                    <Card className="border-0 bg-slate-50">
+                    <Card className="border-0 bg-muted">
                       <CardContent className="p-3">
-                        <div className="text-xs text-slate-500 flex items-center gap-1">
+                        <div className="text-xs text-muted-foreground flex items-center gap-1">
                           <TrendingUp className="w-3 h-3" /> Profit Factor
                         </div>
-                        <div className="text-lg font-bold text-slate-800">{stats.evaluations.averageProfitFactor}</div>
+                        <div className="text-lg font-bold text-foreground">{stats.evaluations.averageProfitFactor}</div>
                       </CardContent>
                     </Card>
-                    <Card className="border-0 bg-slate-50">
+                    <Card className="border-0 bg-muted">
                       <CardContent className="p-3">
-                        <div className="text-xs text-slate-500 flex items-center gap-1">
+                        <div className="text-xs text-muted-foreground flex items-center gap-1">
                           <BarChart3 className="w-3 h-3" /> Evaluations (this cycle)
                         </div>
-                        <div className="text-lg font-bold text-slate-800">
+                        <div className="text-lg font-bold text-foreground">
                           {stats.evaluations.total}
-                          <span className="text-xs font-normal text-slate-500 ml-1">({stats.evaluations.successRate}%)</span>
+                          <span className="text-xs font-normal text-muted-foreground ml-1">({stats.evaluations.successRate}%)</span>
                         </div>
                       </CardContent>
                     </Card>
-                    <Card className="border-0 bg-slate-50">
+                    <Card className="border-0 bg-muted">
                       <CardContent className="p-3">
-                        <div className="text-xs text-slate-500 flex items-center gap-1">
+                        <div className="text-xs text-muted-foreground flex items-center gap-1">
                           <Activity className="w-3 h-3" /> Live Positions
                         </div>
-                        <div className="text-lg font-bold text-slate-800">{stats.positions.live}</div>
+                        <div className="text-lg font-bold text-foreground">{stats.positions.live}</div>
                       </CardContent>
                     </Card>
-                    <Card className="border-0 bg-slate-50">
+                    <Card className="border-0 bg-muted">
                       <CardContent className="p-3">
-                        <div className="text-xs text-slate-500 flex items-center gap-1">
+                        <div className="text-xs text-muted-foreground flex items-center gap-1">
                           <Clock className="w-3 h-3" /> Drawdown Time
                         </div>
-                        <div className="text-lg font-bold text-slate-800">{stats.evaluations.drawdownTime}<span className="text-xs font-normal">m</span></div>
+                        <div className="text-lg font-bold text-foreground">{stats.evaluations.drawdownTime}<span className="text-xs font-normal">m</span></div>
                       </CardContent>
                     </Card>
                   </div>
 
                   {/* System Metrics */}
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                    <h3 className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
                       <Cpu className="w-3.5 h-3.5" /> System Resources
                     </h3>
                     <div className="grid grid-cols-3 gap-2">
-                      <div className="bg-white border rounded p-2.5 text-sm">
+                      <div className="bg-card border rounded p-2.5 text-sm">
                         <div className="flex justify-between items-center">
-                          <span className="text-slate-500 text-xs">CPU Usage</span>
+                          <span className="text-muted-foreground text-xs">CPU Usage</span>
                           <span className="font-mono font-medium">{stats.system.cpuUsage}%</span>
                         </div>
-                        <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="mt-1.5 h-1.5 bg-muted rounded-full overflow-hidden">
                           <div 
                             className="h-full bg-blue-500 rounded-full transition-all duration-500" 
                             style={{ width: `${stats.system.cpuUsage}%` }}
                           />
                         </div>
                       </div>
-                      <div className="bg-white border rounded p-2.5 text-sm">
+                      <div className="bg-card border rounded p-2.5 text-sm">
                         <div className="flex justify-between items-center">
-                          <span className="text-slate-500 text-xs">Memory</span>
+                          <span className="text-muted-foreground text-xs">Memory</span>
                           <span className="font-mono font-medium">{stats.system.memoryUsage}/{stats.system.memoryTotal} MB</span>
                         </div>
-                        <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div className="mt-1.5 h-1.5 bg-muted rounded-full overflow-hidden">
                           <div 
                             className="h-full bg-emerald-500 rounded-full transition-all duration-500" 
                             style={{ width: `${(stats.system.memoryUsage / stats.system.memoryTotal) * 100}%` }}
                           />
                         </div>
                       </div>
-                      <div className="bg-white border rounded p-2.5 text-sm">
+                      <div className="bg-card border rounded p-2.5 text-sm">
                         <div className="flex justify-between items-center">
-                          <span className="text-slate-500 text-xs">Uptime</span>
+                          <span className="text-muted-foreground text-xs">Uptime</span>
                           <span className="font-mono font-medium">{formatUptime(stats.system.uptime)}</span>
                         </div>
-                        <div className="text-xs text-slate-400 mt-1">
+                        <div className="text-xs text-muted-foreground mt-1">
                           {stats.system.processCount} processes running
                         </div>
                       </div>
@@ -312,24 +312,24 @@ export function SeedSystemDialog() {
 
                   {/* Database Metrics */}
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                    <h3 className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
                       <Database className="w-3.5 h-3.5" /> Database
                     </h3>
                     <div className="grid grid-cols-4 gap-2">
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Req/sec</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Req/sec</div>
                         <div className="text-base font-bold font-mono">{stats.database.requestsPerSec}</div>
                       </div>
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Size</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Size</div>
                         <div className="text-base font-bold font-mono">{stats.database.sizeMb} MB</div>
                       </div>
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Records</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Records</div>
                         <div className="text-base font-bold font-mono">{stats.database.totalRecords}</div>
                       </div>
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Connections</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Connections</div>
                         <div className="text-base font-bold font-mono">{stats.database.connections}</div>
                       </div>
                     </div>
@@ -337,24 +337,24 @@ export function SeedSystemDialog() {
 
                   {/* Data Processing */}
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                    <h3 className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
                       <Activity className="w-3.5 h-3.5" /> Data Processing
                     </h3>
                     <div className="grid grid-cols-4 gap-2">
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Prehistoric</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Prehistoric</div>
                         <div className="text-base font-bold font-mono">{stats.data.prehistoricLoaded}</div>
                       </div>
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Realtime</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Realtime</div>
                         <div className="text-base font-bold font-mono text-emerald-600">{stats.data.realtimeActive} Active</div>
                       </div>
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Strategy Cycles</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Strategy Cycles</div>
                         <div className="text-base font-bold font-mono">{stats.data.evaluationsProcessed}</div>
                       </div>
-                      <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Indication Cycles</div>
+                      <div className="bg-card border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Indication Cycles</div>
                         <div className="text-base font-bold font-mono">{stats.data.cyclesCompleted}</div>
                       </div>
                     </div>
@@ -362,7 +362,7 @@ export function SeedSystemDialog() {
 
                   {/* Errors */}
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                    <h3 className="text-xs font-semibold text-foreground/80 flex items-center gap-1.5">
                       <AlertTriangle className="w-3.5 h-3.5" /> Errors & Status
                     </h3>
                     <div className="grid grid-cols-4 gap-2">
@@ -374,12 +374,12 @@ export function SeedSystemDialog() {
                         <div className="text-xs text-amber-600">Warnings</div>
                         <div className="text-base font-bold font-mono text-amber-700">{stats.errors.warning}</div>
                       </div>
-                      <div className="bg-slate-50 border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Last Hour</div>
+                      <div className="bg-muted border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Last Hour</div>
                         <div className="text-base font-bold font-mono">{stats.errors.lastHour}</div>
                       </div>
-                      <div className="bg-slate-50 border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Total</div>
+                      <div className="bg-muted border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Total</div>
                         <div className="text-base font-bold font-mono">{stats.errors.total}</div>
                       </div>
                     </div>
@@ -387,7 +387,7 @@ export function SeedSystemDialog() {
 
                   {/* Positions */}
                   <div className="space-y-2">
-                    <h3 className="text-xs font-semibold text-slate-700">Positions</h3>
+                    <h3 className="text-xs font-semibold text-foreground/80">Positions</h3>
                     <div className="grid grid-cols-3 gap-2">
                       <div className="bg-emerald-50 border border-emerald-100 rounded p-2.5">
                         <div className="text-xs text-emerald-600">Live</div>
@@ -397,8 +397,8 @@ export function SeedSystemDialog() {
                         <div className="text-xs text-blue-600">Pending</div>
                         <div className="text-base font-bold font-mono text-blue-700">{stats.positions.pending}</div>
                       </div>
-                      <div className="bg-slate-50 border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Closed</div>
+                      <div className="bg-muted border rounded p-2.5">
+                        <div className="text-xs text-muted-foreground">Closed</div>
                         <div className="text-base font-bold font-mono">{stats.positions.closed}</div>
                       </div>
                     </div>
@@ -407,9 +407,9 @@ export function SeedSystemDialog() {
                   <Separator />
 
                   {/* Bottom Summary */}
-                  <div className="text-xs text-slate-400 flex justify-between items-center">
-                    <span>Max Drawdown: <span className="font-medium text-slate-600">{stats.evaluations.maxDrawdown}%</span></span>
-                    <span>Success Rate: <span className="font-medium text-slate-600">{stats.evaluations.successRate}%</span></span>
+                  <div className="text-xs text-muted-foreground flex justify-between items-center">
+                    <span>Max Drawdown: <span className="font-medium text-foreground/80">{stats.evaluations.maxDrawdown}%</span></span>
+                    <span>Success Rate: <span className="font-medium text-foreground/80">{stats.evaluations.successRate}%</span></span>
                     <span>Auto-refresh: 3s</span>
                   </div>
                 </div>
@@ -443,7 +443,7 @@ export function SeedSystemDialog() {
             <ScrollArea className="flex-1">
               <div className="px-4 py-2 space-y-1">
                 {filteredLogs.length === 0 ? (
-                  <div className="text-center text-sm text-slate-400 py-12">No logs available</div>
+                  <div className="text-center text-sm text-muted-foreground py-12">No logs available</div>
                 ) : (
                   filteredLogs.map(log => (
                     <Collapsible 
@@ -453,7 +453,7 @@ export function SeedSystemDialog() {
                       className="border rounded overflow-hidden"
                     >
                       <CollapsibleTrigger className="w-full">
-                        <div className="flex items-center gap-2 p-2 hover:bg-slate-50 text-left">
+                        <div className="flex items-center gap-2 p-2 hover:bg-muted text-left">
                           {log.level === "success" && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />}
                           {log.level === "warn" && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
                           {log.level === "error" && <XCircle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />}
@@ -462,7 +462,7 @@ export function SeedSystemDialog() {
                           <div className="flex-1 text-xs">
                             <div className="flex justify-between">
                               <span className="font-medium">{log.message}</span>
-                              <span className="text-slate-400 font-mono text-[10px]">{log.timestamp}</span>
+                              <span className="text-muted-foreground font-mono text-[10px]">{log.timestamp}</span>
                             </div>
                           </div>
                           
@@ -471,7 +471,7 @@ export function SeedSystemDialog() {
                           </Badge>
                           
                           <ChevronDown className={cn(
-                            "w-3.5 h-3.5 text-slate-400 transition-transform",
+                            "w-3.5 h-3.5 text-muted-foreground transition-transform",
                             expandedLogs.has(log.id) && "rotate-180"
                           )} />
                         </div>
@@ -479,10 +479,10 @@ export function SeedSystemDialog() {
                       
                       <CollapsibleContent>
                         {log.details && (
-                          <div className="p-2.5 bg-slate-50 border-t text-xs font-mono text-slate-600 space-y-0.5">
+                          <div className="p-2.5 bg-muted border-t text-xs font-mono text-foreground/80 space-y-0.5">
                             {Object.entries(log.details).map(([k, v]) => (
                               <div key={k} className="flex gap-2">
-                                <span className="text-slate-400 min-w-[100px]">{k}:</span>
+                                <span className="text-muted-foreground min-w-[100px]">{k}:</span>
                                 <span>{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
                               </div>
                             ))}
