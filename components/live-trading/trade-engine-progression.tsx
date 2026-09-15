@@ -81,7 +81,7 @@ export function TradeEngineProgression() {
       case "initializing":
         return "bg-blue-100 text-blue-800"
       case "stopped":
-        return "bg-gray-100 text-gray-800"
+        return "bg-muted text-foreground"
       case "error":
         return "bg-red-100 text-red-800"
       default:
@@ -140,7 +140,7 @@ export function TradeEngineProgression() {
 
                 <div className="flex gap-2">
                   {!conn.isEnabled && (
-                    <Badge variant="secondary" className="text-xs bg-gray-100">
+                    <Badge variant="secondary" className="text-xs bg-muted">
                       Disabled
                     </Badge>
                   )}

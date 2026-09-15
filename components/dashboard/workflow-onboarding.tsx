@@ -99,17 +99,17 @@ export function WorkflowOnboarding() {
 
         {/* Current Status Summary */}
         <div className="grid grid-cols-3 gap-2 text-sm">
-          <div className="bg-white rounded p-2">
-            <div className="text-xs text-gray-600">With Credentials</div>
-            <div className="text-lg font-semibold text-gray-900">{systemStatus.connectionsWithCredentials}</div>
+          <div className="bg-card rounded p-2">
+            <div className="text-xs text-foreground/80">With Credentials</div>
+            <div className="text-lg font-semibold text-foreground">{systemStatus.connectionsWithCredentials}</div>
           </div>
-          <div className="bg-white rounded p-2">
-            <div className="text-xs text-gray-600">In Active Panel</div>
-            <div className="text-lg font-semibold text-gray-900">{systemStatus.activeConnections}</div>
+          <div className="bg-card rounded p-2">
+            <div className="text-xs text-foreground/80">In Active Panel</div>
+            <div className="text-lg font-semibold text-foreground">{systemStatus.activeConnections}</div>
           </div>
-          <div className="bg-white rounded p-2">
-            <div className="text-xs text-gray-600">Engine Ready</div>
-            <div className="text-lg font-semibold text-gray-900">{systemStatus.dashboardEnabled}</div>
+          <div className="bg-card rounded p-2">
+            <div className="text-xs text-foreground/80">Engine Ready</div>
+            <div className="text-lg font-semibold text-foreground">{systemStatus.dashboardEnabled}</div>
           </div>
         </div>
 
@@ -125,20 +125,20 @@ export function WorkflowOnboarding() {
                       ? 'bg-green-500 text-white'
                       : step.status === 'current'
                       ? 'bg-blue-500 text-white'
-                      : 'bg-gray-300 text-gray-600'
+                      : 'bg-muted-foreground/30 text-foreground/80'
                   }`}
                 >
                   {step.status === 'complete' ? <CheckCircle2 size={16} /> : step.id}
                 </div>
                 {index < steps.length - 1 && (
-                  <div className="w-0.5 h-8 bg-gray-300 my-1" />
+                  <div className="w-0.5 h-8 bg-muted-foreground/30 my-1" />
                 )}
               </div>
 
               {/* Step Content */}
               <div className="flex-1 pb-4">
-                <p className="font-medium text-gray-900">{step.title}</p>
-                <p className="text-sm text-gray-600 mt-1">{step.description}</p>
+                <p className="font-medium text-foreground">{step.title}</p>
+                <p className="text-sm text-foreground/80 mt-1">{step.description}</p>
                 {step.action && (
                   <a href={step.action.href || '#'} onClick={step.action.onClick}>
                     <Button
@@ -157,7 +157,7 @@ export function WorkflowOnboarding() {
         </div>
 
         {/* Help Section */}
-        <div className="bg-white rounded p-3 border border-blue-200">
+        <div className="bg-card rounded p-3 border border-blue-200">
           <div className="flex gap-2 text-sm">
             <AlertCircle size={16} className="text-blue-600 flex-shrink-0 mt-0.5" />
             <div>

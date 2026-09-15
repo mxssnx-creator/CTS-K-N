@@ -392,7 +392,7 @@ export function QuickstartFullSystemTestDialog() {
       case "running": return <Clock className="w-4 h-4 animate-spin text-blue-500" />
       case "success": return <CheckCircle2 className="w-4 h-4 text-green-500" />
       case "error": return <AlertCircle className="w-4 h-4 text-red-500" />
-      default: return <div className="w-4 h-4 rounded-full border-2 border-gray-300" />
+      default: return <div className="w-4 h-4 rounded-full border-2 border-border" />
     }
   }
 
@@ -402,8 +402,8 @@ export function QuickstartFullSystemTestDialog() {
       case "success": return "text-green-600"
       case "error": return "text-red-600"
       case "status": return "text-purple-600 font-semibold"
-      case "info": return "text-gray-600"
-      default: return "text-gray-500"
+      case "info": return "text-foreground/80"
+      default: return "text-muted-foreground"
     }
   }
 
@@ -461,15 +461,15 @@ export function QuickstartFullSystemTestDialog() {
               <div className="space-y-1">
                 {logs.map(entry => (
                   <div key={entry.id} className={`${getLogColor(entry.type)}`}>
-                    <span className="text-slate-500 mr-2">{entry.timestamp.toLocaleTimeString()}</span>
+                    <span className="text-muted-foreground mr-2">{entry.timestamp.toLocaleTimeString()}</span>
                     {entry.message}
                   </div>
                 ))}
                 {isRunning && logs.length === 0 && (
-                  <div className="text-slate-400">Initializing test...</div>
+                  <div className="text-muted-foreground">Initializing test...</div>
                 )}
                 {!isRunning && logs.length === 0 && (
-                  <div className="text-slate-400">Click \"Run Full System Test\" to begin monitoring</div>
+                  <div className="text-muted-foreground">Click \"Run Full System Test\" to begin monitoring</div>
                 )}
               </div>
             </Card>
@@ -479,56 +479,56 @@ export function QuickstartFullSystemTestDialog() {
           {overallProgress === 100 && !isRunning && (
             <>
               <Separator />
-              <Card className="p-4 bg-gradient-to-br from-slate-50 to-slate-100 border-slate-200">
-                <h4 className="text-sm font-semibold mb-3 text-slate-700 flex items-center gap-2">
+              <Card className="p-4 bg-gradient-to-br from-slate-50 to-slate-100 border-border">
+                <h4 className="text-sm font-semibold mb-3 text-foreground/80 flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   Test Results Overview
                 </h4>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                   <div className="space-y-1">
-                    <div className="text-slate-500">Total Cycles</div>
-                    <div className="text-lg font-bold text-slate-900">
+                    <div className="text-muted-foreground">Total Cycles</div>
+                    <div className="text-lg font-bold text-foreground">
                       {logs.find(l => l.message.includes('Total Cycles'))?.message.split(':')[1].trim() || '0'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Indications</div>
+                    <div className="text-muted-foreground">Indications</div>
                     <div className="text-lg font-bold text-blue-600">
                       {logs.find(l => l.message.includes('Total Indications'))?.message.split(':')[1].trim() || '0'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Prehistoric Candles</div>
+                    <div className="text-muted-foreground">Prehistoric Candles</div>
                     <div className="text-lg font-bold text-purple-600">
                       {logs.find(l => l.message.includes('Prehistoric Candles'))?.message.split(':')[1].trim() || '0'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Success Rate</div>
+                    <div className="text-muted-foreground">Success Rate</div>
                     <div className="text-lg font-bold text-emerald-600">
                       {logs.find(l => l.message.includes('Cycle Success Rate'))?.message.split(':')[1].trim() || '0%'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Avg CPU</div>
-                    <div className="text-lg font-bold text-slate-700">
+                    <div className="text-muted-foreground">Avg CPU</div>
+                    <div className="text-lg font-bold text-foreground/80">
                       {logs.find(l => l.message.includes('Average CPU'))?.message.split(':')[1].trim() || '0%'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Avg Memory</div>
-                    <div className="text-lg font-bold text-slate-700">
+                    <div className="text-muted-foreground">Avg Memory</div>
+                    <div className="text-lg font-bold text-foreground/80">
                       {logs.find(l => l.message.includes('Average Memory'))?.message.split(':')[1].trim() || '0%'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Database Size</div>
-                    <div className="text-lg font-bold text-slate-700">
+                    <div className="text-muted-foreground">Database Size</div>
+                    <div className="text-lg font-bold text-foreground/80">
                       {logs.find(l => l.message.includes('Database Size'))?.message.split(':')[1].trim() || '0MB'}
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-slate-500">Positions</div>
+                    <div className="text-muted-foreground">Positions</div>
                     <div className="text-lg font-bold text-orange-600">
                       {logs.find(l => l.message.includes('Positions Generated'))?.message.split(':')[1].trim() || '0'}
                     </div>

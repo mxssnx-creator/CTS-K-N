@@ -37,7 +37,7 @@ export function StrategyBar({ strategy, onToggle, onVolumeFactorChange, minimalP
     if (name.includes("Real")) return "bg-purple-100 text-purple-800"
     if (name.includes("Block")) return "bg-orange-100 text-orange-800"
     if (name.includes("DCA")) return "bg-red-100 text-red-800"
-    return "bg-gray-100 text-gray-800"
+    return "bg-muted text-foreground"
   }
 
   const getValidationColor = (state: string) => {
@@ -49,12 +49,12 @@ export function StrategyBar({ strategy, onToggle, onVolumeFactorChange, minimalP
       case "pending":
         return "bg-yellow-100 text-yellow-800"
       default:
-        return "bg-gray-100 text-gray-800"
+        return "bg-muted text-foreground"
     }
   }
 
   const isProfitable = strategy.avg_profit_factor >= minimalProfitFactor
-  const barColor = isProfitable ? "bg-green-500" : "bg-gray-400"
+  const barColor = isProfitable ? "bg-green-500" : "bg-muted-foreground/30"
 
   const handleVolumeChange = (value: number[]) => {
     const newFactor = value[0]
@@ -111,11 +111,11 @@ export function StrategyBar({ strategy, onToggle, onVolumeFactorChange, minimalP
             <div className="w-32 space-y-1 shrink-0">
               <div className="flex justify-between text-xs">
                 <span className="truncate">PF ratio: {strategy.stats.total_trades > 0 ? strategy.avg_profit_factor.toFixed(3) : "—"}</span>
-                <span className={`${isProfitable ? "text-green-600" : "text-gray-500"} ml-1`}>
+                <span className={`${isProfitable ? "text-green-600" : "text-muted-foreground"} ml-1`}>
                   {isProfitable ? "✓" : "✗"}
                 </span>
               </div>
-              <div className="w-full bg-gray-200 rounded-full h-1">
+              <div className="w-full bg-muted-foreground/30 rounded-full h-1">
                 <div
                   className={`h-1 rounded-full ${barColor} transition-all duration-300`}
                   style={{ width: `${Math.min(Math.max(strategy.avg_profit_factor / MAIN_TRADE_PF_RATIO_MAX, 0), 1) * 100}%` }}

@@ -64,7 +64,7 @@ const getLevelColor = (level: string) => {
     case 'CRITICAL':
       return 'bg-red-200 text-red-900'
     default:
-      return 'bg-gray-100 text-gray-800'
+      return 'bg-muted text-foreground'
   }
 }
 
@@ -144,7 +144,7 @@ export function ExpandableErrorPanel({
               placeholder="Search logs..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 border border-border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
           <div className="flex gap-1">
@@ -163,26 +163,26 @@ export function ExpandableErrorPanel({
         </div>
 
         {/* Log Count */}
-        <div className="text-sm text-gray-500">
+        <div className="text-sm text-muted-foreground">
           Showing {filteredLogs.length} of {logs.length} logs
         </div>
 
         {/* Logs List */}
         <div className="space-y-2 max-h-[600px] overflow-y-auto">
           {filteredLogs.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
+            <div className="text-center py-8 text-muted-foreground">
               No logs found
             </div>
           ) : (
             filteredLogs.map((log, index) => (
               <div
                 key={index}
-                className="border border-gray-200 rounded-lg hover:border-gray-300 transition-colors"
+                className="border border-border rounded-lg hover:border-border transition-colors"
               >
                 {/* Log Header - Always Visible */}
                 <button
                   onClick={() => toggleExpand(index)}
-                  className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                  className="w-full px-4 py-3 flex items-center justify-between hover:bg-muted transition-colors"
                 >
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     {getLevelIcon(log.level)}
@@ -191,7 +191,7 @@ export function ExpandableErrorPanel({
                     </Badge>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate text-left">{log.message}</p>
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs text-muted-foreground">
                         {log.timestamp} {log.correlationId && `(${log.correlationId})`}
                       </p>
                     </div>
@@ -205,23 +205,23 @@ export function ExpandableErrorPanel({
 
                 {/* Expanded Details */}
                 {expandedLogs.has(index) && (
-                  <div className="border-t border-gray-200 bg-gray-50 px-4 py-3 space-y-3">
+                  <div className="border-t border-border bg-muted px-4 py-3 space-y-3">
                     {/* Category & Correlation */}
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div>
-                        <span className="text-gray-500 font-medium">Category:</span>
-                        <p className="text-gray-900">{log.category}</p>
+                        <span className="text-muted-foreground font-medium">Category:</span>
+                        <p className="text-foreground">{log.category}</p>
                       </div>
                       {log.correlationId && (
                         <div>
-                          <span className="text-gray-500 font-medium">Correlation ID:</span>
+                          <span className="text-muted-foreground font-medium">Correlation ID:</span>
                           <div className="flex items-center gap-2">
-                            <p className="text-gray-900 font-mono text-xs truncate">
+                            <p className="text-foreground font-mono text-xs truncate">
                               {log.correlationId}
                             </p>
                             <button
                               onClick={() => copyToClipboard(log.correlationId!)}
-                              className="text-gray-400 hover:text-gray-600"
+                              className="text-muted-foreground hover:text-foreground/80"
                             >
                               <Copy className="w-3 h-3" />
                             </button>
@@ -233,8 +233,8 @@ export function ExpandableErrorPanel({
                     {/* Context */}
                     {log.context && Object.keys(log.context).length > 0 && (
                       <div>
-                        <span className="text-gray-500 font-medium text-sm">Context:</span>
-                        <pre className="text-xs bg-white border border-gray-200 rounded p-2 overflow-x-auto mt-1">
+                        <span className="text-muted-foreground font-medium text-sm">Context:</span>
+                        <pre className="text-xs bg-card border border-border rounded p-2 overflow-x-auto mt-1">
                           {JSON.stringify(log.context, null, 2)}
                         </pre>
                       </div>
@@ -246,25 +246,25 @@ export function ExpandableErrorPanel({
                         <span className="text-red-700 font-medium text-sm">Error Details:</span>
                         <div className="mt-2 space-y-1 text-sm">
                           <p>
-                            <span className="text-gray-500 font-medium">Name:</span>{' '}
-                            <span className="text-gray-900">{log.error.name}</span>
+                            <span className="text-muted-foreground font-medium">Name:</span>{' '}
+                            <span className="text-foreground">{log.error.name}</span>
                           </p>
                           <p>
-                            <span className="text-gray-500 font-medium">Message:</span>{' '}
-                            <span className="text-gray-900">{log.error.message}</span>
+                            <span className="text-muted-foreground font-medium">Message:</span>{' '}
+                            <span className="text-foreground">{log.error.message}</span>
                           </p>
                           {log.error.code && (
                             <p>
-                              <span className="text-gray-500 font-medium">Code:</span>{' '}
-                              <span className="text-gray-900">{log.error.code}</span>
+                              <span className="text-muted-foreground font-medium">Code:</span>{' '}
+                              <span className="text-foreground">{log.error.code}</span>
                             </p>
                           )}
                           {log.error.stack && (
                             <details>
-                              <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
+                              <summary className="cursor-pointer text-muted-foreground hover:text-foreground/80">
                                 Stack Trace
                               </summary>
-                              <pre className="text-xs bg-white border border-gray-200 rounded p-2 overflow-x-auto mt-1">
+                              <pre className="text-xs bg-card border border-border rounded p-2 overflow-x-auto mt-1">
                                 {log.error.stack}
                               </pre>
                             </details>
@@ -280,22 +280,22 @@ export function ExpandableErrorPanel({
                         <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
                           {log.metrics.duration !== undefined && (
                             <p>
-                              <span className="text-gray-500 font-medium">Duration:</span>{' '}
-                              <span className="text-gray-900">{log.metrics.duration}ms</span>
+                              <span className="text-muted-foreground font-medium">Duration:</span>{' '}
+                              <span className="text-foreground">{log.metrics.duration}ms</span>
                             </p>
                           )}
                           {log.metrics.memoryBefore !== undefined && (
                             <p>
-                              <span className="text-gray-500 font-medium">Memory Before:</span>{' '}
-                              <span className="text-gray-900">
+                              <span className="text-muted-foreground font-medium">Memory Before:</span>{' '}
+                              <span className="text-foreground">
                                 {(log.metrics.memoryBefore / 1024 / 1024).toFixed(2)}MB
                               </span>
                             </p>
                           )}
                           {log.metrics.memoryAfter !== undefined && (
                             <p>
-                              <span className="text-gray-500 font-medium">Memory After:</span>{' '}
-                              <span className="text-gray-900">
+                              <span className="text-muted-foreground font-medium">Memory After:</span>{' '}
+                              <span className="text-foreground">
                                 {(log.metrics.memoryAfter / 1024 / 1024).toFixed(2)}MB
                               </span>
                             </p>

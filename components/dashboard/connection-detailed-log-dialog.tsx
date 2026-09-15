@@ -197,7 +197,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
       case "success": return "text-emerald-600"
       case "warning": return "text-amber-600"
       case "error": return "text-red-600"
-      default: return "text-slate-600"
+      default: return "text-foreground/80"
     }
   }
 
@@ -263,12 +263,12 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
           <TabsContent value="overview" className="mt-0">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">Total Cycles</div>
-                <div className="text-xl font-bold text-slate-900">{metrics?.cyclesCompleted || 0}</div>
+                <div className="text-xs text-muted-foreground">Total Cycles</div>
+                <div className="text-xl font-bold text-foreground">{metrics?.cyclesCompleted || 0}</div>
                 <Progress value={Math.min(100, (metrics?.cyclesCompleted || 0) / 10)} className="h-1" />
               </Card>
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">Success Rate</div>
+                <div className="text-xs text-muted-foreground">Success Rate</div>
                 <div className="text-xl font-bold text-emerald-600">{metrics?.cycleSuccessRate?.toFixed(1) || 0}%</div>
                 <Progress value={metrics?.cycleSuccessRate || 0} className="h-1 bg-emerald-100" />
               </Card>
@@ -290,35 +290,35 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                   `Cumulative since run start: ${metrics?.indicationsTotal || 0}`
                 }
               >
-                <div className="text-xs text-slate-500">Indications (alive)</div>
+                <div className="text-xs text-muted-foreground">Indications (alive)</div>
                 <div className="text-xl font-bold text-violet-600 tabular-nums flex items-baseline gap-1">
                   {metrics?.activeIndicationsTotal || 0}
-                  <span className="text-[10px] font-normal text-slate-500">
+                  <span className="text-[10px] font-normal text-muted-foreground">
                     / {metrics?.indicationsTotal || 0}
                   </span>
                 </div>
               </Card>
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">Avg Cycle Time</div>
+                <div className="text-xs text-muted-foreground">Avg Cycle Time</div>
                 <div className="text-xl font-bold text-purple-600">{metrics?.averageCycleTime || 0}ms</div>
               </Card>
 
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">Prehistoric Candles</div>
-                <div className="text-lg font-bold text-slate-700">{metrics?.prehistoricCandles?.toLocaleString() || 0}</div>
+                <div className="text-xs text-muted-foreground">Prehistoric Candles</div>
+                <div className="text-lg font-bold text-foreground/80">{metrics?.prehistoricCandles?.toLocaleString() || 0}</div>
               </Card>
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">Symbols Loaded</div>
-                <div className="text-lg font-bold text-slate-700">{metrics?.symbolsLoaded || 0}</div>
+                <div className="text-xs text-muted-foreground">Symbols Loaded</div>
+                <div className="text-lg font-bold text-foreground/80">{metrics?.symbolsLoaded || 0}</div>
               </Card>
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">CPU Usage</div>
-                <div className="text-lg font-bold text-slate-700">{metrics?.cpuUsage || 0}%</div>
+                <div className="text-xs text-muted-foreground">CPU Usage</div>
+                <div className="text-lg font-bold text-foreground/80">{metrics?.cpuUsage || 0}%</div>
                 <Progress value={metrics?.cpuUsage || 0} className="h-1" />
               </Card>
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-slate-500">Memory Usage</div>
-                <div className="text-lg font-bold text-slate-700">{metrics?.memoryUsage || 0}%</div>
+                <div className="text-xs text-muted-foreground">Memory Usage</div>
+                <div className="text-lg font-bold text-foreground/80">{metrics?.memoryUsage || 0}%</div>
                 <Progress value={metrics?.memoryUsage || 0} className="h-1" />
               </Card>
             </div>
@@ -330,7 +330,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                   {logs.slice(0, 30).map(entry => (
                     <div key={entry.id} className={`flex items-start gap-2 text-xs py-1 ${getTypeColor(entry.type)}`}>
                       <span className="mt-0.5">{getTypeIcon(entry.type)}</span>
-                      <span className="text-slate-400 min-w-[70px]">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                      <span className="text-muted-foreground min-w-[70px]">{new Date(entry.timestamp).toLocaleTimeString()}</span>
                       <span>{entry.message}</span>
                     </div>
                   ))}
@@ -346,7 +346,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                 <Card key={category} className="overflow-hidden">
                   <button
                     onClick={() => toggleCategory(category)}
-                    className="w-full flex items-center justify-between p-3 hover:bg-slate-50 transition-colors"
+                    className="w-full flex items-center justify-between p-3 hover:bg-muted transition-colors"
                   >
                     <div className="flex items-center gap-2">
                       {expandedCategories[category] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -366,7 +366,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                           {entries.map(entry => (
                             <div key={entry.id} className={`flex items-start gap-2 text-xs py-1 ${getTypeColor(entry.type)}`}>
                               <span className="mt-0.5">{getTypeIcon(entry.type)}</span>
-                              <span className="text-slate-400 min-w-[70px]">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                              <span className="text-muted-foreground min-w-[70px]">{new Date(entry.timestamp).toLocaleTimeString()}</span>
                               <span className="flex-1">{entry.message}</span>
                             </div>
                           ))}
@@ -383,10 +383,10 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
           <TabsContent value="data" className="mt-0">
             <div className="grid grid-cols-3 gap-3 mb-4">
               <Card className="p-3 space-y-2">
-                <h5 className="text-xs font-semibold text-slate-700">Prehistoric Data</h5>
+                <h5 className="text-xs font-semibold text-foreground/80">Prehistoric Data</h5>
                 <div className="text-xs space-y-1">
-                  <div className="flex justify-between"><span className="text-slate-500">Candles Processed</span><span>{metrics?.prehistoricCandles?.toLocaleString() || 0}</span></div>
-                  <div className="flex justify-between"><span className="text-slate-500">Symbols Loaded</span><span>{metrics?.symbolsLoaded || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Candles Processed</span><span>{metrics?.prehistoricCandles?.toLocaleString() || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Symbols Loaded</span><span>{metrics?.symbolsLoaded || 0}</span></div>
                 </div>
               </Card>
               {/*
@@ -398,16 +398,16 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                 carrying live Sets without leaving the Data tab.
               */}
               <Card className="p-3 space-y-2">
-                <h5 className="text-xs font-semibold text-slate-700">Indications</h5>
+                <h5 className="text-xs font-semibold text-foreground/80">Indications</h5>
                 <div className="text-xs space-y-1">
-                  <div className="flex justify-between"><span className="text-slate-500">Total Generated</span><span className="tabular-nums">{metrics?.indicationsTotal || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Total Generated</span><span className="tabular-nums">{metrics?.indicationsTotal || 0}</span></div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Active Now</span>
+                    <span className="text-muted-foreground">Active Now</span>
                     <span className="tabular-nums font-semibold text-violet-700">
                       {metrics?.activeIndicationsTotal || 0}
                     </span>
                   </div>
-                  <div className="flex justify-between text-[10px] text-slate-500">
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
                     <span>D / M / A / O</span>
                     <span className="tabular-nums">
                       {metrics?.activeIndDirection || 0} ·
@@ -419,16 +419,16 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                 </div>
               </Card>
               <Card className="p-3 space-y-2">
-                <h5 className="text-xs font-semibold text-slate-700">Strategies</h5>
+                <h5 className="text-xs font-semibold text-foreground/80">Strategies</h5>
                 <div className="text-xs space-y-1">
-                  <div className="flex justify-between"><span className="text-slate-500">Evaluated</span><span className="tabular-nums">{metrics?.strategiesEvaluated || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Evaluated</span><span className="tabular-nums">{metrics?.strategiesEvaluated || 0}</span></div>
                   <div className="flex justify-between">
-                    <span className="text-slate-500">Active Now</span>
+                    <span className="text-muted-foreground">Active Now</span>
                     <span className="tabular-nums font-semibold text-amber-700">
                       {metrics?.activeStrategiesTotal || 0}
                     </span>
                   </div>
-                  <div className="flex justify-between text-[10px] text-slate-500">
+                  <div className="flex justify-between text-[10px] text-muted-foreground">
                     <span>B / M / R</span>
                     <span className="tabular-nums">
                       {metrics?.activeStratBase || 0} ·
@@ -436,7 +436,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                       {metrics?.activeStratReal || 0}
                     </span>
                   </div>
-                  <div className="flex justify-between"><span className="text-slate-500">Positions Generated</span><span className="tabular-nums">{metrics?.positionsGenerated || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Positions Generated</span><span className="tabular-nums">{metrics?.positionsGenerated || 0}</span></div>
                 </div>
               </Card>
             </div>
@@ -472,8 +472,8 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
             {errorCount === 0 && warningCount === 0 ? (
               <Card className="p-8 text-center">
                 <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-3" />
-                <h4 className="font-medium text-slate-700 mb-1">No errors detected</h4>
-                <p className="text-sm text-slate-500">All systems running normally with 0 errors and 0 warnings</p>
+                <h4 className="font-medium text-foreground/80 mb-1">No errors detected</h4>
+                <p className="text-sm text-muted-foreground">All systems running normally with 0 errors and 0 warnings</p>
               </Card>
             ) : (
               <div className="space-y-2">
@@ -486,8 +486,8 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                     <ScrollArea className="h-[200px]">
                       <div className="space-y-1.5">
                         {logs.filter(l => l.type === "error").map(entry => (
-                          <div key={entry.id} className="text-xs bg-white rounded p-2 border border-red-100">
-                            <div className="flex justify-between text-slate-500 mb-1">
+                          <div key={entry.id} className="text-xs bg-card rounded p-2 border border-red-100">
+                            <div className="flex justify-between text-muted-foreground mb-1">
                               <span>{entry.category}</span>
                               <span>{new Date(entry.timestamp).toLocaleString()}</span>
                             </div>
@@ -508,8 +508,8 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                     <ScrollArea className="h-[200px]">
                       <div className="space-y-1.5">
                         {logs.filter(l => l.type === "warning").map(entry => (
-                          <div key={entry.id} className="text-xs bg-white rounded p-2 border border-amber-100">
-                            <div className="flex justify-between text-slate-500 mb-1">
+                          <div key={entry.id} className="text-xs bg-card rounded p-2 border border-amber-100">
+                            <div className="flex justify-between text-muted-foreground mb-1">
                               <span>{entry.category}</span>
                               <span>{new Date(entry.timestamp).toLocaleString()}</span>
                             </div>

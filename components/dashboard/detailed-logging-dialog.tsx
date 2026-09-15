@@ -198,7 +198,7 @@ export function DetailedLoggingDialog() {
       case "live": return "bg-amber-100 text-amber-800"
       case "engine": return "bg-orange-100 text-orange-800"
       case "error": return "bg-red-100 text-red-800"
-      default: return "bg-gray-100 text-gray-800"
+      default: return "bg-muted text-foreground"
     }
   }
 
@@ -279,7 +279,7 @@ export function DetailedLoggingDialog() {
         )}
 
         {/* Main Content - Logs or Data */}
-        <ScrollArea className="flex-1 min-h-0 border rounded-md bg-slate-50/70 p-2">
+        <ScrollArea className="flex-1 min-h-0 border rounded-md bg-muted/70 p-2">
           {activeTab === "data" ? (
             <div className="space-y-4 p-2">
               {summary ? (
@@ -625,7 +625,7 @@ export function DetailedLoggingDialog() {
                   onOpenChange={() => toggleExpand(log.id)}
                 >
                   <CollapsibleTrigger asChild>
-                    <div className="flex items-center gap-2 p-2 hover:bg-muted rounded cursor-pointer text-xs border border-transparent hover:border-slate-200">
+                    <div className="flex items-center gap-2 p-2 hover:bg-muted rounded cursor-pointer text-xs border border-transparent hover:border-border">
                       {expandedIds.has(log.id) ? (
                         <ChevronDown className="h-3 w-3 shrink-0" />
                       ) : (
@@ -647,7 +647,7 @@ export function DetailedLoggingDialog() {
                     </div>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
-                    <div className="ml-6 p-2 bg-slate-100 rounded text-xs space-y-1">
+                    <div className="ml-6 p-2 bg-muted rounded text-xs space-y-1">
                       {log.details && (
                         <>
                           {log.details.timeframe && (
@@ -760,31 +760,31 @@ export function DetailedLoggingDialog() {
             </div>
 
             <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded bg-slate-50 p-2">Realtime cycles: <span className="font-semibold">{summary.realtimeCycles || 0}</span></div>
-              <div className="rounded bg-slate-50 p-2">Realtime active connections: <span className="font-semibold">{summary.realtimeRunningConnections || 0}</span></div>
+              <div className="rounded bg-muted p-2">Realtime cycles: <span className="font-semibold">{summary.realtimeCycles || 0}</span></div>
+              <div className="rounded bg-muted p-2">Realtime active connections: <span className="font-semibold">{summary.realtimeRunningConnections || 0}</span></div>
             </div>
             
             {/* Pseudo Positions Breakdown */}
             <div className="mt-2 grid grid-cols-4 gap-2 text-xs">
-              <div className="bg-gray-50 rounded p-2">
+              <div className="bg-muted rounded p-2">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Base Positions:</span>
                   <span className="font-mono font-semibold">{summary.pseudoPositions.base}</span>
                 </div>
               </div>
-              <div className="bg-gray-50 rounded p-2">
+              <div className="bg-muted rounded p-2">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Main Positions:</span>
                   <span className="font-mono font-semibold">{summary.pseudoPositions.main}</span>
                 </div>
               </div>
-              <div className="bg-gray-50 rounded p-2">
+              <div className="bg-muted rounded p-2">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Real Positions:</span>
                   <span className="font-mono font-semibold">{summary.pseudoPositions.real}</span>
                 </div>
               </div>
-              <div className="bg-gray-50 rounded p-2">
+              <div className="bg-muted rounded p-2">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Total:</span>
                   <span className="font-mono font-semibold text-green-600">{summary.pseudoPositions.total}</span>
