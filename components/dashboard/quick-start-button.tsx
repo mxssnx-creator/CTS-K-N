@@ -525,19 +525,19 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
                     <span className="font-medium">Strategy Cycles:</span> {functionalOverview.counts?.strategyCycles || 0}
                   </div>
                   <div>
-                    <span className="font-medium">Strategies Evaluated:</span> {functionalOverview.strategiesEvaluated}
+                    <span className="font-medium">Strategies Evaluated (this cycle):</span> {functionalOverview.strategiesEvaluated}
                   </div>
                   <div>
-                    <span className="font-medium">Base Strategies:</span> {functionalOverview.counts?.baseStrategies || (functionalOverview.baseSetsCreated ? "Active" : "0")}
+                    <span className="font-medium">Base Strategies (this cycle):</span> {functionalOverview.counts?.baseStrategies || (functionalOverview.baseSetsCreated ? "Active" : "0")}
                   </div>
                   <div>
-                    <span className="font-medium">Main Strategies:</span> {functionalOverview.counts?.mainStrategies || (functionalOverview.mainSetsCreated ? "Active" : "0")}
+                    <span className="font-medium">Main Strategies (this cycle):</span> {functionalOverview.counts?.mainStrategies || (functionalOverview.mainSetsCreated ? "Active" : "0")}
                   </div>
                   <div>
-                    <span className="font-medium">Real Strategies:</span> {functionalOverview.counts?.realStrategies || (functionalOverview.realSetsCreated ? "Active" : "0")}
+                    <span className="font-medium">Real Strategies (this cycle):</span> {functionalOverview.counts?.realStrategies || (functionalOverview.realSetsCreated ? "Active" : "0")}
                   </div>
                   <div>
-                    <span className="font-medium">Live Strategies:</span> {functionalOverview.counts?.liveStrategies || (functionalOverview.liveSetsCreated ? "Active" : "0")}
+                    <span className="font-medium">Live Strategies (this cycle):</span> {functionalOverview.counts?.liveStrategies || (functionalOverview.liveSetsCreated ? "Active" : "0")}
                   </div>
                   <div className="col-span-2">
                     <span className="font-medium">DB Position Entries:</span> {functionalOverview.positionsEntriesCreated}

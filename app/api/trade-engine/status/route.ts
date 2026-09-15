@@ -6,6 +6,7 @@ import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-sc
 import { buildMissingTradeEngineWorkerDiagnostic, readTradeEngineWorkerHeartbeat } from "@/lib/trade-engine-worker-heartbeat"
 import { readTradeEngineStatusCache, writeTradeEngineStatusCache } from "@/lib/trade-engine-status-cache"
 import { getDeploymentRuntimeLabel, isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -235,12 +236,16 @@ export async function GET() {
               // Get progression state
               const progressionState = await ProgressionStateManager.getProgressionState(conn.id, engineType)
           
-          // Get positions and trades counts
-          const positionsKey = `positions:${conn.id}`
-          const tradesKey = `trades:${conn.id}`
-          
-          const positionsCount = await client.scard(positionsKey)
-          const tradesCount = await client.scard(tradesKey)
+          // Positions and trades come from the canonical live execution
+          // summary — the same source as /api/positions/stats and
+          // /api/tracking/overview — so every surface reports identical
+          // numbers. The previous `positions:<id>` / `trades:<id>` sets are
+          // not written by any current code path and always read as 0.
+          const executionSummary = await getLiveExecutionSummary(conn.id).catch(() => null)
+          const positionsCount = executionSummary?.totalPositions ?? 0
+          const tradesCount = executionSummary?.totalTrades ?? 0
+          const openPositionsCount = executionSummary?.openPositions ?? 0
+          const openOrdersCount = executionSummary?.openOrders ?? 0
               const [
                 rawEngineState,
                 settingsEngineState,
@@ -309,6 +314,8 @@ export async function GET() {
             activelyUsing: conn.is_enabled_dashboard === true || conn.is_enabled_dashboard === "1",
             positions: positionsCount,
             trades: tradesCount,
+            openPositions: openPositionsCount,
+            openOrders: openOrdersCount,
             progression: {
               cycles_completed: progressionState.cyclesCompleted || 0,
               successful_cycles: progressionState.successfulCycles || 0,
@@ -344,6 +351,8 @@ export async function GET() {
       stopped: connectionStatuses.filter((c: any) => c.status === "stopped" || c.status === "error").length,
       totalTrades: connectionStatuses.reduce((sum: number, c: any) => sum + (c.trades || 0), 0),
       totalPositions: connectionStatuses.reduce((sum: number, c: any) => sum + (c.positions || 0), 0),
+      totalOpenPositions: connectionStatuses.reduce((sum: number, c: any) => sum + (c.openPositions || 0), 0),
+      totalOpenOrders: connectionStatuses.reduce((sum: number, c: any) => sum + (c.openOrders || 0), 0),
       errors: connectionStatuses.filter((c: any) => c.error).length,
     }
 
