@@ -1203,6 +1203,15 @@ const EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000   // initial response deadline; 
 const EXCHANGE_AMBIGUOUS_PLACE_GRACE_MS = 3_000
 const EXCHANGE_AMBIGUOUS_RECOVERY_MS    = 3_000
 const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption + sync prefetch
+// Post-entry protection audit: retry venue reads before treating an unreadable
+// snapshot as a failed audit (total ~25 s of patience after the entry burst).
+const POST_ENTRY_AUDIT_READ_DELAYS_MS_DEFAULT = [2_000, 5_000, 8_000, 10_000]
+function postEntryAuditReadDelaysMs(): number[] {
+  const raw = process.env.CTS_POST_ENTRY_AUDIT_READ_DELAYS_MS
+  if (raw === undefined) return POST_ENTRY_AUDIT_READ_DELAYS_MS_DEFAULT
+  const parsed = raw.split(",").map((v) => Number(v.trim())).filter((v) => Number.isFinite(v) && v >= 0)
+  return parsed
+}
 const EXCHANGE_TIMEOUT_GET_ORDER_MS     = 6_000   // fill detection; retry via next sync tick on miss
 const SYSTEM_CLOSE_RETRY_DELAYS_MS = [60_000, 120_000, 240_000, 300_000] as const
 
@@ -15768,26 +15777,69 @@ export async function executeLivePosition(
     }
 
     if (livePosition.executedQuantity > 0) {
+      // The audit reads venue positions and open orders. Under the request
+      // burst that follows an entry (fill polling, three protection orders,
+      // aggregate reconcile) the venue regularly needs several seconds, and a
+      // single 8 s read used to fail with "[getPositions] Timeout" — after
+      // which a filled, already-armed position was rolled back on no
+      // evidence, and the strategy re-entered a minute later (observed:
+      // four ATOMUSDT entries in eleven minutes). A read failure is not a
+      // proven violation: retry the read with backoff, and only roll back
+      // when the venue snapshot itself proves the protection incomplete.
       let finalAdmission: EntryProtectionAdmissionDecision | null = null
-      try {
-        finalAdmission = await auditEntryProtectionBeforeVenueMutation({
-          connectionId,
-          symbol: realPosition.symbol,
-          direction: realPosition.direction,
-          connector: exchangeConnector,
-          requireCapacity: false,
-        })
-      } catch (error) {
-        console.warn(
-          `${LOG_PREFIX} post-entry protection verification failed: ${error instanceof Error ? error.message : String(error)}`,
-        )
+      let auditReadError: string | null = null
+      const auditReadDelays = postEntryAuditReadDelaysMs()
+      for (let attempt = 0; attempt < auditReadDelays.length + 1; attempt++) {
+        try {
+          finalAdmission = await auditEntryProtectionBeforeVenueMutation({
+            connectionId,
+            symbol: realPosition.symbol,
+            direction: realPosition.direction,
+            connector: exchangeConnector,
+            requireCapacity: false,
+          })
+          auditReadError = null
+          break
+        } catch (error) {
+          auditReadError = error instanceof Error ? error.message : String(error)
+          console.warn(
+            `${LOG_PREFIX} post-entry protection verification read failed (attempt ${attempt + 1}/${auditReadDelays.length + 1}): ${auditReadError}`,
+          )
+          if (attempt < auditReadDelays.length) {
+            await new Promise((resolve) => setTimeout(resolve, auditReadDelays[attempt]))
+          }
+        }
       }
-      if (initialSecurityReconcileFailed || !finalAdmission?.safe) {
+      if (!finalAdmission) {
+        // Unreadable after retries: the position is filled and its protection
+        // legs were armed above. Closing it now would be a venue mutation on
+        // no information (and can time out the same way). Keep it open under
+        // its armed protection, mark it for the next verification pass, and
+        // halt NEW exposure until an authoritative audit succeeds.
+        const detail = auditReadError || "post_entry_authoritative_audit_unavailable"
+        pushStep(livePosition, "post_entry_audit_deferred", false, detail)
+        livePosition.statusReason = `post_entry_audit_deferred: ${detail}`
+        await savePosition(livePosition)
+        await client.setex(
+          entryProtectionHaltKeyOf(connectionId),
+          24 * 60 * 60,
+          JSON.stringify({ at: Date.now(), reason: "post_entry_audit_unavailable", violations: [detail].slice(0, 24) }),
+        ).catch(() => {})
+        await logProgressionEvent(
+          connectionId,
+          "live_trading",
+          "warning",
+          `Post-entry protection audit deferred for ${realPosition.symbol} ${realPosition.direction}: venue snapshot unavailable; position kept open under armed protection, new entries halted`,
+          { positionId: livePosition.id, symbol: realPosition.symbol, direction: realPosition.direction, detail },
+        ).catch(() => {})
+        return livePosition
+      }
+      if (!finalAdmission.safe) {
         await rollbackEntryWithoutCompleteProtection(
           "Post-entry venue audit could not prove row TP/SL plus full-slot security protection",
           [
             ...(initialSecurityReconcileFailed ? ["entry_security_reconcile_failed"] : []),
-            ...(finalAdmission?.violations || ["post_entry_authoritative_audit_unavailable"]),
+            ...(finalAdmission.violations || []),
           ],
         )
         return livePosition
