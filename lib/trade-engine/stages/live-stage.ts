@@ -1808,6 +1808,23 @@ function scheduleSystemCloseRetry(
   return retry
 }
 
+/**
+ * Whether a live row has an authoritative venue handle that a system close can
+ * act on. Adopted rows (`adopted_from_exchange_control_book` /
+ * `adopted_from_exchange`) are created only after an ownership proof — an
+ * explicit CTS watermark on the venue position or a complete connection-owned
+ * three-order protection book — and record the venue position under
+ * `exchangeData.positionId`. Before this helper existed, only `orderId` and
+ * `exchangeData.exchangePositionId` counted, so every adopted row was treated
+ * as "external position protection": the exchange close was skipped each
+ * cycle, the row was kept open, its protection legs were re-armed on top of
+ * the existing book, and the max-hold force-close looped forever.
+ */
+export function hasSystemVenueHandle(position: Pick<LivePosition, "orderId" | "exchangeData">): boolean {
+  const data = (position.exchangeData || {}) as Record<string, unknown>
+  return !!(position.orderId || data.exchangePositionId || data.positionId)
+}
+
 function isSystemCloseRetryDeferred(position: LivePosition, nowMs = Date.now()): boolean {
   return Number(position.systemCloseRetry?.nextRetryAt || 0) > nowMs
 }
@@ -16789,7 +16806,7 @@ export async function closeLivePosition(
     // Fallback: if `orderId` is missing but `exchangePositionId` exists
     // (reconciled/adopted position), use it to close via exchange-side
     // position ID. Without EITHER, skip all exchange operations.
-    const hasSystemOrderId = !!(position.orderId || position.exchangeData?.exchangePositionId)
+    const hasSystemOrderId = hasSystemVenueHandle(position)
 
     const hadSlId = !!position.stopLossOrderId
     const hadTpId = !!position.takeProfitOrderId
@@ -16891,6 +16908,7 @@ export async function closeLivePosition(
     // Close-result state — set by the branches below.
     let exchangeCloseSuccess = false
     let exchangeCloseReason: "ok" | "already_closed" | "failed" | "skipped" = "skipped"
+    let lastErrorMsgForBackoff = "invalid_response"
 
     if (exchangeConnector && hasSystemOrderId && Number(position.executedQuantity || 0) <= 0) {
       exchangeCloseSuccess = true
@@ -17030,6 +17048,7 @@ export async function closeLivePosition(
           }
 
           lastErrorMsg = (r && typeof r === "object" && r.error) ? String(r.error) : "invalid_response"
+          lastErrorMsgForBackoff = lastErrorMsg
           terminalCloseError = lastErrorMsg
 
           // ── Already-closed reconciliation ─��─���─────────────────────────
@@ -17057,6 +17076,7 @@ export async function closeLivePosition(
           break
         } catch (err) {
           lastErrorMsg = err instanceof Error ? err.message : String(err)
+          lastErrorMsgForBackoff = lastErrorMsg
           terminalCloseError = lastErrorMsg
           console.error(`${LOG_PREFIX} [v0] Exchange close threw error (attempt ${attempt + 1}): ${lastErrorMsg}`)
           // Thrown timeouts and network errors ARE retryable.
@@ -17220,6 +17240,13 @@ export async function closeLivePosition(
       const rollbackStatus: LivePosition["status"] = originalStatus && originalStatus !== "closing"
         ? originalStatus
         : "open"
+      // A close that never reached the venue (skipped) or came back without a
+      // classifiable failure would otherwise be retried on every cycle with
+      // `retry_at=0` — observed as a max-hold force-close loop. Give it the
+      // same bounded backoff a rejected venue close receives.
+      if (!position.systemCloseRetry || Number(position.systemCloseRetry.nextRetryAt || 0) <= Date.now()) {
+        scheduleSystemCloseRetry(position, exchangeCloseReason === "skipped" ? "invalid_response" : lastErrorMsgForBackoff)
+      }
       position.status = rollbackStatus
       position.statusReason =
         `close_failed_exchange_unconfirmed: ${closeReason}; position kept open; ` +
