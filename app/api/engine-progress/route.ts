@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getProgressManager, getAllProgressManagers } from "@/lib/engine-progress-manager"
 import { getEngineLogger } from "@/lib/engine-logger"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getRedisClient, initRedis, getActiveConnectionsForEngine } from "@/lib/redis-db"
 import { buildProgressionScope } from "@/lib/progression-scope"
 
 export const dynamic = "force-dynamic"
@@ -35,11 +35,20 @@ export async function GET(request: NextRequest) {
     const engineType = searchParams.get("engineType")
 
     if (!connectionId) {
-      // Return all progress managers
+      // The in-process registry is only populated in the process that runs
+      // the engine. In the worker/multi-unit deployment this request handler
+      // does not, so enumerate the canonical enabled connections and read the
+      // Redis-backed rotation progress for each; in-process manager state is
+      // merged when it happens to exist.
       const allManagers = getAllProgressManagers()
-      const allProgress = await Promise.all(Array.from(allManagers.entries()).map(async ([id, manager]) => ({
+      const canonical = await getActiveConnectionsForEngine().catch(() => [] as any[])
+      const ids = new Set<string>([...allManagers.keys(), ...canonical.map((c: any) => String(c.id))])
+      const allProgress = await Promise.all(Array.from(ids).map(async (id) => ({
         connectionId: id,
-        state: { ...manager.getState(), realtimeRotation: await rotationProgress(id, engineType) },
+        state: {
+          ...(allManagers.get(id)?.getState() ?? getProgressManager(id).getState()),
+          realtimeRotation: await rotationProgress(id, engineType),
+        },
       })))
       return NextResponse.json({ progress: allProgress })
     }

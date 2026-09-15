@@ -90,7 +90,7 @@ export function GlobalTradeEngineControls() {
           connectionHeartbeatFresh: data.connectionHeartbeatFresh === true,
           diagnosticHint: data.diagnostics?.hint || null,
           connectedExchanges: data.connectedExchanges || data.summary?.total || 0,
-          activePositions: data.activePositions || data.summary?.totalPositions || 0,
+          activePositions: data.activePositions || data.summary?.totalOpenPositions || data.summary?.totalPositions || 0,
           totalProfit: data.totalProfit || 0,
           uptime: data.uptime || 0,
           lastUpdate: new Date(data.lastUpdate || Date.now()),

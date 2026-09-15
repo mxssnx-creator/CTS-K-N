@@ -135,7 +135,10 @@ export function SeedSystemDialog() {
         data: {
           prehistoricLoaded: functionalOverview.symbolsActive || 0,
           realtimeActive: monitoring.connections?.liveTrade || 0,
-          evaluationsProcessed: functionalOverview.indicationsCalculated || 0,
+          // Strategy cycles, not the indication cycle count: the neighbouring
+          // "Cycles" card already shows indication cycles, and the snapshot
+          // "Evaluations (this cycle)" card above is a per-cycle funnel size.
+          evaluationsProcessed: functionalOverview.counts?.strategyCycles || 0,
           cyclesCompleted: functionalOverview.counts?.indicationCycles || 0
         }
       })
@@ -239,7 +242,7 @@ export function SeedSystemDialog() {
                     <Card className="border-0 bg-slate-50">
                       <CardContent className="p-3">
                         <div className="text-xs text-slate-500 flex items-center gap-1">
-                          <BarChart3 className="w-3 h-3" /> Evaluations
+                          <BarChart3 className="w-3 h-3" /> Evaluations (this cycle)
                         </div>
                         <div className="text-lg font-bold text-slate-800">
                           {stats.evaluations.total}
@@ -347,11 +350,11 @@ export function SeedSystemDialog() {
                         <div className="text-base font-bold font-mono text-emerald-600">{stats.data.realtimeActive} Active</div>
                       </div>
                       <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Evaluations</div>
+                        <div className="text-xs text-slate-500">Strategy Cycles</div>
                         <div className="text-base font-bold font-mono">{stats.data.evaluationsProcessed}</div>
                       </div>
                       <div className="bg-white border rounded p-2.5">
-                        <div className="text-xs text-slate-500">Cycles</div>
+                        <div className="text-xs text-slate-500">Indication Cycles</div>
                         <div className="text-base font-bold font-mono">{stats.data.cyclesCompleted}</div>
                       </div>
                     </div>
