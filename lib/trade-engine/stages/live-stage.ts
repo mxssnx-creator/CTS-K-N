@@ -16853,7 +16853,22 @@ export async function closeLivePosition(
       lockId,
       POSITION_MUTATION_LOCK_TTL_MS,
     )
-    const transitioned = await mutatePositionWithVersionCheck(position, ["open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated", "closing", "closing_partial"], draft => {
+    // A `pending` row is normally still being submitted and must not be
+    // closed from outside its own execution flow. The one exception is a
+    // pre-fill reservation that never obtained a venue handle: nothing on the
+    // venue exists for it, isPreFillWithoutExchangeHandle already treats it as
+    // locally finalizable further below, but without this transition the
+    // stuck-placement sweeper could never reach that code (observed: pending
+    // ATOMUSDT/UNIUSDT rows with executedQuantity 0 and no orderId surviving
+    // every close attempt with a null result).
+    const pendingPreFillWithoutHandle =
+      position.status === "pending" &&
+      isPreFillWithoutExchangeHandle(position, position.status, hasSystemVenueHandle(position))
+    const closingTransitionFrom: string[] = [
+      "open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated", "closing", "closing_partial",
+      ...(pendingPreFillWithoutHandle ? ["pending"] : []),
+    ]
+    const transitioned = await mutatePositionWithVersionCheck(position, closingTransitionFrom, draft => {
       draft.status = "closing"
       draft.lockedAt = Date.now()
       draft.lockedBy = lockId

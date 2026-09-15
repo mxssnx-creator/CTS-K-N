@@ -35,3 +35,21 @@ describe("stuck pre-fill placement sweeper", () => {
     expect(src).toContain("const mayFinalizeClose = exchangeCloseSuccess || (!exchangeConnector && localOnlyCloseAllowed)")
   })
 })
+
+describe("closing a pending pre-fill row without a venue handle", () => {
+  test("closeLivePosition admits `pending` into the closing transition only for pre-fill rows without a venue handle", () => {
+    const src = readFileSync(resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
+    const fn = src.slice(src.indexOf("export async function closeLivePosition("))
+    expect(fn).toContain("const pendingPreFillWithoutHandle =")
+    expect(fn).toContain('isPreFillWithoutExchangeHandle(position, position.status, hasSystemVenueHandle(position))')
+    expect(fn).toContain('...(pendingPreFillWithoutHandle ? ["pending"] : [])')
+    expect(fn).toContain("mutatePositionWithVersionCheck(position, closingTransitionFrom, draft => {")
+    // The base list still excludes pending: an in-flight submission is never closed from outside.
+    expect(fn).toMatch(/"open", "filled", "partially_filled", "placed", "pending_fill", "placed_unconfirmed", "simulated", "closing", "closing_partial",\n\s+\.\.\.\(pendingPreFillWithoutHandle/)
+  })
+
+  test("the sweeper also runs from the realtime processor, which owns the sync of engine-active connections", () => {
+    const rt = readFileSync(resolve(process.cwd(), "lib/trade-engine/realtime-processor.ts"), "utf8")
+    expect(rt).toContain("await sweepStuckPreFillPlacements(this.connectionId).catch(() => undefined)")
+  })
+})
