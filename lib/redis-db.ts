@@ -6846,9 +6846,68 @@ export async function deleteSettings(key: string): Promise<void> {
   await client.del(`settings:${key}`)
 }
 
-export async function flushAll(): Promise<void> {
-  const client = getRedisClient()
-  await client.flushDb()
+/**
+ * Key prefixes that belong to other projects sharing this Redis database and
+ * must survive every CTS-K-N reset/flush. The production host runs CTS-G on
+ * the same instance and the same logical DB (prefix `cts-ga:`), so a bare
+ * FLUSHDB would destroy that project's state. Override with a comma-separated
+ * `CTS_REDIS_PROTECTED_PREFIXES`; an empty override protects nothing.
+ */
+export function protectedRedisKeyPrefixes(): string[] {
+  const raw = process.env.CTS_REDIS_PROTECTED_PREFIXES
+  const source = raw === undefined ? "cts-ga:,cts-g:" : raw
+  return source
+    .split(",")
+    .map((prefix) => prefix.trim())
+    .filter((prefix) => prefix.length > 0)
+}
+
+export interface OwnedKeyFlushResult {
+  deleted: number
+  protected: number
+  protectedPrefixes: string[]
+  batches: number
+}
+
+const OWNED_FLUSH_BATCH_SIZE = 500
+
+/**
+ * Delete every key owned by CTS-K-N in the current logical DB while leaving
+ * keys of co-located projects untouched. This replaces FLUSHDB for all reset
+ * and flush routes: it is the only wipe that is safe on a shared instance.
+ * Keys are removed in bounded batches so a large keyspace never becomes one
+ * giant command, and in-process caches are invalidated afterwards so stale
+ * connections or settings cannot be served after the wipe.
+ */
+export async function flushOwnedKeys(
+  client: Pick<RedisClientLike, "keys" | "del"> = getRedisClient(),
+): Promise<OwnedKeyFlushResult> {
+  const prefixes = protectedRedisKeyPrefixes()
+  const all = await client.keys("*")
+  const owned: string[] = []
+  let protectedCount = 0
+  for (const key of all) {
+    if (prefixes.some((prefix) => key.startsWith(prefix))) protectedCount++
+    else owned.push(key)
+  }
+  let deleted = 0
+  let batches = 0
+  for (let index = 0; index < owned.length; index += OWNED_FLUSH_BATCH_SIZE) {
+    const batch = owned.slice(index, index + OWNED_FLUSH_BATCH_SIZE)
+    deleted += await client.del(...batch)
+    batches++
+  }
+  invalidateConnectionsCache()
+  invalidateAppSettingsCache()
+  return { deleted, protected: protectedCount, protectedPrefixes: prefixes, batches }
+}
+
+/**
+ * Historical name kept for the reset/flush routes. It no longer issues
+ * FLUSHDB: on the shared production instance that wiped CTS-G as well.
+ */
+export async function flushAll(): Promise<OwnedKeyFlushResult> {
+  return flushOwnedKeys()
 }
 
 // Cache getRedisStats for 5 s. The key count comes from `client.dbSize()`

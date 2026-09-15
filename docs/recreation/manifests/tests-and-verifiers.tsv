@@ -272,6 +272,7 @@ unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
+unit	__tests__/unit/reset-db-preserves-foreign-keys.test.ts
 unit	__tests__/unit/retention-policy.test.ts
 unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts

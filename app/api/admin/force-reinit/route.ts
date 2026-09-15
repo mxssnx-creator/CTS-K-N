@@ -16,16 +16,17 @@ export async function POST(request: Request) {
   try {
     console.log("[v0] Force reinitialization of Redis database...")
 
-    const { initRedis } = await import("@/lib/redis-db")
-    const { getRedisClient } = await import("@/lib/redis-db")
+    const { initRedis, flushOwnedKeys } = await import("@/lib/redis-db")
     const { runMigrations, resetMigrationRunState } = await import("@/lib/redis-migrations")
 
     const startTime = Date.now()
 
-    // Clear all Redis keys
-    console.log("[v0] Clearing all Redis data...")
-    const client = getRedisClient()
-    await client.flushDb()
+    // Clear only CTS-K-N-owned keys. The shared production instance also holds
+    // another project's keys; FLUSHDB would have destroyed them.
+    console.log("[v0] Clearing CTS-K-N Redis data...")
+    await initRedis()
+    const flushed = await flushOwnedKeys()
+    console.log("[v0] Owned keys removed:", flushed)
 
     // Re-initialize
     console.log("[v0] Re-initializing Redis...")
