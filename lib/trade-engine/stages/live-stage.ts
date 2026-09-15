@@ -79,6 +79,7 @@ import {
   isTruthyFlag,
 } from "@/lib/connection-state-utils"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import {
   advanceBlockCountPausesOnPositionClose,
   buildBlockLegState,
@@ -12937,9 +12938,19 @@ export async function executeLivePosition(
     // of flags, credentials, and Redis checks, so production could display Live
     // ON while this branch silently created paper positions.
     const readinessIntent = readinessIntentForExecution(connSettings, executionIntent)
-    const liveReadiness = executionIntent === "direct"
+    const configuredReadiness = executionIntent === "direct"
       ? evaluateDirectTradeLiveReadiness(connSettings, connectionId)
       : evaluateRealTradeReadiness(connSettings, readinessIntent)
+    // Runtime admission is the interlock, not a display detail. The configured
+    // readiness above only reflects switches and credentials; the entry
+    // protection halt (`live:entry-protection-halt:<id>`) and the account
+    // snapshot halt live in Redis and were previously projected only onto
+    // status surfaces — the execution path still placed venue entries while
+    // every readiness surface showed "blocked". Project them here so a halted
+    // connection cannot open new exposure through any caller.
+    const liveReadiness = configuredReadiness.canPlaceRealOrders
+      ? await readLiveEntryReadiness(client, connectionId, configuredReadiness)
+      : configuredReadiness
     const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined

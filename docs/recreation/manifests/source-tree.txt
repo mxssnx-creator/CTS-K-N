@@ -186,6 +186,7 @@ __tests__/unit/live-dispatch-outcome.test.ts
 __tests__/unit/live-entry-budget-block-cache.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
 __tests__/unit/live-entry-readiness.test.ts
+__tests__/unit/live-execution-honours-entry-protection-halt.test.ts
 __tests__/unit/live-execution-summary.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-order-metrics-snapshot.test.ts
