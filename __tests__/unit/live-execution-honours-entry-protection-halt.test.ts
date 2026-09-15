@@ -17,7 +17,7 @@ describe("entry protection halt is enforced at execution, not only on status sur
     const fnStart = src.indexOf("export async function executeLivePosition(")
     expect(fnStart).toBeGreaterThan(0)
     const body = src.slice(fnStart)
-    const projection = body.indexOf("const admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)")
+    const projection = body.indexOf("let admission = await readLiveEntryReadiness(client, connectionId, liveReadiness)")
     const submission = body.indexOf("Step 5: Place entry order with retry")
     const trace = body.indexOf("const orderTrace: LiveOrderTrace = newLiveOrderTrace(")
     expect(projection).toBeGreaterThan(0)
