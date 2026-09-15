@@ -1,5 +1,11 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-09-16 ~06:20 UTC (Claude-Sitzung: Zombie-Zeilen gelöst)
+
+**Ursache der unschließbaren Zombies gefunden und behoben (PR #381, `main` edfdb672):** `closeLivePosition` erlaubte den Übergang nach `closing` nie aus `pending` (Liste: open/filled/partially_filled/placed/pending_fill/placed_unconfirmed/simulated/closing/closing_partial), obwohl `isPreFillWithoutExchangeHandle` weiter unten `pending` als lokal finalisierbar führt → jeder Close-Versuch an einer `pending`-Reservierung ohne Order-ID lieferte `null` (nicht der Lock: Lock-Key frei, NX/PX-Erwerb funktioniert). Fix: `pending` wird nur für Pre-Fill-Zeilen **ohne** Venue-Handle in den Closing-Übergang aufgenommen; laufende Submissions bleiben geschützt. Sweeper zusätzlich im Realtime-Prozessor neben `processSimulatedPositions` (Cron-Reconcile überspringt engine-aktive Verbindungen: `connectionsChecked 0 / skipped 15`). **Live verifiziert:** Sweep aus dem Workspace → `scanned 2, closed 2` (ATOM-Zombies nach 249 min finalisiert), `/api/data/positions` 48 → **0** offene Zeilen; die 45 UNI-JSON-only-Zeilen waren zuvor durch Hash-Verfall aus dem Engine-Blick verschwunden.
+
+**Weiter offen:** (a) Quelle des Pro-Zyklus-Reservierungs-Leaks für `UNIUSDT short` (executeLivePosition-Abbruch vor Status-Write, vermutlich Exception; durch Sweeper jetzt nur noch ≤10-min-Sichtbarkeit, nicht Ursache); (b) Persistenz: Hash-TTL vs. JSON/Index ohne TTL — Index-Leser sollen IDs ohne Hash verwerfen bzw. JSON-TTL an Hash koppeln; (c) Realtime-Progression-Budget; (d) Reset-DB prozessübergreifend; (e) geteiltes X02-Konto.
+
 ## Fortsetzungsstand — 2026-09-16 ~04:40 UTC (Claude-Sitzung: Sweeper deployed, Zombie-Leak weiter offen)
 
 **Gemergt und deployed (PR #379, `main` ff999d9f):** `isStuckPreFillPlacement()` + `sweepStuckPreFillPlacements()` (Pre-Fill-Status, Menge 0, kein Venue-Handle, keine Durable-Action, `createdAt` > 10 min, `CTS_STUCK_PLACEMENT_MS`), eingehängt als Step 1b in `reconcileLivePositions`. Server 315/315, READY.
