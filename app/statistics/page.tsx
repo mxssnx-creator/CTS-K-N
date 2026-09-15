@@ -70,8 +70,7 @@ import { DeactivatedLiveConfigs } from "@/components/statistics/deactivated-live
 import {
   statisticsHistoryTupleToTradingPosition,
   toStatisticsHistoryTuple,
-  type StatisticsHistoryTupleV1,
-} from "@/lib/trade-history"
+  type StatisticsHistoryTupleV1, isAttributedTradeHistoryRow, UNATTRIBUTED_EXCHANGE_STRATEGY } from "@/lib/trade-history"
 import {
   buildLiveTradingAnalytics,
   type DrawdownTimeMetric,
@@ -547,7 +546,7 @@ export default function StatisticsPage() {
             for (const payload of responses) {
               if (payload.history?.success && Array.isArray(payload.history.rows)) {
                 for (const row of payload.history.rows) {
-                  if (row && row.id && row.symbol && (row.direction === "long" || row.direction === "short")) {
+                  if (row && row.id && row.symbol && (row.direction === "long" || row.direction === "short") && isAttributedTradeHistoryRow(row)) {
                     historyRows.push(row as TradeHistoryRow)
                   }
                 }
@@ -563,6 +562,9 @@ export default function StatisticsPage() {
                     : []
               for (const tuple of tuples) {
                 if (!Array.isArray(tuple) || tuple.length !== 18 || !tuple[0] || !tuple[1]) continue
+                // Venue trades without CTS lineage (other actors on a shared
+                // account) are listed by the archive but are not our positions.
+                if (tuple[2] === UNATTRIBUTED_EXCHANGE_STRATEGY) continue
                 const position = statisticsHistoryTupleToTradingPosition(tuple, payload.id)
                 if (seen.has(position.id)) continue
                 seen.add(position.id)

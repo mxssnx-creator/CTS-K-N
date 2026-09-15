@@ -16,7 +16,7 @@ import {
   summarizeTradeHistory,
   toStatisticsHistoryTuple,
   type TradeHistoryRow,
-} from "@/lib/trade-history"
+ isAttributedTradeHistoryRow } from "@/lib/trade-history"
 import { buildLiveTradingAnalytics } from "@/lib/live-trading-analytics"
 import type { TradingAnalyticsRow } from "@/lib/live-trading-analytics"
 import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
@@ -525,6 +525,12 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         structurallyUnresolvedTradeSnapshots - reconciledSnapshots,
       )
       const rows = mergedRows.filter((row) => row.accountingQuality !== "exchange_required")
+      // Venue history on a shared account includes other actors' trades. They
+      // stay visible (typed "unattributed-exchange") but never enter this
+      // connection's performance figures.
+      const attributedRows = rows.filter(isAttributedTradeHistoryRow)
+      const unattributedRows = rows.filter((row) => !isAttributedTradeHistoryRow(row))
+      const analyticsNowStatistics = Date.now()
       return NextResponse.json({
         success: true,
         connectionId,
@@ -532,9 +538,14 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         view: "statistics",
         tupleVersion: 1,
         rows: rows.map(toStatisticsHistoryTuple),
+        attributedRows: attributedRows.length,
         // The Statistics page must use the same complete local/venue-cache
         // snapshot for its row counts and PF/DDT, independent of table paging.
-        analytics: buildLiveTradingAnalytics(rows, Date.now()),
+        analytics: buildLiveTradingAnalytics(attributedRows, analyticsNowStatistics),
+        unattributedExchange: {
+          rows: unattributedRows.length,
+          analytics: buildLiveTradingAnalytics(unattributedRows, analyticsNowStatistics),
+        },
         archive: {
           indexed: archive.indexed,
           uniqueIds: archive.uniqueIds,
@@ -665,7 +676,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     )
       .filter((row) => row.accountingQuality !== "exchange_required")
       .slice(0, limit)
-    const summary = summarizeTradeHistory(rows)
+    const summary = summarizeTradeHistory(rows.filter(isAttributedTradeHistoryRow))
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the
     // complete PF 4/12/48h, PF last 12/25/75 and DDT 3d windows.
@@ -678,7 +689,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       if (!analyticsRow || analyticsRow.environment !== mode) continue
       analyticsById.set(`id:${analyticsRow.id}`, analyticsRow)
     }
-    for (const row of rows.filter((row) => row.environment === mode)) {
+    for (const row of rows.filter((row) => row.environment === mode && isAttributedTradeHistoryRow(row))) {
       analyticsById.set(`id:${row.id}`, row)
     }
     const analyticsRows = [...analyticsById.values()]
