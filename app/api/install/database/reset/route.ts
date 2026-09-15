@@ -27,7 +27,8 @@ export async function POST(request: NextRequest) {
     const stopResult = await stopAllProgressionsBeforeReset()
     console.log("[v0] Progressions stopped before reset:", stopResult)
 
-    await flushAll()
+    const flushed = await flushAll()
+    console.log("[v0] Owned keys removed (foreign prefixes preserved):", flushed)
 
     // CRITICAL: a bare FLUSHALL leaves the database completely empty —
     // no `_schema_version`, no metadata hashes, no seeded base connections

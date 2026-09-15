@@ -28,7 +28,8 @@ export async function POST(request: Request) {
     console.log("[v0] Progressions stopped before reset-and-init:", stopResult)
     
     // Flush all data from Redis
-    await flushAll()
+    const flushed = await flushAll()
+    console.log("[v0] Owned keys removed (foreign prefixes preserved):", flushed)
     console.log("[v0] Redis database flushed")
     
     console.log("[v0] === RUNNING FRESH MIGRATIONS ===")

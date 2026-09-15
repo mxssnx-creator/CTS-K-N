@@ -62,8 +62,9 @@ export async function POST(request: NextRequest) {
 
     // Step 2: Flush all data
     try {
-      await flushAll()
-      logs.push("✓ All Redis data flushed (FLUSHALL executed)")
+      const flushed = await flushAll()
+    console.log("[v0] Owned keys removed (foreign prefixes preserved):", flushed)
+      logs.push(`✓ CTS-K-N Redis data flushed (${flushed.deleted} keys removed, ${flushed.protected} foreign keys preserved)`)
       console.log("[v0] Redis flushed successfully")
     } catch (error) {
       logs.push(`✗ Flush operation failed: ${error}`)

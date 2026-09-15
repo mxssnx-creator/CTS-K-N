@@ -119,6 +119,7 @@ CTS_REDIS_MEMORY_INSTANCE_SHARE	test-or-operator-tool	no	no	1	scripts/redis-memo
 CTS_REDIS_PERSISTENCE_CLEANUP_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_PERSISTENCE_CLEANUP_MIN_AGE_MS	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REDIS_PORT	test-or-operator-tool	no	yes	2	.env.example,scripts/npm-redis-service.mjs
+CTS_REDIS_PROTECTED_PREFIXES	application-runtime	no	no	2	__tests__/unit/reset-db-preserves-foreign-keys.test.ts,lib/redis-db.ts
 CTS_REDIS_SERVER_BIN	test-or-operator-tool	no	no	1	scripts/preview-redis-harness.mjs
 CTS_REDIS_VERSION	test-or-operator-tool	no	no	1	scripts/npm-redis-service.mjs
 CTS_REMOTE_INSTALL_TEST_ROOT	application-runtime	no	no	2	__tests__/unit/install-deployment-contract.test.ts,app/api/install/remote/route.ts
