@@ -15,6 +15,53 @@ export interface DcaProfile {
   cooldownSeconds: number
   /** Total position ceiling including the initial 1× fill (5 = 500%). */
   maxPositionVolumeRatio: number
+  /**
+   * Additive recovery levels for the DCA lane, mirroring the Block lane:
+   * selectable 1..6, default 3, step 1. A level multiplies the per-step
+   * add-on relative to the ORIGINAL base quantity, so level L on step S with
+   * ratio R contributes base x R x L. Levels are per DCA step (each step
+   * count recovers independently) and escalate only while that step keeps
+   * returning non-positive results; a positive result resets it to level 1.
+   * The position ceiling (`maxPositionVolumeRatio`) still bounds the total.
+   */
+  incrementSteps: number
+}
+
+// The DCA lane uses the same additive recovery-level contract as Block, from
+// the same verified shared implementation, so both lanes cannot drift apart.
+const dcaVolume = require("./block-volume-ratio.cjs") as {
+  BLOCK_INCREMENT_STEPS_MIN: number
+  BLOCK_INCREMENT_STEPS_MAX: number
+  BLOCK_INCREMENT_STEPS_DEFAULT: number
+  normalizeBlockIncrementSteps: (value: unknown, fallback?: number) => number
+  blockVolumeMultiplier: (count: number, ratio: number, steps?: number, requestedStep?: number) => number
+  blockEffectiveIncrementStep: (count: number, steps?: number, requestedStep?: number) => number
+}
+export const DCA_INCREMENT_STEPS_MIN = dcaVolume.BLOCK_INCREMENT_STEPS_MIN
+export const DCA_INCREMENT_STEPS_MAX = dcaVolume.BLOCK_INCREMENT_STEPS_MAX
+export const DCA_INCREMENT_STEPS_DEFAULT = dcaVolume.BLOCK_INCREMENT_STEPS_DEFAULT
+
+/** Clamp an operator-selected DCA recovery level onto the supported 1..6 range. */
+export function normalizeDcaIncrementSteps(value: unknown, fallback = DCA_INCREMENT_STEPS_DEFAULT): number {
+  return dcaVolume.normalizeBlockIncrementSteps(value, fallback)
+}
+
+/**
+ * Per-step DCA add-on relative to the ORIGINAL base quantity.
+ *
+ * `stepRatio` is the configured multiplier of that DCA step, `recoveryLevel`
+ * the level currently held by that step (1 = no escalation). The result is the
+ * add-on ratio only — never a compounded position size — so each step count is
+ * an independent calculation exactly like a Block count.
+ */
+export function calculateDcaStepVolumeRatio(
+  stepRatio: number,
+  recoveryLevel = 1,
+  incrementSteps = DCA_INCREMENT_STEPS_DEFAULT,
+): number {
+  if (!Number.isFinite(stepRatio) || stepRatio <= 0) return 0
+  const level = dcaVolume.blockEffectiveIncrementStep(1, incrementSteps, recoveryLevel)
+  return Number((stepRatio * level).toFixed(12))
 }
 
 export const DEFAULT_DCA_PROFILE: DcaProfile = {
@@ -27,6 +74,7 @@ export const DEFAULT_DCA_PROFILE: DcaProfile = {
   breakevenProfitPct: 0.2,
   cooldownSeconds: 30,
   maxPositionVolumeRatio: MAX_DCA_POSITION_VOLUME_RATIO,
+  incrementSteps: DCA_INCREMENT_STEPS_DEFAULT,
 }
 
 export interface DcaLegState {
@@ -109,6 +157,10 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
     1,
     4,
   ))
+  const incrementSteps = normalizeDcaIncrementSteps(
+    (source.incrementSteps ?? source.dcaIncrementSteps) as unknown,
+    DEFAULT_DCA_PROFILE.incrementSteps,
+  )
   const maxPositionVolumeRatio = finiteInRange(
     source.maxPositionVolumeRatio ?? source.dcaMaxPositionVolumeRatio ?? source.dcaMaxVolumeRatio,
     DEFAULT_DCA_PROFILE.maxPositionVolumeRatio,
@@ -177,6 +229,7 @@ export function normalizeDcaProfile(raw: unknown): DcaProfile {
       3600,
     )),
     maxPositionVolumeRatio,
+    incrementSteps,
   }
 }
 

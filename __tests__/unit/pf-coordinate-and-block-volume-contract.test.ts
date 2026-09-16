@@ -10,6 +10,16 @@ import {
 const { advanceBlockCountLifecycle } = require("@/lib/block-volume-ratio.cjs")
 
 import {
+  DCA_INCREMENT_STEPS_DEFAULT,
+  DCA_INCREMENT_STEPS_MAX,
+  DCA_INCREMENT_STEPS_MIN,
+  DEFAULT_DCA_PROFILE,
+  calculateDcaStepVolumeRatio,
+  normalizeDcaIncrementSteps,
+  normalizeDcaProfile,
+} from "@/lib/dca-strategy"
+
+import {
   BLOCK_INCREMENT_STEPS_DEFAULT,
   BLOCK_INCREMENT_STEPS_MAX,
   BLOCK_INCREMENT_STEPS_MIN,
@@ -109,6 +119,43 @@ describe("Block volume is base-anchored, additive per count and independent", ()
     for (const args of [[0, 0.5], [2, 0], [2, -1], [Number.NaN, 0.5]] as Array<[number, number]>) {
       expect(calculateBlockVolumeMultiplier(args[0], args[1])).toBe(0)
       expect(calculateBlockVolumeIncrementRatio(args[0], args[1])).toBe(0)
+    }
+  })
+})
+
+describe("DCA uses the same additive recovery-level contract as Block", () => {
+  test("levels run 1..6 with default 3 and clamp instead of growing", () => {
+    expect(DCA_INCREMENT_STEPS_MIN).toBe(1)
+    expect(DCA_INCREMENT_STEPS_MAX).toBe(6)
+    expect(DCA_INCREMENT_STEPS_DEFAULT).toBe(3)
+    expect(DEFAULT_DCA_PROFILE.incrementSteps).toBe(3)
+    expect(normalizeDcaIncrementSteps(0)).toBe(1)
+    expect(normalizeDcaIncrementSteps(9)).toBe(6)
+    expect(normalizeDcaIncrementSteps(undefined)).toBe(3)
+    // Both lanes must resolve a level identically — one shared implementation.
+    for (const value of [0, 1, 2, 3, 6, 9, "4", null]) {
+      expect(normalizeDcaIncrementSteps(value as unknown)).toBe(normalizeBlockIncrementSteps(value as unknown))
+    }
+  })
+
+  test("a level multiplies the per-step add-on against the ORIGINAL base quantity", () => {
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      expect(calculateDcaStepVolumeRatio(0.5, level, 6)).toBeCloseTo(0.5 * level, 10)
+    }
+    // Requesting above the configured maximum clamps, never compounds.
+    expect(calculateDcaStepVolumeRatio(0.5, 9, 6)).toBeCloseTo(calculateDcaStepVolumeRatio(0.5, 6, 6), 10)
+    expect(calculateDcaStepVolumeRatio(0.5, 3, 2)).toBeCloseTo(calculateDcaStepVolumeRatio(0.5, 2, 2), 10)
+    // Steps are independent: the ratio of a step never depends on a prior step.
+    expect(calculateDcaStepVolumeRatio(1, 3, 6)).toBeCloseTo(3, 10)
+    expect(calculateDcaStepVolumeRatio(1, 3, 6)).not.toBeCloseTo(1.5 ** 3, 2)
+  })
+
+  test("the operator profile round-trips the level and invalid input yields no add-on", () => {
+    expect(normalizeDcaProfile({ dcaIncrementSteps: 5 }).incrementSteps).toBe(5)
+    expect(normalizeDcaProfile({ incrementSteps: 42 }).incrementSteps).toBe(6)
+    expect(normalizeDcaProfile({}).incrementSteps).toBe(3)
+    for (const ratio of [0, -1, Number.NaN]) {
+      expect(calculateDcaStepVolumeRatio(ratio, 3, 6)).toBe(0)
     }
   })
 })
