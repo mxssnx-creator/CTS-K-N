@@ -734,6 +734,7 @@ function withCycleDiagnostic<T>(
   onSlowThreshold?: () => void,
 ): Promise<T> {
   let warned = false
+  const startedAt = Date.now()
   const timer = setTimeout(() => {
     warned = true
     console.warn(`[v0] [CycleDiagnostic] ${label} exceeded ${ms}ms; continuing exhaustive work without retry`)
@@ -745,7 +746,13 @@ function withCycleDiagnostic<T>(
   return work.finally(() => {
     clearTimeout(timer)
     if (warned) {
-      console.info(`[v0] [CycleDiagnostic] ${label} completed after the slow-cycle threshold`)
+      // The elapsed time is the whole point of the diagnostic: without it the
+      // log said a cycle was slow but never how slow, so a 31 s cycle and a
+      // 150 s cycle were indistinguishable and neither could be attributed.
+      const elapsedMs = Date.now() - startedAt
+      console.info(
+        `[v0] [CycleDiagnostic] ${label} completed after the slow-cycle threshold in ${elapsedMs}ms (budget ${ms}ms, over by ${elapsedMs - ms}ms)`,
+      )
     }
   })
 }
