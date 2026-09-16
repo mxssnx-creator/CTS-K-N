@@ -76,8 +76,8 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const [strategySubTab, setStrategySubTab] = useState("main")
   const [strategyMainSubTab, setStrategyMainSubTab] = useState("base")
   const blockAdjustmentEnabled = parseStoredBoolean(settings.blockAdjustment, true)
-  const blockOnlyEnabled = parseStoredBoolean(settings.blockOnlyEnabled, true)
-  const dcaAdjustmentEnabled = parseStoredBoolean(settings.dcaAdjustment, false)
+  const axisEnabled = parseStoredBoolean(settings.axisEnabled, true)
+  const dcaAdjustmentEnabled = parseStoredBoolean(settings.dcaAdjustment, true)
   const dcaVolumes: number[] = Array.isArray(settings.dcaStepVolumeMultipliers)
     ? settings.dcaStepVolumeMultipliers
     : DEFAULT_DCA_PROFILE.stepVolumeMultipliers
@@ -470,19 +470,18 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                 </CardHeader>
                 <CardContent>
                   <div className="grid gap-6 md:grid-cols-3">
-                    <div className="flex items-center justify-between p-4 border rounded-lg border-amber-300/70 bg-amber-50/60 dark:border-amber-800/70 dark:bg-amber-950/20">
+                    <div className="flex items-center justify-between p-4 border rounded-lg">
                       <div>
-                        <Label htmlFor="global-block-only">Block Only</Label>
+                        <Label htmlFor="global-axis-enabled">Axis strategy</Label>
                         <p className="text-xs text-muted-foreground">
-                          Calculate every family, but execute Main rows only through Block.
+                          Position-Count axis windows execute as their own family. Every family is calculated
+                          and validated either way; a disabled family only stops opening new active orders.
                         </p>
                       </div>
                       <Switch
-                        id="global-block-only"
-                        aria-label="Execute Main positions through Block adjustment rows only"
-                        checked={blockOnlyEnabled && blockAdjustmentEnabled}
-                        disabled={!blockAdjustmentEnabled}
-                        onCheckedChange={(checked) => handleSettingChange("blockOnlyEnabled", checked)}
+                        id="global-axis-enabled"
+                        checked={axisEnabled}
+                        onCheckedChange={(checked) => handleSettingChange("axisEnabled", checked)}
                       />
                     </div>
                     <div className="flex items-center justify-between p-4 border rounded-lg">
@@ -496,7 +495,6 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                         checked={blockAdjustmentEnabled}
                         onCheckedChange={(checked) => {
                           handleSettingChange("blockAdjustment", checked)
-                          if (!checked) handleSettingChange("blockOnlyEnabled", false)
                         }}
                       />
                     </div>

@@ -113,7 +113,7 @@ export interface CoordinationSettings {
   /** Normal/default strategy family; all evaluation remains available when off. */
   normalEnabled: boolean
   /** Execute Main positions through Block adjustment rows only. */
-  blockOnlyEnabled: boolean
+  axisEnabled: boolean
 
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
@@ -229,7 +229,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   variants: {
     trailing: true,
     block:    true,
-    dca:      false, // off by default per operator spec
+    dca:      true, // all four families are enabled by default
   },
   blockVolumeRatio: 1.0,
   blockProfitFactorRatio: 1.1,
@@ -246,7 +246,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockRowLiveMaxStack: 6,
   blockRowLivePauseCountRatio: 1.0,
   normalEnabled: true,
-  blockOnlyEnabled: true,
+  axisEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
@@ -386,7 +386,6 @@ export function StrategyCoordinationSection({
     onChange({
       ...value,
       variants: { ...value.variants, [key]: enabled },
-      ...(key === "block" && !enabled ? { blockOnlyEnabled: false } : {}),
     })
   }
 
@@ -821,35 +820,34 @@ export function StrategyCoordinationSection({
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
-          <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-300/60 bg-amber-50/70 p-3 dark:border-amber-800/70 dark:bg-amber-950/25">
-            <div className="flex-1 min-w-0">
-              <Label htmlFor="coordination-block-only" className="text-sm font-semibold">Block Only</Label>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                Enabled by default. Normal, Trailing, Position-Count and DCA
-                Sets remain fully calculated and visible, while Main exchange
-                execution is emitted only by independently validated Block
-                adjustment rows. Signal lanes remain independent.
-              </p>
-            </div>
-            <Switch
-              id="coordination-block-only"
-              aria-label="Execute Main positions through Block adjustment rows only"
-              checked={value.blockOnlyEnabled}
-              onCheckedChange={(checked) => onChange({ ...value, blockOnlyEnabled: checked })}
-              disabled={!value.variants.block}
-            />
-          </div>
           <div className="flex items-start justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 p-3">
             <div className="flex-1 min-w-0">
               <Label className="text-sm font-semibold">Normal strategy</Label>
               <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
                 Default strategy Sets without an additional strategy type. On by
-                default; turning it off does not remove validation or statistics.
+                default; turning it off withholds only new active orders — the Normal
+                rows stay calculated as the base for every relative family.
               </p>
             </div>
             <Switch
               checked={value.normalEnabled}
               onCheckedChange={(checked) => onChange({ ...value, normalEnabled: checked })}
+            />
+          </div>
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 p-3">
+            <div className="flex-1 min-w-0">
+              <Label className="text-sm font-semibold">Axis strategy</Label>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                Position-Count axis windows. On by default. Every family is an
+                independent switch: a disabled family keeps being calculated,
+                validated and reported — Normal remains the internal base every
+                relative lane resolves against — it only stops opening new
+                active orders. Signal lanes stay independent.
+              </p>
+            </div>
+            <Switch
+              checked={value.axisEnabled}
+              onCheckedChange={(checked) => onChange({ ...value, axisEnabled: checked })}
             />
           </div>
           {VARIANTS.map((variant) => {
@@ -922,8 +920,7 @@ export function StrategyCoordinationSection({
           <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
             <p className="text-xs leading-relaxed text-muted-foreground">
               Block owns an independent adjustment row and can accumulate into
-              a calculated parent. With Block Only enabled it replaces, rather
-              than adds to, that parent's physical execution count.
+              a calculated parent. It adds to, rather than replaces, that parent's physical execution count.
             </p>
           </div>
           {/* Volume ratio */}

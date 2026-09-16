@@ -80,7 +80,7 @@ export const initialSettings: Settings = {
 
   // Adjustment Strategies
   blockAdjustment: true,
-  blockOnlyEnabled: true,
+  axisEnabled: true,
   dcaAdjustment: false,
   block_enabled: true,
   dca_enabled: false,

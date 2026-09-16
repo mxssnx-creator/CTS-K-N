@@ -165,6 +165,7 @@ __tests__/unit/exchange-position-symbols-stats.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
 __tests__/unit/forced-symbols.test.ts
+__tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
 __tests__/unit/functional-overview-stage-snapshot.test.ts
@@ -176,6 +177,8 @@ __tests__/unit/historic-four-hour-stats.test.ts
 __tests__/unit/historic-profit-factor.test.ts
 __tests__/unit/historic-progression-generation.test.ts
 __tests__/unit/historic-replay-policy.test.ts
+__tests__/unit/historic-test-section-contract.test.ts
+__tests__/unit/historic-test-settings.test.ts
 __tests__/unit/indication-configuration-counts.test.ts
 __tests__/unit/indication-connection-selection.test.ts
 __tests__/unit/indication-lane-identity.test.ts
@@ -910,6 +913,7 @@ components/settings/direct-trade-settings.tsx
 components/settings/exchange-connection-dialog.tsx
 components/settings/exchange-connection-manager.tsx
 components/settings/exchange-connection-settings-dialog.tsx
+components/settings/historic-test-section.tsx
 components/settings/install-manager.tsx
 components/settings/logging-settings.tsx
 components/settings/logs-viewer.tsx
@@ -1291,6 +1295,7 @@ lib/global-rate-limiter.ts
 lib/health-check.ts
 lib/historic-four-hour-stats.ts
 lib/historic-profit-factor.ts
+lib/historic-test-settings.ts
 lib/html-response-parser.ts
 lib/index.ts
 lib/indication-calculator.ts

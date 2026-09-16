@@ -1,6 +1,7 @@
 import { getConnection } from "@/lib/redis-db"
 import { createLiveOrderConnector } from "@/lib/live-order-service"
 import { isExactSystemPositionOwner } from "@/lib/system-order-ownership"
+import { isDirectTradeVstConnection } from "@/lib/direct-trade-live-readiness"
 
 const ACTIVE_EXCHANGE_LIFECYCLE_STATUSES = new Set([
   "open",
@@ -68,6 +69,17 @@ export async function resolveDirectTradeLifecycleConnector(
       statusCode: 503,
       mode: "direct_trade_lifecycle_connection_missing",
     })
+  }
+
+  // Direct-Trade venue mutations exist for exactly one connection: the X02
+  // Prod-VST lane. Any other connection that still carries an owned Direct row
+  // (a recovered row on a connection since taken read-only, a lane that was
+  // never authorised) must NOT be escalated to a mutating connector. Keep the
+  // caller's read-only fallback so reconciliation continues to observe, and
+  // never fails the whole run over a row it may not touch. Foreign and
+  // non-relevant exposure is never influenced from here.
+  if (!isDirectTradeVstConnection(connection, connectionId)) {
+    return fallbackConnector
   }
 
   const resolved = await createLiveOrderConnector(connection, {

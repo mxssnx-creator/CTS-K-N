@@ -29,6 +29,7 @@ import {
 } from "@/lib/constants"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
+import { historicTestSettingsToHashFields, normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import {
   normalizeMainTradeStagePfRatio,
@@ -111,6 +112,21 @@ function serializeConnectionSettingsHash(settings: Record<string, unknown>): Rec
   return out
 }
 
+/**
+ * Historic Test: accept the nested document or any flat mirror, normalize it
+ * onto the operator contract, and persist BOTH the JSON document and the flat
+ * hash mirrors so the engine and the settings-change detector see one
+ * coherent value.
+ */
+function normalizeHistoricTestInSettings(settings: Record<string, any>): void {
+  const touched = Object.keys(settings).some((key) =>
+    key === "historic_test_settings" || key === "historicTestSettings" || key === "historicTest"
+      || key.startsWith("historicTest") || key.startsWith("historic_test_"))
+  if (!touched) return
+  const normalized = normalizeHistoricTestSettings(settings)
+  Object.assign(settings, historicTestSettingsToHashFields(normalized))
+  settings.historicTestSettings = normalized
+}
 function normalizeCoordinationAxesInSettings(settings: Record<string, any>): void {
   const rawCoord = settings.coordination_settings ?? settings.coordinationSettings
   if (!rawCoord || typeof rawCoord !== "object") return
@@ -696,6 +712,7 @@ export async function PUT(
       mergeConnectionSettings(currentSettings, incomingSettings),
     ))
     normalizeCoordinationAxesInSettings(mergedSettings)
+    normalizeHistoricTestInSettings(mergedSettings)
     enforceCombinedStrategyPipeline(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
     if (hasSymbols) {
@@ -867,6 +884,7 @@ export async function PATCH(
       mergeConnectionSettings(current, settings),
     ))
     normalizeCoordinationAxesInSettings(merged)
+    normalizeHistoricTestInSettings(merged)
     enforceCombinedStrategyPipeline(merged)
     // Keep the canonical nested coordination object in sync with the top-level
     // knob. The Settings UI may send `posCountsVolumeRatio` either at the top
