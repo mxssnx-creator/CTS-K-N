@@ -130,6 +130,7 @@ __tests__/unit/direct-trade-market-history.test.ts
 __tests__/unit/direct-trade-memory-maintenance.test.ts
 __tests__/unit/direct-trade-overview-stats.test.ts
 __tests__/unit/direct-trade-position-capacity.test.ts
+__tests__/unit/direct-trade-position-retention.test.ts
 __tests__/unit/direct-trade-position-stage.test.ts
 __tests__/unit/direct-trade-processor-lease.test.ts
 __tests__/unit/direct-trade-pulse-route.test.ts
@@ -1234,6 +1235,7 @@ lib/direct-trade-market-history.ts
 lib/direct-trade-memory-maintenance.ts
 lib/direct-trade-overview-stats.ts
 lib/direct-trade-position-capacity.cjs
+lib/direct-trade-position-retention.ts
 lib/direct-trade-position-stage.ts
 lib/direct-trade-processor-lease.ts
 lib/direct-trade-settings-sync.ts

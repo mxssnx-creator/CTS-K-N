@@ -1,4 +1,5 @@
 import { maintainDirectTradeMemory } from "@/lib/direct-trade-memory-maintenance"
+import { applyDirectTradePositionRetention } from "@/lib/direct-trade-position-retention"
 import { timingSafeEqual } from "node:crypto"
 import { type NextRequest, NextResponse } from "next/server"
 import {
@@ -1099,7 +1100,9 @@ export async function POST(request: NextRequest) {
       }
       const keys = directTradeKeyspace(scopeConnectionId)
       const write = client.multi()
-      write.set(keys.positions, JSON.stringify(positions))
+      // The document is read and rewritten whole on every touch, so settled
+      // history is bounded here; every live row is kept unconditionally.
+      write.set(keys.positions, JSON.stringify(applyDirectTradePositionRetention(positions)))
       write.set(keys.openPositionStage, JSON.stringify(openPositionStage))
       write.set(keys.stats, JSON.stringify(stats))
       write.set(keys.configStatus, JSON.stringify(configStatus))

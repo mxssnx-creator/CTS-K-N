@@ -19922,8 +19922,11 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
                 })
                 if (!recoveryProof.safe) {
                   logRuntimeWarning(
+                    // A foreign position is a stable condition, not an event:
+                    // at 60 s each this produced ~112 identical lines per cycle
+                    // on a shared account and buried real errors.
                     `live-adoption:${connectionId}:${mapKey}`,
-                    60_000,
+                    15 * 60_000,
                     `${LOG_PREFIX} preserving unwatermarked exchange position ${sym} ${direction}; protection book proof failed (${recoveryProof.reason})`,
                   )
                   continue
@@ -19939,7 +19942,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
               )) {
                 logRuntimeWarning(
                   `live-adoption-rules:${connectionId}:${mapKey}`,
-                  60_000,
+                  15 * 60_000,
                   `${LOG_PREFIX} preserving unwatermarked exchange position ${sym} ${direction}; exact instrument rules unavailable for recovery`,
                 )
                 continue
