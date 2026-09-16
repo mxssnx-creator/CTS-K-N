@@ -243,6 +243,7 @@ f346127eee4abca9a54383e337dfcd5938d5a0c68b265160a67b7b7ed0c08e33	3433	__tests__/
 64f9edb37a3d9c652b60cdc5690797d2c48b7a43c2faf616d9bd2ac66020c274	2503	__tests__/unit/orders-route-concurrency.test.ts
 ef62c7e485f8060ec8f902ab6992a781185e7aa77505ab41cb17d9dedd0da036	10073	__tests__/unit/overall-control-lifecycle.test.ts
 4cc7aed0b840c3a3c4a800b8d353ec4014aaa3296f59a6a226d6282ec17d6b1e	2746	__tests__/unit/overall-control-orders.test.ts
+bacd507a6ea5095a8d4d88d9ba1fb81ef49c42adb178287f954d8f77592d8703	1386	__tests__/unit/overall-stats-relevant-connections.test.ts
 07d93cfa8a0ca123ac91dc7ad349a253356fb0cb7a9d9ea9e50fedda3be4441e	4038	__tests__/unit/overview-poller.test.ts
 41d1754d016050dbcb8a22687d166231517131485f700fec0b7b93f0184a3d2d	1147	__tests__/unit/performance-profiler.test.ts
 e473377d74f87e3c29e32b1a33f648ddf86445ef6e89fa65bfa87290a763304d	918	__tests__/unit/persistent-paths.test.ts
@@ -529,7 +530,7 @@ f8cf53e8abf703bf02a0154cbf3bcdc195361693b9eb028732a34f8efe2c017e	13844	app/api/o
 0b554e50d17d086f9df2cb3b5e6bcdea56f7839d1b3e0d8ba9e6a0dace81cea0	13527	app/api/positions/[id]/route.ts
 6b74ede04949f260da282eee381eefc05ecfca218da5bf03c1069fb6e09b37dc	8004	app/api/positions/evaluate-readiness/route.ts
 5a762c63160bd2e26592e2a8d891e090cf98b9106ac603c5df530680780bdb19	9042	app/api/positions/route.ts
-eb5e1c438ddfe1b95375f572a8a0ae6ba533e8b753231f3a12e3eeb52476e51f	7177	app/api/positions/stats/route.ts
+3b6502004bc7f6db81e39b6db03097870c5567f9dd340d4fb2325d306342bd8c	7792	app/api/positions/stats/route.ts
 f5dbd5ac74dba9190255ebb4631404cd1c48016e6cb428c90d69942992f6b114	4891	app/api/preset-coordination-engine/[id]/[presetTypeId]/start/route.ts
 1fd2c095308164dd7697b247c35123af3f9a09a02f86b1598d3b25d2932fad76	1760	app/api/preset-coordination-engine/[id]/[presetTypeId]/status/route.ts
 dcfffbd8cfd73d6af315857bf6052d561c23fbf5904eeec62b8b8894828cbfee	3477	app/api/preset-coordination-engine/[id]/[presetTypeId]/stop/route.ts
