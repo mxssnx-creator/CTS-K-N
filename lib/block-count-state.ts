@@ -514,6 +514,10 @@ export async function advanceBlockCountPausesOnPositionClose(redis: any, positio
   await serialized(connectionId, async () => {
     const { updateBlockLifecycleForClose } = await import("./block-count-outcomes")
     await updateBlockLifecycleForClose(redis, position)
+    // The DCA lane recovers per step exactly as Block recovers per count, so
+    // it settles on the same terminal position under the same serialization.
+    const { updateDcaStepLifecycleForClose } = await import("./dca-step-outcomes")
+    await updateDcaStepLifecycleForClose(redis, position)
   })
 }
 

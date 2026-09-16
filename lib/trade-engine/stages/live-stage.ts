@@ -79,6 +79,8 @@ import {
   isTruthyFlag,
 } from "@/lib/connection-state-utils"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
+import { calculateDcaStepVolumeRatio } from "@/lib/dca-strategy"
+import { dcaStepStateKey, readDcaStepRecoveryLevel } from "@/lib/dca-step-outcomes"
 import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import {
   advanceBlockCountPausesOnPositionClose,
@@ -1829,6 +1831,25 @@ function scheduleSystemCloseRetry(
  * cycle, the row was kept open, its protection legs were re-armed on top of
  * the existing book, and the max-hold force-close looped forever.
  */
+/**
+ * Recovery level currently held by one DCA step of a live position.
+ *
+ * Mirrors the Block lane, where every block count recovers independently: the
+ * level rises while that step keeps settling non-positive and resets to 1 on a
+ * positive result. Steps are independent — the level of step N never derives
+ * from step N-1. Returns 1 (no escalation) when no state is recorded, so the
+ * quantity is identical to the plain configured multiplier.
+ */
+export function resolveDcaStepRecoveryLevel(
+  position: { dcaLegs?: Array<Record<string, any>> | null } | null | undefined,
+  step: number,
+): number {
+  const legs = Array.isArray(position?.dcaLegs) ? position!.dcaLegs! : []
+  const leg = legs.find((entry) => Number(entry?.step) === Number(step))
+  const level = Number(leg?.recoveryLevel ?? leg?.incrementStep ?? 1)
+  return Number.isFinite(level) && level >= 1 ? Math.floor(level) : 1
+}
+
 export function hasSystemVenueHandle(position: Pick<LivePosition, "orderId" | "exchangeData">): boolean {
   const data = (position.exchangeData || {}) as Record<string, unknown>
   return !!(position.orderId || data.exchangePositionId || data.positionId)
@@ -4583,7 +4604,24 @@ async function resolveAccumulationPlan(
     // notional ceiling below remains the final system-wide exposure guard.
     const dcaLaneCurrentQuantity = baseQuantity + calculateConfirmedDcaAddQuantity(existing.dcaLegs)
     const dcaSetQuantityBefore = Number(existing.dcaLegs?.find((leg) => leg.step === next.step)?.quantity || 0)
-    const dcaTargetQuantity = baseQuantity * next.volumeMultiplier
+    // Apply the recovery level held by THIS DCA step, mirroring the Block
+    // lane: level L multiplies the step's add-on against the ORIGINAL base
+    // quantity. With no lifecycle state the level is 1 and the target is
+    // identical to the plain configured multiplier.
+    // The level is persisted per connection/symbol/source/step, so an
+    // escalation survives the position that produced it and applies to the
+    // next position opened for that same step. The leg value is the fallback
+    // for rows written before the persisted lane existed.
+    const dcaStepStored = await client.hgetall(dcaStepStateKey(connId)).catch(() => ({})) as Record<string, string>
+    const dcaStepLevel = Math.max(
+      readDcaStepRecoveryLevel(dcaStepStored, existing.symbol, existing.setKey, next.step),
+      resolveDcaStepRecoveryLevel(existing, next.step),
+    )
+    const dcaTargetQuantity = baseQuantity * calculateDcaStepVolumeRatio(
+      next.volumeMultiplier,
+      dcaStepLevel,
+      dcaProfile.incrementSteps,
+    )
     const remainingStepQuantity = Math.max(0, dcaTargetQuantity - dcaSetQuantityBefore)
     const addQty = calculateDcaAddQuantity(
       baseQuantity,
