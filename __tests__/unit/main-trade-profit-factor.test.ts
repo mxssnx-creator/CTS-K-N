@@ -25,10 +25,10 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(MAIN_TRADE_PF_RATIO_MAX).toBe(2.3)
     expect(MAIN_TRADE_PF_RATIO_STEP).toBe(0.02)
     expect(MAIN_TRADE_STAGE_PF_DEFAULTS).toEqual({
-      base: 0.8,
-      main: 1.1,
-      real: 1.1,
-      live: 1.1,
+      base: 1.3,
+      main: 1.3,
+      real: 1.3,
+      live: 1.3,
     })
     expect(normalizeMainTradePfRatio(0.079)).toBe(1.02)
     expect(normalizeMainTradePfRatio(1.0)).toBe(1.02)

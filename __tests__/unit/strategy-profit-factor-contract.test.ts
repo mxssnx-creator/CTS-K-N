@@ -1,6 +1,12 @@
 import { StrategyEngine } from "@/lib/strategies"
 
 const config = {
+  // This suite verifies the Result-R -> PF coordinate math, not the promotion
+  // gate. Pin the Base threshold to the historic 0.80 floor so a change of the
+  // systemwide default (1.30 since 2026-09-16) cannot silently turn a maths
+  // assertion into a gate assertion.
+  baseProfitFactor: 0.8,
+  base_min_profit_factor: 0.8,
   takeprofit_factor: 5,
   stoploss_ratio: 1,
   trailing_enabled: false,

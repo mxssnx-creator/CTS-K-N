@@ -4,10 +4,22 @@ import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
   MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  normalizeMainTradeStagePfRatio,
   mainTradePfRatioToSignedResultR,
   signedResultRToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import { DEFAULT_TAKE_PROFIT_POSITION_COST_STEPS } from "@/lib/position-cost"
+
+/**
+ * Resolve the Base-stage promotion threshold from the operator configuration,
+ * falling back to the shipped systemwide default. Accepts both the canonical
+ * camelCase field and the stored snake_case mirror.
+ */
+export function resolveBaseStagePfThreshold(config?: Partial<StrategyConfig> | null): number {
+  const raw = (config as any)?.baseProfitFactor ?? (config as any)?.base_min_profit_factor
+  if (raw == null || raw === "") return MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+  return normalizeMainTradeStagePfRatio("base", raw)
+}
 
 function strategyId(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -68,7 +80,12 @@ export class StrategyEngine {
     const avgSignedResultR = this.calculateAverageSignedResultR(lastPositions)
     const avgProfitFactor = signedResultRToMainTradePfRatio(avgSignedResultR)
 
-    const isValid = avgProfitFactor >= MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+    // The Base gate is an operator setting (selectable 0.80–2.30 in 0.02
+    // steps). It used to compare against MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+    // directly, so a configured threshold was silently ignored and the gate
+    // moved only when the shipped default moved.
+    const baseThreshold = resolveBaseStagePfThreshold(config)
+    const isValid = avgProfitFactor >= baseThreshold
 
     let adjustedVolumeFactor = 1
     const appliedAdjustments: AdjustmentType[] = []
@@ -398,11 +415,11 @@ export class StrategyEngine {
     return drawdownHours
   }
 
-  validateStrategyForTrading(strategy: StrategyResult): boolean {
+  validateStrategyForTrading(strategy: StrategyResult, config?: Partial<StrategyConfig>): boolean {
     return (
       strategy.validation_state === "valid" &&
       strategy.should_open_position &&
-      strategy.avg_profit_factor >= MAIN_TRADE_BASE_PF_RATIO_DEFAULT
+      strategy.avg_profit_factor >= resolveBaseStagePfThreshold(config)
     )
   }
 
