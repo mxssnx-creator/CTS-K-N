@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { initRedis, getRedisClient, getAllConnections, withSharedPersistenceLease } from "@/lib/redis-db"
+import { initRedis, getRedisClient, getAllConnections, isConnectionAssignedToMain, withSharedPersistenceLease } from "@/lib/redis-db"
 import { reconcileLivePositions, syncWithExchange } from "@/lib/trade-engine/stages/live-stage"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
@@ -59,6 +59,8 @@ function requestSource(request: Request): string {
 interface SweepSummary {
   connectionsChecked: number
   connectionsSkipped: number
+  /** Skipped because the connection is not assigned to Main (never touched). */
+  connectionsNotRelevant: number
   positionsReconciled: number
   positionsClosed: number
   positionsUpdated: number
@@ -73,6 +75,7 @@ function newSummary(): SweepSummary {
   return {
     connectionsChecked: 0,
     connectionsSkipped: 0,
+    connectionsNotRelevant: 0,
     positionsReconciled: 0,
     positionsClosed: 0,
     positionsUpdated: 0,
@@ -121,6 +124,18 @@ export async function runLivePositionRecoverySweep(): Promise<SweepSummary> {
 
     if (!isLiveTrade && !hasOpenPositions) {
       summary.connectionsSkipped++
+      continue
+    }
+    // Only connection-relevant exposure is ever touched from here. A
+    // connection that the operator removed from the Main connections is not
+    // reconciled at all — not even to observe — so a leftover or recovered
+    // row on it (a read-only mainnet account, a lane without credentials)
+    // can never receive a venue mutation or fail the whole run. Foreign
+    // positions are never influenced; system-owned rows of relevant
+    // connections keep their full lifecycle sync.
+    if (!isConnectionAssignedToMain(conn as any)) {
+      summary.connectionsSkipped++
+      summary.connectionsNotRelevant++
       continue
     }
 

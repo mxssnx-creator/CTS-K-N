@@ -164,6 +164,7 @@ __tests__/unit/exchange-position-symbols-stats.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
 __tests__/unit/forced-symbols.test.ts
+__tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
 __tests__/unit/functional-overview-stage-snapshot.test.ts
