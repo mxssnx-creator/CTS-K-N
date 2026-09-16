@@ -1,3 +1,4 @@
+import { HISTORIC_TEST_SETTINGS_CHANGE_FIELDS } from "@/lib/historic-test-settings"
 const SYMBOL_AFFECTING_SETTING_FIELDS = new Set([
   "active_symbols",
   "activeSymbols",
@@ -19,6 +20,7 @@ const SYMBOL_AFFECTING_SETTING_FIELDS = new Set([
 ])
 
 const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
+  ...HISTORIC_TEST_SETTINGS_CHANGE_FIELDS,
   "profitFactorMin",
   "baseProfitFactor",
   "mainProfitFactor",

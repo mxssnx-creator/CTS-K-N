@@ -161,6 +161,8 @@ unit	__tests__/unit/historic-four-hour-stats.test.ts
 unit	__tests__/unit/historic-profit-factor.test.ts
 unit	__tests__/unit/historic-progression-generation.test.ts
 unit	__tests__/unit/historic-replay-policy.test.ts
+unit	__tests__/unit/historic-test-section-contract.test.ts
+unit	__tests__/unit/historic-test-settings.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
 unit	__tests__/unit/indication-connection-selection.test.ts
 unit	__tests__/unit/indication-lane-identity.test.ts
