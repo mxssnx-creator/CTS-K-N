@@ -7,9 +7,15 @@ import {
   signedResultRToMainTradePfRatio,
   scaleMainTradePfCoordinate,
 } from "@/lib/main-trade-profit-factor"
+const { advanceBlockCountLifecycle } = require("@/lib/block-volume-ratio.cjs")
+
 import {
+  BLOCK_INCREMENT_STEPS_DEFAULT,
+  BLOCK_INCREMENT_STEPS_MAX,
+  BLOCK_INCREMENT_STEPS_MIN,
   calculateBlockVolumeMultiplier,
   calculateBlockVolumeIncrementRatio,
+  normalizeBlockIncrementSteps,
 } from "@/lib/block-count-state"
 
 describe("PF coordinate is PositionCost-relative with 1.00 neutral", () => {
@@ -61,13 +67,42 @@ describe("Block volume is base-anchored, additive per count and independent", ()
     }
   })
 
-  test("the recovery increment step multiplies the add-on and is clamped to the operator range", () => {
-    expect(calculateBlockVolumeMultiplier(3, 0.5, 2, 2)).toBeCloseTo(4, 10)
-    // Requesting a step above the configured maximum clamps instead of growing.
-    expect(calculateBlockVolumeMultiplier(3, 0.5, 2, 5)).toBeCloseTo(calculateBlockVolumeMultiplier(3, 0.5, 2, 2), 10)
-    // The UI range must not offer more than the shared clamp accepts.
-    const ui = readFileSync(resolve(process.cwd(), "components/settings/direct-trade-settings.tsx"), "utf8")
-    expect(ui).toContain('label="Block additive recovery steps" value={state.blockIncrementSteps} min={1} max={2}')
+  test("recovery levels run 1..6 with default 3 and each level multiplies the add-on", () => {
+    expect(BLOCK_INCREMENT_STEPS_MIN).toBe(1)
+    expect(BLOCK_INCREMENT_STEPS_MAX).toBe(6)
+    expect(BLOCK_INCREMENT_STEPS_DEFAULT).toBe(3)
+    // count 2, ratio 0.5: level L adds 2 x 0.5 x L to the base volume.
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      expect(calculateBlockVolumeMultiplier(2, 0.5, 6, level)).toBeCloseTo(1 + 2 * 0.5 * level, 10)
+    }
+    // Levels clamp at the configured maximum instead of growing without bound.
+    expect(calculateBlockVolumeMultiplier(3, 0.5, 6, 9)).toBeCloseTo(calculateBlockVolumeMultiplier(3, 0.5, 6, 6), 10)
+    expect(normalizeBlockIncrementSteps(0)).toBe(1)
+    expect(normalizeBlockIncrementSteps(9)).toBe(6)
+    expect(normalizeBlockIncrementSteps(undefined)).toBe(3)
+    // Both operator surfaces must offer exactly the supported range.
+    const settingsUi = readFileSync(resolve(process.cwd(), "components/settings/direct-trade-settings.tsx"), "utf8")
+    expect(settingsUi).toContain('label="Block additive recovery levels" value={state.blockIncrementSteps} min={1} max={6}')
+    const presetsUi = readFileSync(resolve(process.cwd(), "app/presets/page.tsx"), "utf8")
+    expect(presetsUi).toContain('label="Recovery levels" value={draft.blockIncrementSteps} min={1} max={6}')
+  })
+
+  test("an escalated recovery level persists for that block count until a positive result resets it", () => {
+    const base = { setKey: "s#block:row_live:2", symbol: "BTCUSDT", direction: "long" as const, sourceKey: "s", blockCount: 2, incrementSteps: 6, pauseCount: 1, updatedAt: 1 }
+    // Two non-positive results on block count 2 escalate one level and hold it.
+    let state = advanceBlockCountLifecycle(null, { ...base, netPnl: -1, executedIncrementStep: 1 })
+    expect(state.incrementStep).toBe(1)
+    state = advanceBlockCountLifecycle(state, { ...base, netPnl: -1, executedIncrementStep: state.incrementStep })
+    expect(state.incrementStep).toBe(2)
+    state = advanceBlockCountLifecycle(state, { ...base, netPnl: -1, executedIncrementStep: state.incrementStep })
+    state = advanceBlockCountLifecycle(state, { ...base, netPnl: -1, executedIncrementStep: state.incrementStep })
+    expect(state.incrementStep).toBe(3)
+    expect(state.recovering).toBe(true)
+    // A positive result on that count drops straight back to the base level.
+    state = advanceBlockCountLifecycle(state, { ...base, netPnl: 5, executedIncrementStep: state.incrementStep })
+    expect(state.incrementStep).toBe(1)
+    expect(state.recovering).toBe(false)
+    expect(state.nonPositiveCount).toBe(0)
   })
 
   test("invalid inputs yield no add-on instead of a silent volume", () => {

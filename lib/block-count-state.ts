@@ -42,8 +42,8 @@ export const BLOCK_COUNT_MAX = 6
 /** Decode older persisted rows without dropping their ownership/protection. */
 export const LEGACY_BLOCK_COUNT_MAX = 12
 export const BLOCK_INCREMENT_STEPS_MIN = 1
-export const BLOCK_INCREMENT_STEPS_MAX = 2
-export const BLOCK_INCREMENT_STEPS_DEFAULT = 2
+export const BLOCK_INCREMENT_STEPS_MAX = 6
+export const BLOCK_INCREMENT_STEPS_DEFAULT = 3
 export const BLOCK_PROFIT_FACTOR_RATIO_DEFAULT = 1.1
 export const BLOCK_PROFIT_FACTOR_RATIO_LEGACY_DEFAULT = 0.8
 
