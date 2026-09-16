@@ -41,6 +41,8 @@ export interface HistoricTestSimulationRequest {
   symbol: string
   indication: string
   family: HistoricTestStrategyFamily
+  /** Independent config inside the family (a Block count, for example). */
+  variant?: string
   window: HistoricTestWindow
   /** Upper bound on progression steps the adapter may evaluate for this combination. */
   maxProgressCount: number
@@ -56,6 +58,12 @@ export interface HistoricTestRunInput {
   /** Symbols already ranked by the configured order; the run takes the first `symbolCount`. */
   rankedSymbols: readonly string[]
   indications: readonly string[]
+  /**
+   * Independent configs per family. A family listed here is expanded into one
+   * combination per variant, each scored and validated on its own; a family
+   * without variants is replayed once. Block counts arrive here.
+   */
+  familyVariants?: Partial<Record<HistoricTestStrategyFamily, readonly string[]>>
   simulate: HistoricTestSimulator
   now?: number
   lastRunAt?: number | null
@@ -124,23 +132,27 @@ export async function runHistoricTest(input: HistoricTestRunInput): Promise<Hist
   for (const symbol of symbols) {
     for (const indication of indications) {
       for (const family of families) {
-        const key = { symbol, indication, family }
-        let trades: readonly HistoricTestTrade[] = []
-        try {
-          trades = await input.simulate({
-            connectionId: input.connectionId,
-            symbol,
-            indication,
-            family,
-            window,
-            maxProgressCount: settings.symbols.maxProgressCount,
-          }) || []
-        } catch {
-          // One unusable combination must never invalidate the pass.
-          errors++
-          continue
+        const variants = (input.familyVariants?.[family] || []).map((v) => String(v || "").trim()).filter(Boolean)
+        for (const variant of variants.length > 0 ? variants : [""]) {
+          const key = { symbol, indication, family, variant: variant || undefined }
+          let trades: readonly HistoricTestTrade[] = []
+          try {
+            trades = await input.simulate({
+              connectionId: input.connectionId,
+              symbol,
+              indication,
+              family,
+              variant: variant || undefined,
+              window,
+              maxProgressCount: settings.symbols.maxProgressCount,
+            }) || []
+          } catch {
+            // One unusable config must never invalidate the pass.
+            errors++
+            continue
+          }
+          scores.push(scoreHistoricCombination(key, trades, settings.minProfitFactor))
         }
-        scores.push(scoreHistoricCombination(key, trades, settings.minProfitFactor))
       }
     }
   }
@@ -179,6 +191,7 @@ export async function persistHistoricTestRun(redis: any, result: HistoricTestRun
       symbol: row.symbol,
       indication: row.indication,
       family: row.family,
+      variant: row.variant,
       profitFactor: row.profitFactor,
       trades: row.trades,
       averageDrawdownTimeMin: row.averageDrawdownTimeMin,
@@ -222,7 +235,7 @@ export async function readHistoricTestValidatedKeys(redis: any, connectionId: st
 export function isHistoricTestAdmitted(
   settings: HistoricTestSettings,
   validatedKeys: Set<string>,
-  key: { symbol: string; indication: string; family: HistoricTestStrategyFamily },
+  key: { symbol: string; indication: string; family: HistoricTestStrategyFamily; variant?: string },
 ): boolean {
   if (!settings?.enabled) return true
   return validatedKeys.has(combinationKeyOf(key))

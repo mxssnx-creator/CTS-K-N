@@ -179,6 +179,9 @@ __tests__/unit/historic-profit-factor.test.ts
 __tests__/unit/historic-progression-generation.test.ts
 __tests__/unit/historic-replay-policy.test.ts
 __tests__/unit/historic-test-candles.test.ts
+__tests__/unit/historic-test-family-derivations.test.ts
+__tests__/unit/historic-test-family-replay.test.ts
+__tests__/unit/historic-test-live-deactivation.test.ts
 __tests__/unit/historic-test-replay.test.ts
 __tests__/unit/historic-test-runner.test.ts
 __tests__/unit/historic-test-scoring.test.ts
@@ -1302,6 +1305,9 @@ lib/health-check.ts
 lib/historic-four-hour-stats.ts
 lib/historic-profit-factor.ts
 lib/historic-test-candles.ts
+lib/historic-test-family-derivations.ts
+lib/historic-test-family-replay.ts
+lib/historic-test-live-deactivation.ts
 lib/historic-test-replay.ts
 lib/historic-test-runner.ts
 lib/historic-test-scoring.ts

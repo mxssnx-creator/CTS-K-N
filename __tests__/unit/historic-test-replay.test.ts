@@ -38,15 +38,15 @@ const request = (over: Record<string, unknown> = {}) => ({
 }) as any
 
 describe("Historic Test replay adapter", () => {
-  test("families the replay cannot model are refused, never invented", async () => {
+  test("only trailing is refused; block and axis are derived exactly", async () => {
     const simulate = createHistoricCandleSimulator({ loadCandles: async () => candles() })
-    expect(HISTORIC_TEST_SIMULATED_FAMILIES).toEqual(["normal", "dca"])
-    for (const family of ["trailing", "axis", "block"] as const) {
+    expect(HISTORIC_TEST_SIMULATED_FAMILIES).toEqual(["normal", "dca", "block", "axis"])
+    for (const family of ["trailing"] as const) {
       await expect(simulate(request({ family }))).rejects.toBeInstanceOf(HistoricTestUnsupportedFamilyError)
     }
   })
 
-  test("an unsupported family is reported as zero combinations, not as a fabricated ProfitFactor", async () => {
+  test("the family that cannot be modelled reports zero combinations, the derivable ones are measured", async () => {
     const simulate = createHistoricCandleSimulator({ loadCandles: async () => candles() })
     const result = await runHistoricTest({
       connectionId: "c1",
@@ -56,11 +56,14 @@ describe("Historic Test replay adapter", () => {
       simulate,
       now: NOW,
     })
+    const trailing = result.summaries.find((s) => s.family === "trailing")!
+    expect(trailing.combinations).toBe(0)
+    expect(trailing.trades).toBe(0)
+    expect(result.errors).toBe(1) // trailing only
+    expect(result.scores.map((s) => s.family).sort()).toEqual(["axis", "block", "dca", "normal"])
+    // Block and Axis are measured independently of the baseline.
     const block = result.summaries.find((s) => s.family === "block")!
-    expect(block.combinations).toBe(0)
-    expect(block.trades).toBe(0)
-    expect(result.errors).toBe(3) // trailing, axis, block
-    expect(result.scores.map((s) => s.family).sort()).toEqual(["dca", "normal"])
+    expect(block.combinations).toBe(1)
   })
 
   test("results are expressed in PositionCost units", async () => {

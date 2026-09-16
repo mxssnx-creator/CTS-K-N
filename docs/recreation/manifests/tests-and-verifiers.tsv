@@ -165,6 +165,9 @@ unit	__tests__/unit/historic-profit-factor.test.ts
 unit	__tests__/unit/historic-progression-generation.test.ts
 unit	__tests__/unit/historic-replay-policy.test.ts
 unit	__tests__/unit/historic-test-candles.test.ts
+unit	__tests__/unit/historic-test-family-derivations.test.ts
+unit	__tests__/unit/historic-test-family-replay.test.ts
+unit	__tests__/unit/historic-test-live-deactivation.test.ts
 unit	__tests__/unit/historic-test-replay.test.ts
 unit	__tests__/unit/historic-test-runner.test.ts
 unit	__tests__/unit/historic-test-scoring.test.ts

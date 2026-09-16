@@ -9,12 +9,16 @@
  *             configured take-profit / stop-loss. Fully modelled.
  *   dca     — the connection's DCA profile: multi-step accumulation with the
  *             configured step distances and volume multipliers. Fully modelled.
- *   trailing / axis / block — NOT modelled. The replay engine has no trailing
- *             exit, no Position-Count axis window and no Block count lane, so
- *             any number produced for them would be invented rather than
- *             measured. They raise HistoricTestUnsupportedFamilyError, which
- *             the runner records as a skipped combination; the family then
- *             reports zero combinations instead of a fabricated ProfitFactor.
+ *   block  — a Block count changes only the position volume, so each baseline
+ *             trade is scaled by the multiplier its count carried, with the
+ *             count following the live recovery rule. Exact, not approximated.
+ *   axis   — a Position-Count axis changes only which entries are admitted, so
+ *             the baseline series is filtered by the axis windows. Exact.
+ *   trailing — NOT modelled. It replaces the exit rule, so it cannot be
+ *             derived from trades whose exits are already fixed; it needs a
+ *             replay that walks the price path. It raises
+ *             HistoricTestUnsupportedFamilyError and the family reports zero
+ *             combinations instead of a fabricated ProfitFactor.
  *
  * Adding a family here means teaching the replay its actual mechanics — never
  * mapping it onto a different family's behaviour.
@@ -28,6 +32,12 @@ import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib
 import { POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 import type { HistoricTestSimulationRequest, HistoricTestSimulator } from "@/lib/historic-test-runner"
 import type { HistoricTestTrade } from "@/lib/historic-test-scoring"
+import {
+  deriveAxisTrades,
+  deriveBlockTrades,
+  type AxisDerivationParams,
+  type BlockDerivationParams,
+} from "@/lib/historic-test-family-derivations"
 
 export class HistoricTestUnsupportedFamilyError extends Error {
   readonly family: string
@@ -38,7 +48,7 @@ export class HistoricTestUnsupportedFamilyError extends Error {
   }
 }
 
-export const HISTORIC_TEST_SIMULATED_FAMILIES = ["normal", "dca"] as const
+export const HISTORIC_TEST_SIMULATED_FAMILIES = ["normal", "dca", "block", "axis"] as const
 
 /** Indication name -> replay entry model. Unknown names fall back to momentum. */
 export function resolveBacktestEntry(indication: string): DcaBacktestEntry {
@@ -60,6 +70,10 @@ export interface HistoricCandleSimulatorOptions {
   /** Round-trip cost in percent; also the PositionCost the result is expressed in. */
   positionCostPercent?: number
   slippagePct?: number
+  /** Block lane parameters for the volume derivation. */
+  block?: Partial<BlockDerivationParams>
+  /** Position-Count axis windows for the admission derivation. */
+  axis?: Partial<AxisDerivationParams>
 }
 
 /**
@@ -79,7 +93,7 @@ export function createHistoricCandleSimulator(
   const baseProfile = normalizeDcaProfile(options.profile ?? DEFAULT_DCA_PROFILE)
 
   return async (request: HistoricTestSimulationRequest): Promise<readonly HistoricTestTrade[]> => {
-    if (request.family !== "normal" && request.family !== "dca") {
+    if (!(HISTORIC_TEST_SIMULATED_FAMILIES as readonly string[]).includes(request.family)) {
       throw new HistoricTestUnsupportedFamilyError(request.family)
     }
 
@@ -87,6 +101,8 @@ export function createHistoricCandleSimulator(
     if (!Array.isArray(candles) || candles.length === 0) return []
 
     // "normal" is the same replay without accumulation: one entry per signal.
+    // Block and Axis change volume and admission respectively, never the
+    // price path, so both derive exactly from the single-entry baseline.
     const profile: DcaProfile = request.family === "dca"
       ? baseProfile
       : normalizeDcaProfile({ ...baseProfile, maxSteps: 1, stepVolumeMultipliers: [1], stepDistancesPct: [baseProfile.stepDistancesPct[0] ?? 1] })
@@ -106,11 +122,14 @@ export function createHistoricCandleSimulator(
     // The progress bound caps how many closed trades one combination
     // contributes, so a dense symbol cannot dominate the validation.
     const bound = Math.max(1, Math.floor(Number(request.maxProgressCount) || 0) || 1)
-    return result.trades.slice(0, bound).map((trade) => ({
+    const baseline: HistoricTestTrade[] = result.trades.slice(0, bound).map((trade) => ({
       // Net percent over the round trip, expressed in PositionCost units.
       signedResultR: Number((trade.pnlPctOfInitialNotional / positionCostPercent).toFixed(12)),
       openedAt: trade.entryTime,
       closedAt: trade.exitTime,
     }))
+    if (request.family === "block") return deriveBlockTrades(baseline, options.block)
+    if (request.family === "axis") return deriveAxisTrades(baseline, options.axis)
+    return baseline
   }
 }

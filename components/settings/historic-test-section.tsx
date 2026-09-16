@@ -9,6 +9,7 @@ import { Switch } from "@/components/ui/switch"
 import {
   HISTORIC_TEST_MAX_PROGRESS_COUNT,
   HISTORIC_TEST_PERIOD_HOURS,
+  HISTORIC_TEST_LIVE_CHECK_POSITIONS,
   HISTORIC_TEST_RECALC_INTERVAL_HOURS,
   HISTORIC_TEST_STRATEGY_FAMILIES,
   HISTORIC_TEST_SYMBOL_COUNT,
@@ -140,6 +141,26 @@ export function HistoricTestSection({ value, onChange, exchangeOptions = [], con
               onValueChange={([v]) => set("recalcIntervalHours", v)}
             />
           </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Live check positions</Label>
+            <span className="text-xs tabular-nums text-muted-foreground">{value.liveCheckPositions}</span>
+          </div>
+          <Slider
+            aria-label="Historic Test live check positions"
+            min={HISTORIC_TEST_LIVE_CHECK_POSITIONS.min}
+            max={HISTORIC_TEST_LIVE_CHECK_POSITIONS.max}
+            step={1}
+            value={[value.liveCheckPositions]}
+            onValueChange={([v]) => set("liveCheckPositions", v)}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            A validated config is re-judged on its own last N settled live results and
+            deactivated when they turn negative. Judged per config — a failing Block count
+            never disqualifies a sibling. Default {HISTORIC_TEST_LIVE_CHECK_POSITIONS.default}.
+          </p>
         </div>
 
         <div className="space-y-2">

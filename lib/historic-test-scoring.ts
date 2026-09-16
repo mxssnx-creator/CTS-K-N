@@ -30,6 +30,13 @@ export interface HistoricTestCombinationKey {
   symbol: string
   indication: string
   family: HistoricTestStrategyFamily
+  /**
+   * Discriminates independent configs inside one family — a Block count, for
+   * example. Two variants of the same family are scored, validated and
+   * deactivated entirely separately, so count 3 failing never disqualifies
+   * count 1.
+   */
+  variant?: string
 }
 
 export interface HistoricTestCombinationScore extends HistoricTestCombinationKey {
@@ -62,7 +69,13 @@ function holdMinutes(trade: HistoricTestTrade): number {
 }
 
 export function combinationKeyOf(key: HistoricTestCombinationKey): string {
-  return `${String(key.symbol || "").toUpperCase()}|${String(key.indication || "").toLowerCase()}|${key.family}`
+  const variant = String(key.variant || "").trim().toLowerCase()
+  return [
+    String(key.symbol || "").toUpperCase(),
+    String(key.indication || "").toLowerCase(),
+    key.family,
+    ...(variant ? [variant] : []),
+  ].join("|")
 }
 
 /**
@@ -81,6 +94,7 @@ export function scoreHistoricCombination(
     symbol: String(key.symbol || "").toUpperCase(),
     indication: String(key.indication || "").toLowerCase(),
     family: key.family,
+    variant: String(key.variant || "").trim().toLowerCase() || undefined,
     trades: rows.length,
     wins: 0,
     losses: 0,
