@@ -466,7 +466,7 @@ function RealVariantStatsCard({
 function RealStagePositionDetail({ value, executionPolicy }: {
   value: unknown
   executionPolicy?: {
-    blockOnlyEnabled: boolean
+    axisEnabled: boolean
     normalEnabled: boolean
     trailingEnabled: boolean
     blockEnabled: boolean
@@ -822,7 +822,7 @@ export function ConnectionInfoDialog({ open, onOpenChange, connectionId, connect
     return value === undefined || value === null || value === "" ? fallback : asBoolean(value)
   }
   const strategyExecutionPolicy = {
-    blockOnlyEnabled: policyValue(reportedExecutionPolicy.blockOnlyEnabled, derived.settings.blockOnlyEnabled ?? coordinationSettings.blockOnlyEnabled, true),
+    axisEnabled: policyValue(reportedExecutionPolicy.axisEnabled, derived.settings.axisEnabled ?? (coordinationSettings as Record<string, unknown>).axisEnabled, true),
     normalEnabled: policyValue(reportedExecutionPolicy.normalEnabled, derived.settings.normalEnabled ?? coordinationSettings.normalEnabled, true),
     trailingEnabled: policyValue(reportedExecutionPolicy.trailingEnabled, derived.settings.variantTrailingEnabled ?? coordinationVariants.trailing, true),
     blockEnabled: policyValue(reportedExecutionPolicy.blockEnabled, derived.settings.variantBlockEnabled ?? coordinationVariants.block, true),

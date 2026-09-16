@@ -76,7 +76,7 @@ export interface Settings {
 
   // Adjustment Strategies
   blockAdjustment: boolean
-  blockOnlyEnabled: boolean
+  axisEnabled: boolean
   dcaAdjustment: boolean
   block_enabled: boolean
   dca_enabled: boolean
