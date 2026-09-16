@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server"
-import { getAllConnections, initRedis } from "@/lib/redis-db"
+import { getAllConnections, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
 import { getLiveExecutionSummary, type LiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
@@ -31,9 +31,19 @@ export async function GET(request: NextRequest) {
       searchParams.get("connection_id") || searchParams.get("connectionId") || "",
     ).trim()
     const statusFilter = String(searchParams.get("status") || "all").toLowerCase()
+    // Overall stats cover the connections the operator actually runs. Building
+    // a summary for every stored connection also loaded the working documents
+    // of lanes that were removed from Main (one of them a 10 MB Direct-Trade
+    // document), which cost close to a second per request and reported
+    // exposure the system no longer manages. An explicit connection_id is
+    // always honoured, so a single non-relevant connection can still be
+    // inspected on purpose.
     const connectionIds = requestedConnectionId
       ? [requestedConnectionId]
-      : (await getAllConnections()).map((connection: any) => String(connection.id || "")).filter(Boolean)
+      : (await getAllConnections())
+          .filter((connection: any) => isConnectionAssignedToMain(connection))
+          .map((connection: any) => String(connection.id || ""))
+          .filter(Boolean)
     const summaries = await Promise.all(connectionIds.map(getLiveExecutionSummary))
 
     const totalPositions = summaries.reduce((sum, row) => sum + row.totalPositions, 0)
