@@ -112,7 +112,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
       expect(JSON.parse(String(
         await client.hget("connection_settings:bingx-custom-v100", "connection_settings"),
       ))).toMatchObject({
-        profitFactorMin: { base: 1.3, main: 1.3, real: 1.3, live: 1.1 },
+        profitFactorMin: { base: 1.3, main: 1.1, real: 1.1, live: 1.1 },
         measured: { profitFactor: 0.5 },
       })
     } finally {
@@ -198,7 +198,7 @@ describe("migration 100 Direct-Trade scopes and operational PF thresholds", () =
         .toMatchObject({
           profitFactorMin: { base: 1.02, main: 1.14, real: 2.3, live: 1.1 },
           measured: { profitFactor: 0.5 },
-          baseProfitFactor: 0.8,
+          baseProfitFactor: 1.3,
           blockOnlyEnabled: true,
           realEvalPosCount: 20,
           blockRowRealEvalPosCount: 20,

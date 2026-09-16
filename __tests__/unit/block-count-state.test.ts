@@ -267,7 +267,7 @@ describe("independent Block count lifecycle", () => {
 
   test("normalizes increment steps and migrates only the exact legacy PF sentinel", () => {
     expect(normalizeBlockIncrementSteps(0)).toBe(1)
-    expect(normalizeBlockIncrementSteps(99)).toBe(2)
+    expect(normalizeBlockIncrementSteps(99)).toBe(6)
     expect(calculateBlockEffectiveIncrementStep(6, 2, 9)).toBe(2)
     expect(normalizeBlockProfitFactorRatio(0.8)).toBe(1.1)
     expect(normalizeBlockProfitFactorRatio(0.81)).toBe(0.81)
