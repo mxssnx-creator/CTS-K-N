@@ -329,6 +329,7 @@ __tests__/unit/status-canonical-position-counts.test.ts
 __tests__/unit/strategy-axis-coordination.test.ts
 __tests__/unit/strategy-block-real-overlays.test.ts
 __tests__/unit/strategy-execution-policy.test.ts
+__tests__/unit/strategy-family-switches.test.ts
 __tests__/unit/strategy-flow-log-throttle.test.ts
 __tests__/unit/strategy-indication-policy.test.ts
 __tests__/unit/strategy-indication-representatives.test.ts

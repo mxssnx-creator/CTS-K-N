@@ -745,16 +745,17 @@ describe("Real-stage Block overlays", () => {
       variant: "dca" as const,
     }
 
+    // Block alone: switch the other families off individually.
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],
-      { blockEnabled: true, blockOnly: true },
+      { blockEnabled: true, normalEnabled: false, axisEnabled: false, dcaEnabled: false },
     ).map((set) => set.setKey)).toEqual([
       blockLong.setKey,
     ])
 
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],
-      { blockEnabled: true, blockOnly: false },
+      { blockEnabled: true },
     ).map((set) => set.setKey)).toEqual([
       standardLong.setKey,
       blockLong.setKey,
@@ -763,7 +764,7 @@ describe("Real-stage Block overlays", () => {
 
     expect(selectLiveDispatchCandidates(
       [standardLong],
-      { blockEnabled: false, dcaEnabled: false, blockOnly: true },
+      { normalEnabled: false, axisEnabled: false, blockEnabled: false, dcaEnabled: false },
     ).map((set) => set.setKey)).toEqual([])
 
     expect(selectLiveDispatchCandidates(

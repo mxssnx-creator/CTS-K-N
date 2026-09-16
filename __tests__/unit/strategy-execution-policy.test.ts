@@ -6,16 +6,17 @@ import {
 } from "@/lib/strategy-execution-policy"
 
 describe("strategy execution family policy", () => {
-  test("defaults Block-Only on and keeps legacy aliases readable", () => {
+  test("defaults every family on and ignores the retired -only aliases", () => {
     expect(normalizeStrategyExecutionPolicy({ blockOnly: true, variantBlockOnly: true })).toEqual({
-      blockOnlyEnabled: true,
       normalEnabled: true,
+      axisEnabled: true,
       trailingEnabled: true,
       blockEnabled: true,
-      dcaEnabled: false,
+      dcaEnabled: true,
     })
-    expect(normalizeStrategyExecutionPolicy({ blockOnly: false })).toMatchObject({
-      blockOnlyEnabled: false,
+    expect(normalizeStrategyExecutionPolicy({ variantDcaEnabled: false })).toMatchObject({
+      dcaEnabled: false,
+      normalEnabled: true,
     })
   })
 
@@ -32,6 +33,7 @@ describe("strategy execution family policy", () => {
   test("all families off is a physical-dispatch stop while evaluation can continue", () => {
     const policy = normalizeStrategyExecutionPolicy({
       normalEnabled: false,
+      axisEnabled: false,
       trailingEnabled: false,
       blockEnabled: false,
       dcaEnabled: false,
@@ -44,13 +46,13 @@ describe("strategy execution family policy", () => {
     expect(isStrategyExecutionFamilyEnabled("signal", policy)).toBe(true)
   })
 
-  test("Block-Only dispatches Block and independent Signal lanes only", () => {
+  test("switching every other family off dispatches Block and the independent Signal lane only", () => {
     const policy = normalizeStrategyExecutionPolicy({
-      blockOnlyEnabled: true,
-      normalEnabled: true,
-      trailingEnabled: true,
+      normalEnabled: false,
+      axisEnabled: false,
+      trailingEnabled: false,
       blockEnabled: true,
-      dcaEnabled: true,
+      dcaEnabled: false,
     })
     expect(hasAnyStrategyExecutionVariantEnabled(policy)).toBe(true)
     expect(isStrategyExecutionFamilyEnabled("normal", policy)).toBe(false)

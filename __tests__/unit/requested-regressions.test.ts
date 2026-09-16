@@ -2652,7 +2652,13 @@ describe("requested regression guardrails", () => {
     expect(strategiesRoute).not.toContain("is_enabled: !!strat.is_enabled")
     expect(migrations).toContain('strategy_stage_switches: "compatibility-only-always-true"')
     expect(read("lib/strategy-coordinator.ts")).toContain("normalEnabled: this._coordinationSettings.normalEnabled !== false")
-    expect(read("lib/strategy-coordinator.ts")).toContain("blockOnlyEnabled: this._coordinationSettings.blockOnlyEnabled === true")
+    // The "-only" mode was retired: Normal/Axis/Block/DCA are independent
+    // switches, all enabled by default, and a disabled family is still
+    // processed internally (Normal remains the base every relative lane
+    // resolves against) — it is only withheld from the physical dispatcher.
+    expect(read("lib/strategy-coordinator.ts")).toContain("axisEnabled: this._coordinationSettings.axisEnabled !== false")
+    expect(read("lib/strategy-coordinator.ts")).not.toContain("blockOnlyEnabled: this._coordinationSettings")
+    expect(read("lib/strategy-execution-policy.ts")).not.toContain("blockOnlyEnabled")
   })
 
   test("statistics never invent portfolio balance, TP/SL values, trailing values, or execution PF", () => {

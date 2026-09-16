@@ -1151,10 +1151,8 @@ export function collectActivePositionCountsBySymbol(
 export function selectLiveDispatchCandidates(
   candidates: StrategySet[],
   options: {
-    blockOnlyEnabled?: boolean
-    /** Backward-compatible persisted/operator alias. */
-    blockOnly?: boolean
     normalEnabled?: boolean
+    axisEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
     dcaEnabled?: boolean
@@ -1165,8 +1163,8 @@ export function selectLiveDispatchCandidates(
   const seenSignalSlots = new Set<string>()
   const seenSignalBlockSlots = new Set<string>()
   const policy: StrategyExecutionPolicy = {
-    blockOnlyEnabled: (options.blockOnlyEnabled ?? options.blockOnly) === true,
     normalEnabled: options.normalEnabled !== false,
+    axisEnabled: options.axisEnabled !== false,
     trailingEnabled: options.trailingEnabled !== false,
     blockEnabled: options.blockEnabled !== false,
     // Direct unit/integration callers historically pass only the Block
@@ -2688,7 +2686,7 @@ export class StrategyCoordinator {
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
     /** Execute Main-family exchange rows only through Block adjustment rows. */
-    blockOnlyEnabled: boolean
+    axisEnabled: boolean
     /**
      * Position-Count coordination ratio — normalized on the 0.1..10 operator
      * grid, then converted to the per-valid-Set multiplier (10 → 0.02).
@@ -2728,7 +2726,7 @@ export class StrategyCoordinator {
     blockRowLiveMaxStack: 6,
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
-    blockOnlyEnabled: true,
+    axisEnabled: true,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
      * volume happens once during exhaustive axis materialisation.
@@ -3343,9 +3341,8 @@ export class StrategyCoordinator {
         s.normalEnabled ?? s.normal_enabled ?? s.strategyNormalEnabled,
         true,
       )
-      this._coordinationSettings.blockOnlyEnabled = bool(
-        s.blockOnlyEnabled ?? s.block_only_enabled ?? s.strategyBlockOnlyEnabled
-          ?? s.blockOnly ?? s.variantBlockOnly,
+      this._coordinationSettings.axisEnabled = bool(
+        s.axisEnabled ?? s.axis_enabled ?? s.strategyAxisEnabled ?? s.variantAxisEnabled,
         true,
       )
 
@@ -5488,12 +5485,10 @@ export class StrategyCoordinator {
     //   count once, so Base + Pos-Count produces the requested doubled set
     //   count before other Main projections are added.
     const mainAccounting = accountMainStage(baseValidCount, mainSets)
-    const mainPublicAccounting = accountMainStage(
-      baseValidCount,
-      this._coordinationSettings.blockOnlyEnabled
-        ? mainSets.filter((set) => set.variant !== "block")
-        : mainSets,
-    )
+    // The retired "-only" mode used to hide Block rows from the public Main
+    // accounting. Families are independent switches now, so the public view
+    // reports the same exhaustive Main set the internal accounting uses.
+    const mainPublicAccounting = accountMainStage(baseValidCount, mainSets)
     const mainBaseInputCount = baseValidCount
     const mainLogicalEvaluated = mainAccounting.logicalEvaluated
     const mainPassedParentCount = uniqueBaseSetsProduced.size
@@ -5538,7 +5533,7 @@ export class StrategyCoordinator {
       const mainOpenAccounting = resolveMainOpenAccounting(
         mainCalculatedOpenBreakdown,
         mainValidOpen,
-        this._coordinationSettings.blockOnlyEnabled,
+        false,
       )
       const mainOpenBreakdown = mainOpenAccounting.included
       const mainRunningNow = mainOpenAccounting.overall
@@ -8897,11 +8892,11 @@ export class StrategyCoordinator {
     const isLiveTradeEnabled = await this.isLiveTradingEnabledForConnection()
     if (!isCurrent()) return cancelled()
     const executionPolicy: StrategyExecutionPolicy = {
-      blockOnlyEnabled: this._coordinationSettings.blockOnlyEnabled === true,
       normalEnabled: this._coordinationSettings.normalEnabled !== false,
+      axisEnabled: this._coordinationSettings.axisEnabled !== false,
       trailingEnabled: this._coordinationSettings.variants.trailing !== false,
-      blockEnabled: this._coordinationSettings.variants.block === true,
-      dcaEnabled: this._coordinationSettings.variants.dca === true,
+      blockEnabled: this._coordinationSettings.variants.block !== false,
+      dcaEnabled: this._coordinationSettings.variants.dca !== false,
     }
     // The stage still evaluates and persists every qualifying row when this
     // is false. It only closes the physical-dispatch gate, so an operator can

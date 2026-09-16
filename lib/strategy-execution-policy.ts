@@ -11,23 +11,33 @@ export type StrategyExecutionFamily = "normal" | "trailing" | "block" | "dca" | 
 
 export interface StrategyExecutionPolicy {
   /**
-   * Execute only Block adjustment rows from the Main family. Calculation and
-   * reporting of Normal/Trailing/Pos-Count/DCA rows remains exhaustive.
-   * Signal lanes keep their independent admission policy.
+   * Independent per-family execution switches. All four are enabled by
+   * default. A disabled family is still calculated, evaluated and reported
+   * exhaustively — it is simply not handed to the physical dispatcher, so no
+   * new active real/live order or position is opened from it.
+   *
+   * Disabling `normalEnabled` therefore does NOT stop Normal processing: the
+   * Normal rows remain the internal base every relative lane is measured
+   * against (Axis windows, Block counts, DCA steps all keep resolving against
+   * them). They only stop becoming active orders themselves.
+   *
+   * The independent Signal lane keeps its own admission policy and is not
+   * governed by these switches.
    */
-  blockOnlyEnabled: boolean
   normalEnabled: boolean
-  trailingEnabled: boolean
+  axisEnabled: boolean
   blockEnabled: boolean
   dcaEnabled: boolean
+  /** Trailing follows the Normal switch it decorates. */
+  trailingEnabled: boolean
 }
 
 export const DEFAULT_STRATEGY_EXECUTION_POLICY: StrategyExecutionPolicy = {
-  blockOnlyEnabled: true,
   normalEnabled: true,
-  trailingEnabled: true,
+  axisEnabled: true,
   blockEnabled: true,
-  dcaEnabled: false,
+  dcaEnabled: true,
+  trailingEnabled: true,
 }
 
 function bool(value: unknown, fallback: boolean): boolean {
@@ -41,26 +51,30 @@ export function normalizeStrategyExecutionPolicy(
 ): StrategyExecutionPolicy {
   const source = raw || {}
   return {
-    blockOnlyEnabled: bool(
-      source.blockOnlyEnabled ?? source.block_only_enabled ?? source.strategyBlockOnlyEnabled
-        ?? source.blockOnly ?? source.variantBlockOnly,
-      DEFAULT_STRATEGY_EXECUTION_POLICY.blockOnlyEnabled,
-    ),
     normalEnabled: bool(
-      source.normalEnabled ?? source.normal_enabled ?? source.strategyNormalEnabled,
+      source.normalEnabled ?? source.normal_enabled ?? source.strategyNormalEnabled
+        ?? source.variantNormalEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.normalEnabled,
     ),
-    trailingEnabled: bool(
-      source.trailingEnabled ?? source.variantTrailingEnabled ?? source.strategyBaseTrailingEnabled,
-      DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
+    axisEnabled: bool(
+      source.axisEnabled ?? source.axis_enabled ?? source.strategyAxisEnabled
+        ?? source.variantAxisEnabled,
+      DEFAULT_STRATEGY_EXECUTION_POLICY.axisEnabled,
     ),
     blockEnabled: bool(
-      source.blockEnabled ?? source.variantBlockEnabled ?? source.blockAdjustment,
+      source.blockEnabled ?? source.block_enabled ?? source.strategyBlockEnabled
+        ?? source.variantBlockEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.blockEnabled,
     ),
     dcaEnabled: bool(
-      source.dcaEnabled ?? source.variantDcaEnabled,
+      source.dcaEnabled ?? source.dca_enabled ?? source.strategyDcaEnabled
+        ?? source.variantDcaEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.dcaEnabled,
+    ),
+    trailingEnabled: bool(
+      source.trailingEnabled ?? source.trailing_enabled ?? source.strategyTrailingEnabled
+        ?? source.variantTrailingEnabled,
+      DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
     ),
   }
 }
@@ -85,19 +99,19 @@ export function classifyStrategyExecutionFamily(set: any): StrategyExecutionFami
 export function hasAnyStrategyExecutionVariantEnabled(
   policy: StrategyExecutionPolicy,
 ): boolean {
-  if (policy.blockOnlyEnabled) return policy.blockEnabled
-  return policy.normalEnabled || policy.trailingEnabled || policy.blockEnabled || policy.dcaEnabled
+  return policy.normalEnabled || policy.axisEnabled || policy.blockEnabled || policy.dcaEnabled
 }
 
 export function isStrategyExecutionFamilyEnabled(
   family: StrategyExecutionFamily,
   policy: StrategyExecutionPolicy,
 ): boolean {
+  // The Signal lane is independent of the Normal/Axis/Block/DCA switches.
   if (family === "signal") return true
-  if (policy.blockOnlyEnabled) return family === "block" && policy.blockEnabled
-  if (family === "axis") return true
   if (family === "normal") return policy.normalEnabled
-  if (family === "trailing") return policy.trailingEnabled
+  if (family === "axis") return policy.axisEnabled
   if (family === "block") return policy.blockEnabled
+  if (family === "trailing") return policy.normalEnabled && policy.trailingEnabled
   return policy.dcaEnabled
 }
+
