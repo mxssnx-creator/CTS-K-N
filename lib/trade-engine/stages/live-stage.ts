@@ -80,6 +80,7 @@ import {
 } from "@/lib/connection-state-utils"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { calculateDcaStepVolumeRatio } from "@/lib/dca-strategy"
+import { dcaStepStateKey, readDcaStepRecoveryLevel } from "@/lib/dca-step-outcomes"
 import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import {
   advanceBlockCountPausesOnPositionClose,
@@ -4607,7 +4608,15 @@ async function resolveAccumulationPlan(
     // lane: level L multiplies the step's add-on against the ORIGINAL base
     // quantity. With no lifecycle state the level is 1 and the target is
     // identical to the plain configured multiplier.
-    const dcaStepLevel = resolveDcaStepRecoveryLevel(existing, next.step)
+    // The level is persisted per connection/symbol/source/step, so an
+    // escalation survives the position that produced it and applies to the
+    // next position opened for that same step. The leg value is the fallback
+    // for rows written before the persisted lane existed.
+    const dcaStepStored = await client.hgetall(dcaStepStateKey(connId)).catch(() => ({})) as Record<string, string>
+    const dcaStepLevel = Math.max(
+      readDcaStepRecoveryLevel(dcaStepStored, existing.symbol, existing.setKey, next.step),
+      resolveDcaStepRecoveryLevel(existing, next.step),
+    )
     const dcaTargetQuantity = baseQuantity * calculateDcaStepVolumeRatio(
       next.volumeMultiplier,
       dcaStepLevel,

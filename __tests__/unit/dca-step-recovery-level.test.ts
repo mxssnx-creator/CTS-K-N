@@ -34,7 +34,9 @@ describe("per-step DCA recovery level in the live execution path", () => {
 
   test("the live step target multiplies the configured multiplier by that step's level", () => {
     const src = readFileSync(resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
-    expect(src).toContain("const dcaStepLevel = resolveDcaStepRecoveryLevel(existing, next.step)")
+    // The persisted per-step lane wins, with the leg value as the fallback.
+    expect(src).toContain("readDcaStepRecoveryLevel(dcaStepStored, existing.symbol, existing.setKey, next.step)")
+    expect(src).toContain("resolveDcaStepRecoveryLevel(existing, next.step),")
     expect(src).toContain("const dcaTargetQuantity = baseQuantity * calculateDcaStepVolumeRatio(")
     expect(src).not.toContain("const dcaTargetQuantity = baseQuantity * next.volumeMultiplier")
     // The max-position ceiling still bounds the result.

@@ -97,6 +97,7 @@ unit	__tests__/unit/dashboard-event-polling.test.ts
 unit	__tests__/unit/dashboard-main-connections.test.ts
 unit	__tests__/unit/database-validator-migration-contract.test.ts
 unit	__tests__/unit/dca-backtest.test.ts
+unit	__tests__/unit/dca-step-outcomes.test.ts
 unit	__tests__/unit/dca-step-recovery-level.test.ts
 unit	__tests__/unit/default-indication-direction.test.ts
 unit	__tests__/unit/direct-trade-calculate-route.test.ts

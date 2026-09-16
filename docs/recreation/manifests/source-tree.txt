@@ -111,6 +111,7 @@ __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
 __tests__/unit/database-validator-migration-contract.test.ts
 __tests__/unit/dca-backtest.test.ts
+__tests__/unit/dca-step-outcomes.test.ts
 __tests__/unit/dca-step-recovery-level.test.ts
 __tests__/unit/default-indication-direction.test.ts
 __tests__/unit/direct-trade-calculate-route.test.ts
@@ -1213,6 +1214,7 @@ lib/db-types.ts
 lib/db-verifier.ts
 lib/db.ts
 lib/dca-backtest.ts
+lib/dca-step-outcomes.ts
 lib/dca-strategy.ts
 lib/debug-mode.ts
 lib/default-exchanges-seeder.ts
