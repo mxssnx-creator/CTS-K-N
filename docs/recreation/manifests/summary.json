@@ -1,8 +1,8 @@
 {
   "project": "CTS-K-N",
-  "sourceRevisionBeforeHandoffCommit": "9ac0b93fc882b440ed84f6cff2042c7958962d65",
-  "sourceTreeBeforeHandoffCommit": "b1bd10d98fb516a49c68788bbffa54a5b19199ec",
-  "sourceRevisionTimestamp": "2026-09-15T22:48:17+00:00",
+  "sourceRevisionBeforeHandoffCommit": "fe3fb91bf62d47c4a15ae88102f387019d484c01",
+  "sourceTreeBeforeHandoffCommit": "1ce1c381bcebeb1c60f825af3a0ce5b0831a7132",
+  "sourceRevisionTimestamp": "2026-09-16T01:40:57+02:00",
   "workingTreeChangesIncluded": true,
   "workingTreeStatusEntryCount": 1,
   "nodeRequirement": ">=20.16",
