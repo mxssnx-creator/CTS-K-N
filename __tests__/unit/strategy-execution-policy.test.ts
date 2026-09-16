@@ -9,6 +9,7 @@ describe("strategy execution family policy", () => {
   test("defaults Block-Only on and keeps legacy aliases readable", () => {
     expect(normalizeStrategyExecutionPolicy({ blockOnly: true, variantBlockOnly: true })).toEqual({
       blockOnlyEnabled: true,
+      blockActiveEnabled: false,
       normalEnabled: true,
       trailingEnabled: true,
       blockEnabled: true,

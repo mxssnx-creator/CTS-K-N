@@ -1154,6 +1154,8 @@ export function selectLiveDispatchCandidates(
     blockOnlyEnabled?: boolean
     /** Backward-compatible persisted/operator alias. */
     blockOnly?: boolean
+    /** "Block Active": admit ordinary unadjusted Row-Live rows. Default off. */
+    blockActiveEnabled?: boolean
     normalEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
@@ -1166,6 +1168,7 @@ export function selectLiveDispatchCandidates(
   const seenSignalBlockSlots = new Set<string>()
   const policy: StrategyExecutionPolicy = {
     blockOnlyEnabled: (options.blockOnlyEnabled ?? options.blockOnly) === true,
+    blockActiveEnabled: options.blockActiveEnabled === true,
     normalEnabled: options.normalEnabled !== false,
     trailingEnabled: options.trailingEnabled !== false,
     blockEnabled: options.blockEnabled !== false,
@@ -2689,6 +2692,7 @@ export class StrategyCoordinator {
     normalEnabled: boolean
     /** Execute Main-family exchange rows only through Block adjustment rows. */
     blockOnlyEnabled: boolean
+    blockActiveEnabled: boolean
     /**
      * Position-Count coordination ratio — normalized on the 0.1..10 operator
      * grid, then converted to the per-valid-Set multiplier (10 → 0.02).
@@ -2729,6 +2733,7 @@ export class StrategyCoordinator {
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
     blockOnlyEnabled: true,
+    blockActiveEnabled: false,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
      * volume happens once during exhaustive axis materialisation.
@@ -3347,6 +3352,14 @@ export class StrategyCoordinator {
         s.blockOnlyEnabled ?? s.block_only_enabled ?? s.strategyBlockOnlyEnabled
           ?? s.blockOnly ?? s.variantBlockOnly,
         true,
+      )
+      // "Block Active": ordinary unadjusted Row-Live rows only become active
+      // real/live orders when the operator explicitly enables this. Disabled
+      // by default; calculations and reporting stay exhaustive either way.
+      this._coordinationSettings.blockActiveEnabled = bool(
+        s.blockActiveEnabled ?? s.block_active_enabled ?? s.strategyBlockActiveEnabled
+          ?? s.blockActive ?? s.dcaActiveEnabled,
+        false,
       )
 
       // ── Block-strategy tuning (previously never read from settings) ─────
@@ -8898,6 +8911,7 @@ export class StrategyCoordinator {
     if (!isCurrent()) return cancelled()
     const executionPolicy: StrategyExecutionPolicy = {
       blockOnlyEnabled: this._coordinationSettings.blockOnlyEnabled === true,
+      blockActiveEnabled: this._coordinationSettings.blockActiveEnabled === true,
       normalEnabled: this._coordinationSettings.normalEnabled !== false,
       trailingEnabled: this._coordinationSettings.variants.trailing !== false,
       blockEnabled: this._coordinationSettings.variants.block === true,

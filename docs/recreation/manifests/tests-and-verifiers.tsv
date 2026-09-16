@@ -68,6 +68,7 @@ unit	__tests__/unit/bingx-vst-read-pacer.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/bingx-vst-soak-plan.test.ts
+unit	__tests__/unit/block-active-gate.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/block-settings-migration.test.ts
