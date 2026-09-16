@@ -140,8 +140,8 @@ export interface IndicationTracking {
 
 export interface StrategyStageTracking {
   executionPolicy: {
-    blockOnlyEnabled: boolean
     normalEnabled: boolean
+    axisEnabled: boolean
     trailingEnabled: boolean
     blockEnabled: boolean
     dcaEnabled: boolean

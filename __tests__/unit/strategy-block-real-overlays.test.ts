@@ -667,7 +667,7 @@ describe("Real-stage Block overlays", () => {
       pendingLongTwo,
       pendingLongThree,
       pendingShortFour,
-    ], { blockActiveEnabled: true })
+    ])
     expect(firstBatch.map((set) => set.setKey)).toEqual([
       standardLong.setKey,
       standardLongLower.setKey,
@@ -715,7 +715,7 @@ describe("Real-stage Block overlays", () => {
       },
     ] as StrategySet[]
 
-    const selected = selectLiveDispatchCandidates(candidates, { blockActiveEnabled: true })
+    const selected = selectLiveDispatchCandidates(candidates)
     expect(selected.map((set) => set.setKey)).toEqual([
       "BTCUSDT:direction:long#standard:a",
       "BTCUSDT:direction:long#standard:b",
@@ -745,16 +745,17 @@ describe("Real-stage Block overlays", () => {
       variant: "dca" as const,
     }
 
+    // Block alone: switch the other families off individually.
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],
-      { blockEnabled: true, blockOnly: true },
+      { blockEnabled: true, normalEnabled: false, axisEnabled: false, dcaEnabled: false },
     ).map((set) => set.setKey)).toEqual([
       blockLong.setKey,
     ])
 
     expect(selectLiveDispatchCandidates(
       [standardLong, blockLong, dcaLong],
-      { blockEnabled: true, blockOnly: false, blockActiveEnabled: true },
+      { blockEnabled: true },
     ).map((set) => set.setKey)).toEqual([
       standardLong.setKey,
       blockLong.setKey,
@@ -763,7 +764,7 @@ describe("Real-stage Block overlays", () => {
 
     expect(selectLiveDispatchCandidates(
       [standardLong],
-      { blockEnabled: false, dcaEnabled: false, blockOnly: true },
+      { normalEnabled: false, axisEnabled: false, blockEnabled: false, dcaEnabled: false },
     ).map((set) => set.setKey)).toEqual([])
 
     expect(selectLiveDispatchCandidates(

@@ -204,7 +204,7 @@ export interface StageOverviewInput {
     }
     /** Whether the Normal/default execution family is enabled. */
     normalEnabled?: boolean
-    blockOnlyEnabled?: boolean
+    axisEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
     dcaEnabled?: boolean
@@ -381,9 +381,9 @@ export function buildConnectionStageOverview(input: StageOverviewInput) {
       blockCalculated,
       breakdownComplete,
       normalEnabled: input.main?.normalEnabled !== false,
-      blockOnlyEnabled: input.main?.blockOnlyEnabled === true,
+      axisEnabled: input.main?.axisEnabled !== false,
       executionPolicy: {
-        blockOnlyEnabled: input.main?.blockOnlyEnabled === true,
+        axisEnabled: input.main?.axisEnabled !== false,
         normalEnabled: input.main?.normalEnabled !== false,
         trailingEnabled: input.main?.trailingEnabled !== false,
         blockEnabled: input.main?.blockEnabled !== false,

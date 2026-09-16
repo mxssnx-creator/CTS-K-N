@@ -11,38 +11,33 @@ export type StrategyExecutionFamily = "normal" | "trailing" | "block" | "dca" | 
 
 export interface StrategyExecutionPolicy {
   /**
-   * Execute only Block adjustment rows from the Main family. Calculation and
-   * reporting of Normal/Trailing/Pos-Count/DCA rows remains exhaustive.
-   * Signal lanes keep their independent admission policy.
-   */
-  blockOnlyEnabled: boolean
-  /**
-   * "Block Active" — whether ordinary, unadjusted Row-Live rows may become
-   * active real/live orders and positions.
+   * Independent per-family execution switches. All four are enabled by
+   * default. A disabled family is still calculated, evaluated and reported
+   * exhaustively — it is simply not handed to the physical dispatcher, so no
+   * new active real/live order or position is opened from it.
    *
-   * Disabled by default: only rows carrying an actual adjustment (a Block
-   * count add-on, a DCA step add-on) are dispatched, while the ordinary rows
-   * keep being calculated, evaluated and reported exhaustively. Enabling it
-   * restores the previous behaviour where the unadjusted Row-Live rows are
-   * dispatched too, subject to the per-family flags below.
+   * Disabling `normalEnabled` therefore does NOT stop Normal processing: the
+   * Normal rows remain the internal base every relative lane is measured
+   * against (Axis windows, Block counts, DCA steps all keep resolving against
+   * them). They only stop becoming active orders themselves.
    *
-   * This never affects calculation, statistics or existing exposure — it is
-   * an admission gate for NEW unadjusted orders only.
+   * The independent Signal lane keeps its own admission policy and is not
+   * governed by these switches.
    */
-  blockActiveEnabled: boolean
   normalEnabled: boolean
-  trailingEnabled: boolean
+  axisEnabled: boolean
   blockEnabled: boolean
   dcaEnabled: boolean
+  /** Trailing follows the Normal switch it decorates. */
+  trailingEnabled: boolean
 }
 
 export const DEFAULT_STRATEGY_EXECUTION_POLICY: StrategyExecutionPolicy = {
-  blockOnlyEnabled: true,
-  blockActiveEnabled: false,
   normalEnabled: true,
-  trailingEnabled: true,
+  axisEnabled: true,
   blockEnabled: true,
-  dcaEnabled: false,
+  dcaEnabled: true,
+  trailingEnabled: true,
 }
 
 function bool(value: unknown, fallback: boolean): boolean {
@@ -56,31 +51,30 @@ export function normalizeStrategyExecutionPolicy(
 ): StrategyExecutionPolicy {
   const source = raw || {}
   return {
-    blockOnlyEnabled: bool(
-      source.blockOnlyEnabled ?? source.block_only_enabled ?? source.strategyBlockOnlyEnabled
-        ?? source.blockOnly ?? source.variantBlockOnly,
-      DEFAULT_STRATEGY_EXECUTION_POLICY.blockOnlyEnabled,
-    ),
-    blockActiveEnabled: bool(
-      source.blockActiveEnabled ?? source.block_active_enabled ?? source.strategyBlockActiveEnabled
-        ?? source.blockActive ?? source.dcaActiveEnabled,
-      DEFAULT_STRATEGY_EXECUTION_POLICY.blockActiveEnabled,
-    ),
     normalEnabled: bool(
-      source.normalEnabled ?? source.normal_enabled ?? source.strategyNormalEnabled,
+      source.normalEnabled ?? source.normal_enabled ?? source.strategyNormalEnabled
+        ?? source.variantNormalEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.normalEnabled,
     ),
-    trailingEnabled: bool(
-      source.trailingEnabled ?? source.variantTrailingEnabled ?? source.strategyBaseTrailingEnabled,
-      DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
+    axisEnabled: bool(
+      source.axisEnabled ?? source.axis_enabled ?? source.strategyAxisEnabled
+        ?? source.variantAxisEnabled,
+      DEFAULT_STRATEGY_EXECUTION_POLICY.axisEnabled,
     ),
     blockEnabled: bool(
-      source.blockEnabled ?? source.variantBlockEnabled ?? source.blockAdjustment,
+      source.blockEnabled ?? source.block_enabled ?? source.strategyBlockEnabled
+        ?? source.variantBlockEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.blockEnabled,
     ),
     dcaEnabled: bool(
-      source.dcaEnabled ?? source.variantDcaEnabled,
+      source.dcaEnabled ?? source.dca_enabled ?? source.strategyDcaEnabled
+        ?? source.variantDcaEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.dcaEnabled,
+    ),
+    trailingEnabled: bool(
+      source.trailingEnabled ?? source.trailing_enabled ?? source.strategyTrailingEnabled
+        ?? source.variantTrailingEnabled,
+      DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
     ),
   }
 }
@@ -105,23 +99,19 @@ export function classifyStrategyExecutionFamily(set: any): StrategyExecutionFami
 export function hasAnyStrategyExecutionVariantEnabled(
   policy: StrategyExecutionPolicy,
 ): boolean {
-  if (policy.blockOnlyEnabled) return policy.blockEnabled
-  if (!policy.blockActiveEnabled) return policy.blockEnabled || policy.dcaEnabled
-  return policy.normalEnabled || policy.trailingEnabled || policy.blockEnabled || policy.dcaEnabled
+  return policy.normalEnabled || policy.axisEnabled || policy.blockEnabled || policy.dcaEnabled
 }
 
 export function isStrategyExecutionFamilyEnabled(
   family: StrategyExecutionFamily,
   policy: StrategyExecutionPolicy,
 ): boolean {
+  // The Signal lane is independent of the Normal/Axis/Block/DCA switches.
   if (family === "signal") return true
-  if (policy.blockOnlyEnabled) return family === "block" && policy.blockEnabled
-  // Block Active gates the ordinary, unadjusted Row-Live families. Adjusted
-  // rows (block counts, DCA steps) and the independent Signal lane are
-  // unaffected, and every family is still calculated and reported.
-  if (family === "axis") return policy.blockActiveEnabled
-  if (family === "normal") return policy.blockActiveEnabled && policy.normalEnabled
-  if (family === "trailing") return policy.blockActiveEnabled && policy.trailingEnabled
+  if (family === "normal") return policy.normalEnabled
+  if (family === "axis") return policy.axisEnabled
   if (family === "block") return policy.blockEnabled
+  if (family === "trailing") return policy.normalEnabled && policy.trailingEnabled
   return policy.dcaEnabled
 }
+

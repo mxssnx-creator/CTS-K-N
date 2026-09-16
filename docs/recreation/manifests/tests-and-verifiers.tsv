@@ -68,7 +68,6 @@ unit	__tests__/unit/bingx-vst-read-pacer.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/bingx-vst-soak-plan.test.ts
-unit	__tests__/unit/block-active-gate.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/block-settings-migration.test.ts
@@ -316,6 +315,7 @@ unit	__tests__/unit/status-canonical-position-counts.test.ts
 unit	__tests__/unit/strategy-axis-coordination.test.ts
 unit	__tests__/unit/strategy-block-real-overlays.test.ts
 unit	__tests__/unit/strategy-execution-policy.test.ts
+unit	__tests__/unit/strategy-family-switches.test.ts
 unit	__tests__/unit/strategy-flow-log-throttle.test.ts
 unit	__tests__/unit/strategy-indication-policy.test.ts
 unit	__tests__/unit/strategy-indication-representatives.test.ts
