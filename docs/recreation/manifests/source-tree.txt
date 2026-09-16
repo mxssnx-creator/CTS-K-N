@@ -186,6 +186,7 @@ __tests__/unit/historic-test-replay.test.ts
 __tests__/unit/historic-test-runner.test.ts
 __tests__/unit/historic-test-scoring.test.ts
 __tests__/unit/historic-test-section-contract.test.ts
+__tests__/unit/historic-test-service.test.ts
 __tests__/unit/historic-test-settings.test.ts
 __tests__/unit/indication-configuration-counts.test.ts
 __tests__/unit/indication-connection-selection.test.ts
@@ -1311,6 +1312,7 @@ lib/historic-test-live-deactivation.ts
 lib/historic-test-replay.ts
 lib/historic-test-runner.ts
 lib/historic-test-scoring.ts
+lib/historic-test-service.ts
 lib/historic-test-settings.ts
 lib/html-response-parser.ts
 lib/index.ts

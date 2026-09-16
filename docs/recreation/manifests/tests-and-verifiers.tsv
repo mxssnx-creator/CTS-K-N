@@ -172,6 +172,7 @@ unit	__tests__/unit/historic-test-replay.test.ts
 unit	__tests__/unit/historic-test-runner.test.ts
 unit	__tests__/unit/historic-test-scoring.test.ts
 unit	__tests__/unit/historic-test-section-contract.test.ts
+unit	__tests__/unit/historic-test-service.test.ts
 unit	__tests__/unit/historic-test-settings.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
 unit	__tests__/unit/indication-connection-selection.test.ts
