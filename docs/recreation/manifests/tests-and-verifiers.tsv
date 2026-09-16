@@ -116,6 +116,7 @@ unit	__tests__/unit/direct-trade-market-history.test.ts
 unit	__tests__/unit/direct-trade-memory-maintenance.test.ts
 unit	__tests__/unit/direct-trade-overview-stats.test.ts
 unit	__tests__/unit/direct-trade-position-capacity.test.ts
+unit	__tests__/unit/direct-trade-position-retention.test.ts
 unit	__tests__/unit/direct-trade-position-stage.test.ts
 unit	__tests__/unit/direct-trade-processor-lease.test.ts
 unit	__tests__/unit/direct-trade-pulse-route.test.ts
