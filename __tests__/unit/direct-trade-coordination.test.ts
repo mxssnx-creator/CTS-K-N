@@ -469,7 +469,7 @@ describe("Direct-Trade independent historical coordination", () => {
     expect(sets.map((set) => set.takeprofit)).toEqual([0.4, 0.5])
     expect(sets.every((set) =>
       set.blockVolumeRatio === 1.5
-      && set.blockIncrementSteps === 2
+      && set.blockIncrementSteps === 4
       && set.blockCount === 3,
     )).toBe(true)
     expect(new Set(sets.map((set) => set.setKey)).size).toBe(2)

@@ -40,14 +40,18 @@ export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1
 
 // Base is exhaustive, but the separate Base Valid row remains meaningful in
 // the neutral domain: 1.00 means no result remains after one PositionCost.
-// Positive gate tuning is an explicit operator setting, not an implicit
-// stricter floor on hot reload.
-// Base deliberately admits a wider bootstrap domain than downstream stages.
-// The operator contract uses a classic 0.80 minimum for Base Valid while
-// Main/Real/Live retain the positive PositionCost-relative 1.02 floor.
+// The selectable floor stays at 0.80 for Base so an operator can still widen
+// the bootstrap domain deliberately; only the DEFAULT is raised.
 export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
-export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8
-export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.1
+// Operator-requested systemwide quality default (2026-09-16): every stage
+// starts at ratio 1.30 instead of Base 0.80 / downstream 1.10. With
+// PositionCost 0.10% this demands a rolling realised average of +0.30%
+// (3 × PositionCost) before a Set is promoted. 1.30 sits exactly on the
+// documented 1.02 + n×0.02 grid (n = 14), so normalizeMainTradePfRatio is a
+// no-op on it. This is a STRICTER gate: it reduces the admitted Set domain
+// and never inflates a reported result.
+export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.3
+export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.3
 
 export type MainTradeStage = "base" | "main" | "real" | "live"
 

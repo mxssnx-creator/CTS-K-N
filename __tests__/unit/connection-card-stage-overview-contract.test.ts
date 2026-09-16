@@ -82,11 +82,11 @@ describe("connection card stage overview contract", () => {
     expect(card).toContain("Ratio <strong")
   })
 
-  test("Base setting copy and engine share the 0.80 selectable floor", () => {
+  test("Base setting copy and engine share the 0.80 selectable floor and the 1.30 default", () => {
     const settings = read("components/settings/strategy/base-strategy-settings.tsx")
     const ratios = read("lib/main-trade-profit-factor.ts")
-    expect(settings).toContain("selectable range 0.80–2.30 in 0.02 steps; default 0.80")
+    expect(settings).toContain("selectable range 0.80–2.30 in 0.02 steps; default 1.30")
     expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8")
-    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 0.8")
+    expect(ratios).toContain("MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.3")
   })
 })

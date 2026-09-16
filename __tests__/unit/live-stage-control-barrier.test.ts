@@ -787,7 +787,9 @@ describe("executing Live-stage control barriers", () => {
       blockTargetAddQuantity: 1,
       blockTargetQuantity: 2,
       addQty: 1,
-      blockIncrementSteps: 2,
+      // The default recovery level count is 3 since 2026-09-16; the executed
+      // level here is still 1, so the quantities above are unchanged.
+      blockIncrementSteps: 3,
     })
   })
 

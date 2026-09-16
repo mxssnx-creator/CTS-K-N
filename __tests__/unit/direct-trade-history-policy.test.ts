@@ -88,10 +88,12 @@ describe("Direct-Trade bounded historic sufficiency", () => {
     expect(historyPolicy.clampDirectTradeHistoryHours("bad", 48)).toBe(48)
   })
 
-  test("keeps processor and calculation on the canonical 1.10 PositionCost coordinate", () => {
-    expect(historyPolicy.DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.1)
-    expect(historyPolicy.DIRECT_TRADE_RECENT_PF_DEFAULT).toBe(1.1)
-    expect(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.1)
+  test("keeps processor and calculation on the systemwide PositionCost coordinate", () => {
+    // Direct-Trade inherits the systemwide stage default (raised to 1.30 on
+    // 2026-09-16); it must never drift away from it independently.
+    expect(historyPolicy.DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.3)
+    expect(historyPolicy.DIRECT_TRADE_RECENT_PF_DEFAULT).toBe(1.3)
+    expect(DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT).toBe(1.3)
   })
 
   test("keeps the paper Block harness on the same recent-PF coordinate", () => {

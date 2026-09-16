@@ -65,6 +65,9 @@ describe("DCA profile and progression", () => {
       maxSteps: 2,
       stepVolumeMultipliers: [1.5, 2.5, 0, 0],
       stepDistancesPct: [1, 1, 3, 3],
+      // Additive recovery levels default to 3 (selectable 1..6), mirroring the
+      // Block lane; this fixture configures no explicit level.
+      incrementSteps: 3,
       takeProfitMode: "breakeven_plus",
       breakevenProfitPct: 0.35,
       cooldownSeconds: 45,

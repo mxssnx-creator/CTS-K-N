@@ -1115,7 +1115,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       accumulatedSetKeys: [binancePhysical, binanceLane],
     } as any, recordingConnector)
 
-    // Default steps=2: General 0.01 × (1 + 3 × 1.5) = 0.055.
+    // Default recovery levels=3 (executed level 1): General 0.01 × (1 + 3 × 1.5) = 0.055.
     expect(position.executedQuantity).toBeCloseTo(0.055, 12)
     expect(placeOrder.mock.calls[1]?.[2]).toBeCloseTo(0.045, 12)
     expect(position).toMatchObject({
@@ -1127,7 +1127,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
           blockCount: 3,
           requestedQuantity: 0.045,
           targetBlockQuantity: 0.055,
-          incrementSteps: 2,
+          incrementSteps: 3,
           effectiveIncrementStep: 1,
           laneKey: binanceLane,
           sourceId: "binance-usdm",
@@ -1516,7 +1516,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         baseVolumeMultiplier: 1,
         volumeIncrementRatio: 1,
         volumeMultiplier: 2,
-        incrementSteps: 2,
+        incrementSteps: 3,
         effectiveIncrementStep: 1,
       }),
     ])
@@ -1664,7 +1664,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         blockCount: 2,
         baseQuantity: 0.01,
         targetBlockQuantity: 0.03,
-        incrementSteps: 2,
+        incrementSteps: 3,
         effectiveIncrementStep: 1,
       }),
     ])
@@ -1694,7 +1694,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       quantity: 0.01,
       requestedQuantity: 0.01,
       targetBlockQuantity: 0.04,
-      incrementSteps: 2,
+      incrementSteps: 3,
       effectiveIncrementStep: 1,
     })
 
@@ -2109,7 +2109,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       blockCount: 3,
       requestedQuantity: 0.0225,
       volumeIncrementRatio: 2.25,
-      incrementSteps: 2,
+      incrementSteps: 3,
       effectiveIncrementStep: 1,
     })
 
@@ -2142,7 +2142,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         targetBlockQuantity: 0.035,
         requestedQuantity: 0.02,
         volumeIncrementRatio: 2.5,
-        incrementSteps: 2,
+        incrementSteps: 3,
         effectiveIncrementStep: 1,
       }),
     ]))

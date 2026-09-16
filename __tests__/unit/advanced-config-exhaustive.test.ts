@@ -43,10 +43,10 @@ describe("advanced compatibility configuration generator", () => {
     expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.mainMinProfitFactor).toEqual({
       min: 1.02,
       max: 2.3,
-      default: 1.1,
+      default: 1.3,
       step: 0.02,
     })
-    expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.realMinProfitFactor).toBe(1.1)
+    expect(DEFAULT_ADVANCED_CONFIG.strategyEvaluation.realMinProfitFactor).toBe(1.3)
     expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.takeProfitSteps).toMatchObject({ min: 5, default: 5 })
     expect(DEFAULT_ADVANCED_CONFIG.indicationEvaluation.timeoutSeconds.default).toBe(0.25)
     expect(DEFAULT_ADVANCED_CONFIG.pseudoPosition.timeoutSeconds.default).toBe(1)
