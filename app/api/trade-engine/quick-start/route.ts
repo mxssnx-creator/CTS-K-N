@@ -851,11 +851,11 @@ async function handlePost(request: Request) {
        ["normalEnabled", "normal_enabled"],
        "true",
      ))
-     const resolvedBlockOnly = stringifySettingValue(resolveQuickStartValue(
+     const resolvedAxis = stringifySettingValue(resolveQuickStartValue(
        body,
        existingQuickStartSettings,
-       ["blockOnlyEnabled", "block_only_enabled", "blockOnly", "variantBlockOnly"],
-       ["blockOnlyEnabled", "block_only_enabled", "blockOnly", "variantBlockOnly"],
+       ["axisEnabled", "axis_enabled", "variantAxisEnabled"],
+       ["axisEnabled", "axis_enabled", "variantAxisEnabled"],
        "true",
      ))
      const resolvedVariantDca = stringifySettingValue(resolveQuickStartValue(
@@ -863,7 +863,7 @@ async function handlePost(request: Request) {
        existingQuickStartSettings,
        ["variantDcaEnabled", "variant_dca"],
        ["variantDcaEnabled", "variant_dca"],
-       "false",
+       "true",
      ))
      const resolvedControlOrders = stringifySettingValue(resolveQuickStartValue(
        body,
@@ -1012,7 +1012,7 @@ async function handlePost(request: Request) {
       live_min_profit_factor: resolvedLiveProfitFactor,
       // Variant toggles
       normalEnabled: resolvedNormal,
-      blockOnlyEnabled: resolvedBlockOnly,
+      axisEnabled: resolvedAxis,
       variantTrailingEnabled: resolvedVariantTrailing,
       variantBlockEnabled: resolvedVariantBlock,
       variantDcaEnabled: resolvedVariantDca,

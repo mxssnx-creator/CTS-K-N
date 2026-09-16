@@ -311,7 +311,7 @@ function getDefaultSettings(): Record<string, any> {
     strategyBaseTrailingEnabled: true,
     strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,
     normalEnabled: true,
-    blockOnlyEnabled: true,
+    axisEnabled: true,
     blockAdjustment: true,
     variantBlockEnabled: true,
     blockVolumeRatio: 1,

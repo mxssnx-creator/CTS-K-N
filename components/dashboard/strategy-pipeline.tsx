@@ -14,7 +14,7 @@ import {
 
 interface StrategyTracking {
   executionPolicy?: {
-    blockOnlyEnabled: boolean
+    axisEnabled: boolean
     normalEnabled: boolean
     trailingEnabled: boolean
     blockEnabled: boolean

@@ -284,9 +284,9 @@ interface ConnectionStageOverview {
     blockCalculated: number
     breakdownComplete: boolean
     normalEnabled: boolean
-    blockOnlyEnabled: boolean
+    axisEnabled?: boolean
     executionPolicy?: {
-      blockOnlyEnabled: boolean
+      axisEnabled?: boolean
       normalEnabled: boolean
       trailingEnabled: boolean
       blockEnabled: boolean
@@ -3837,9 +3837,7 @@ export function ActiveConnectionCard({
                     <div className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
                       Main
                       <Badge variant="outline" className="h-4 px-1 text-[8px]">
-                        {connectionStageOverview.main.blockOnlyEnabled
-                          ? "Block Only"
-                          : `Normal ${connectionStageOverview.main.normalEnabled ? "on" : "off"}`}
+                        {`Normal ${connectionStageOverview.main.normalEnabled ? "on" : "off"}`}
                       </Badge>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
@@ -3857,7 +3855,7 @@ export function ActiveConnectionCard({
                           ].join(", ")}
                         >
                           Cycle {connectionStageOverview.latestCycle?.main.valid.toLocaleString() ?? "—"}/{connectionStageOverview.latestCycle?.main.overall.toLocaleString() ?? "—"} · N {connectionStageOverview.main.breakdown.standard} · T {connectionStageOverview.main.breakdown.trailing} · Pos {connectionStageOverview.main.breakdown.positionCount}
-                          <> · B {connectionStageOverview.main.breakdown.block}/{connectionStageOverview.main.blockCalculated}{connectionStageOverview.main.blockOnlyEnabled ? " (replace)" : ""}</>
+                          <> · B {connectionStageOverview.main.breakdown.block}/{connectionStageOverview.main.blockCalculated}</>
                           <> · D {connectionStageOverview.main.breakdown.dca}{connectionStageOverview.main.executionPolicy?.dcaEnabled ? "" : " (calc)"}</>
                         </div>
                   </div>

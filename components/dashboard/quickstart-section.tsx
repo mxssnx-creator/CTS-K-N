@@ -278,7 +278,7 @@ interface LiveStats {
   variantDca: VariantDetail
   variantOverall: VariantDetail
   normalEnabled: boolean
-  blockOnlyEnabled: boolean
+  axisEnabled: boolean
   trailingEnabled: boolean
   blockEnabled: boolean
   dcaEnabled: boolean
@@ -380,7 +380,7 @@ const EMPTY_STATS: LiveStats = {
   variantDefault:  { ...EMPTY_VARIANT }, variantTrailing: { ...EMPTY_VARIANT },
   variantBlock:    { ...EMPTY_VARIANT }, variantDca:      { ...EMPTY_VARIANT },
   variantOverall:  { ...EMPTY_VARIANT },
-  normalEnabled: true, blockOnlyEnabled: true, trailingEnabled: true, blockEnabled: true, dcaEnabled: false,
+  normalEnabled: true, axisEnabled: true, trailingEnabled: true, blockEnabled: true, dcaEnabled: false,
   mainCoord: {
     ...EMPTY_MAIN_COORD,
     positionContext: { ...EMPTY_MAIN_COORD.positionContext },
@@ -681,10 +681,10 @@ export function QuickstartSection() {
         variantDca:            variant(s.strategyVariants?.dca),
         variantOverall:        variant(s.strategyVariants?.overall),
         normalEnabled:         s.connectionStageOverview?.main?.executionPolicy?.normalEnabled !== false,
-        blockOnlyEnabled:      s.connectionStageOverview?.main?.executionPolicy?.blockOnlyEnabled !== false,
+        axisEnabled:           s.connectionStageOverview?.main?.executionPolicy?.axisEnabled !== false,
         trailingEnabled:       s.connectionStageOverview?.main?.executionPolicy?.trailingEnabled !== false,
         blockEnabled:          s.connectionStageOverview?.main?.executionPolicy?.blockEnabled !== false,
-        dcaEnabled:            s.connectionStageOverview?.main?.executionPolicy?.dcaEnabled === true,
+        dcaEnabled:            s.connectionStageOverview?.main?.executionPolicy?.dcaEnabled !== false,
         mainCoord,
         // Live exchange execution — prefer openPositions.live.open (scan-based, authoritative)
         // over liveExecution.positionsOpen (counter formula that can drift on restart).

@@ -17,6 +17,8 @@ import {
 } from "@/lib/constants"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { MarginCallPanel } from "@/components/settings/margin-call-panel"
+import { HistoricTestSection } from "@/components/settings/historic-test-section"
+import { DEFAULT_HISTORIC_TEST_SETTINGS, normalizeHistoricTestSettings, type HistoricTestSettings } from "@/lib/historic-test-settings"
 import {
   EXCHANGE_SYMBOL_COUNT_MAX,
   HIGH_SCALE_SYMBOL_STRESS_TARGET,
@@ -359,6 +361,7 @@ export function ConnectionSettingsDialog({
   const [stratMain,   setStratMain]   = useState<StrategyChannel>(DEFAULT_STRATEGY_PROFILE)
   const [stratPreset, setStratPreset] = useState<StrategyChannel>(DEFAULT_STRATEGY_PROFILE)
   const [coordination, setCoordination] = useState<CoordinationSettings>(DEFAULT_COORDINATION_SETTINGS)
+  const [historicTest, setHistoricTest] = useState<HistoricTestSettings>(DEFAULT_HISTORIC_TEST_SETTINGS)
 
   // ── Settings presets ────────────────────────────────────────────
   const [presets,        setPresets]        = useState<SettingsPreset[]>([])
@@ -411,7 +414,9 @@ export function ConnectionSettingsDialog({
           preset: enforceStrategyChannelPipeline(stratPreset),
         },
         coordination_settings: coordination,
-        blockOnlyEnabled:     coordination.blockOnlyEnabled,
+        historic_test_settings: historicTest,
+        normalEnabled:        coordination.normalEnabled,
+        axisEnabled:          coordination.axisEnabled,
         prevPosMinCount:      coordination.prevPosMinCount,
         mainEvalPosCount:     coordination.mainEvalPosCount,
         realEvalPosCount:     coordination.realEvalPosCount,
@@ -630,6 +635,7 @@ export function ConnectionSettingsDialog({
         setStratPreset(normalizeStrategyChannel(settings.strategies?.preset))
 
         const coord = settings.coordination_settings || settings.coordinationSettings || {}
+        setHistoricTest(normalizeHistoricTestSettings(settings))
         {
           const dca = normalizeDcaProfile({ ...(settings as Record<string, unknown>), ...coord })
           const rawTrailing = (coord as Record<string, unknown>).trailingVariants ??
@@ -675,17 +681,11 @@ export function ConnectionSettingsDialog({
               : typeof (settings as Record<string, unknown>).normalEnabled === "boolean"
                 ? Boolean((settings as Record<string, unknown>).normalEnabled)
                 : DEFAULT_COORDINATION_SETTINGS.normalEnabled,
-            blockOnlyEnabled: typeof coord.blockOnlyEnabled === "boolean"
-              ? coord.blockOnlyEnabled
-              : typeof (coord as Record<string, unknown>).blockOnly === "boolean"
-                ? Boolean((coord as Record<string, unknown>).blockOnly)
-                : typeof (coord as Record<string, unknown>).variantBlockOnly === "boolean"
-                  ? Boolean((coord as Record<string, unknown>).variantBlockOnly)
-              : typeof (settings as Record<string, unknown>).blockOnlyEnabled === "boolean"
-                ? Boolean((settings as Record<string, unknown>).blockOnlyEnabled)
-                : typeof (settings as Record<string, unknown>).blockOnly === "boolean"
-                  ? Boolean((settings as Record<string, unknown>).blockOnly)
-                : DEFAULT_COORDINATION_SETTINGS.blockOnlyEnabled,
+            axisEnabled: typeof coord.axisEnabled === "boolean"
+              ? coord.axisEnabled
+              : typeof (settings as Record<string, unknown>).axisEnabled === "boolean"
+                ? Boolean((settings as Record<string, unknown>).axisEnabled)
+                : DEFAULT_COORDINATION_SETTINGS.axisEnabled,
             posCountsVolumeRatio: normalizePosCountVolumeRatio(
               coord.posCountsVolumeRatio,
               DEFAULT_COORDINATION_SETTINGS.posCountsVolumeRatio,
@@ -830,8 +830,9 @@ export function ConnectionSettingsDialog({
         // and never reached the engine's connection_settings hash reader.
         coordination_settings: coordination,
         coordinationSettings:  coordination, // legacy alias
+        historic_test_settings: historicTest,
         normalEnabled: coordination.normalEnabled,
-        blockOnlyEnabled: coordination.blockOnlyEnabled,
+        axisEnabled: coordination.axisEnabled,
         // Persist both indication channels in the same ordered transaction as
         // the rest of the dialog. This produces one coherent hot reload and
         // prevents the engine from seeing new strategies with old indications.
@@ -1622,6 +1623,13 @@ export function ConnectionSettingsDialog({
                       onCheckedChange={(checked) => setOverview(p => ({ ...p, useSystemCloseOnly: checked }))}
                     />
                   </div>
+                  {/* ── Historic Test ──────────────────────────────── */}
+                  <HistoricTestSection
+                    value={historicTest}
+                    onChange={setHistoricTest}
+                    connectionExchange={exchangeKey}
+                    exchangeOptions={["bingx", "bybit", "binance"]}
+                  />
                 </TabsContent>
 
                 {/* LIVE ─────────────────────────────────────────── */}
