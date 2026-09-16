@@ -32,6 +32,16 @@ export interface BlockDerivationParams {
   incrementSteps: number
   /** Highest count the lane may reach. */
   maxStack: number
+  /**
+   * Replay ONE independent Block count instead of the evolving lane.
+   *
+   * Each count is its own config: with `fixedCount` set to N every attempt of
+   * the lane runs at count N's add-on, and the recovery level advances for
+   * that count alone (reset by a positive result). Without it the lane walks
+   * 0 -> 1 -> 2 ... which measures the lane as a whole, not the individual
+   * count the operator validates.
+   */
+  fixedCount?: number
 }
 
 export const DEFAULT_BLOCK_DERIVATION: BlockDerivationParams = {
@@ -55,8 +65,11 @@ export function deriveBlockTrades(
 ): HistoricTestTrade[] {
   const config = { ...DEFAULT_BLOCK_DERIVATION, ...params }
   const maxStack = Math.max(0, Math.floor(Number(config.maxStack) || 0))
+  const fixedCount = Number.isFinite(Number(config.fixedCount)) && Number(config.fixedCount) > 0
+    ? Math.min(maxStack || Math.floor(Number(config.fixedCount)), Math.floor(Number(config.fixedCount)))
+    : null
   const out: HistoricTestTrade[] = []
-  let count = 0
+  let count = fixedCount ?? 0
   let level = 1
   let nonPositiveRun = 0
 
@@ -73,8 +86,9 @@ export function deriveBlockTrades(
     })
 
     if (result > 0) {
-      // A positive result ends the recovery: the lane returns to base volume.
-      count = 0
+      // A positive result ends the recovery. An independent count keeps its
+      // identity — only its recovery level returns to base.
+      count = fixedCount ?? 0
       level = 1
       nonPositiveRun = 0
     } else {
@@ -87,7 +101,7 @@ export function deriveBlockTrades(
           level = Math.min(Math.max(1, Math.floor(Number(config.incrementSteps) || 1)), level + 1)
         }
       }
-      count = Math.min(maxStack, count + 1)
+      count = fixedCount ?? Math.min(maxStack, count + 1)
     }
   }
   return out

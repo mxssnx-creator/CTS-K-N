@@ -48,6 +48,14 @@ export class HistoricTestUnsupportedFamilyError extends Error {
   }
 }
 
+/** A Block variant names its count: "2", "count:2" and "block:2" all mean count 2. */
+export function parseBlockCountVariant(variant: unknown): number | null {
+  const match = String(variant ?? "").trim().toLowerCase().match(/(\d+)\s*$/)
+  if (!match) return null
+  const count = Number(match[1])
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : null
+}
+
 export const HISTORIC_TEST_SIMULATED_FAMILIES = ["normal", "dca", "block", "axis"] as const
 
 /** Indication name -> replay entry model. Unknown names fall back to momentum. */
@@ -128,7 +136,16 @@ export function createHistoricCandleSimulator(
       openedAt: trade.entryTime,
       closedAt: trade.exitTime,
     }))
-    if (request.family === "block") return deriveBlockTrades(baseline, options.block)
+    if (request.family === "block") {
+      // The variant IS the independent config: "2" replays Block count 2 on
+      // its own, with its own recovery level, so every count is scored and
+      // validated separately instead of sharing one evolving lane.
+      const fixedCount = parseBlockCountVariant(request.variant)
+      return deriveBlockTrades(baseline, {
+        ...options.block,
+        ...(fixedCount != null ? { fixedCount } : {}),
+      })
+    }
     if (request.family === "axis") return deriveAxisTrades(baseline, options.axis)
     return baseline
   }

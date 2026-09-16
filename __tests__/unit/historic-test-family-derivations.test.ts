@@ -76,3 +76,38 @@ describe("Axis derivation filters admissions, never results", () => {
     expect(results(out)).toEqual([3, -2, 7])
   })
 })
+
+describe("each Block count is an independent config", () => {
+  const { deriveBlockTrades } = require("@/lib/historic-test-family-derivations")
+  const { parseBlockCountVariant } = require("@/lib/historic-test-replay")
+  const baseline = [{ signedResultR: -1 }, { signedResultR: -1 }, { signedResultR: 2 }, { signedResultR: -1 }]
+
+  test("a variant names the count it replays", () => {
+    expect(parseBlockCountVariant("2")).toBe(2)
+    expect(parseBlockCountVariant("count:3")).toBe(3)
+    expect(parseBlockCountVariant("block:6")).toBe(6)
+    expect(parseBlockCountVariant("")).toBeNull()
+    expect(parseBlockCountVariant(undefined)).toBeNull()
+    expect(parseBlockCountVariant("0")).toBeNull()
+  })
+
+  test("a fixed count runs every attempt at that count's add-on, unlike the evolving lane", () => {
+    const evolving = deriveBlockTrades(baseline, { volumeRatio: 1, incrementSteps: 3, maxStack: 3 })
+    const count2 = deriveBlockTrades(baseline, { volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 2 })
+    // The evolving lane starts at base volume; count 2 never does.
+    expect(evolving[0].signedResultR).toBeCloseTo(-1, 10)
+    expect(count2[0].signedResultR).toBeCloseTo(-3, 10) // 1 + 2 x 1 x level 1 = 3
+    // Different counts must produce different results — that is the point of
+    // validating them independently.
+    const count1 = deriveBlockTrades(baseline, { volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 1 })
+    expect(count1.map((t) => t.signedResultR)).not.toEqual(count2.map((t) => t.signedResultR))
+  })
+
+  test("a positive result resets the level but never the count's identity", () => {
+    const count2 = deriveBlockTrades([{ signedResultR: -1 }, { signedResultR: 5 }, { signedResultR: -1 }], {
+      volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 2,
+    })
+    // After the win the lane is still count 2 at level 1 -> multiplier 3.
+    expect(count2[2].signedResultR).toBeCloseTo(-3, 10)
+  })
+})
