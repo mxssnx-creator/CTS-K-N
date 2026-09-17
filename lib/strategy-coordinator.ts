@@ -2544,6 +2544,9 @@ export function getStrategyCoordinator(
   return coordinator
 }
 
+/** A symbol whose strategy flow exceeds this is reported with its stage split. */
+const STRATEGY_FLOW_SLOW_SYMBOL_MS = 5_000
+
 export class StrategyCoordinator {
   static forceNextSettingsReload(connectionId: string): number {
     const generation = Date.now()
@@ -3639,6 +3642,8 @@ export class StrategyCoordinator {
       // createLiveSets can resolve axis parent entries in O(1) instead of O(N).
       //
       // STAGE 1: BASE — one Set per (indication_type × direction)
+      const stageTimings = { base: 0, main: 0, real: 0, live: 0 }
+      const baseStartedAt = Date.now()
       const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(
         symbol,
         indications,
@@ -3646,6 +3651,7 @@ export class StrategyCoordinator {
         isPrehistoric,
         isCurrent,
       )
+      stageTimings.base = Date.now() - baseStartedAt
       markPhase("base")
       if (!isCurrent()) return []
       results.push(baseResult)
@@ -3660,6 +3666,7 @@ export class StrategyCoordinator {
       // STAGE 2: MAIN — validate Base Sets AND create additional related
       // variant Sets (Default / Trailing / Block / DCA) gated by posCtx.
       // CoordIndex receives a SetCoordRecord per built set (O(1) per set).
+      const mainStartedAt = Date.now()
       const { result: mainResult, sets: mainSets } = await this.createMainSets(
         symbol,
         baseSets,
@@ -3668,6 +3675,7 @@ export class StrategyCoordinator {
         isPrehistoric,
         isCurrent,
       )
+      stageTimings.main = Date.now() - mainStartedAt
       markPhase("main")
       if (!isCurrent()) return []
       results.push(mainResult)
@@ -3682,6 +3690,7 @@ export class StrategyCoordinator {
       // additional related variants flow uniformly through this filter).
       // CoordIndex.validRealKeys is populated here; Real tuner writes sizeDelta
       // / tunedAvgPF onto each record for O(1) access at Live dispatch.
+      const realStartedAt = Date.now()
       const { result: realResult, sets: realSets } = await this.evaluateRealSets(
         symbol,
         mainSets,
@@ -3690,6 +3699,7 @@ export class StrategyCoordinator {
         isPrehistoric,
         isCurrent,
       )
+      stageTimings.real = Date.now() - realStartedAt
       markPhase("real")
       if (!isCurrent()) return []
       results.push(realResult)
@@ -3704,6 +3714,7 @@ export class StrategyCoordinator {
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
       // instead of the prior O(N) realSets.find() scan.
       if (!isPrehistoric) {
+        const liveStartedAt = Date.now()
         const { result: liveResult, sets: liveSets } = await this.createLiveSets(
           symbol,
           realSets,
@@ -3711,6 +3722,18 @@ export class StrategyCoordinator {
           skipLiveDispatch,
           isCurrent,
         )
+        stageTimings.live = Date.now() - liveStartedAt
+        // A single symbol's strategy flow dominates the realtime cycle when it
+        // runs long; without the stage split the 48 s symbols observed in
+        // production cannot be attributed to Base, Main, Real or Live.
+        const stageTotalMs = stageTimings.base + stageTimings.main + stageTimings.real + stageTimings.live
+        if (stageTotalMs >= STRATEGY_FLOW_SLOW_SYMBOL_MS) {
+          console.warn(
+            `[v0] [StrategyFlow] ${this.connectionId}:${symbol} slow flow ${stageTotalMs}ms — ` +
+            `base=${stageTimings.base}ms main=${stageTimings.main}ms real=${stageTimings.real}ms live=${stageTimings.live}ms ` +
+            `(baseSets=${baseSets.length} mainSets=${mainSets.length} realSets=${realSets.length})`,
+          )
+        }
         markPhase("live")
         if (!isCurrent()) return []
         results.push(liveResult)
