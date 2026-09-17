@@ -298,7 +298,13 @@ describe("production installation and Kilo deployment contract", () => {
     expect(installer).toContain('run_root chown "$install_owner:$service_group" "$ENV_FILE"')
     expect(installer).toContain('run_root chmod 640 "$ENV_FILE"')
     expect(installer).toContain('run_as_service test -r "$ENV_FILE"')
-    expect(installer).toMatch(/production-deploy-init\.mjs" \\\n\s+\|\| return 1/)
+    // Deployment initialization must still fail closed. It is now wrapped so
+    // the failure can be CLASSIFIED as configuration — the app is already
+    // health-proven at this point, and a configuration gap must not take a
+    // working build off the air — but it still returns non-zero.
+    expect(installer).toMatch(
+      /production-deploy-init\.mjs"; then\n\s+VERIFY_FAILURE_KIND="configuration"\n\s+return 1\n\s+fi/,
+    )
     expect(installer).toMatch(/run-minute-scheduler\.mjs" --once \\\n\s+\|\| return 1/)
     expect(existsSync(path.join(process.cwd(), "vercel.json"))).toBe(false)
     const packageJson = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"))
