@@ -1,4 +1,6 @@
 import { filterHistoricAdmittedSets } from "@/lib/historic-test-admission"
+import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
+import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
 import { normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
 import { readHistoricTestValidatedKeys } from "@/lib/historic-test-runner"
 /**
@@ -20,7 +22,7 @@ import { readHistoricTestValidatedKeys } from "@/lib/historic-test-runner"
  * Strategy counts always represent the number of SETS, not individual pseudo positions.
  */
 
-import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getSettings, setSettings, getRedisClient, getConnection } from "@/lib/redis-db"
 import { marketDataKey } from "@/lib/market-data-keys"
 import { createHash } from "crypto"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -2544,6 +2546,9 @@ export function getStrategyCoordinator(
   return coordinator
 }
 
+/** A symbol whose strategy flow exceeds this is reported with its stage split. */
+const STRATEGY_FLOW_SLOW_SYMBOL_MS = 5_000
+
 export class StrategyCoordinator {
   static forceNextSettingsReload(connectionId: string): number {
     const generation = Date.now()
@@ -3639,6 +3644,8 @@ export class StrategyCoordinator {
       // createLiveSets can resolve axis parent entries in O(1) instead of O(N).
       //
       // STAGE 1: BASE — one Set per (indication_type × direction)
+      const stageTimings = { base: 0, main: 0, real: 0, live: 0 }
+      const baseStartedAt = Date.now()
       const { result: baseResult, sets: baseSets, coordIndex } = await this.createBaseSets(
         symbol,
         indications,
@@ -3646,6 +3653,7 @@ export class StrategyCoordinator {
         isPrehistoric,
         isCurrent,
       )
+      stageTimings.base = Date.now() - baseStartedAt
       markPhase("base")
       if (!isCurrent()) return []
       results.push(baseResult)
@@ -3660,6 +3668,7 @@ export class StrategyCoordinator {
       // STAGE 2: MAIN — validate Base Sets AND create additional related
       // variant Sets (Default / Trailing / Block / DCA) gated by posCtx.
       // CoordIndex receives a SetCoordRecord per built set (O(1) per set).
+      const mainStartedAt = Date.now()
       const { result: mainResult, sets: mainSets } = await this.createMainSets(
         symbol,
         baseSets,
@@ -3668,6 +3677,7 @@ export class StrategyCoordinator {
         isPrehistoric,
         isCurrent,
       )
+      stageTimings.main = Date.now() - mainStartedAt
       markPhase("main")
       if (!isCurrent()) return []
       results.push(mainResult)
@@ -3682,6 +3692,7 @@ export class StrategyCoordinator {
       // additional related variants flow uniformly through this filter).
       // CoordIndex.validRealKeys is populated here; Real tuner writes sizeDelta
       // / tunedAvgPF onto each record for O(1) access at Live dispatch.
+      const realStartedAt = Date.now()
       const { result: realResult, sets: realSets } = await this.evaluateRealSets(
         symbol,
         mainSets,
@@ -3690,6 +3701,7 @@ export class StrategyCoordinator {
         isPrehistoric,
         isCurrent,
       )
+      stageTimings.real = Date.now() - realStartedAt
       markPhase("real")
       if (!isCurrent()) return []
       results.push(realResult)
@@ -3704,6 +3716,7 @@ export class StrategyCoordinator {
       // Axis-entry hydration uses coordIndex.base.byKey.get(parentKey) — O(1)
       // instead of the prior O(N) realSets.find() scan.
       if (!isPrehistoric) {
+        const liveStartedAt = Date.now()
         const { result: liveResult, sets: liveSets } = await this.createLiveSets(
           symbol,
           realSets,
@@ -3711,6 +3724,18 @@ export class StrategyCoordinator {
           skipLiveDispatch,
           isCurrent,
         )
+        stageTimings.live = Date.now() - liveStartedAt
+        // A single symbol's strategy flow dominates the realtime cycle when it
+        // runs long; without the stage split the 48 s symbols observed in
+        // production cannot be attributed to Base, Main, Real or Live.
+        const stageTotalMs = stageTimings.base + stageTimings.main + stageTimings.real + stageTimings.live
+        if (stageTotalMs >= STRATEGY_FLOW_SLOW_SYMBOL_MS) {
+          console.warn(
+            `[v0] [StrategyFlow] ${this.connectionId}:${symbol} slow flow ${stageTotalMs}ms — ` +
+            `base=${stageTimings.base}ms main=${stageTimings.main}ms real=${stageTimings.real}ms live=${stageTimings.live}ms ` +
+            `(baseSets=${baseSets.length} mainSets=${mainSets.length} realSets=${realSets.length})`,
+          )
+        }
         markPhase("live")
         if (!isCurrent()) return []
         results.push(liveResult)
@@ -8961,10 +8986,12 @@ export class StrategyCoordinator {
         ].filter(Boolean) as string[]
       }),
     ))
+    const liveSub = { start: Date.now(), windows: 0, blockOverlays: 0, blockWindows: 0, persist: 0, marketData: 0, dispatch: 0 }
     const rowWindows = await this.getStrategySetWindowBatch(
       rowHistoryKeys,
       this._coordinationSettings.liveEvalPosCount,
     )
+    liveSub.windows = Date.now() - liveSub.start; let liveMark = Date.now()
     const rowLive = materializeContinuousStageRows(rowLiveSource, {
       stage: "live",
       lookback: this._coordinationSettings.liveEvalPosCount,
@@ -8976,6 +9003,7 @@ export class StrategyCoordinator {
     // selector below, which would apply the Live gate a second time and make
     // a saved 15-position row behave differently at dispatch.
     const builtRowLiveBlock = await this.buildRowLiveBlockOverlays(symbol, rowLive.rows, metrics)
+    liveSub.blockOverlays = Date.now() - liveMark; liveMark = Date.now()
     // Independent Row-Live Blocks are executable configurations in their own
     // right.  Read their exact result rings in one batch and retain a row only
     // when its own rolling PF/DDT passes (or it is already actively protected).
@@ -8985,6 +9013,7 @@ export class StrategyCoordinator {
       builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
       this._coordinationSettings.liveEvalPosCount,
     )
+    liveSub.blockWindows = Date.now() - liveMark; liveMark = Date.now()
     const rowLiveBlock = applyExactBlockRowWindows(
       builtRowLiveBlock,
       blockWindows,
@@ -9212,6 +9241,7 @@ export class StrategyCoordinator {
         client.set(liveCountKey, String(qualifying.length), { EX: 86400 } as any),
         ...liveVariantWrites,
       ])
+      liveSub.persist = Date.now() - liveMark; liveMark = Date.now()
     } catch { /* non-critical */ }
     if (!isCurrent()) return cancelled()
 
@@ -9256,8 +9286,12 @@ export class StrategyCoordinator {
     // minProfitFactor to 0.75 on first run), so this workaround is no longer needed.
 
     if (qualifying.length > 0 && !skipLiveDispatch && isCurrent()) {
+      liveSub.marketData = Date.now() - liveMark
       const dispatchPipelineStartedAt = Date.now()
       let dispatchOutcomePersisted = false
+      // Set when the connection-level runtime admission blocks every new
+      // entry this cycle; the per-Set loop is then skipped as a whole.
+      let dispatchHaltedForConnection: string | null = null
       const persistUnavailableDispatch = async (
         reason: string,
         classification: "blocked" | "error" = "error",
@@ -9356,6 +9390,38 @@ export class StrategyCoordinator {
           connector = await exchangeConnectorFactory.getOrCreateConnector(this.connectionId)
         }
         if (!isCurrent()) return cancelled()
+
+        // ── Connection-level admission, decided ONCE per symbol ────────────
+        // With live trading on and a runtime halt in force (entry protection
+        // halt, account snapshot halt), every qualifying Set would otherwise
+        // be handed to executeLivePosition, run the whole pre-placement path,
+        // be rejected at the interlock and persist a rejected row. Production
+        // showed 1,497 such calls for one symbol in one cycle — 100% blocked,
+        // 0 placed, ~4 s of Redis writes producing nothing but rejected rows.
+        // The halt is a property of the connection, not of the Set, so it is
+        // read once here and the whole dispatch is recorded as blocked without
+        // touching a single Set. Simulation (live trading off) is unaffected:
+        // that path is the exhaustive paper lifecycle and must keep running.
+        if (isLiveTradeEnabled && connector) {
+          const haltClient = getRedisClient() as any
+          // Evaluate readiness on the SAME document executeLivePosition uses:
+          // the parsed connection (getConnection), which carries the
+          // connection id. The bare settings overlay has no id, and with a
+          // LIVE_ORDER_CONNECTION_IDS allow-list configured the readiness
+          // gate then fails closed as connection_not_allowed — which made this
+          // short-circuit dead code on production while every Set still went
+          // through the interlock individually.
+          const connectionDocument = ((await getConnection(this.connectionId).catch(() => null)) || {}) as Record<string, unknown>
+          const configuredReadiness = evaluateRealTradeReadiness(
+            { ...connectionDocument, id: this.connectionId, connectionId: this.connectionId } as any,
+            "main",
+          )
+          const runtimeAdmission = await readLiveEntryReadiness(haltClient, this.connectionId, configuredReadiness)
+            .catch(() => configuredReadiness)
+          if (configuredReadiness.canPlaceRealOrders && !runtimeAdmission.canPlaceRealOrders) {
+            dispatchHaltedForConnection = String(runtimeAdmission.blockCode || "runtime_admission_blocked")
+          }
+        }
         // The LiveStage owns both exchange and paper execution. Running the
         // same ordered path in simulation is essential: Standard creates the
         // confirmed parent first, then Block/DCA adjust that parent. The old
@@ -9442,7 +9508,12 @@ export class StrategyCoordinator {
             const dispatchStartedAt = Date.now()
             const physicallyExecutedSets: StrategySet[] = []
 
-            for (const set of dispatchSets) {
+            if (dispatchHaltedForConnection) {
+              // Record the whole selection as blocked in one write instead of
+              // walking every Set through the interlock individually.
+              await persistUnavailableDispatch(dispatchHaltedForConnection, "blocked")
+            }
+            for (const set of dispatchHaltedForConnection ? [] : dispatchSets) {
               if (!isCurrent()) return cancelled()
               try {
                 // ── Axis-entry hydration — O(1) via BaseRegistry ──────────────
@@ -9873,6 +9944,21 @@ export class StrategyCoordinator {
         }
       }
 
+      liveSub.dispatch = Date.now() - dispatchPipelineStartedAt
+      {
+        const liveTotal = Date.now() - liveSub.start
+        if (liveTotal >= STRATEGY_FLOW_SLOW_SYMBOL_MS) {
+          // The stage split showed the Live stage owns ~97% of a slow symbol's
+          // flow; this line says which part of the Live stage.
+          console.warn(
+            `[v0] [StrategyFlow] ${this.connectionId}:${symbol} live-stage split ${liveTotal}ms — ` +
+            `windows=${liveSub.windows}ms blockOverlays=${liveSub.blockOverlays}ms blockWindows=${liveSub.blockWindows}ms ` +
+            `persist=${liveSub.persist}ms marketData=${liveSub.marketData}ms dispatch=${liveSub.dispatch}ms ` +
+            `(other=${Math.max(0, liveTotal - liveSub.windows - liveSub.blockOverlays - liveSub.blockWindows - liveSub.persist - liveSub.marketData - liveSub.dispatch)}ms)` +
+            (dispatchHaltedForConnection ? ` halted=${dispatchHaltedForConnection}` : ""),
+          )
+        }
+      }
       // After dispatching new entries, reconcile already-open positions with
       // the exchange so that any SL/TP/manual-close that happened since the
       // last cycle transitions the Redis record to "closed". Rate-limited per

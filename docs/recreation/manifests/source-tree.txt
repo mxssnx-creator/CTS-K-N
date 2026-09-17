@@ -66,6 +66,7 @@ __tests__/unit/advanced-config-exhaustive.test.ts
 __tests__/unit/aggregate-protection-coordination.test.ts
 __tests__/unit/api-stats-fetcher.test.ts
 __tests__/unit/auth-runtime-secret.test.ts
+__tests__/unit/authoritative-snapshot-cache.test.ts
 __tests__/unit/backtest-result-accounting.test.ts
 __tests__/unit/balanced-config-selection.test.ts
 __tests__/unit/base-position-batch-coordination.test.ts
@@ -226,6 +227,7 @@ __tests__/unit/live-position-status.test.ts
 __tests__/unit/live-positions-pnl.test.ts
 __tests__/unit/live-slot-lookup-cache.test.ts
 __tests__/unit/live-stage-control-barrier.test.ts
+__tests__/unit/live-stage-halt-shortcircuit.test.ts
 __tests__/unit/live-stage-position-cost-coordinate.test.ts
 __tests__/unit/live-stage-redis-position-lock.test.ts
 __tests__/unit/live-trade-block-clearance.test.ts
@@ -352,6 +354,7 @@ __tests__/unit/strategy-block-real-overlays.test.ts
 __tests__/unit/strategy-execution-policy.test.ts
 __tests__/unit/strategy-family-switches.test.ts
 __tests__/unit/strategy-flow-log-throttle.test.ts
+__tests__/unit/strategy-flow-stage-timing.test.ts
 __tests__/unit/strategy-indication-policy.test.ts
 __tests__/unit/strategy-indication-representatives.test.ts
 __tests__/unit/strategy-main-set-deduplication.test.ts
