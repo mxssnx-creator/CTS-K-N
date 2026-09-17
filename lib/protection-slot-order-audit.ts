@@ -321,10 +321,16 @@ export function classifyConnectionOwnedProtectionBook(input: {
     return empty("invalid_slot_inputs")
   }
 
+  // Only system-owned, connection-relevant orders are counted. The slot count
+  // used to be taken over EVERY order on the symbol/direction, with ownership
+  // checked afterwards — so on a shared account another system's protection
+  // orders were counted into our book and the slot failed as
+  // exact_slot_control_count_mismatch even when our own three legs were
+  // present and correct. Foreign orders are not ours to count, exactly as
+  // foreign positions are not ours to manage.
   const slotOrders = input.openOrders
     .map((order) => order as Record<string, any>)
     .filter((order) => orderMatchesSlot(order, symbol, input.direction))
-  if (slotOrders.length !== 3) return empty("exact_slot_control_count_mismatch")
 
   const owned = slotOrders.filter((order) => isConnectionOwnedProtectionOrderForSlot(
     order,
@@ -332,7 +338,7 @@ export function classifyConnectionOwnedProtectionBook(input: {
     symbol,
     input.direction,
   ))
-  if (owned.length !== slotOrders.length) return empty("foreign_or_unknown_slot_control_present")
+  if (owned.length !== 3) return empty("exact_slot_control_count_mismatch")
   if (owned.some((order) => protectionOrderKind(order, input.direction) === null)) return empty("non_protection_slot_control_present")
 
   const takeProfitOrders = owned.filter((order) => protectionOrderKind(order, input.direction) === "take_profit")
