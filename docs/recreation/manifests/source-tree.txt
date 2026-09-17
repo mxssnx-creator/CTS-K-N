@@ -190,6 +190,7 @@ __tests__/unit/historic-test-scoring.test.ts
 __tests__/unit/historic-test-section-contract.test.ts
 __tests__/unit/historic-test-service.test.ts
 __tests__/unit/historic-test-settings.test.ts
+__tests__/unit/historic-test-stats-surface.test.ts
 __tests__/unit/indication-configuration-counts.test.ts
 __tests__/unit/indication-connection-selection.test.ts
 __tests__/unit/indication-lane-identity.test.ts
@@ -429,6 +430,7 @@ app/api/backup/auto/route.ts
 app/api/broadcast/health/route.ts
 app/api/broadcast/stats/route.ts
 app/api/connections/[id]/engine-states/route.ts
+app/api/connections/[id]/historic-test/route.ts
 app/api/connections/[id]/margin-call/route.ts
 app/api/connections/counts/route.ts
 app/api/connections/progression/[id]/logs/route.ts
@@ -927,6 +929,7 @@ components/settings/exchange-connection-dialog.tsx
 components/settings/exchange-connection-manager.tsx
 components/settings/exchange-connection-settings-dialog.tsx
 components/settings/historic-test-section.tsx
+components/settings/historic-test-stats-panel.tsx
 components/settings/install-manager.tsx
 components/settings/logging-settings.tsx
 components/settings/logs-viewer.tsx
