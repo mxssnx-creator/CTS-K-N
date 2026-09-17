@@ -179,6 +179,7 @@ __tests__/unit/historic-profit-factor.test.ts
 __tests__/unit/historic-progression-generation.test.ts
 __tests__/unit/historic-replay-policy.test.ts
 __tests__/unit/historic-test-candles.test.ts
+__tests__/unit/historic-test-cron-contract.test.ts
 __tests__/unit/historic-test-family-derivations.test.ts
 __tests__/unit/historic-test-family-replay.test.ts
 __tests__/unit/historic-test-live-deactivation.test.ts
@@ -440,6 +441,7 @@ app/api/connections/status/route.ts
 app/api/connections/validation/[id]/route.ts
 app/api/cron/direct-trade-continuity/route.ts
 app/api/cron/generate-indications/route.ts
+app/api/cron/historic-test/route.ts
 app/api/cron/schedule-indications/route.ts
 app/api/cron/server-continuity/route.ts
 app/api/cron/sync-live-positions/route.ts

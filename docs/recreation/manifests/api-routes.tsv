@@ -38,6 +38,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/connections/validation/[id]	GET	connections	force-dynamic		none-detected	app/api/connections/validation/[id]/route.ts
 /api/cron/direct-trade-continuity	GET,POST	cron	force-dynamic		cron	app/api/cron/direct-trade-continuity/route.ts
 /api/cron/generate-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/generate-indications/route.ts
+/api/cron/historic-test	GET,POST	cron	force-dynamic	60	cron	app/api/cron/historic-test/route.ts
 /api/cron/schedule-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/schedule-indications/route.ts
 /api/cron/server-continuity	GET,POST	cron	force-dynamic	60	cron	app/api/cron/server-continuity/route.ts
 /api/cron/sync-live-positions	GET	cron	force-dynamic	60	cron	app/api/cron/sync-live-positions/route.ts
