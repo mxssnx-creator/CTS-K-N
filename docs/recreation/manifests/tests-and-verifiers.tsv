@@ -194,6 +194,7 @@ unit	__tests__/unit/live-entry-protection-admission.test.ts
 unit	__tests__/unit/live-entry-readiness.test.ts
 unit	__tests__/unit/live-execution-honours-entry-protection-halt.test.ts
 unit	__tests__/unit/live-execution-summary.test.ts
+unit	__tests__/unit/live-family-statistics.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
 unit	__tests__/unit/live-order-metrics-snapshot.test.ts
 unit	__tests__/unit/live-order-preflight.test.ts
