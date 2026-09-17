@@ -3500,6 +3500,29 @@ export class TradeEngineManager {
         // watchdog tied to this stamp rather than the age of the lease.
         this.canonicalPipelineAdmission.touch("scheduled")
         if (cycleSlowThresholdExceeded) {
+          // Attribute the overrun. The cycle total says a pass was slow; only
+          // the phase split says whether indication evaluation, pseudo-position
+          // updates or strategy processing caused it — and which symbols.
+          try {
+            const phaseTotals = { indication: 0, pseudo: 0, strategy: 0 }
+            const bySymbol: Array<{ symbol: string; ms: number }> = []
+            for (const row of (pipelineResults || []) as any[]) {
+              const phases = row?.phaseDurationsMs
+              if (phases) {
+                phaseTotals.indication += Number(phases.indication) || 0
+                phaseTotals.pseudo += Number(phases.pseudo) || 0
+                phaseTotals.strategy += Number(phases.strategy) || 0
+              }
+              if (row?.symbol) bySymbol.push({ symbol: String(row.symbol), ms: Number(row.durationMs) || 0 })
+            }
+            const slowest = bySymbol.sort((a, b) => b.ms - a.ms).slice(0, 5)
+              .map((row) => `${row.symbol}=${row.ms}ms`).join(" ")
+            console.warn(
+              `[v0] [CycleDiagnostic] Engine ${this.connectionId} realtime-progression phase split: ` +
+              `indication=${phaseTotals.indication}ms pseudo=${phaseTotals.pseudo}ms strategy=${phaseTotals.strategy}ms ` +
+              `| slowest symbols: ${slowest || "none"}`,
+            )
+          } catch { /* attribution must never break the cycle */ }
           // Record slow exhaustive work without discarding its completed
           // results. The diagnostic threshold is not an admission/result cap.
           try {

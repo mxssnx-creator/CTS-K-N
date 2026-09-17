@@ -282,6 +282,7 @@ unit	__tests__/unit/quickstart-timeouts.test.ts
 unit	__tests__/unit/rate-limiter-queue.test.ts
 unit	__tests__/unit/real-position-durability.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
+unit	__tests__/unit/realtime-cycle-phase-timing.test.ts
 unit	__tests__/unit/realtime-rotation-progress.test.ts
 unit	__tests__/unit/realtime-trailing-update.test.ts
 unit	__tests__/unit/redis-connection-identity.test.ts
