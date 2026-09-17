@@ -7,7 +7,12 @@ const live = src.slice(src.indexOf("private async createLiveSets("))
 describe("connection-level halt short-circuits per-Set dispatch", () => {
   test("the runtime admission is read once per symbol, only for real live dispatch", () => {
     expect(live).toContain("if (isLiveTradeEnabled && connector) {")
-    expect(live).toContain("const configuredReadiness = evaluateRealTradeReadiness(connectionOverlay as any, \"main\")")
+    // Readiness must be evaluated on a document that carries the connection
+    // id; the bare overlay fails closed as connection_not_allowed under an
+    // allow-list, which silently disabled this whole short-circuit.
+    expect(live).toContain("const connectionDocument = ((await getConnection(this.connectionId).catch(() => null)) || {}) as Record<string, unknown>")
+    expect(live).toContain("{ ...connectionDocument, id: this.connectionId, connectionId: this.connectionId } as any,")
+    expect(live).not.toContain("evaluateRealTradeReadiness(connectionOverlay as any")
     expect(live).toContain("readLiveEntryReadiness(haltClient, this.connectionId, configuredReadiness)")
     expect(live).toContain("if (configuredReadiness.canPlaceRealOrders && !runtimeAdmission.canPlaceRealOrders) {")
   })
