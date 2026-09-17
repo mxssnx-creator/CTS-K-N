@@ -182,6 +182,7 @@ __tests__/unit/historic-progression-generation.test.ts
 __tests__/unit/historic-replay-policy.test.ts
 __tests__/unit/historic-test-admission.test.ts
 __tests__/unit/historic-test-candles.test.ts
+__tests__/unit/historic-test-config-signals.test.ts
 __tests__/unit/historic-test-cron-contract.test.ts
 __tests__/unit/historic-test-family-derivations.test.ts
 __tests__/unit/historic-test-family-replay.test.ts
@@ -390,6 +391,7 @@ __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
 __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
+__tests__/unit/trailing-family-replay-wiring.test.ts
 __tests__/unit/trend-indication.test.ts
 __tests__/unit/trend-wiring.test.ts
 __tests__/unit/unsubmitted-live-retention.test.ts
@@ -1319,6 +1321,7 @@ lib/historic-four-hour-stats.ts
 lib/historic-profit-factor.ts
 lib/historic-test-admission.ts
 lib/historic-test-candles.ts
+lib/historic-test-config-signals.ts
 lib/historic-test-family-derivations.ts
 lib/historic-test-family-replay.ts
 lib/historic-test-live-deactivation.ts

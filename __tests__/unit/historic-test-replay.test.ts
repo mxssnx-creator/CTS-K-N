@@ -38,15 +38,19 @@ const request = (over: Record<string, unknown> = {}) => ({
 }) as any
 
 describe("Historic Test replay adapter", () => {
-  test("only trailing is refused; block and axis are derived exactly", async () => {
+  test("every family is measured; none is refused as unmodellable", async () => {
     const simulate = createHistoricCandleSimulator({ loadCandles: async () => candles() })
-    expect(HISTORIC_TEST_SIMULATED_FAMILIES).toEqual(["normal", "dca", "block", "axis"])
-    for (const family of ["trailing"] as const) {
-      await expect(simulate(request({ family }))).rejects.toBeInstanceOf(HistoricTestUnsupportedFamilyError)
+    expect(HISTORIC_TEST_SIMULATED_FAMILIES).toEqual(["normal", "dca", "block", "axis", "trailing"])
+    // Trailing is replayed on the price path rather than derived, but it is
+    // measured like every other family — it used to throw and report nothing.
+    for (const family of ["normal", "dca", "block", "axis", "trailing"] as const) {
+      await expect(simulate(request({ family }))).resolves.toBeDefined()
     }
+    // An unknown family is still refused rather than invented.
+    await expect(simulate(request({ family: "not-a-family" }))).rejects.toBeInstanceOf(HistoricTestUnsupportedFamilyError)
   })
 
-  test("the family that cannot be modelled reports zero combinations, the derivable ones are measured", async () => {
+  test("all five families are scored, none skipped", async () => {
     const simulate = createHistoricCandleSimulator({ loadCandles: async () => candles() })
     const result = await runHistoricTest({
       connectionId: "c1",
@@ -57,10 +61,9 @@ describe("Historic Test replay adapter", () => {
       now: NOW,
     })
     const trailing = result.summaries.find((s) => s.family === "trailing")!
-    expect(trailing.combinations).toBe(0)
-    expect(trailing.trades).toBe(0)
-    expect(result.errors).toBe(1) // trailing only
-    expect(result.scores.map((s) => s.family).sort()).toEqual(["axis", "block", "dca", "normal"])
+    expect(trailing.combinations).toBeGreaterThan(0)
+    expect(result.errors).toBe(0)
+    expect(result.scores.map((s) => s.family).sort()).toEqual(["axis", "block", "dca", "normal", "trailing"])
     // Block and Axis are measured independently of the baseline.
     const block = result.summaries.find((s) => s.family === "block")!
     expect(block.combinations).toBe(1)
