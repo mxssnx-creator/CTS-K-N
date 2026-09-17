@@ -5,6 +5,7 @@ import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import {
   Activity,
+  MonitorDot,
   AlarmClock,
   BarChart3,
   Bot,
@@ -106,6 +107,7 @@ const navigationGroups: NavigationGroup[] = [
       { title: "Logistics", href: "/logistics", icon: Workflow, description: "Queues, batches, and processing flow" },
       { title: "Structure", href: "/structure", icon: Layers3, description: "System topology and stage relations" },
       { title: "Monitoring", href: "/monitoring", icon: Gauge, description: "Runtime health, logs, and resources" },
+      { title: "Realtime Monitors", href: "/main/realtime", icon: MonitorDot, description: "Live market data and position monitors" },
       { title: "Advanced Monitor", href: "/monitoring-advanced", icon: RadioTower, description: "SSE and broadcaster telemetry" },
       { title: "Alerts", href: "/alerts", icon: AlarmClock, description: "Operational and market alerts" },
       { title: "Settings", href: "/settings", icon: Cog, description: "Connections, engine, and strategy defaults" },

@@ -253,6 +253,7 @@ __tests__/unit/market-data-history-contract.test.ts
 __tests__/unit/market-data-second-coverage.test.ts
 __tests__/unit/monitoring-stats-route.test.ts
 __tests__/unit/multi-range-coordination.test.ts
+__tests__/unit/navigation-and-pages.test.ts
 __tests__/unit/navigation-contract.test.ts
 __tests__/unit/no-fixed-sleeps-regression.test.ts
 __tests__/unit/orchestrated-verifier-safety.test.ts
@@ -732,13 +733,8 @@ app/login/page.tsx
 app/logistics/layout.tsx
 app/logistics/page.tsx
 app/main/layout.tsx
-app/main/page.tsx
 app/main/realtime/layout.tsx
 app/main/realtime/page.tsx
-app/minimal-test/layout.tsx
-app/minimal-test/page.tsx
-app/minimal/layout.tsx
-app/minimal/page.tsx
 app/monitoring-advanced/layout.tsx
 app/monitoring-advanced/page.tsx
 app/monitoring/layout.tsx
@@ -766,8 +762,6 @@ app/settings/indications/signal/page.tsx
 app/settings/layout-enhanced.tsx
 app/settings/layout.tsx
 app/settings/page.tsx
-app/simple/layout.tsx
-app/simple/page.tsx
 app/statistics/direct-trade/page.tsx
 app/statistics/indications/common/page.tsx
 app/statistics/indications/layout.tsx
@@ -781,12 +775,6 @@ app/strategies/loading.tsx
 app/strategies/page.tsx
 app/structure/layout.tsx
 app/structure/page.tsx
-app/test-layout/layout.tsx
-app/test-layout/page.tsx
-app/test-simple/layout.tsx
-app/test-simple/page.tsx
-app/test/layout.tsx
-app/test/page.tsx
 app/testing/connection/page.tsx
 app/testing/engine/page.tsx
 app/testing/layout.tsx
