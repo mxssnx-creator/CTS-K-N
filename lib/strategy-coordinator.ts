@@ -1,3 +1,6 @@
+import { filterHistoricAdmittedSets } from "@/lib/historic-test-admission"
+import { normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
+import { readHistoricTestValidatedKeys } from "@/lib/historic-test-runner"
 /**
  * Strategy Coordinator - Progressive Strategy Flow
  * Coordinates the progression from BASE → MAIN → REAL → LIVE with proper evaluation metrics
@@ -8901,6 +8904,20 @@ export class StrategyCoordinator {
     // The stage still evaluates and persists every qualifying row when this
     // is false. It only closes the physical-dispatch gate, so an operator can
     // turn every family off without losing historic validation coverage.
+    // Historic Test: when enabled, only combinations the validation pass proved
+    // positive may be dispatched. Loaded once per cycle so every dispatch
+    // decision in this cycle sees one consistent validated set.
+    // Settings come through the canonical overlay, never a raw hash read: the
+    // overlay is what merges legacy and canonical documents, and reading around
+    // it would make the Historic Test see a different configuration than every
+    // other consumer.
+    const historicRedis = getRedisClient() as any
+    const historicTestSettings = normalizeHistoricTestSettings(
+      (await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({}))) as Record<string, unknown>,
+    )
+    const historicValidatedKeys = historicTestSettings.enabled
+      ? await readHistoricTestValidatedKeys(historicRedis, this.connectionId).catch(() => new Set<string>())
+      : new Set<string>()
     const anyExecutionFamilyEnabled = hasAnyStrategyExecutionVariantEnabled(executionPolicy)
     const activeStrategyKeys = new Set<string>()
     const cachedActive = this._activeKeysCache.get(symbol)
@@ -9247,7 +9264,11 @@ export class StrategyCoordinator {
       ): Promise<void> => {
         try {
           const eligible = anyExecutionFamilyEnabled
-            ? selectLiveDispatchCandidates(qualifying, executionPolicy)
+            ? filterHistoricAdmittedSets(
+                selectLiveDispatchCandidates(qualifying, executionPolicy),
+                historicTestSettings,
+                historicValidatedKeys,
+              )
             : []
           const eligibleKeys = new Set(eligible.map((candidate) => candidate.setKey))
           const suppressed = qualifying.filter((set) => !eligibleKeys.has(set.setKey))
@@ -9352,7 +9373,11 @@ export class StrategyCoordinator {
             // no hidden per-symbol budget may defer otherwise eligible Sets.
             const dispatchCandidates = qualifying
             const policyEligibleDispatchSets = anyExecutionFamilyEnabled
-              ? selectLiveDispatchCandidates(dispatchCandidates, executionPolicy)
+              ? filterHistoricAdmittedSets(
+                  selectLiveDispatchCandidates(dispatchCandidates, executionPolicy),
+                  historicTestSettings,
+                  historicValidatedKeys,
+                )
               : []
             const policyEligibleKeys = new Set(
               policyEligibleDispatchSets.map((set) => set.setKey),
