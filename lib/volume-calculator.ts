@@ -158,6 +158,27 @@ interface VolumeCalculationParams {
   minimumNotionalCeilingAllowanceUsd?: number
 }
 
+/**
+ * Hard ceiling on a variant (Block/DCA/Position-Count) size multiplier.
+ *
+ * This is a RISK limit, not a tuning knob: it stops a recovery chain from
+ * putting an unbounded multiple of the base notional on one position. A Block
+ * lane at count 6 / level 6 requests 37x; without this ceiling a single
+ * recovery sequence could dwarf the whole book.
+ */
+export const VARIANT_MULTIPLIER_CEILING = 5
+
+const reportedTruncations = new Set<string>()
+function reportVariantMultiplierTruncation(requested: number, applied: number): void {
+  const key = `${requested.toFixed(2)}->${applied.toFixed(2)}`
+  if (reportedTruncations.has(key)) return
+  reportedTruncations.add(key)
+  if (reportedTruncations.size > 64) reportedTruncations.clear()
+  console.warn(
+    `[v0] [VolumeCalculator] variant multiplier ${requested.toFixed(2)}x exceeds the ${VARIANT_MULTIPLIER_CEILING}x risk ceiling and is executed at ${applied.toFixed(2)}x — configured recovery depth beyond this point has no effect on size`,
+  )
+}
+
 export interface VolumeCalculationResult {
   calculatedVolume?: number
   finalVolume?: number
@@ -644,7 +665,15 @@ export class VolumeCalculator {
         const n = Number(raw)
         if (!Number.isFinite(n) || n <= 0) return 1
         const normalized = Math.max(0.01, n)
-        return allowUnboundedVariantMultiplier ? normalized : Math.min(5, normalized)
+        if (allowUnboundedVariantMultiplier) return normalized
+        const applied = Math.min(VARIANT_MULTIPLIER_CEILING, normalized)
+        // Truncation used to be silent: a Block lane configured for 19x was
+        // executed at 5x with nothing said anywhere, so the configured
+        // recovery depth looked ineffective instead of capped. Report it once
+        // per distinct multiplier so the gap between configured and executed
+        // size is visible without flooding the log.
+        if (applied < normalized) reportVariantMultiplierTruncation(normalized, applied)
+        return applied
       }
       const variantMult = clampVariant(sizeMultiplier)
 
@@ -753,8 +782,11 @@ export class VolumeCalculator {
     const riskVariantMultiplier = Number.isFinite(rawVariant) && rawVariant > 0
       ? (allowUnboundedVariantMultiplier
           ? Math.max(0.01, rawVariant)
-          : Math.min(5, Math.max(0.01, rawVariant)))
+          : Math.min(VARIANT_MULTIPLIER_CEILING, Math.max(0.01, rawVariant)))
       : 1
+    if (Number.isFinite(rawVariant) && rawVariant > VARIANT_MULTIPLIER_CEILING && !allowUnboundedVariantMultiplier) {
+      reportVariantMultiplierTruncation(rawVariant, VARIANT_MULTIPLIER_CEILING)
+    }
     // The Base→Main→Real coordination basis is immutable identity.
     // Low-volume variants are represented exclusively by `sizeMultiplier`
     // (Position-Count/DCA), while Main/Preset/Signal are explicit Live

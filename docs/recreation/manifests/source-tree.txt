@@ -86,6 +86,7 @@ __tests__/unit/bingx-vst-soak-audit.test.ts
 __tests__/unit/bingx-vst-soak-plan.test.ts
 __tests__/unit/block-additive-lifecycle.test.ts
 __tests__/unit/block-count-state.test.ts
+__tests__/unit/block-defaults-and-ceiling.test.ts
 __tests__/unit/block-settings-migration.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
