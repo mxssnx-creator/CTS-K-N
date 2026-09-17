@@ -14,11 +14,10 @@
  *             count following the live recovery rule. Exact, not approximated.
  *   axis   — a Position-Count axis changes only which entries are admitted, so
  *             the baseline series is filtered by the axis windows. Exact.
- *   trailing — NOT modelled. It replaces the exit rule, so it cannot be
- *             derived from trades whose exits are already fixed; it needs a
- *             replay that walks the price path. It raises
- *             HistoricTestUnsupportedFamilyError and the family reports zero
- *             combinations instead of a fabricated ProfitFactor.
+ *   trailing — replayed on the PRICE PATH, not derived from the baseline: the
+ *             exit rule is what it changes, so a trade whose exit is already
+ *             fixed cannot express it. replayTrailing walks each baseline
+ *             entry forward through the candles with a trailing stop.
  *
  * Adding a family here means teaching the replay its actual mechanics — never
  * mapping it onto a different family's behaviour.
@@ -29,6 +28,7 @@ import {
   type DcaBacktestEntry,
 } from "@/lib/dca-backtest"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
+import { replayTrailing } from "@/lib/historic-test-family-replay"
 import { POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 import type { HistoricTestSimulationRequest, HistoricTestSimulator } from "@/lib/historic-test-runner"
 import type { HistoricTestTrade } from "@/lib/historic-test-scoring"
@@ -56,7 +56,7 @@ export function parseBlockCountVariant(variant: unknown): number | null {
   return Number.isFinite(count) && count > 0 ? Math.floor(count) : null
 }
 
-export const HISTORIC_TEST_SIMULATED_FAMILIES = ["normal", "dca", "block", "axis"] as const
+export const HISTORIC_TEST_SIMULATED_FAMILIES = ["normal", "dca", "block", "axis", "trailing"] as const
 
 /** Indication name -> replay entry model. Unknown names fall back to momentum. */
 export function resolveBacktestEntry(indication: string): DcaBacktestEntry {
@@ -74,6 +74,8 @@ export interface HistoricCandleSimulatorOptions {
   timeframeMinutes?: 5 | 15 | 30
   takeProfitPct?: number
   stopLossPct?: number
+  /** trailing: percent the exit trails behind the best price reached. */
+  trailingRetracePct?: number
   maxHoldMinutes?: number
   /** Round-trip cost in percent; also the PositionCost the result is expressed in. */
   positionCostPercent?: number
@@ -136,6 +138,13 @@ export function createHistoricCandleSimulator(
       openedAt: trade.entryTime,
       closedAt: trade.exitTime,
     }))
+    if (request.family === "trailing") {
+      return replayTrailing(candles, result.trades, {
+        trailingRetracePct: options.trailingRetracePct,
+        stopLossPct: options.stopLossPct,
+        positionCostPercent,
+      }).slice(0, bound)
+    }
     if (request.family === "block") {
       // The variant IS the independent config: "2" replays Block count 2 on
       // its own, with its own recovery level, so every count is scored and
