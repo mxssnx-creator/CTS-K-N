@@ -6005,6 +6005,7 @@ async function accumulateIntoLivePosition(
 
     let orderRes: any
     try {
+      invalidateAuthoritativeSnapshot(connector)
       orderRes = await connector.placeOrder(
         symbol,
         exchangeSide,
@@ -6758,6 +6759,7 @@ async function reduceCombinedPosCountPosition(
 
     let response: any
     try {
+      invalidateAuthoritativeSnapshot(connector)
       response = await connector.placeOrder(
         position.symbol,
         side,
@@ -8139,6 +8141,7 @@ async function cancelProtectionOrder(
     if (typeof connector?.cancelOrder !== "function") return false
     // withTimeout wraps cancelOrder; actual HTTP timeout is enforced by the
     // rate-limiter's executeTimeoutMs (dispatch-time only, not enqueue-time).
+    invalidateAuthoritativeSnapshot(connector)
     const res = await withTimeout(
       connector.cancelOrder(symbol, orderId) as Promise<any>,
       EXCHANGE_TIMEOUT_CANCEL_ORDER_MS,
@@ -11537,10 +11540,72 @@ function buildExactProtectionSlotPlan(
   return plans.length === 1 ? plans[0] : null
 }
 
+// ── Authoritative venue snapshot, shared across one dispatch pass ──────────
+// The admission audit reads venue positions and open orders with forced
+// refresh, up to twice per executeLivePosition. Production measured ~4 s per
+// dispatched Set — six Sets on one symbol cost 23 s, sequentially — and every
+// one of those reads returned the same venue state, because within one pass
+// the venue only changes when THIS process mutates it.
+//
+// The snapshot is therefore shared per connector for a short window and
+// invalidated the moment this process places, cancels or closes anything on
+// that connector. An audit after our own mutation always reads fresh; audits
+// between mutations share one read. The window bounds staleness against
+// external actors on a shared account; the existing post-entry audit and halt
+// logic remain the authority for anything that slips through it.
+const AUTHORITATIVE_SNAPSHOT_TTL_MS = 3_000
+interface AuthoritativeSnapshotCacheEntry {
+  positions?: { at: number; value: Promise<Record<string, any>[]> }
+  orders?: Map<string, { at: number; value: Promise<Record<string, any>[]> }>
+  /**
+   * After this process mutates the venue, fills and cancellations land
+   * asynchronously — a read taken 50 ms after placeOrder can miss the fill,
+   * and caching that read would let the next Set admit exposure against a
+   * venue state that is already wrong. So sharing is suspended for a full
+   * window after any own mutation: every read until `dirtyUntil` goes to the
+   * venue.
+   */
+  dirtyUntil?: number
+}
+const authoritativeSnapshotCache = new WeakMap<object, AuthoritativeSnapshotCacheEntry>()
+
+/** Drop the shared venue snapshot for a connector after this process mutated the venue. */
+export function invalidateAuthoritativeSnapshot(connector: any): void {
+  if (!connector || typeof connector !== "object") return
+  authoritativeSnapshotCache.set(connector, { dirtyUntil: Date.now() + AUTHORITATIVE_SNAPSHOT_TTL_MS })
+}
+
+function snapshotSharingSuspended(entry: AuthoritativeSnapshotCacheEntry | null, now: number): boolean {
+  return Boolean(entry?.dirtyUntil && now < entry.dirtyUntil)
+}
+
+function snapshotEntryFor(connector: any): AuthoritativeSnapshotCacheEntry | null {
+  if (!connector || typeof connector !== "object") return null
+  let entry = authoritativeSnapshotCache.get(connector)
+  if (!entry) { entry = {}; authoritativeSnapshotCache.set(connector, entry) }
+  return entry
+}
+
 async function readAuthoritativeProtectionPositions(connector: any): Promise<Record<string, any>[]> {
   if (!connector || typeof connector.getPositions !== "function") {
     throw new Error("Exact-slot reconciliation requires a venue position snapshot")
   }
+  const entry = snapshotEntryFor(connector)
+  const now = Date.now()
+  if (snapshotSharingSuspended(entry, now)) return readAuthoritativeProtectionPositionsUncached(connector)
+  if (entry?.positions && now - entry.positions.at < AUTHORITATIVE_SNAPSHOT_TTL_MS) {
+    return entry.positions.value
+  }
+  const value = readAuthoritativeProtectionPositionsUncached(connector)
+  if (entry) {
+    entry.positions = { at: now, value }
+    // A failed read must not be served to the next caller as if it were a snapshot.
+    value.catch(() => { if (entry.positions?.value === value) entry.positions = undefined })
+  }
+  return value
+}
+
+async function readAuthoritativeProtectionPositionsUncached(connector: any): Promise<Record<string, any>[]> {
   const positions = await withTimeout(
     readFreshPositionSnapshot(connector, undefined, EXCHANGE_TIMEOUT_GET_POSITIONS_MS),
     EXCHANGE_TIMEOUT_GET_POSITIONS_MS,
@@ -11562,6 +11627,25 @@ async function readAuthoritativeProtectionOrders(
   if (!connector || typeof connector.getOpenOrders !== "function") {
     throw new Error("Exact-slot reconciliation requires a venue open-order snapshot")
   }
+  const entry = snapshotEntryFor(connector)
+  const scope = String(symbol || "*").toUpperCase()
+  const now = Date.now()
+  if (snapshotSharingSuspended(entry, now)) return readAuthoritativeProtectionOrdersUncached(connector, symbol)
+  const cached = entry?.orders?.get(scope)
+  if (cached && now - cached.at < AUTHORITATIVE_SNAPSHOT_TTL_MS) return cached.value
+  const value = readAuthoritativeProtectionOrdersUncached(connector, symbol)
+  if (entry) {
+    if (!entry.orders) entry.orders = new Map()
+    entry.orders.set(scope, { at: now, value })
+    value.catch(() => { if (entry.orders?.get(scope)?.value === value) entry.orders?.delete(scope) })
+  }
+  return value
+}
+
+async function readAuthoritativeProtectionOrdersUncached(
+  connector: any,
+  symbol?: string,
+): Promise<Record<string, any>[]> {
   const orders = await withTimeout(
     connector.getOpenOrders(symbol, { forceRefresh: true }) as Promise<any>,
     25_000,
@@ -14795,6 +14879,7 @@ export async function executeLivePosition(
             }
           }
           await assertMarginCallEntryAllowed(connectionId, exchangeConnector)
+          invalidateAuthoritativeSnapshot(exchangeConnector)
           exchangeSubmissionStarted = true
           return exchangeConnector.placeOrder(
             realPosition.symbol,
@@ -17145,6 +17230,7 @@ export async function closeLivePosition(
           await savePosition(position)
           await persistCriticalLiveState(`system-close-prepared:${position.id}`)
 
+          invalidateAuthoritativeSnapshot(exchangeConnector)
           const closeSide: "buy" | "sell" = position.direction === "long" ? "sell" : "buy"
           const request = typeof exchangeConnector.placeOrder === "function"
             ? exchangeConnector.placeOrder(
@@ -20689,6 +20775,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           let cancelSucceeded = false
           if (position.orderId && exchangeConnector?.cancelOrder) {
             try {
+              invalidateAuthoritativeSnapshot(exchangeConnector)
               await withTimeout(
                 exchangeConnector.cancelOrder(position.symbol, position.orderId) as Promise<any>,
                 EXCHANGE_TIMEOUT_CANCEL_ORDER_MS,
