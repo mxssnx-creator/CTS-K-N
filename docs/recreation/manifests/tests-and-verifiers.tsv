@@ -211,6 +211,7 @@ unit	__tests__/unit/live-position-status.test.ts
 unit	__tests__/unit/live-positions-pnl.test.ts
 unit	__tests__/unit/live-slot-lookup-cache.test.ts
 unit	__tests__/unit/live-stage-control-barrier.test.ts
+unit	__tests__/unit/live-stage-halt-shortcircuit.test.ts
 unit	__tests__/unit/live-stage-position-cost-coordinate.test.ts
 unit	__tests__/unit/live-stage-redis-position-lock.test.ts
 unit	__tests__/unit/live-trade-block-clearance.test.ts
