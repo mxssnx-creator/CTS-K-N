@@ -18,6 +18,14 @@ describe("slow cycles report how slow they actually were", () => {
     expect(finallyBlock.indexOf("if (warned) {")).toBeLessThan(finallyBlock.indexOf("const elapsedMs"))
   })
 
+  test("the completion line uses a channel the production journal captures", () => {
+    // console.info is dropped by the deployed logging pipeline; the measured
+    // duration must not be written to a channel nobody can read.
+    const finallyBlock = fn.slice(fn.indexOf("return work.finally("))
+    expect(finallyBlock).toContain("console.warn(")
+    expect(finallyBlock).not.toContain("console.info(")
+  })
+
   test("diagnostics still never reject or alter the work promise", () => {
     expect(fn).toContain("return work.finally(")
     expect(fn).toContain("try { onSlowThreshold?.() } catch { /* diagnostics must never break work */ }")

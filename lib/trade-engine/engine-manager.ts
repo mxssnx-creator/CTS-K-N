@@ -750,7 +750,11 @@ function withCycleDiagnostic<T>(
       // log said a cycle was slow but never how slow, so a 31 s cycle and a
       // 150 s cycle were indistinguishable and neither could be attributed.
       const elapsedMs = Date.now() - startedAt
-      console.info(
+      // console.info is not captured by the production journal — the original
+      // completion line was invisible for the lifetime of this diagnostic, and
+      // so was the elapsed time added to it. The duration is the reason the
+      // line exists, so it goes to the same channel as the warning that fired.
+      console.warn(
         `[v0] [CycleDiagnostic] ${label} completed after the slow-cycle threshold in ${elapsedMs}ms (budget ${ms}ms, over by ${elapsedMs - ms}ms)`,
       )
     }
