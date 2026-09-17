@@ -57,6 +57,7 @@ __tests__/diagnostic-cleanup.ts
 __tests__/e2e/progression-flow.test.ts
 __tests__/integration/live-order-service.test.ts
 __tests__/integration/main-engine-live-dispatch.test.ts
+__tests__/integration/outcome-set-ceiling.test.ts
 __tests__/integration/preset-optimizer-store.test.ts
 __tests__/integration/progression-api.test.ts
 __tests__/unit/active-outbreak-indication.test.ts

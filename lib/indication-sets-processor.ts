@@ -195,6 +195,17 @@ const COMMON_INDICATION_CALC_BATCH_SIZE = Math.max(
 // Shared Redis must not receive one network round-trip for every exact Common
 // tuple. These are transport batches only: every cooldown, pending outcome,
 // Set row, and index membership is still written independently in Redis.
+/**
+ * Ceiling on distinct outcome sets per connection. x02 holds ~22k for 24
+ * symbols (~900 per symbol); 60k leaves room for a 50-symbol universe while
+ * making a runaway grid impossible. Override with INDICATION_OUTCOME_SETS_MAX.
+ */
+const INDICATION_OUTCOME_SETS_MAX_DEFAULT = 60_000
+export function resolveOutcomeSetsPerConnectionMax(): number {
+  const raw = Number(process.env.INDICATION_OUTCOME_SETS_MAX)
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : INDICATION_OUTCOME_SETS_MAX_DEFAULT
+}
+
 const INDICATION_REDIS_BATCH_SIZE = Math.max(
   16,
   Math.min(
@@ -338,6 +349,30 @@ end
 
 redis.call("HSET", statsKey, "grossProfit", tostring(grossProfit), "grossLoss", tostring(grossLoss), "count", tostring(count), "basis", basis)
 redis.call("SADD", outcomeIndexKey, sampleKey, statsKey)
+-- Per-connection ceiling on the NUMBER of outcome sets. The sample cap above
+-- bounds samples per set; nothing bounded how many distinct sets a
+-- connection may hold, and a forced prehistoric reload materialised the
+-- whole parameter grid — over a million sets for one connection, 5 GB of
+-- Redis, and a build that died of memory. The least-recently-written sets
+-- are evicted atomically here, together with their samples and their index
+-- membership, so the ceiling holds without a separate sweeper.
+local lruKey = KEYS[4]
+local maxSets = tonumber(ARGV[6]) or 0
+local nowMs = tonumber(ARGV[7]) or 0
+if lruKey and maxSets > 0 then
+  redis.call("ZADD", lruKey, nowMs, statsKey)
+  redis.call("EXPIRE", lruKey, 7 * 24 * 60 * 60)
+  local size = redis.call("ZCARD", lruKey)
+  if size > maxSets then
+    local victims = redis.call("ZRANGE", lruKey, 0, size - maxSets - 1)
+    for _, victimStats in ipairs(victims) do
+      local base = string.sub(victimStats, 1, -(#":outcome_stats") - 1)
+      redis.call("DEL", victimStats, base .. ":outcomes")
+      redis.call("SREM", outcomeIndexKey, victimStats, base .. ":outcomes")
+      redis.call("ZREM", lruKey, victimStats)
+    end
+  end
+end
 -- The index is a rebuildable discovery structure. Expire it with the same
 -- horizon as the outcome projection so abandoned set keys do not accumulate.
 redis.call("EXPIRE", outcomeIndexKey, 7 * 24 * 60 * 60)
@@ -3555,14 +3590,17 @@ export class IndicationSetsProcessor {
         const statsKey = `${write.setKey}:outcome_stats`
         const connectionId = String(write.setKey.split(":")[1] || this.connectionId)
         const outcomeIndexKey = `indication_sets:outcome_keys:index:${connectionId}`
+        const outcomeLruKey = `indication_sets:outcome_keys:lru:${connectionId}`
         pipeline.eval(RECORD_OUTCOME_SAMPLE_SCRIPT, {
-          keys: [key, statsKey, outcomeIndexKey],
+          keys: [key, statsKey, outcomeIndexKey, outcomeLruKey],
           arguments: [
             JSON.stringify(write.sample),
             String(this.toOutcomeAmount(write.sample.profit)),
             String(this.toOutcomeAmount(write.sample.loss)),
             String(cap),
             OUTCOME_SAMPLE_BASIS,
+            String(resolveOutcomeSetsPerConnectionMax()),
+            String(Date.now()),
           ],
         })
       }
@@ -3629,13 +3667,15 @@ export class IndicationSetsProcessor {
       | undefined
     if (typeof evalLua === "function") {
       const result = await evalLua.call(client, RECORD_OUTCOME_SAMPLE_SCRIPT, {
-        keys: [key, statsKey, outcomeIndexKey],
+        keys: [key, statsKey, outcomeIndexKey, `indication_sets:outcome_keys:lru:${connectionId}`],
         arguments: [
           serializedSample,
           String(sampleProfit),
           String(sampleLoss),
           String(cap),
           OUTCOME_SAMPLE_BASIS,
+          String(resolveOutcomeSetsPerConnectionMax()),
+          String(Date.now()),
         ],
       })
       const grossProfit = Number(result?.[0] ?? 0)
