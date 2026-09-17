@@ -22,7 +22,7 @@ import { readHistoricTestValidatedKeys } from "@/lib/historic-test-runner"
  * Strategy counts always represent the number of SETS, not individual pseudo positions.
  */
 
-import { initRedis, getSettings, setSettings, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getSettings, setSettings, getRedisClient, getConnection } from "@/lib/redis-db"
 import { marketDataKey } from "@/lib/market-data-keys"
 import { createHash } from "crypto"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -9404,9 +9404,18 @@ export class StrategyCoordinator {
         // that path is the exhaustive paper lifecycle and must keep running.
         if (isLiveTradeEnabled && connector) {
           const haltClient = getRedisClient() as any
-          const connectionOverlay = (await getCanonicalConnectionSettingsOverlay(this.connectionId)
-            .catch(() => ({}))) as Record<string, unknown>
-          const configuredReadiness = evaluateRealTradeReadiness(connectionOverlay as any, "main")
+          // Evaluate readiness on the SAME document executeLivePosition uses:
+          // the parsed connection (getConnection), which carries the
+          // connection id. The bare settings overlay has no id, and with a
+          // LIVE_ORDER_CONNECTION_IDS allow-list configured the readiness
+          // gate then fails closed as connection_not_allowed — which made this
+          // short-circuit dead code on production while every Set still went
+          // through the interlock individually.
+          const connectionDocument = ((await getConnection(this.connectionId).catch(() => null)) || {}) as Record<string, unknown>
+          const configuredReadiness = evaluateRealTradeReadiness(
+            { ...connectionDocument, id: this.connectionId, connectionId: this.connectionId } as any,
+            "main",
+          )
           const runtimeAdmission = await readLiveEntryReadiness(haltClient, this.connectionId, configuredReadiness)
             .catch(() => configuredReadiness)
           if (configuredReadiness.canPlaceRealOrders && !runtimeAdmission.canPlaceRealOrders) {
