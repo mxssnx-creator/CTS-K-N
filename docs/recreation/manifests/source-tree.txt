@@ -207,6 +207,7 @@ __tests__/unit/live-entry-protection-admission.test.ts
 __tests__/unit/live-entry-readiness.test.ts
 __tests__/unit/live-execution-honours-entry-protection-halt.test.ts
 __tests__/unit/live-execution-summary.test.ts
+__tests__/unit/live-family-statistics.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-order-metrics-snapshot.test.ts
 __tests__/unit/live-order-preflight.test.ts
@@ -1347,6 +1348,7 @@ lib/live-entry-budget-block-cache.ts
 lib/live-entry-protection-admission.ts
 lib/live-entry-readiness.ts
 lib/live-execution-summary.ts
+lib/live-family-statistics.ts
 lib/live-order-coordination.ts
 lib/live-order-counter-keys.ts
 lib/live-order-logger.ts
