@@ -2234,8 +2234,11 @@ public_access_url() {
   [[ -n "$host" ]] && printf 'http://%s:%s' "$host" "$APP_PORT" || printf 'http://127.0.0.1:%s' "$APP_PORT"
 }
 
+VERIFY_FAILURE_KIND="build"
+
 verify_and_restart() {
   section "Migrations, scheduler, persistence, and restart recovery"
+  VERIFY_FAILURE_KIND="build"
   local base_url="http://127.0.0.1:$APP_PORT" before_id after_id
   wait_for_health 90 || return 1
 
@@ -2250,9 +2253,18 @@ verify_and_restart() {
   rm -f -- "$RUNTIME_DIR/maintenance-stop"
   ok "Released the maintenance marker for deployment initialization after app health passed"
 
-  node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
-    env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs" \
-    || return 1
+  # Deployment initialization asserts OPERATIONAL configuration (credentials,
+  # persisted live-trade intent). The application is already proven healthy
+  # above, so a configuration gap must never take a working build off the air:
+  # doing so turned "live trading is not enabled" into a full outage, and the
+  # flag it complains about is itself cleared by this installer's state
+  # restore — a self-inflicted loop. Record the failure kind so the caller can
+  # keep the runtime up and report loudly instead of stopping everything.
+  if ! node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
+    env REQUIRE_SHARED_PERSISTENCE="$([[ "$(env_value CTS_REDIS_SERVICE_MODE)" == "inline-snapshot" ]] && echo 0 || echo 1)" DEPLOYMENT_URL="$base_url" node "$PROJECT_ROOT/scripts/production-deploy-init.mjs"; then
+    VERIFY_FAILURE_KIND="configuration"
+    return 1
+  fi
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
     env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" \
     node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once \
@@ -2295,6 +2307,18 @@ verify_and_restart() {
 
 rollback_after_failed_verification() {
   warn "Final verification failed"
+  if [[ "$VERIFY_FAILURE_KIND" == "configuration" ]]; then
+    # The build is healthy; only operational configuration is incomplete.
+    # Leave the runtime serving and make the gap impossible to miss.
+    warn "Deployment initialization reported an operational configuration gap"
+    warn "The application build is healthy and stays RUNNING; fix the configuration and re-run initialization"
+    if ! start_runtime; then
+      fatal "Configuration gap reported and the runtime could not be kept running; inspect service logs"
+    fi
+    wait_for_health 90 \
+      || fatal "Configuration gap reported and the running build stopped answering health checks"
+    fatal "Deployment initialization incomplete (configuration); runtime left running on the new build"
+  fi
   # A verification failure must leave every managed owner stopped and the
   # fail-closed maintenance marker armed, including a clean install that has
   # no previous .next artifact to restore.

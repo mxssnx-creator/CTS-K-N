@@ -103,6 +103,7 @@ unit	__tests__/unit/dca-backtest.test.ts
 unit	__tests__/unit/dca-step-outcomes.test.ts
 unit	__tests__/unit/dca-step-recovery-level.test.ts
 unit	__tests__/unit/default-indication-direction.test.ts
+unit	__tests__/unit/deploy-keeps-runtime-up.test.ts
 unit	__tests__/unit/direct-trade-calculate-route.test.ts
 unit	__tests__/unit/direct-trade-canonical-order.test.ts
 unit	__tests__/unit/direct-trade-config-store.test.ts
