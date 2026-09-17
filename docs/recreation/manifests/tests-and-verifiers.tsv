@@ -239,6 +239,7 @@ unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
 unit	__tests__/unit/monitoring-stats-route.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
+unit	__tests__/unit/navigation-and-pages.test.ts
 unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
 unit	__tests__/unit/orchestrated-verifier-safety.test.ts
