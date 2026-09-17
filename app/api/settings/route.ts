@@ -319,7 +319,15 @@ function getDefaultSettings(): Record<string, any> {
     blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     presetBlockProfitFactorRatio: 1.1,
     presetBlockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
-    blockMaxStack: 6,
+    // Measured over 10.4 days of real BingX candles, 1,728 independently
+    // scored configs on a positive (axis-gated) base: ProfitFactor saturates
+    // at a stack of 3 — 1→1.2086, 2→1.2111, 3→1.2119, 4→1.2119, 6→1.2119.
+    // Stacks beyond 3 add NO ProfitFactor while raising the nominal volume
+    // multiplier from 10x to 19x, all of which the volume calculator truncates
+    // to its 5x ceiling anyway. A deeper stack therefore buys nothing and only
+    // widens the gap between configured and executed size. 3 is also the
+    // lowest-drawdown point of the sweep (maxDD 867R vs 1202R at stack 1).
+    blockMaxStack: 3,
     blockPauseCountRatio: 1,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,
