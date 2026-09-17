@@ -19,6 +19,8 @@ export const HISTORIC_TEST_MIN_PROFIT_FACTOR_DEFAULT = 1.2
 export const HISTORIC_TEST_SYMBOL_COUNT = { min: 1, max: 50, default: 15 } as const
 export const HISTORIC_TEST_RECALC_INTERVAL_HOURS = { min: 1, max: 8, default: 2 } as const
 export const HISTORIC_TEST_MAX_PROGRESS_COUNT = { min: 10, max: 300, default: 200 } as const
+/** Live re-check: how many recent settled live positions decide a config's fate. */
+export const HISTORIC_TEST_LIVE_CHECK_POSITIONS = { min: 3, max: 100, default: 15 } as const
 
 export type HistoricTestStrategyFamily = "normal" | "trailing" | "axis" | "block" | "dca"
 export const HISTORIC_TEST_STRATEGY_FAMILIES: readonly HistoricTestStrategyFamily[] =
@@ -38,6 +40,13 @@ export interface HistoricTestSettings {
   symbolCount: number
   /** Re-run cadence in hours: 1..8. */
   recalcIntervalHours: number
+  /**
+   * Deactivation from real live exchange results: a validated config is
+   * re-judged on its own last N settled live positions and dropped when that
+   * evidence turns negative. Judged per config, so a failing Block count never
+   * disqualifies a sibling.
+   */
+  liveCheckPositions: number
   /** Which strategy families take part. All on by default. */
   strategies: Record<HistoricTestStrategyFamily, boolean>
   symbols: {
@@ -56,6 +65,7 @@ export const DEFAULT_HISTORIC_TEST_SETTINGS: HistoricTestSettings = {
   minProfitFactor: HISTORIC_TEST_MIN_PROFIT_FACTOR_DEFAULT,
   symbolCount: HISTORIC_TEST_SYMBOL_COUNT.default,
   recalcIntervalHours: HISTORIC_TEST_RECALC_INTERVAL_HOURS.default,
+  liveCheckPositions: HISTORIC_TEST_LIVE_CHECK_POSITIONS.default,
   strategies: { normal: true, trailing: true, axis: true, block: true, dca: true },
   symbols: {
     exchange: "",
@@ -138,6 +148,10 @@ export function normalizeHistoricTestSettings(raw: unknown): HistoricTestSetting
       pick(s, "recalcIntervalHours", "recalc_interval_hours", "historicTestRecalcIntervalHours", "historic_test_recalc_interval_hours"),
       HISTORIC_TEST_RECALC_INTERVAL_HOURS.min, HISTORIC_TEST_RECALC_INTERVAL_HOURS.max, d.recalcIntervalHours,
     ),
+    liveCheckPositions: intInRange(
+      pick(s, "liveCheckPositions", "live_check_positions", "historicTestLiveCheckPositions", "historic_test_live_check_positions"),
+      HISTORIC_TEST_LIVE_CHECK_POSITIONS.min, HISTORIC_TEST_LIVE_CHECK_POSITIONS.max, d.liveCheckPositions,
+    ),
     strategies,
     symbols: {
       exchange: String(pick(symbolsRaw, "exchange") ?? pick(s, "historicTestExchange", "historic_test_exchange") ?? "").trim().toLowerCase(),
@@ -160,6 +174,7 @@ export function historicTestSettingsToHashFields(settings: HistoricTestSettings)
     historicTestMinProfitFactor: String(settings.minProfitFactor),
     historicTestSymbolCount: String(settings.symbolCount),
     historicTestRecalcIntervalHours: String(settings.recalcIntervalHours),
+    historicTestLiveCheckPositions: String(settings.liveCheckPositions),
     historicTestNormalEnabled: String(settings.strategies.normal),
     historicTestTrailingEnabled: String(settings.strategies.trailing),
     historicTestAxisEnabled: String(settings.strategies.axis),

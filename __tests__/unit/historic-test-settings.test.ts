@@ -13,6 +13,7 @@ describe("Historic Test settings contract", () => {
       minProfitFactor: 1.2,
       symbolCount: 15,
       recalcIntervalHours: 2,
+      liveCheckPositions: 15,
       strategies: { normal: true, trailing: true, axis: true, block: true, dca: true },
       symbols: { exchange: "", order: "volatility_1h", maxProgressCount: 200 },
     })
@@ -30,6 +31,9 @@ describe("Historic Test settings contract", () => {
     expect(normalizeHistoricTestSettings({ symbolCount: 51 }).symbolCount).toBe(50)
     expect(normalizeHistoricTestSettings({ recalcIntervalHours: 0 }).recalcIntervalHours).toBe(1)
     expect(normalizeHistoricTestSettings({ recalcIntervalHours: 9 }).recalcIntervalHours).toBe(8)
+    expect(normalizeHistoricTestSettings({ liveCheckPositions: 1 }).liveCheckPositions).toBe(3)
+    expect(normalizeHistoricTestSettings({ liveCheckPositions: 999 }).liveCheckPositions).toBe(100)
+    expect(normalizeHistoricTestSettings({ historic_test_live_check_positions: "25" }).liveCheckPositions).toBe(25)
     expect(normalizeHistoricTestSettings({ symbols: { maxProgressCount: 5 } }).symbols.maxProgressCount).toBe(10)
     expect(normalizeHistoricTestSettings({ symbols: { maxProgressCount: 301 } }).symbols.maxProgressCount).toBe(300)
     // The PF threshold lives on the PositionCost-relative 1.02 + n x 0.02 grid.
