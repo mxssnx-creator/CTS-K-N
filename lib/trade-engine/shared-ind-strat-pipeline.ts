@@ -64,6 +64,12 @@ export interface PipelineCycleResult {
   strategiesEvaluated: number
   liveReady: number
   durationMs: number
+  /**
+   * Time spent in each awaited phase of this symbol's cycle. The cycle total
+   * alone could not say WHICH phase made a slow cycle slow, which is the only
+   * question worth asking about a 78 s cycle against a 30 s budget.
+   */
+  phaseDurationsMs?: { indication: number; pseudo: number; strategy: number }
   error?: string
 }
 
@@ -168,6 +174,7 @@ export async function runIndStratCycle(
     strategiesEvaluated: 0,
     liveReady: 0,
     durationMs: 0,
+    phaseDurationsMs: { indication: 0, pseudo: 0, strategy: 0 },
   }
   const shouldContinue = (): boolean => {
     try {
@@ -185,6 +192,7 @@ export async function runIndStratCycle(
     // Exhaustive calculation has no fixed completion timeout. A fixed 20s
     // Promise.race discarded a valid completed snapshot while its underlying
     // work continued, making Base/Stats look partially populated.
+    const indicationStartedAt = Date.now()
     const indications = await withPhaseTimeout(
       deps.indication.processIndication(symbol, deps.asOfMs, shouldContinue),
       `Phase1/processIndication/${symbol}`,
@@ -194,6 +202,7 @@ export async function runIndStratCycle(
           `[v0] [SharedPipeline] processIndication failed for ${symbol} (mode=${mode}, asOfMs=${deps.asOfMs ?? "now"}):`,
           err instanceof Error ? err.message : String(err),
         )
+    if (result.phaseDurationsMs) result.phaseDurationsMs.indication = Date.now() - indicationStartedAt
         return [] as any[]
       })
     if (!shouldContinue()) return result
@@ -227,11 +236,13 @@ export async function runIndStratCycle(
     if (mode === "realtime") {
       if (!shouldContinue()) return result
       try {
+        const pseudoStartedAt = Date.now()
         const pseudoUpdates = await withPhaseTimeout(
           deps.realtime.updateOpenPseudoPositionsForSymbol(symbol),
           `Phase2/pseudoUpdate/${symbol}`,
           8_000,
         )
+        if (result.phaseDurationsMs) result.phaseDurationsMs.pseudo = Date.now() - pseudoStartedAt
         result.pseudoUpdates = pseudoUpdates
       } catch (pseudoErr) {
         console.error(
@@ -293,6 +304,7 @@ export async function runIndStratCycle(
       await yieldPipelineEventLoop()
       if (!shouldContinue()) return result
       const strategyInput = result.indicationCount > 0 ? indications : []
+      const strategyStartedAt = Date.now()
       const stratResult = await withPhaseTimeout(
         deps.strategy
           .processStrategy(
@@ -316,6 +328,7 @@ export async function runIndStratCycle(
         `Phase3/processStrategy/${symbol}`,
         PHASE3_TIMEOUT_MS,
       )
+      if (result.phaseDurationsMs) result.phaseDurationsMs.strategy = Date.now() - strategyStartedAt
       if (!shouldContinue()) return result
       result.strategiesEvaluated = stratResult.strategiesEvaluated || 0
       result.liveReady = stratResult.liveReady || 0
