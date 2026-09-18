@@ -262,6 +262,7 @@ __tests__/unit/orchestrated-verifier-safety.test.ts
 __tests__/unit/order-quantity.test.ts
 __tests__/unit/orders-market-notional.test.ts
 __tests__/unit/orders-route-concurrency.test.ts
+__tests__/unit/orphaned-position-sweep.test.ts
 __tests__/unit/overall-control-lifecycle.test.ts
 __tests__/unit/overall-control-orders.test.ts
 __tests__/unit/overall-stats-relevant-connections.test.ts
