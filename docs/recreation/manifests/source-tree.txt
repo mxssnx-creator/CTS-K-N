@@ -312,6 +312,7 @@ __tests__/unit/quickstart-ordering.test.ts
 __tests__/unit/quickstart-timeouts.test.ts
 __tests__/unit/rate-limiter-queue.test.ts
 __tests__/unit/real-position-durability.test.ts
+__tests__/unit/real-stage-accounting.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/realtime-cycle-phase-timing.test.ts
 __tests__/unit/realtime-rotation-progress.test.ts

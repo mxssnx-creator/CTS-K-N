@@ -7907,6 +7907,9 @@ export class StrategyCoordinator {
     // deterministic observability. A positive diagnostic materialisation
     // ceiling can bound only the downstream object graph after this complete
     // evaluation; production/default zero remains unlimited.
+    // Candidates this stage evaluated, before de-duplication by Set key and
+    // before any materialisation ceiling.
+    const realCandidateCount = realPostHedge.length
     const qualifiedRealSets = Array.from(new Map(
       realPostHedge.map((set) => [set.setKey, set]),
     ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
@@ -8252,13 +8255,27 @@ export class StrategyCoordinator {
           // (Overall is pulled from `strategies_real_total` on read.)
           updated_at:         String(Date.now()),
           // Per-symbol fields — see createBaseSets for rationale.
-          [`s:${symbol}:created`]:    String(realSets.length),
+          // `created` is the candidate pool this stage actually evaluated;
+          // `passed` is what survived it. Both used to be written from
+          // `realSets.length`, so Real could only ever report a 100% pass rate
+          // — a tautology, not a measurement. Whether the stage coordinates at
+          // all was therefore invisible in the metrics, and it read as a stage
+          // with no effect in every diagnostic.
+          [`s:${symbol}:created`]:    String(realCandidateCount),
           [`s:${symbol}:entries`]:    String(realEntriesTotal),
           [`s:${symbol}:running`]:    String(realRunningNow),
           [`s:${symbol}:progressing`]: String(
             realSets.filter((s) => (s.entryCount || 0) > 0).length,
           ),
           [`s:${symbol}:passed`]:     String(realSets.length),
+          // The two reductions that separate them, so a drop can be attributed
+          // rather than guessed at.
+          [`s:${symbol}:deduplicated`]: String(
+            Math.max(0, realCandidateCount - qualifiedRealSets.length),
+          ),
+          [`s:${symbol}:materialization_truncated`]: String(
+            Math.max(0, qualifiedRealSets.length - realSets.length),
+          ),
           [`s:${symbol}:evaluated`]:  String(realLogicalInput),
           [`s:${symbol}:input_sets`]: String(realLogicalInput),
           [`s:${symbol}:logical_passed_sets`]: String(realLogicalPassed),
