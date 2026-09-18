@@ -3538,6 +3538,17 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     await client.hset(posKey, {
       ...position,
     } as any)
+    // The open index must be established WITH the hash, not 150 lines and a
+    // dozen awaits later. Anything throwing in between used to leave a row
+    // hash that no index references: invisible to every index-driven path
+    // (including the stuck-placement sweep) but still evaluated directly by
+    // the entry-protection audit, which then re-armed the connection-wide
+    // entry halt forever. Production carried four such rows for 10.7 days and
+    // no entry could be placed on the connection. The later upsert stays in
+    // place and is idempotent; this one closes the window.
+    if (!incomingTerminal) {
+      await upsertRedisListHead(client, openIndexKey, position.id).catch(() => undefined)
+    }
     await client.set(
       jsonKey,
       JSON.stringify(buildLivePositionCompatibilitySnapshot(position as unknown as Record<string, unknown>)),
