@@ -9,7 +9,7 @@ const fn = src.slice(
 
 describe("the rollback halt retires on OUR book, not the whole venue", () => {
   test("a non-flat row blocks only when this connection owns it", () => {
-    expect(fn).toContain("return !isExactSystemPositionOwner(row, connectionId)")
+    expect(fn).toContain("return !isExactSystemPositionOwner(row, scope)")
     // The caller passes the connection, so ownership can be decided at all.
     expect(src).toContain("isAuthoritativeVenueBookFlat(input.venuePositions, input.connectionId)")
   })
@@ -17,6 +17,9 @@ describe("the rollback halt retires on OUR book, not the whole venue", () => {
   test("an unattributable row still blocks — unreadable state never retires a halt", () => {
     expect(fn).toContain("if (quantity === null) return false")
     expect(fn).toContain("if (!Array.isArray(venuePositions)) return false")
+    // Without a connection to attribute against, nothing is provably foreign,
+    // so the strict behaviour stands rather than failing open.
+    expect(fn).toContain("if (!scope) return false")
   })
 
   test("a flat row is flat regardless of owner", () => {

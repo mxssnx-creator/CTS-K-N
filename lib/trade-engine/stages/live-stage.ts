@@ -779,15 +779,21 @@ function setCachedPositions(connId: string, positions: any[]): void {
    */
   function isAuthoritativeVenueBookFlat(
     venuePositions: readonly Record<string, any>[],
-    connectionId: string,
+    connectionId?: string,
   ): boolean {
     if (!Array.isArray(venuePositions)) return false
+    const scope = String(connectionId || "").trim()
     return venuePositions.every((row) => {
       const quantity = venuePositionQuantityForEmptyBook(row)
       if (quantity === null) return false
       if (quantity <= 1e-10) return true
-      // A non-flat row only blocks when it is ours.
-      return !isExactSystemPositionOwner(row, connectionId)
+      // A non-flat row blocks unless it is PROVABLY another system's. Without
+      // a connection to attribute against, nothing is provable, so the strict
+      // behaviour stands: any open row blocks. Treating "not provably ours" as
+      // foreign would fail open and retire a halt over exposure that might be
+      // ours after all.
+      if (!scope) return false
+      return !isExactSystemPositionOwner(row, scope)
     })
   }
 
