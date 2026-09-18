@@ -62,8 +62,9 @@ describe("live volume coordination by strategy variant", () => {
     const tooLarge = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: 500 })
     const invalid = VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier: -4 })
 
-    expect(tooLarge.sizeMultiplier).toBe(5)
-    expect(tooLarge.finalVolume).toBeCloseTo(0.1, 8)
+    // Bounded at the 15x operator ceiling: a 500x request is clamped, not honoured.
+    expect(tooLarge.sizeMultiplier).toBe(15)
+    expect(tooLarge.finalVolume).toBeCloseTo(0.3, 8)
     expect(invalid.sizeMultiplier).toBe(1)
     expect(invalid.finalVolume).toBeCloseTo(0.05, 8)
   })
@@ -75,6 +76,9 @@ describe("live volume coordination by strategy variant", () => {
       sizeMultiplier: 5,
     })
 
+    // sizeMultiplier 5 does not exceed the ordinary 5x allocation, so this
+    // position keeps the ordinary ceiling and the cap still engages exactly as
+    // before. Only a variant asking for MORE than 5x reaches the 15x limit.
     expect(result.intendedNotionalUsd).toBeCloseTo(100, 10)
     expect(result.maxExecutionNotionalUsd).toBeCloseTo(50, 10)
     expect(result.finalVolume).toBeCloseTo(0.5, 10)
