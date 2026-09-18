@@ -3,7 +3,7 @@ import { VolumeCalculator } from "@/lib/volume-calculator"
 
 describe("fresh-entry budget admission", () => {
   const proof = {
-    marketType: "crypto", finalQuantity: 0, ceiling: 0.57,
+    marketType: "crypto", finalQuantity: 0, ceiling: 1.71,
     universalMinimum: 5, balanceIsFallback: false, reason: "Budget below minimum",
   }
 
@@ -14,14 +14,16 @@ describe("fresh-entry budget admission", () => {
       tradeMode: "main", mainVolumeFactor: 10, sizeMultiplier: 500,
       allowUnboundedVariantMultiplier: true,
     })
-    expect(result.maxExecutionNotionalUsd).toBeCloseTo(0.57, 10)
+    // The ceiling scales with the 15x operator limit (0.57 at 5x); the
+    // invariant under test is that the budget still BLOCKS the entry.
+    expect(result.maxExecutionNotionalUsd).toBeCloseTo(1.71, 10)
     expect(result.exchangeMinNotionalUsd).toBeGreaterThanOrEqual(5)
     expect(result.finalVolume).toBe(0)
     const cache = new LiveEntryBudgetBlockCache()
     expect(cache.remember("x02:settings1", {
       ...proof, ceiling: result.maxExecutionNotionalUsd!, finalQuantity: result.finalVolume!,
     }, 100)).toBe(true)
-    expect(cache.get("x02:settings1", 1099)?.ceiling).toBeCloseTo(0.57, 10)
+    expect(cache.get("x02:settings1", 1099)?.ceiling).toBeCloseTo(1.71, 10)
     expect(cache.get("x02:settings1", 1100)).toBeNull()
     expect(cache.get("x01:settings1", 101)).toBeNull()
     expect(cache.get("x02:settings2", 101)).toBeNull()
