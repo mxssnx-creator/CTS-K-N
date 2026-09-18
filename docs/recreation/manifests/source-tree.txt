@@ -179,6 +179,7 @@ __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
 __tests__/unit/functional-overview-stage-snapshot.test.ts
 __tests__/unit/futures-connectors-contract.test.ts
+__tests__/unit/halt-retires-on-own-book.test.ts
 __tests__/unit/health-route-liveness-budget.test.ts
 __tests__/unit/health-runtime-contract.test.ts
 __tests__/unit/historic-candle-window.test.ts

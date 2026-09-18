@@ -762,12 +762,38 @@ function setCachedPositions(connId: string, positions: any[]): void {
     return Math.max(...parsed.map((value) => Math.abs(value)))
   }
 
+  /**
+   * Whether OUR book on the venue is flat.
+   *
+   * This used to require every venue row to be flat, including rows belonging
+   * to another system on a shared account. On the shared X02 account that
+   * condition is permanently unsatisfiable — a second system holds 13 open
+   * positions — so the empty-book observation was never recorded, the two
+   * confirmations never accumulated, and a rollback halt ran its full 24 h TTL
+   * while this connection held no exposure at all. Every entry stayed blocked
+   * by exposure that is not ours to manage, which is the same mistake the slot
+   * book made before ownership was applied before counting.
+   *
+   * A row we cannot attribute is still treated as blocking: unreadable state
+   * must not retire a safety halt.
+   */
   function isAuthoritativeVenueBookFlat(
     venuePositions: readonly Record<string, any>[],
+    connectionId?: string,
   ): boolean {
-    return Array.isArray(venuePositions) && venuePositions.every((row) => {
+    if (!Array.isArray(venuePositions)) return false
+    const scope = String(connectionId || "").trim()
+    return venuePositions.every((row) => {
       const quantity = venuePositionQuantityForEmptyBook(row)
-      return quantity !== null && quantity <= 1e-10
+      if (quantity === null) return false
+      if (quantity <= 1e-10) return true
+      // A non-flat row blocks unless it is PROVABLY another system's. Without
+      // a connection to attribute against, nothing is provable, so the strict
+      // behaviour stands: any open row blocks. Treating "not provably ours" as
+      // foreign would fail open and retire a halt over exposure that might be
+      // ours after all.
+      if (!scope) return false
+      return !isExactSystemPositionOwner(row, scope)
     })
   }
 
@@ -796,7 +822,7 @@ function setCachedPositions(connId: string, positions: any[]): void {
     return input.localOpenPositionCount === 0
       && input.liveOrderIds instanceof Set
       && Array.isArray(input.venuePositions)
-      && isAuthoritativeVenueBookFlat(input.venuePositions)
+      && isAuthoritativeVenueBookFlat(input.venuePositions, input.connectionId)
       && systemOrderCount === 0
   }
 
