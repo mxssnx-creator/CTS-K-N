@@ -19,8 +19,11 @@ describe("Block defaults follow the measured saturation point", () => {
     // extra depth cannot change position size, only nominal intent.
     const requested = [3, 4, 6].map((stack) => blockVolumeMultiplier(stack, 1, 3, 3))
     expect(requested).toEqual([10, 13, 19])
-    for (const value of requested) expect(Math.min(VARIANT_MULTIPLIER_CEILING, value)).toBe(5)
-    // At the default stack of 3 the first recovery level still scales freely.
+    // At the 15x operator ceiling, stack 3 and 4 now execute at their full
+    // requested size; only stack 6 is still truncated. The saturation argument
+    // is unchanged — they all produce the same ProfitFactor — so the extra
+    // depth still buys nothing, it merely costs more exposure.
+    expect(requested.map((v) => Math.min(VARIANT_MULTIPLIER_CEILING, v))).toEqual([10, 13, 15])
     expect(blockVolumeMultiplier(3, 1, 3, 1)).toBe(4)
     expect(Math.min(VARIANT_MULTIPLIER_CEILING, 4)).toBe(4)
   })
@@ -28,7 +31,7 @@ describe("Block defaults follow the measured saturation point", () => {
 
 describe("the risk ceiling is explicit and reported, not silent", () => {
   test("the ceiling is a named constant documented as a risk limit", () => {
-    expect(VARIANT_MULTIPLIER_CEILING).toBe(5)
+    expect(VARIANT_MULTIPLIER_CEILING).toBe(15)
     expect(calculator).toContain("This is a RISK limit, not a tuning knob")
     // No bare magic number left on either clamping path.
     expect(calculator).not.toContain("Math.min(5, normalized)")
