@@ -190,31 +190,6 @@ const ROUTES: Record<string, RoutePresentation> = {
     description: "Minimal server-render and application-shell readiness check.",
     eyebrow: "Diagnostics",
   },
-  "/simple": {
-    title: "System Snapshot",
-    description: "Compact authenticated application and migration-state snapshot.",
-    eyebrow: "Diagnostics",
-  },
-  "/minimal": {
-    title: "Minimal Runtime",
-    description: "Reduced control-plane runtime and connectivity verification.",
-    eyebrow: "Diagnostics",
-  },
-  "/test": {
-    title: "Authentication Test",
-    description: "Internal authenticated rendering and context validation.",
-    eyebrow: "Diagnostics",
-  },
-  "/test-layout": {
-    title: "Layout Test",
-    description: "Internal application-shell rendering validation.",
-    eyebrow: "Diagnostics",
-  },
-  "/test-simple": {
-    title: "System Test",
-    description: "Internal page and component rendering validation.",
-    eyebrow: "Diagnostics",
-  },
 }
 
 function humanize(segment: string): string {
