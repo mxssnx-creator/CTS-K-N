@@ -118,11 +118,33 @@ export interface AxisDerivationParams {
   pause: number
 }
 
+/**
+ * Axis windows that actually engage.
+ *
+ * Measured over 1,065,456 replayed trades (10 symbols, 216 indication configs
+ * each, 3.5 days of real 5-minute candles), sweeping cont x pause:
+ *
+ *   cont=8 (the previous default): admits 98% of entries, PF 0.930–0.935
+ *   cont=3:                        admits 78%,            PF 1.006–1.030
+ *   cont=2:                        admits 62%,            PF 1.090–1.102
+ *   cont=1, pause=4:               admits 53%,            PF 1.2231
+ *   cont=1, pause=8:               admits 36%,            PF 1.2234
+ *
+ * At cont=8 the gate is a no-op: an end-to-end run reported the axis family
+ * with byte-identical results to Normal — same ProfitFactor, same net result,
+ * same trade count — so it consumed a family slot while measuring nothing of
+ * its own. The relationship is monotone, and cont=1 is where the baseline
+ * turns from losing (0.90) to profitable (1.22).
+ *
+ * pause=4 over pause=8: the ProfitFactor is the same to three decimals
+ * (1.2231 vs 1.2234) while admitting 45% more entries, so the shorter pause
+ * buys the same quality on substantially more opportunities.
+ */
 export const DEFAULT_AXIS_DERIVATION: AxisDerivationParams = {
   prev: 12,
   last: 4,
-  cont: 8,
-  pause: 8,
+  cont: 1,
+  pause: 4,
 }
 
 /**
