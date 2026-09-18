@@ -10972,9 +10972,16 @@ export class StrategyCoordinator {
       {
         name: "default",
         gate: () => true,
+        // ONE configuration per Base Set. The Main stage is a 1:1 re-evaluation
+        // of Base under Main thresholds, not a fan-out: a second leverage
+        // tuple doubled every Base Set before the axis expansion doubled it
+        // again, so Main ran at ~4x Base (measured: base 9,462 -> main 36,936)
+        // and every downstream stage inherited the multiple — Real reached
+        // 118,644 and Live 147,824 evaluated entries per pass. Axis adds its
+        // own Set per valid Base Set on top; that is the intended expansion,
+        // and it is only visible as such when the default lane stays 1:1.
         configs: [
-          { size: 1.0, leverage: 1, state: "new", pfBias: 1.00, ddtBias: 0  },
-          { size: 1.0, leverage: 2, state: "new", pfBias: 1.05, ddtBias: 15 },
+          { size: 1.0, leverage: 1, state: "new", pfBias: 1.00, ddtBias: 0 },
         ],
       },
       {
