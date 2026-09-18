@@ -104,6 +104,7 @@ unit	__tests__/unit/dca-backtest.test.ts
 unit	__tests__/unit/dca-step-outcomes.test.ts
 unit	__tests__/unit/dca-step-recovery-level.test.ts
 unit	__tests__/unit/default-indication-direction.test.ts
+unit	__tests__/unit/deferral-reason-visibility.test.ts
 unit	__tests__/unit/deploy-keeps-runtime-up.test.ts
 unit	__tests__/unit/design-theme-consistency.test.ts
 unit	__tests__/unit/direct-trade-calculate-route.test.ts
