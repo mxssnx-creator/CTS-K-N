@@ -171,6 +171,7 @@ __tests__/unit/exchange-live-summary-route.test.ts
 __tests__/unit/exchange-position-symbols-stats.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
+__tests__/unit/family-statistics-surface.test.ts
 __tests__/unit/forced-symbols.test.ts
 __tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
@@ -640,6 +641,7 @@ app/api/settings/set-limits/route.ts
 app/api/settings/system/route.ts
 app/api/startup/initialize/route.ts
 app/api/statistics/deactivated-configs/route.ts
+app/api/statistics/families/route.ts
 app/api/statistics/indications/route.ts
 app/api/strategies/overview/route.ts
 app/api/strategies/route.ts
@@ -969,6 +971,7 @@ components/statistics/analytics-filters.tsx
 components/statistics/block-strategy-stats.tsx
 components/statistics/deactivated-live-configs.tsx
 components/statistics/direct-trade-statistics.tsx
+components/statistics/family-performance-panel.tsx
 components/statistics/indication-analytics-dashboard.tsx
 components/statistics/preset-trade-stats.tsx
 components/statistics/statistics-section-nav.tsx
