@@ -17845,12 +17845,65 @@ export function isStuckPreFillPlacement(
   if (!placedAt) return false
   return nowMs - placedAt >= thresholdMs
 }
+/**
+ * Positions this sweep may finalize: the open index PLUS orphaned row hashes.
+ *
+ * `getLivePositions` enumerates the open index only. A row whose hash exists
+ * but whose id was never added to that index — or was removed from it while
+ * the hash survived — is invisible to every index-driven path, including this
+ * sweep. It is NOT invisible to the entry-protection audit, which evaluates
+ * the row it is accumulating directly: production carried four such rows,
+ * `pending` with quantity 0 and no venue handle, 10.7 days old, and each
+ * accumulation attempt failed verification and re-armed the CONNECTION-WIDE
+ * entry halt. Every entry on the connection was blocked by rows that no
+ * cleanup path could reach, and clearing the halt by hand only bought minutes.
+ *
+ * The cleanup must therefore see at least what the blocking path sees. The
+ * scan is bounded and additive: index rows keep their order and orphans are
+ * appended, de-duplicated by id.
+ */
+async function collectSweepableLivePositions(connectionId: string): Promise<LivePosition[]> {
+  const indexed = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+  const seen = new Set(indexed.map((row) => String(row.id)))
+  const orphans: LivePosition[] = []
+  try {
+    const client = getRedisClient() as any
+    if (typeof client.scan !== "function") return indexed
+    const prefix = `live_positions:${connectionId}:`
+    let cursor = "0"
+    let guard = 0
+    do {
+      const reply = await client.scan(cursor, { MATCH: `${prefix}*`, COUNT: 500 }).catch(() => null)
+      const nextCursor = String(reply?.cursor ?? reply?.[0] ?? "0")
+      const keys: string[] = (reply?.keys ?? reply?.[1] ?? []) as string[]
+      for (const key of keys) {
+        const id = String(key).slice(prefix.length)
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        const row = await readLivePositionSnapshot(client, connectionId, id).catch(() => null)
+        // Only non-terminal rows matter; a closed orphan is harmless history.
+        if (row && isActiveLiveSlotStatus(String(row.status || ""))) orphans.push(row)
+      }
+      cursor = nextCursor
+    } while (cursor !== "0" && ++guard < 200)
+  } catch {
+    // An unscannable store must not stop the indexed sweep from running.
+    return indexed
+  }
+  if (orphans.length > 0) {
+    console.warn(
+      `${LOG_PREFIX} [stuck-placement] ${connectionId}: ${orphans.length} active row(s) exist outside the open index and are included in the sweep`,
+    )
+  }
+  return [...indexed, ...orphans]
+}
+
 export async function sweepStuckPreFillPlacements(
   connectionId: string,
   nowMs = Date.now(),
 ): Promise<{ scanned: number; closed: number; errors: number }> {
   const summary = { scanned: 0, closed: 0, errors: 0 }
-  const rows = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+  const rows = await collectSweepableLivePositions(connectionId)
   const threshold = stuckPlacementThresholdMs()
   for (const position of rows) {
     summary.scanned++
