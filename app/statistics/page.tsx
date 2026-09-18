@@ -65,6 +65,7 @@ import { StatisticsOverview } from "@/components/settings/statistics-overview"
 import { useExchange } from "@/lib/exchange-context"
 import { PageHeader } from "@/components/page-header"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
+import { FamilyPerformancePanel } from "@/components/statistics/family-performance-panel"
 import { StatisticsSectionNav } from "@/components/statistics/statistics-section-nav"
 import { DeactivatedLiveConfigs } from "@/components/statistics/deactivated-live-configs"
 import {
@@ -2038,6 +2039,9 @@ export default function StatisticsPage() {
             </TabsContent>
 
             <TabsContent value="strategies" className="space-y-6">
+              {/* Realised per-family performance, on the same PositionCost
+                  coordinate the Historic Test reports its expectation on. */}
+              <FamilyPerformancePanel />
               <StrategyPerformanceTable strategies={strategyAnalytics} />
             </TabsContent>
 
