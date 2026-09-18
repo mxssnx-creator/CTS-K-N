@@ -54,6 +54,7 @@ unit	__tests__/unit/aggregate-protection-coordination.test.ts
 unit	__tests__/unit/api-stats-fetcher.test.ts
 unit	__tests__/unit/auth-runtime-secret.test.ts
 unit	__tests__/unit/authoritative-snapshot-cache.test.ts
+unit	__tests__/unit/axis-default-engages.test.ts
 unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
 unit	__tests__/unit/base-position-batch-coordination.test.ts
