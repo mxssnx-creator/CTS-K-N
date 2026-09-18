@@ -436,14 +436,18 @@ export function ConnectionCard({
 
   const getStatusColor = (status?: string) => {
     switch (status) {
+      // Tinted surfaces need an explicit dark counterpart: a -50 background
+      // with -900 text is legible on its own but turns into a bright card in a
+      // dark shell. The neutral case uses the theme's own muted tokens so it
+      // follows the shell instead of pinning a light grey.
       case "success":
-        return "bg-green-50 border-green-200 text-green-900"
+        return "bg-green-50 border-green-200 text-green-900 dark:bg-green-950/40 dark:border-green-900/60 dark:text-green-200"
       case "failed":
-        return "bg-red-50 border-red-200 text-red-900"
+        return "bg-red-50 border-red-200 text-red-900 dark:bg-red-950/40 dark:border-red-900/60 dark:text-red-200"
       case "warning":
-        return "bg-yellow-50 border-yellow-200 text-yellow-900"
+        return "bg-yellow-50 border-yellow-200 text-yellow-900 dark:bg-yellow-950/40 dark:border-yellow-900/60 dark:text-yellow-200"
       default:
-        return "bg-gray-50 border-gray-200 text-gray-900"
+        return "bg-muted border-border text-foreground"
     }
   }
 
@@ -502,8 +506,8 @@ export function ConnectionCard({
                 <Badge 
                   className={`text-xs ${
                     isEnabled
-                      ? "bg-green-100 text-green-900 border-green-200" 
-                      : "bg-gray-100 text-gray-600 border-gray-200"
+                      ? "bg-green-100 text-green-900 border-green-200 dark:bg-green-950/50 dark:text-green-200 dark:border-green-900/60"
+                      : "bg-muted text-muted-foreground border-border"
                   }`}
                 >
                   {isEnabled ? "Active" : "Inactive"}

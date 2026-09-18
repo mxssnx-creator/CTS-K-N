@@ -246,7 +246,7 @@ export function SystemVerificationPanel() {
 
       <button
         onClick={() => setAutoRefresh(!autoRefresh)}
-        className="w-full px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded border"
+        className="w-full rounded border px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
       >
         Auto-refresh: {autoRefresh ? "ON" : "OFF"}
       </button>

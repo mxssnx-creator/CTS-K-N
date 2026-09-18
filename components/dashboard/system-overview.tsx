@@ -231,7 +231,7 @@ export function SystemOverview() {
         return "bg-amber-100 text-amber-900 border-amber-200"
       case "idle":
       case "stopped":
-        return "bg-gray-100 text-gray-600 border-gray-200"
+        return "bg-muted text-muted-foreground border-border"
       case "failed":
       case "error":
       case "down":

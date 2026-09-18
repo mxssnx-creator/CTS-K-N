@@ -1345,7 +1345,7 @@ export function ConnectionCard({
               <span className="truncate">{engineStatus?.testing_message || "Testing configurations..."}</span>
               <span className="shrink-0 ml-2">{testingProgress}%</span>
             </div>
-            <div className="w-full bg-gray-200 rounded-full h-1.5">
+            <div className="h-1.5 w-full rounded-full bg-muted">
               <div
                 className="h-1.5 rounded-full bg-blue-500 transition-all duration-300"
                 style={{ width: `${testingProgress}%` }}
