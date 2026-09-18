@@ -4971,6 +4971,22 @@ export class StrategyCoordinator {
     const buildTasks: Array<() => Promise<VariantBuildResult>> = []
 
     let scannedBaseSets = 0
+    // Sets validate on measured results. Both knobs are read once per pass:
+    // CTS_BASE_REQUIRE_MEASURED_HISTORY=0 restores the previous behaviour
+    // (validate on the bootstrap estimate) without a code change, and the
+    // minimum reuses the operator's existing prevPosMinCount so there is one
+    // place that defines "enough history".
+    const requireMeasuredHistoryForBaseValidity =
+      String(process.env.CTS_BASE_REQUIRE_MEASURED_HISTORY ?? "1").trim() !== "0"
+    // The operator's existing "enough history" definition, resolved and cached
+    // by createBaseSets earlier in the same pass. Reusing it keeps one source
+    // of truth rather than introducing a second threshold; the fallback
+    // matches that resolver's own default.
+    const baseHistoryMinCount = Math.max(
+      1,
+      this._prevPosMinCountValue >= 0 ? this._prevPosMinCountValue : 5,
+    )
+
     for (const baseSet of baseSets) {
       if (scannedBaseSets > 0 && scannedBaseSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
         await yieldStrategyScheduler(false, shouldContinue)
@@ -4992,6 +5008,29 @@ export class StrategyCoordinator {
       // Base Valid is independent from Main Valid. Every complete Base Set is
       // counted in Base Total; this first gate applies only the Base-specific
       // PF/DDT contract and forms the input pool for Main.
+      // A Set validates on MEASURED results, never on an expectation.
+      //
+      // Without sufficient position history the PF carried here is the raw
+      // indication-derived estimate (the documented bootstrap path), not an
+      // outcome. Production showed what that means in practice: 29 result
+      // rings existed for thousands of Sets, so nearly every Set was judged on
+      // its estimate — base `apf` reported a median of 2.01 while the measured
+      // outcome stats for 400 Sets ran from 0.86 to 0.94 with NOT ONE above
+      // 1.00. Validating against the estimate let ~70% through at any
+      // threshold, and no threshold could fix it because the two numbers
+      // describe different things.
+      //
+      // A Set below the history threshold is still created, evaluated and
+      // reported — it simply does not become an input for Main until it has
+      // results to show. That also removes the bulk of the downstream work:
+      // only Sets with measured history reach Main, Real and Live.
+      const measuredCount = Number(baseSet.prevPos?.positionCostRatioCount ?? 0)
+      if (requireMeasuredHistoryForBaseValidity && measuredCount < baseHistoryMinCount) {
+        baseSet.status = "invalid"
+        baseSet.rejectionReason =
+          `base_awaiting_measured_history: ${measuredCount} < ${baseHistoryMinCount}`
+        continue
+      }
       if (
         baseSet.avgProfitFactor < metricsBase.minProfitFactor ||
         baseSet.avgDrawdownTime > metricsBase.maxDrawdownTime

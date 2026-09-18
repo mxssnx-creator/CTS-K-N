@@ -394,6 +394,7 @@ unit	__tests__/unit/trailing-family-replay-wiring.test.ts
 unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
 unit	__tests__/unit/unsubmitted-live-retention.test.ts
+unit	__tests__/unit/validate-only-measured-sets.test.ts
 unit	__tests__/unit/volume-calculator-variants.test.ts
 unit	__tests__/unit/volume-identity-systemwide.test.ts
 unit	__tests__/unit/x02-slot-protection-operator.test.ts
