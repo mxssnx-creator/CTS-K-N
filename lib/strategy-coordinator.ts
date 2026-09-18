@@ -9505,6 +9505,18 @@ export class StrategyCoordinator {
             let pending = 0
             let blocked = 0
             let deferred = 0
+            const deferralReasons = new Map<string, { count: number; example: string }>()
+            const recordDeferralReason = (result: any, candidate: any): void => {
+              const text = [result?.statusReason, result?.error, result?.message]
+                .map((value: unknown) => String(value ?? "").trim())
+                .filter(Boolean)
+                .join(" | ")
+              const status = String(result?.status ?? "").trim() || "(no status)"
+              const key = `${status}::${text || "(no reason)"}`.slice(0, 220)
+              const entry = deferralReasons.get(key)
+              if (entry) entry.count++
+              else deferralReasons.set(key, { count: 1, example: String(candidate?.setKey ?? "").slice(0, 120) })
+            }
             const dispatchStartedAt = Date.now()
             const physicallyExecutedSets: StrategySet[] = []
 
@@ -9796,6 +9808,13 @@ export class StrategyCoordinator {
                   blocked++
                 } else if (outcome === "deferred") {
                   deferred++
+                  // The main path: a deferral used to be a bare number.
+                  // Production reached 540 attempts / 540 deferred / 0 placed
+                  // with nothing in the row, nothing in the journal and no
+                  // admission lock held — the dispatcher counted a reason
+                  // nobody recorded, so the last step before an order could
+                  // not be diagnosed at all.
+                  recordDeferralReason(liveResult as any, set)
                 } else if (outcome === "rejected") {
                   rejected++
                 } else if (outcome === "errored") {
@@ -9816,7 +9835,12 @@ export class StrategyCoordinator {
                   errorCode: (err as any)?.errorCode ?? (err as any)?.code,
                 })
                 if (outcome === "blocked") blocked++
-                else if (outcome === "deferred") deferred++
+                else if (outcome === "deferred") {
+                  deferred++
+                  // An exception classified as an expected deferral is just as
+                  // invisible as a returned one; record it with its message.
+                  recordDeferralReason({ status: "error", statusReason: errorMessage }, set)
+                }
                 else if (outcome === "rejected") rejected++
                 else errored++
                 console.warn(
@@ -9837,6 +9861,12 @@ export class StrategyCoordinator {
                 dispatch_pending_count: String(pending),
                 dispatch_blocked_count: String(blocked),
                 dispatch_deferred_count: String(deferred),
+                dispatch_deferred_reasons: JSON.stringify(
+                  [...deferralReasons.entries()]
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 8)
+                    .map(([key, value]) => ({ reason: key, count: value.count, exampleSetKey: value.example })),
+                ),
                 dispatch_rejected_count: String(rejected),
                 dispatch_errored_count: String(errored),
                 dispatch_missing_entry_count: String(missingEntry),
