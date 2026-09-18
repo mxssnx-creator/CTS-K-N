@@ -610,8 +610,35 @@ export class VolumeCalculator {
      * never Infinity. Used by both the positionCost and the
      * risk-percentage branches below.
      */
-    const clampUp = (raw: number): { final: number; adjusted: boolean; reason?: string } => {
+    /**
+     * `variantScale` carries the Block/DCA multiplier into the floor.
+     *
+     * Without it the floor swallowed the strategy: a base of 0.2, 1.0 or 3.0
+     * USD all clamped to the same exchange minimum, so on an account whose
+     * base sits under the minimum a Block recovery executed exactly the same
+     * size as a plain entry — the increase existed in the arithmetic and
+     * vanished at the venue. The floor now scales with the multiplier the
+     * variant asked for, so the step up survives; the execution ceiling and
+     * the balance still bound the result.
+     */
+    const clampUp = (raw: number, variantScale = 1): { final: number; adjusted: boolean; reason?: string } => {
       const safeRaw = Number.isFinite(raw) && raw > 0 ? raw : 0
+      const scale = Number.isFinite(variantScale) && variantScale > 1 ? variantScale : 1
+      // The scaled floor applies ONLY where the plain floor actually binds —
+      // i.e. the order is too small to execute at all. An order that already
+      // clears the venue minimum is left exactly as calculated; inflating it
+      // would multiply an aggregate that was already executable, which is the
+      // per-part minimum inflation the Position-Count contract forbids.
+      const scaledMin = effectiveMin > 0 ? effectiveMin * scale : effectiveMin
+      if (effectiveMin > 0 && safeRaw < effectiveMin && scale > 1) {
+        return {
+          final: scaledMin,
+          adjusted: true,
+          reason: scale > 1
+            ? `Calculated volume ${safeRaw.toFixed(8)} was below the variant-scaled minimum ${scaledMin.toFixed(isForex ? forexLotPrecision : 8)} (exchange minimum x${scale.toFixed(2)} variant multiplier) — clamped up so the strategy increase is not lost at the floor.`
+            : undefined,
+        }
+      }
       if (effectiveMin > 0 && safeRaw < effectiveMin) {
         const usingUniversalFallback = !isForex && exchangeMinVolume <= 0
         const minimumLabel = isForex
@@ -690,9 +717,33 @@ export class VolumeCalculator {
         ? (() => {
             const ordinaryCeiling = positionCostNotionalUsd * MAX_LIVE_POSITION_COST_MULTIPLIER
             const allowance = Number(minimumNotionalCeilingAllowanceUsd)
-            return Number.isFinite(allowance) && allowance > 0
+            const base = Number.isFinite(allowance) && allowance > 0
               ? Math.max(ordinaryCeiling, allowance)
               : ordinaryCeiling
+            // When the base sits UNDER the venue minimum, the floor is what the
+            // order actually costs — and the variant scales that floor. The
+            // ceiling has to admit it, otherwise the scaled floor is computed
+            // and then pulled straight back to the ordinary ceiling, which is
+            // how a Block increase silently became a plain minimum order.
+            // Two bounds keep this from becoming a bypass:
+            //
+            // 1. The scale is capped at the ordinary position-cost multiple.
+            //    An unbounded caller asking 500x must not turn a 5 USD venue
+            //    minimum into a 2,500 USD ceiling.
+            // 2. It applies only when the ordinary ceiling could already afford
+            //    ONE minimum-size order. If the per-position budget cannot even
+            //    reach the venue minimum, the entry is meant to be blocked —
+            //    scaling the floor there would execute an order the book has no
+            //    room for, which is exactly what the 300-position budget guard
+            //    exists to prevent.
+            const plainMinNotional = effectiveMin > 0 ? volumeNotional(effectiveMin) : 0
+            const floorScale = Math.min(variantMult, MAX_LIVE_POSITION_COST_MULTIPLIER)
+            const scaledFloorNotional = plainMinNotional > 0
+              && floorScale > 1
+              && base + Number.EPSILON >= plainMinNotional
+              ? plainMinNotional * floorScale
+              : 0
+            return scaledFloorNotional > base ? scaledFloorNotional : base
           })()
         : undefined
       const calculatedVolume = currentPrice > 0 && forexConversionAvailable
@@ -704,7 +755,7 @@ export class VolumeCalculator {
       const executionVolume = currentPrice > 0 && forexConversionAvailable
         ? executionNotional / (isForex ? forexNotionalPerLot : currentPrice)
         : 0
-      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(executionVolume)
+      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(executionVolume, variantMult)
       const executable = maxExecutionNotionalUsd
         ? executableQuantityAtMost(clampedFinal, maxExecutionNotionalUsd)
         : executableQuantity(clampedFinal)

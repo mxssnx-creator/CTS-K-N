@@ -237,6 +237,7 @@ unit	__tests__/unit/margin-call.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
+unit	__tests__/unit/minimum-scales-with-variant.test.ts
 unit	__tests__/unit/monitoring-stats-route.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
 unit	__tests__/unit/navigation-and-pages.test.ts

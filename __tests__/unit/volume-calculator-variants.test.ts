@@ -42,7 +42,10 @@ describe("live volume coordination by strategy variant", () => {
     expect(standard.finalVolume).toBeCloseTo(0.05, 8)
     expect(standard.calculatedVolume).toBeCloseTo(0.02, 8)
     expect(block.calculatedVolume).toBeCloseTo(0.04, 8)
-    expect(block.finalVolume).toBeCloseTo(0.05, 8)
+    // A sub-minimum order whose variant asks for MORE is lifted to
+    // minimum x multiplier, not to the bare minimum — otherwise a Block
+    // increase on a small base executes exactly like a plain entry.
+    expect(block.finalVolume).toBeCloseTo(0.1, 8)
     expect(dca.calculatedVolume).toBeCloseTo(0.01, 8)
     expect(dca.finalVolume).toBeCloseTo(0.05, 8)
     // Requested ratios remain exact in provenance even when two requests are
@@ -90,11 +93,15 @@ describe("live volume coordination by strategy variant", () => {
     expect(combined.finalVolume).toBeCloseTo(0.32, 8)
   })
 
+  // Executable size below the venue minimum: a variant asking for MORE than
+  // the base is lifted to minimum x multiplier, so its increase survives the
+  // floor; a variant asking for the same or less still clamps to the plain
+  // minimum.
   test.each([
     ["default", 1, 0.02, 0.05],
     ["trailing", 1, 0.02, 0.05],
     ["pause-resume", 1, 0.02, 0.05],
-    ["block", 1.8, 0.036, 0.05],
+    ["block", 1.8, 0.036, 0.09],
     ["dca", 0.5, 0.01, 0.05],
     ["pos-count-part", 0.05, 0.001, 0.05],
   ])("calculates the %s strategy independently", (_variant, multiplier, calculated, executable) => {
@@ -110,7 +117,8 @@ describe("live volume coordination by strategy variant", () => {
     expect(result.liveEngineFactor).toBe(1.2)
     expect(result.sizeMultiplier).toBe(1.5)
     expect(result.calculatedVolume).toBeCloseTo(0.036, 10)
-    expect(result.finalVolume).toBeCloseTo(0.05, 10)
+    // Sub-minimum with a 1.5x variant: lifted to 1.5x the venue minimum.
+    expect(result.finalVolume).toBeCloseTo(0.075, 10)
     expect(input.mainVolumeFactor).toBe(1.2)
     expect(input.sizeMultiplier).toBe(1.5)
   })
