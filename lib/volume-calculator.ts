@@ -50,7 +50,28 @@ import {
 import { tradingPairKey } from "@/lib/trading-pair-keys"
 
 /** Hard upper bound for one live/VST position relative to its PositionCost budget. */
+/**
+ * Ordinary ceiling on the executed notional of one position, as a multiple of
+ * its PositionCost allocation. This governs EVERY position, so it stays at 5x:
+ * raising it outright re-sizes ordinary entries system-wide and lets
+ * small-balance connections clear exchange minimums they were previously
+ * blocked by. A variant that genuinely requests more is handled by
+ * VARIANT_EXECUTION_NOTIONAL_CEILING below.
+ */
 export const MAX_LIVE_POSITION_COST_MULTIPLIER = 5
+
+/**
+ * Ceiling for a position whose VARIANT (Block/DCA) asks for more than the
+ * ordinary allocation. Operator limit: 15x.
+ *
+ * Two ceilings had to move together for configured Block depth to reach the
+ * venue — the variant multiplier and this execution notional — because either
+ * one alone re-truncates the order. It stays a ceiling rather than being
+ * removed: an unbounded request that exceeds balance and exposure is not
+ * executed smaller, it is not executed at all, which measurably broke live
+ * dispatch in six Real->Live scenarios.
+ */
+export const VARIANT_EXECUTION_NOTIONAL_CEILING = 15
 
 /**
  * The only live minimum-floor allowance is the dedicated X02 BingX Prod-VST
@@ -163,10 +184,17 @@ interface VolumeCalculationParams {
  *
  * This is a RISK limit, not a tuning knob: it stops a recovery chain from
  * putting an unbounded multiple of the base notional on one position. A Block
- * lane at count 6 / level 6 requests 37x; without this ceiling a single
- * recovery sequence could dwarf the whole book.
+ * lane at count 6 / level 6 requests 37x.
+ *
+ * Raised from 5x to 15x by operator decision, so configured Block recovery
+ * depth actually reaches the venue. It stays a CEILING rather than being
+ * removed: with no limit at all, a request that exceeds what balance and
+ * exposure allow is not executed smaller — it is not executed AT ALL, which
+ * measurably broke live dispatch (six Real->Live scenarios placed zero
+ * orders). A bounded multiplier keeps the order placeable, which is the
+ * property that matters when recovery runs on a reduced buffer.
  */
-export const VARIANT_MULTIPLIER_CEILING = 5
+export const VARIANT_MULTIPLIER_CEILING = 15
 
 const reportedTruncations = new Set<string>()
 function reportVariantMultiplierTruncation(requested: number, applied: number): void {
@@ -688,7 +716,13 @@ export class VolumeCalculator {
       )
       const maxExecutionNotionalUsd = (tradeMode === "main" || tradeMode === "preset")
         ? (() => {
-            const ordinaryCeiling = positionCostNotionalUsd * MAX_LIVE_POSITION_COST_MULTIPLIER
+            // Ordinary positions keep the ordinary ceiling; a variant that
+            // asks for more may reach the variant ceiling, never beyond it.
+            const ceilingMultiplier = Math.min(
+              VARIANT_EXECUTION_NOTIONAL_CEILING,
+              Math.max(MAX_LIVE_POSITION_COST_MULTIPLIER, variantMult),
+            )
+            const ordinaryCeiling = positionCostNotionalUsd * ceilingMultiplier
             const allowance = Number(minimumNotionalCeilingAllowanceUsd)
             return Number.isFinite(allowance) && allowance > 0
               ? Math.max(ordinaryCeiling, allowance)
