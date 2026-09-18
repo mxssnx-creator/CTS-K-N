@@ -236,6 +236,7 @@ unit	__tests__/unit/logistics-workflow.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-indications-stats-route.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
+unit	__tests__/unit/main-stage-one-per-base.test.ts
 unit	__tests__/unit/main-trade-profit-factor.test.ts
 unit	__tests__/unit/margin-call-route.test.ts
 unit	__tests__/unit/margin-call.test.ts
