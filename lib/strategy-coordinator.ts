@@ -2742,7 +2742,11 @@ export class StrategyCoordinator {
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
-    blockRowRealEvalPosCount: 20,
+    // Block rows are evaluated over a LONGER history than the Set lanes.
+    // A Block count only becomes meaningful once its recovery ladder has been
+    // exercised repeatedly, so a 20-position window judges it on too few
+    // escalations. Operator setting: 30.
+    blockRowRealEvalPosCount: 30,
     liveEvalPosCount: 20,
   }
   private _coordinationLoadedAt = 0
