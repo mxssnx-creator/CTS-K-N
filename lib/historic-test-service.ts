@@ -130,8 +130,31 @@ export async function maybeRunHistoricTest(
     ? await deps.indications(connectionId).catch(() => [...HISTORIC_TEST_DEFAULT_INDICATIONS])
     : [...HISTORIC_TEST_DEFAULT_INDICATIONS]
 
+  // Wire the connection's real configured parameters into the default
+  // simulator so the pass measures what would actually run live, instead of
+  // generic fallbacks. `profile` is the raw settings object itself --
+  // normalizeDcaProfile (inside createHistoricCandleSimulator) already knows
+  // how to pull dcaMaxSteps/dcaStepVolumeMultipliers/etc. out of it directly.
+  const numOrUndefined = (value: unknown): number | undefined => {
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
   const simulate = deps.simulate || createHistoricCandleSimulator({
     loadCandles: (request: HistoricTestSimulationRequest) => loadHistoricTestCandles(request) as Promise<any>,
+    profile: raw as any,
+    positionCostPercent: numOrUndefined((raw as any)?.positionCost ?? (raw as any)?.exchangePositionCost),
+    trailingRetracePct: numOrUndefined((raw as any)?.trailingRetracePct ?? (raw as any)?.trailingMinStep),
+    block: {
+      volumeRatio: numOrUndefined((raw as any)?.blockVolumeRatio),
+      incrementSteps: numOrUndefined((raw as any)?.blockIncrementSteps),
+      maxStack: numOrUndefined((raw as any)?.blockMaxStack),
+    },
+    axis: {
+      prev: numOrUndefined((raw as any)?.axisPrevMaxWindow),
+      last: numOrUndefined((raw as any)?.axisLastMaxWindow),
+      cont: numOrUndefined((raw as any)?.axisContMaxWindow),
+      pause: numOrUndefined((raw as any)?.axisPauseMaxWindow),
+    },
   })
 
   const result = await runHistoricTest({
