@@ -995,8 +995,19 @@ export class PseudoPositionManager {
           { PX: BASE_LANE_REENTRY_COOLDOWN_MS },
         )
       }
-      const strategySetKey = String(position.strategy_set_key || "").trim()
-      const parentSetKey = String(position.parent_set_key || "").trim()
+      // Both spellings, exactly as the registration path above accepts them.
+      // Writers use camelCase (`strategySetKey: set.setKey` in the coordinator,
+      // `strategySetKey: livePosition.setKey` in the Live stage) while this
+      // close path read snake_case only, so for every position written that way
+      // the key resolved empty, the `srem` below never ran, and the Set stayed
+      // in activeStrategySetKeys forever. Production showed the asymmetry
+      // directly: 182 registered Sets against exactly ONE counted as active.
+      const strategySetKey = String(
+        position.strategy_set_key || position.strategySetKey || "",
+      ).trim()
+      const parentSetKey = String(
+        position.parent_set_key || position.parentSetKey || "",
+      ).trim()
       if (strategySetKey) pipeline.srem(this.activeStrategySetKeysSetKey(), strategySetKey)
       if (parentSetKey) pipeline.srem(this.activeStrategySetKeysSetKey(), parentSetKey)
       // P0-4: Free the per-direction slot so another position in the
