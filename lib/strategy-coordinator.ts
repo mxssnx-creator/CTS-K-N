@@ -6111,7 +6111,7 @@ export class StrategyCoordinator {
     for (const source of eligibleSources) {
       const directionActive = activeCombinedByDir[source.direction]
       const exactCount = exactActiveLedger.active[source.setKey] || 0
-      if (directionActive > 0 && exactCount > 0) addCandidate(source, exactCount, "set")
+      if (directionActive > 0 && exactCount > 1) addCandidate(source, exactCount, "set")
     }
 
     const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
