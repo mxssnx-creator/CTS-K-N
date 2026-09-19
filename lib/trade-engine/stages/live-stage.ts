@@ -17888,7 +17888,45 @@ export function isStuckPreFillPlacement(
  * scan is bounded and additive: index rows keep their order and orphans are
  * appended, de-duplicated by id.
  */
+/**
+ * Remove open-index entries whose row hash no longer exists.
+ *
+ * The mirror image of the orphaned-hash case: there a hash had no index entry,
+ * here an index entry points at nothing. Both are one-sided writes, and this
+ * direction is just as damaging — every consumer that counts "own open rows"
+ * counts a row that cannot be read, so the connection looks like it holds
+ * exposure it does not have. Production showed four such entries alongside one
+ * real row, and a dangling entry is enough to keep a connection-wide entry
+ * halt from ever retiring.
+ *
+ * Purely local: no venue position or order is touched, and an entry is removed
+ * only when its hash is verifiably absent — never when the read merely failed.
+ */
+async function pruneDanglingLiveIndexEntries(connectionId: string): Promise<number> {
+  const client = getRedisClient() as any
+  if (typeof client?.lrange !== "function" || typeof client?.lrem !== "function") return 0
+  const indexKey = `live:positions:${connectionId}`
+  const ids: string[] = await client.lrange(indexKey, 0, -1).catch(() => [])
+  let pruned = 0
+  for (const rawId of ids) {
+    const id = String(rawId || "").trim()
+    if (!id) continue
+    const exists = await client.exists(`live_positions:${connectionId}:${id}`).catch(() => 1)
+    // Only a definite "absent" prunes; a failed read leaves the entry alone.
+    if (Number(exists) !== 0) continue
+    const removed = await client.lrem(indexKey, 0, rawId).catch(() => 0)
+    if (Number(removed) > 0) pruned += Number(removed)
+  }
+  if (pruned > 0) {
+    console.warn(
+      `${LOG_PREFIX} [live-index] ${connectionId}: pruned ${pruned} open-index entr(ies) whose row hash no longer exists`,
+    )
+  }
+  return pruned
+}
+
 async function collectSweepableLivePositions(connectionId: string): Promise<LivePosition[]> {
+  await pruneDanglingLiveIndexEntries(connectionId).catch(() => 0)
   const indexed = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
   const seen = new Set(indexed.map((row) => String(row.id)))
   const orphans: LivePosition[] = []
