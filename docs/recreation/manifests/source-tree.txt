@@ -350,6 +350,7 @@ __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
 __tests__/unit/settings-hot-reload.test.ts
 __tests__/unit/settings-propagation.test.ts
+__tests__/unit/settled-rows-auto-close.test.ts
 __tests__/unit/signal-analytics.test.ts
 __tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-indication.test.ts

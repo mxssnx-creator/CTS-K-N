@@ -17902,6 +17902,83 @@ export function isStuckPreFillPlacement(
  * Purely local: no venue position or order is touched, and an entry is removed
  * only when its hash is verifiably absent — never when the read merely failed.
  */
+/**
+ * Close rows whose position was settled by its own protection.
+ *
+ * A filled row that reached the venue, armed its stop-loss, take-profit and
+ * security stop, and was then closed by one of them leaves NOTHING on the
+ * exchange: no position, no open order. The row, however, still reads
+ * `filled`. The admission audit inspects it, finds no protection orders —
+ * correctly, they executed — and reports `owned_shared_stopLoss_missing`,
+ * re-arming the connection-wide entry halt over a position that no longer
+ * exists.
+ *
+ * Production ran the full lifecycle correctly three times today (BATONUSDT,
+ * MICRODUCKUSDT, NUDESUSDT): placed, protected, settled. Each time the halt
+ * returned minutes later because the settlement was never written back.
+ *
+ * The conditions are deliberately narrow, because closing a row that IS still
+ * open would abandon real exposure:
+ *   * the row must have reached the venue (a venue order id), otherwise the
+ *     stuck-placement sweep owns it;
+ *   * the venue snapshot must be READABLE — an unreadable snapshot leaves
+ *     every row untouched;
+ *   * the symbol must show no position for this row's direction AND no order
+ *     this connection owns.
+ */
+async function closeRowsSettledOnVenue(
+  connectionId: string,
+  connector: any,
+): Promise<number> {
+  if (!connector || typeof connector.getPositions !== "function") return 0
+  const rows = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+  const candidates = rows.filter((row) => {
+    const status = String(row?.status || "").toLowerCase()
+    if (status !== "filled" && status !== "open") return false
+    if (Number(row?.executedQuantity || 0) <= 0) return false
+    return Boolean(hasSystemVenueHandle(row))
+  })
+  if (candidates.length === 0) return 0
+
+  const venue = await readAuthoritativeProtectionPositions(connector).catch(() => null)
+  const orders = await readAuthoritativeProtectionOrders(connector).catch(() => null)
+  // Unreadable venue state must never close a row.
+  if (!Array.isArray(venue) || !Array.isArray(orders)) return 0
+
+  const normalize = (value: unknown): string =>
+    String(value ?? "").replace(/[-_/]/g, "").toUpperCase()
+  let closed = 0
+  for (const row of candidates) {
+    const symbol = normalize(row.symbol)
+    const direction = String(row.direction || "").toLowerCase()
+    const stillOnVenue = venue.some((position: any) =>
+      normalize(position?.symbol) === symbol
+      && Math.abs(Number(position?.positionAmt ?? position?.quantity ?? position?.size ?? 0)) > 0)
+    if (stillOnVenue) continue
+    const ownOrderOpen = orders.some((order: any) =>
+      normalize(order?.symbol) === symbol
+      && isConnectionOwnedProtectionOrderForSlot(order, connectionId, String(row.symbol || ""), direction as any))
+    if (ownOrderOpen) continue
+
+    const current = await readLivePositionSnapshot(getRedisClient() as any, connectionId, String(row.id)).catch(() => null)
+    // Re-read before mutating: another pass may have closed it already.
+    if (!current || !isActiveLiveSlotStatus(String(current.status || ""))) continue
+    current.status = "closed"
+    current.closedAt = Date.now()
+    current.statusReason =
+      "settled_by_protection: venue reports no position and no own open order for this symbol"
+    pushStep(current, "settled_on_venue_reconciled", true, current.statusReason)
+    await savePosition(current).catch(() => undefined)
+    closed++
+  }
+  if (closed > 0) {
+    console.warn(
+      `${LOG_PREFIX} [settled-rows] ${connectionId}: closed ${closed} row(s) already settled on the venue`,
+    )
+  }
+  return closed
+}
+
 async function pruneDanglingLiveIndexEntries(connectionId: string): Promise<number> {
   const client = getRedisClient() as any
   if (typeof client?.lrange !== "function" || typeof client?.lrem !== "function") return 0
@@ -18565,6 +18642,10 @@ export async function reconcileLivePositions(
       } catch { /* processSimulatedPositions is self-defensive */ }
     }
     // ── Step 1b: Stuck pre-fill placement sweep (no connector required) ──
+    // Settled rows are reconciled before the stuck-placement sweep so the
+    // halt logic that follows sees a book free of phantom exposure.
+    await closeRowsSettledOnVenue(connectionId, exchangeConnector).catch(() => 0)
+
     try {
       const stuck = await sweepStuckPreFillPlacements(connectionId)
       summary.closed += stuck.closed
