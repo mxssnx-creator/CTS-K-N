@@ -341,6 +341,7 @@ __tests__/unit/security-hardening-encryption.test.ts
 __tests__/unit/security-stop-projection.test.ts
 __tests__/unit/serialized-response-swr.test.ts
 __tests__/unit/server-autoboot-script.test.ts
+__tests__/unit/set-key-casing-symmetry.test.ts
 __tests__/unit/sets-compaction-settings.test.ts
 __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
