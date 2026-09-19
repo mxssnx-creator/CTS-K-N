@@ -123,10 +123,26 @@ export function auditLiveEntryProtectionAdmission(input: {
 }): LiveEntryProtectionAdmissionAudit {
   const violations: string[] = []
   const candidateId = text(input.candidateId)
+  // A row that never reached the venue is not exposure. It has no venue order
+  // id and no fill, so there is nothing on the exchange to protect — and
+  // judging it as an owned position "missing" a stop-loss produced a
+  // deterministic loop in production: the halt lifts, dispatch creates
+  // pending rows, most placements are blocked so the rows never get an order
+  // id, this audit then flags them as unprotected owned exposure and re-arms
+  // the connection-wide halt within ~90 s, and every pass leaves hundreds of
+  // unplaced rows behind (1,201 hashes after three passes). Such rows are
+  // handled by the stuck-placement sweep; they are excluded here so the halt
+  // reflects real venue exposure only.
+  const neverReachedVenue = (row: Record<string, any>): boolean =>
+    quantityOf(row) <= 0
+    && !text(row.orderId)
+    && !text(row.exchangeOrderId)
+    && !text(row.exchangeData?.orderId)
   const owned = input.positions.filter((row) => {
     if (!isExactSystemPositionOwner(row, input.connectionId)) return false
     if (candidateId && text(row.id) === candidateId) return false
-    return ACTIVE_STATUSES.has(text(row.status).toLowerCase())
+    if (!ACTIVE_STATUSES.has(text(row.status).toLowerCase())) return false
+    return !neverReachedVenue(row)
   })
   const executed = owned.filter((row) => quantityOf(row) > 0)
 
