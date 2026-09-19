@@ -74,6 +74,7 @@ unit	__tests__/unit/bingx-vst-soak-plan.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/block-defaults-and-ceiling.test.ts
+unit	__tests__/unit/block-row-eval-window.test.ts
 unit	__tests__/unit/block-settings-migration.test.ts
 unit	__tests__/unit/bounded-concurrency.test.ts
 unit	__tests__/unit/bybit-connector-contract.test.ts
@@ -327,6 +328,7 @@ unit	__tests__/unit/security-hardening-encryption.test.ts
 unit	__tests__/unit/security-stop-projection.test.ts
 unit	__tests__/unit/serialized-response-swr.test.ts
 unit	__tests__/unit/server-autoboot-script.test.ts
+unit	__tests__/unit/set-key-casing-symmetry.test.ts
 unit	__tests__/unit/sets-compaction-settings.test.ts
 unit	__tests__/unit/settings-backup.test.ts
 unit	__tests__/unit/settings-continuity.test.ts
