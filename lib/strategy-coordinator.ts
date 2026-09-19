@@ -9569,6 +9569,28 @@ export class StrategyCoordinator {
             let blocked = 0
             let deferred = 0
             const deferralReasons = new Map<string, { count: number; example: string }>()
+            const blockedReasons = new Map<string, { count: number; example: string }>()
+            const recordOutcomeReason = (
+              bucket: Map<string, { count: number; example: string }>,
+              result: any,
+              candidate: any,
+            ): void => {
+              const text = [result?.statusReason, result?.error, result?.message]
+                .map((value: unknown) => String(value ?? "").trim())
+                .filter(Boolean)
+                .join(" | ")
+              const status = String(result?.status ?? "").trim() || "(no status)"
+              const key = `${status}::${text || "(no reason)"}`.slice(0, 220)
+              const entry = bucket.get(key)
+              if (entry) entry.count++
+              else bucket.set(key, { count: 1, example: String(candidate?.setKey ?? "").slice(0, 120) })
+            }
+            // Blocked is the dominant outcome in production — 5,129 of 5,643
+            // attempts on one symbol — and it had no reason breakdown at all,
+            // so the last step before an order stayed invisible even after the
+            // deferral reasons were instrumented.
+            const recordBlockedReason = (result: any, candidate: any): void =>
+              recordOutcomeReason(blockedReasons, result, candidate)
             const recordDeferralReason = (result: any, candidate: any): void => {
               const text = [result?.statusReason, result?.error, result?.message]
                 .map((value: unknown) => String(value ?? "").trim())
@@ -9869,6 +9891,7 @@ export class StrategyCoordinator {
                   pending++
                 } else if (outcome === "blocked") {
                   blocked++
+                  recordBlockedReason(liveResult as any, set)
                 } else if (outcome === "deferred") {
                   deferred++
                   // The main path: a deferral used to be a bare number.
@@ -9897,7 +9920,10 @@ export class StrategyCoordinator {
                   error: errorMessage,
                   errorCode: (err as any)?.errorCode ?? (err as any)?.code,
                 })
-                if (outcome === "blocked") blocked++
+                if (outcome === "blocked") {
+                  blocked++
+                  recordBlockedReason({ status: "error", statusReason: errorMessage }, set)
+                }
                 else if (outcome === "deferred") {
                   deferred++
                   // An exception classified as an expected deferral is just as
@@ -9924,6 +9950,12 @@ export class StrategyCoordinator {
                 dispatch_pending_count: String(pending),
                 dispatch_blocked_count: String(blocked),
                 dispatch_deferred_count: String(deferred),
+                dispatch_blocked_reasons: JSON.stringify(
+                  [...blockedReasons.entries()]
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 8)
+                    .map(([key, value]) => ({ reason: key, count: value.count, exampleSetKey: value.example })),
+                ),
                 dispatch_deferred_reasons: JSON.stringify(
                   [...deferralReasons.entries()]
                     .sort((a, b) => b[1].count - a[1].count)
