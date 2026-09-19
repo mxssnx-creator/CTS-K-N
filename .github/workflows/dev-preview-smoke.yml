@@ -55,5 +55,24 @@ jobs:
             --preflight-only \
             --skip-system-packages \
             --non-interactive
+      # The unit and integration suites gate every merge. Without this step CI
+      # only checked release completeness and the dev-preview verifier, so a
+      # commit that changed behaviour without updating its guardrail tests
+      # reported success and landed on main red — which the installer then
+      # refuses to deploy, turning a test failure into a failed production
+      # deploy. Redis is required by a small number of integration suites.
+      - name: Start Redis for integration suites
+        run: |
+          (redis-server --port 6399 --save "" --appendonly no --daemonize yes) || \
+            (sudo apt-get update -qq && sudo apt-get install -y -qq redis-server && \
+             redis-server --port 6399 --save "" --appendonly no --daemonize yes)
+          redis-cli -p 6399 ping
+      - name: Run unit and integration tests
+        run: |
+          node --max-old-space-size=4096 \
+            node_modules/jest/bin/jest.js \
+            --runInBand \
+            --testPathPatterns="__tests__/(unit|integration)" \
+            --ci --silent
       - name: Run dev-preview smoke verifier
         run: node scripts/run-dev-preview-check.mjs

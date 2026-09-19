@@ -93,6 +93,7 @@ __tests__/unit/block-settings-migration.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
+__tests__/unit/ci-runs-the-suite.test.ts
 __tests__/unit/clear-progressions-recovery.test.ts
 __tests__/unit/close-adopted-positions.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
