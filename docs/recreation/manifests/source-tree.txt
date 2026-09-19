@@ -113,6 +113,7 @@ __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/create-checkpoint-script.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
 __tests__/unit/cycle-diagnostic-timing.test.ts
+__tests__/unit/dangling-live-index.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
 __tests__/unit/database-validator-migration-contract.test.ts
