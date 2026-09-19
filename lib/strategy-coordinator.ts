@@ -9131,6 +9131,8 @@ export class StrategyCoordinator {
     // selector independently deduplicates Signal source/config slots and
     // ordinary adjustment variants per direction and cycle.
     const qualifying = allQualifying
+    // Same pool minus the internal Block overlay, for the Set-level metrics.
+    const qualifyingExcludingBlock = qualifying.filter((set) => set.variant !== "block")
 
     const liveKey = `strategies:${this.connectionId}:${symbol}:live:sets`
     if (!isCurrent()) return cancelled()
@@ -9279,8 +9281,18 @@ export class StrategyCoordinator {
           // Live doesn't compute avg_pos_per_set / avg_pos_eval_real;
           // those keys are intentionally omitted from the per-symbol
           // bundle so /stats's weighted-mean calculator skips them.
-          [`s:${symbol}:created`]:    String(qualifying.length),
-          [`s:${symbol}:entries`]:    String(qualifying.reduce((s, st) => s + (st.entryCount || 0), 0)),
+          // Block Sets are a SYSTEM-INTERNAL overlay at Live: they exist so
+          // recovery volume can be coordinated, not as separate Live Sets an
+          // operator dispatches. Counting them here inflated `created` well
+          // beyond the Real stage it is meant to be compared against
+          // (production: live 70,573 against real 9,540) and made the stage
+          // ratios unreadable. They keep their own dedicated counters below —
+          // row_live_block_created and row_live_block_valid — so nothing is
+          // hidden, it is simply not mixed into the Set totals.
+          [`s:${symbol}:created`]:    String(qualifyingExcludingBlock.length),
+          [`s:${symbol}:entries`]:    String(
+            qualifyingExcludingBlock.reduce((s, st) => s + (st.entryCount || 0), 0),
+          ),
           [`s:${symbol}:running`]:    String(liveRunningNow),
           [`s:${symbol}:progressing`]: String(realRowCount),
           [`s:${symbol}:passed`]:     String(rowLive.rows.length),
