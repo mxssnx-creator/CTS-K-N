@@ -6095,9 +6095,12 @@ export class StrategyCoordinator {
     }
 
     // Direction-wide active Real/Live exposure calculation.
+    // The first confirmed position (count 1) is the base entry, not a Block
+    // in the stacking sense -- the active overlay only applies once there is
+    // real stacking beyond it, so count 1 is ignored the same as count 0.
     for (const dir of ["long", "short"] as const) {
       const activeCount = activeCombinedByDir[dir]
-      if (activeCount <= 0) continue
+      if (activeCount <= 1) continue
       const source = eligibleSources.find((set) => set.direction === dir)
       if (source) addCandidate(source, activeCount, "global")
     }
