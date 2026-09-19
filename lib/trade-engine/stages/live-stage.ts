@@ -3559,6 +3559,39 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       if (moved) return
     }
     if (!position.version) position.version = 0
+
+    // Protection identity must survive a concurrent write.
+    //
+    // savePosition overwrites the whole hash and bumps the version blindly, so
+    // a pass that read the row BEFORE its controls were armed and saves after
+    // silently drops stopLossOrderId / takeProfitOrderId / securityStopOrderId.
+    // Production showed exactly that: the update_sl_tp step logged the venue
+    // ids it had just written to the row (SL 2101351899508334592), and a later
+    // read found all three fields empty. The admission audit then treats the
+    // filled position as unprotected and holds the connection-wide entry halt
+    // until it settles — which is why only ONE position is ever open at a time
+    // despite 1,292 completed rows.
+    //
+    // A stale writer is identified by its version, not by the absent value: a
+    // deliberate clear (re-arm, liveness-verify) carries the CURRENT version
+    // and is honoured, while a writer whose version is behind the stored row
+    // keeps the stored ids. Cost is one HMGET on writes that would drop an id.
+    const dropsProtectionIdentity =
+      !String(position.stopLossOrderId ?? "").trim()
+      || !String(position.takeProfitOrderId ?? "").trim()
+      || !String(position.securityStopOrderId ?? "").trim()
+    if (dropsProtectionIdentity) {
+      const stored = await client.hgetall(posKey).catch(() => null) as Record<string, any> | null
+      const storedVersion = Number(stored?.version || 0) || 0
+      if (stored && storedVersion > Number(position.version || 0)) {
+        const keep = (value: unknown): string => String(value ?? "").trim()
+        if (!keep(position.stopLossOrderId) && keep(stored.stopLossOrderId)) position.stopLossOrderId = keep(stored.stopLossOrderId)
+        if (!keep(position.takeProfitOrderId) && keep(stored.takeProfitOrderId)) position.takeProfitOrderId = keep(stored.takeProfitOrderId)
+        if (!keep(position.securityStopOrderId) && keep(stored.securityStopOrderId)) position.securityStopOrderId = keep(stored.securityStopOrderId)
+        position.version = storedVersion
+      }
+    }
+
     position.version++
     position.updatedAt = Date.now()
     await client.hset(posKey, {
