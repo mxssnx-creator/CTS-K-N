@@ -68,9 +68,20 @@ function blockStackOf(raw: Record<string, unknown>): number {
 /** Block is validated per count; every other family has a single config. */
 export function buildHistoricTestFamilyVariants(
   blockStack: number,
+  tpslPairCount = 0,
 ): Partial<Record<HistoricTestStrategyFamily, string[]>> {
   const stack = Math.max(1, Math.floor(Number(blockStack) || 1))
-  return { block: Array.from({ length: stack }, (_, index) => `count:${index + 1}`) }
+  const result: Partial<Record<HistoricTestStrategyFamily, string[]>> = {
+    block: Array.from({ length: stack }, (_, index) => `count:${index + 1}`),
+  }
+  const pairs = Math.max(0, Math.floor(Number(tpslPairCount) || 0))
+  if (pairs > 0) {
+    const tpslVariants = Array.from({ length: pairs }, (_, index) => `tpsl:${index}`)
+    result.normal = tpslVariants
+    result.trailing = tpslVariants
+    result.dca = tpslVariants
+  }
+  return result
 }
 
 async function defaultRankSymbols(settings: HistoricTestSettings, connectionId: string): Promise<string[]> {
@@ -139,11 +150,35 @@ export async function maybeRunHistoricTest(
     const n = Number(value)
     return Number.isFinite(n) && n > 0 ? n : undefined
   }
+  const positionCostPercent = numOrUndefined((raw as any)?.positionCost ?? (raw as any)?.exchangePositionCost)
+
+  // The live engine tests exit risk as parallel (take-profit, stop-loss)
+  // lanes -- activeTakeProfitMultipliers / activeStopLossPositionCostRatios,
+  // paired by index -- not one fixed ratio. Give normal/trailing/dca (each
+  // currently a single implicit config) that same real dimension instead of
+  // the generic 5x/20x-of-PositionCost fallback. Block keeps its existing
+  // count-only variant to avoid multiplying its already-widest combination
+  // set further.
+  const parseNumericArray = (value: unknown): number[] => {
+    const parsed = typeof value === "string"
+      ? (() => { try { return JSON.parse(value) } catch { return null } })()
+      : value
+    return Array.isArray(parsed) ? parsed.map(Number).filter((n) => Number.isFinite(n) && n > 0) : []
+  }
+  const tpMultipliers = parseNumericArray((raw as any)?.activeTakeProfitMultipliers)
+  const slRatios = parseNumericArray((raw as any)?.activeStopLossPositionCostRatios)
+  const pcpForTpsl = positionCostPercent ?? 0.1
+  const tpslPairs = Array.from(
+    { length: Math.min(tpMultipliers.length, slRatios.length) },
+    (_, i) => ({ takeProfitPct: tpMultipliers[i] * pcpForTpsl, stopLossPct: slRatios[i] * pcpForTpsl }),
+  )
+
   const simulate = deps.simulate || createHistoricCandleSimulator({
     loadCandles: (request: HistoricTestSimulationRequest) => loadHistoricTestCandles(request) as Promise<any>,
     profile: raw as any,
-    positionCostPercent: numOrUndefined((raw as any)?.positionCost ?? (raw as any)?.exchangePositionCost),
+    positionCostPercent,
     trailingRetracePct: numOrUndefined((raw as any)?.trailingRetracePct ?? (raw as any)?.trailingMinStep),
+    tpslPairs: tpslPairs.length > 0 ? tpslPairs : undefined,
     block: {
       volumeRatio: numOrUndefined((raw as any)?.blockVolumeRatio),
       incrementSteps: numOrUndefined((raw as any)?.blockIncrementSteps),
@@ -162,7 +197,7 @@ export async function maybeRunHistoricTest(
     settings,
     rankedSymbols,
     indications,
-    familyVariants: buildHistoricTestFamilyVariants(blockStackOf(raw)),
+    familyVariants: buildHistoricTestFamilyVariants(blockStackOf(raw), tpslPairs.length),
     simulate: simulate as (request: HistoricTestSimulationRequest) => Promise<readonly HistoricTestTrade[]>,
     now,
   })

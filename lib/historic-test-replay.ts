@@ -84,6 +84,13 @@ export interface HistoricCandleSimulatorOptions {
   block?: Partial<BlockDerivationParams>
   /** Position-Count axis windows for the admission derivation. */
   axis?: Partial<AxisDerivationParams>
+  /**
+   * Real (take-profit, stop-loss) lanes, paired by index -- mirrors the live
+   * engine's activeTakeProfitMultipliers/activeStopLossPositionCostRatios.
+   * Selected per request via a `tpsl:<index>` variant; requests without one
+   * (or with no pairs supplied) keep the existing single-ratio fallback.
+   */
+  tpslPairs?: Array<{ takeProfitPct: number; stopLossPct: number }>
 }
 
 /**
@@ -117,12 +124,21 @@ export function createHistoricCandleSimulator(
       ? baseProfile
       : normalizeDcaProfile({ ...baseProfile, maxSteps: 1, stepVolumeMultipliers: [1], stepDistancesPct: [baseProfile.stepDistancesPct[0] ?? 1] })
 
+    const tpslVariantMatch = /^tpsl:(\d+)$/.exec(String(request.variant || "").trim())
+    const tpslPair = tpslVariantMatch ? options.tpslPairs?.[Number(tpslVariantMatch[1])] : undefined
+    const takeProfitPct = tpslPair
+      ? tpslPair.takeProfitPct
+      : Number(options.takeProfitPct) > 0 ? Number(options.takeProfitPct) : positionCostPercent * 5
+    const stopLossPct = tpslPair
+      ? tpslPair.stopLossPct
+      : Number(options.stopLossPct) > 0 ? Number(options.stopLossPct) : positionCostPercent * 20
+
     const result = runDcaBacktest(candles, {
       profile,
       timeframeMinutes,
       entry: resolveBacktestEntry(request.indication),
-      takeProfitPct: Number(options.takeProfitPct) > 0 ? Number(options.takeProfitPct) : positionCostPercent * 5,
-      stopLossPct: Number(options.stopLossPct) > 0 ? Number(options.stopLossPct) : positionCostPercent * 20,
+      takeProfitPct,
+      stopLossPct,
       maxHoldMinutes: options.maxHoldMinutes,
       roundTripCostPct: positionCostPercent,
       slippagePct: options.slippagePct,
@@ -141,7 +157,7 @@ export function createHistoricCandleSimulator(
     if (request.family === "trailing") {
       return replayTrailing(candles, result.trades, {
         trailingRetracePct: options.trailingRetracePct,
-        stopLossPct: options.stopLossPct,
+        stopLossPct,
         positionCostPercent,
       }).slice(0, bound)
     }
