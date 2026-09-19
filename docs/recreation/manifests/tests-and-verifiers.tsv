@@ -290,6 +290,7 @@ unit	__tests__/unit/progression-operator-symbols.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
+unit	__tests__/unit/protection-ids-lost-update.test.ts
 unit	__tests__/unit/protection-slot-order-audit.test.ts
 unit	__tests__/unit/pseudo-position-close-idempotency.test.ts
 unit	__tests__/unit/pseudo-position-semantics.test.ts
