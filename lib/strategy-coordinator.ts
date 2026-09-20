@@ -1,3 +1,4 @@
+import { clampBlockVolumeRatio } from "@/lib/block-volume-ratio-bounds"
 import { filterHistoricAdmittedSets } from "@/lib/historic-test-admission"
 import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
@@ -3365,7 +3366,9 @@ export class StrategyCoordinator {
       // the engine always used coded defaults regardless of operator changes.
       const bvr = Number(s.blockVolumeRatio)
       if (Number.isFinite(bvr) && bvr > 0) {
-        this._coordinationSettings.blockVolumeRatio = Math.max(0.25, Math.min(3.0, bvr))
+        // Canonical bounds: 0.1-2.0. The old 0.25-3.0 clamp silently rejected
+        // the lower half of the configurable range.
+        this._coordinationSettings.blockVolumeRatio = clampBlockVolumeRatio(bvr)
       }
       this._coordinationSettings.blockProfitFactorRatio = normalizeBlockProfitFactorRatio(
         s.blockProfitFactorRatio ?? s.blockProfitFactor,
