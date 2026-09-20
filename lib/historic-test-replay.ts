@@ -38,6 +38,7 @@ import {
   type AxisDerivationParams,
   type BlockDerivationParams,
 } from "@/lib/historic-test-family-derivations"
+import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
 
 export class HistoricTestUnsupportedFamilyError extends Error {
   readonly family: string
@@ -79,6 +80,10 @@ export interface HistoricCandleSimulatorOptions {
   maxHoldMinutes?: number
   /** Round-trip cost in percent; also the PositionCost the result is expressed in. */
   positionCostPercent?: number
+  /** Exchange taker fee per side, as a fraction; defaults to the shared constant. */
+  takerFeeFraction?: number
+  /** Round-trip slippage, as a fraction; defaults to the shared constant. */
+  slippageFraction?: number
   slippagePct?: number
   /** Block lane parameters for the volume derivation. */
   block?: Partial<BlockDerivationParams>
@@ -140,7 +145,13 @@ export function createHistoricCandleSimulator(
       takeProfitPct,
       stopLossPct,
       maxHoldMinutes: options.maxHoldMinutes,
-      roundTripCostPct: positionCostPercent,
+      // Real round-trip cost, NOT the PositionCost sizing setting. Charging
+      // PositionCost here understated every simulated trade by 0.16 points of
+      // ProfitFactor, so the simulation could only ever look better than live.
+      roundTripCostPct: roundTripCostPercent({
+        takerFeeFraction: options.takerFeeFraction,
+        slippageFraction: options.slippageFraction,
+      }),
       slippagePct: options.slippagePct,
       tradeStartTime: request.window.fromMs,
     })

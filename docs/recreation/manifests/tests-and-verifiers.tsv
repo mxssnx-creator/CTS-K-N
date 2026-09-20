@@ -395,6 +395,7 @@ unit	__tests__/unit/trade-engine-status-settings.test.ts
 unit	__tests__/unit/trade-history-attribution.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
 unit	__tests__/unit/trade-protection-contract.test.ts
+unit	__tests__/unit/trading-round-trip-cost.test.ts
 unit	__tests__/unit/trading-stats-route.test.ts
 unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trailing-family-replay-wiring.test.ts

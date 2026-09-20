@@ -114,6 +114,7 @@ import {
 } from "@/lib/special-strategy"
 import { INDICATION_SET_RETENTION_SECONDS } from "@/lib/redis-retention"
 import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
+import { roundTripCostFraction } from "@/lib/trading-round-trip-cost"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -4238,7 +4239,12 @@ export class IndicationSetsProcessor {
     if (candles.length < 2) return { completed: false, reason: "insufficient_forward_candles" }
     const entry = Number(marketData.executionPrice ?? candles[1].open ?? candles[1].close ?? candles[1].price)
     if (!Number.isFinite(entry) || entry <= 0) return { completed: false, reason: "invalid_entry_price" }
-    const cost = this.outcomeTakerFeePct * 2 + this.outcomeSlippagePct
+    // Same definition the Historic Test replay charges, so a simulated result
+    // and a live one are measured on identical terms.
+    const cost = roundTripCostFraction({
+      takerFeeFraction: this.outcomeTakerFeePct,
+      slippageFraction: this.outcomeSlippagePct,
+    })
     const configuredTakeProfitPct = Number(activeProtection?.takeProfitPct)
     const configuredStopLossPct = Number(activeProtection?.stopLossPct)
     const takeProfitRatio = Number.isFinite(configuredTakeProfitPct) && configuredTakeProfitPct > 0
