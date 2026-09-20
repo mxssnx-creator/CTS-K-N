@@ -44,11 +44,21 @@ export interface BlockDerivationParams {
   /** The uniform ratio the shared mode applies. */
   sharedRatio?: number
   /**
-   * "Active" Block: the base legs (stage 1 and below) are NOT executed, only
-   * the effective recovery entries after them. The base still drives the
-   * recovery state; it simply produces no trade of its own.
+   * "Active" — an ADD-ON that skips the opening Block steps.
+   *
+   * Counted in Block STEPS, 0..3:
+   *   0  off; every Block step is executed
+   *   1  the normal (general) Block step is not executed, only those after it
+   *   2  the first two Block steps are not executed
+   *   3  the first three are not executed
+   *
+   * This is independent of `incrementSteps`, which says how many steps exist
+   * at all — the two carry an offset of one against each other: with
+   * `incrementSteps` 3 and `activeSkipSteps` 1, steps 2 and 3 are traded.
+   *
+   * A skipped step still drives the recovery state; it produces no trade.
    */
-  activeOnly?: boolean
+  activeSkipSteps?: number
   /**
    * Hold an escalated level while results stay non-positive.
    *
@@ -69,18 +79,32 @@ export interface BlockDerivationParams {
   fixedCount?: number
 }
 
-/** Uniform ratio the shared mode applies. */
-export const BLOCK_SHARED_RATIO_DEFAULT = 1.5
+/**
+ * Uniform ratio the shared mode applies.
+ *
+ * Shared fires on "at least one valid Block" and therefore applies to every
+ * recovery entry, so its ratio must be well below the additive one: at 1.5 a
+ * single valid Block produced a 2.5x position, which is oversizing for a
+ * condition that is nearly always true once a lane is recovering.
+ */
+export const BLOCK_SHARED_RATIO_DEFAULT = 0.8
 /** Continuous escalation is capped at 3 steps, per count, independently. */
 export const BLOCK_STEP_MAX = 3
+/** "Active" skip: 0 is off, 1..3 skip that many opening Block steps. */
+export const ACTIVE_SKIP_STEPS_MIN = 0
+export const ACTIVE_SKIP_STEPS_MAX = 3
+export const ACTIVE_SKIP_STEPS_DEFAULT = 0
 
 export const DEFAULT_BLOCK_DERIVATION: BlockDerivationParams = {
-  volumeRatio: 1,
+  // Additive adds a ratio PER valid count, so a small step compounds across
+  // counts; 0.2 keeps a 6-count stack at 2.2x rather than 7x.
+  volumeRatio: 0.2,
   incrementSteps: BLOCK_STEP_MAX,
   maxStack: 3,
   adjustMode: "additive",
   sharedRatio: BLOCK_SHARED_RATIO_DEFAULT,
-  activeOnly: false,
+  activeSkipSteps: ACTIVE_SKIP_STEPS_DEFAULT,
+  // Hold is the general rule; it is switched OFF explicitly, never on.
   holdWhileNegative: true,
 }
 
@@ -125,7 +149,10 @@ export function deriveBlockTrades(
   const adjustMode = config.adjustMode === "shared" ? "shared" : "additive"
   const sharedRatio = Number(config.sharedRatio) > 0 ? Number(config.sharedRatio) : BLOCK_SHARED_RATIO_DEFAULT
   const stepCap = Math.max(1, Math.min(BLOCK_STEP_MAX, Math.floor(Number(config.incrementSteps) || BLOCK_STEP_MAX)))
-  const activeOnly = config.activeOnly === true
+  const activeSkipSteps = Math.max(
+    ACTIVE_SKIP_STEPS_MIN,
+    Math.min(ACTIVE_SKIP_STEPS_MAX, Math.floor(Number(config.activeSkipSteps) || 0)),
+  )
   const holdWhileNegative = config.holdWhileNegative !== false
 
   for (const trade of baseline || []) {
@@ -138,7 +165,14 @@ export function deriveBlockTrades(
         : blockVolume.blockVolumeMultiplier(ranAtCount, config.volumeRatio, stepCap, level))
       : 1
     const result = Number(trade?.signedResultR) || 0
-    if (!activeOnly || ranAtCount > 0) {
+    // The Block STEP this leg runs at: 0 when it is not a Block leg at all,
+    // otherwise 1 for the normal (general) step, 2 for the first escalation,
+    // and so on. Active skips the opening steps.
+    const legStep = ranAtCount > 0 ? level : 0
+    // Active off (0) executes everything, normal legs included. Active N skips
+    // Block steps 1..N; a normal leg is not a Block step and is skipped too,
+    // because Active exists precisely to trade only the later Block steps.
+    if (activeSkipSteps === 0 || legStep > activeSkipSteps) {
       out.push({
         signedResultR: Number((result * (multiplier > 0 ? multiplier : 1)).toFixed(12)),
         openedAt: trade?.openedAt,
@@ -161,11 +195,12 @@ export function deriveBlockTrades(
       if (ranAtCount > 0) {
         nonPositiveRun++
         if (nonPositiveRun % Math.max(1, ranAtCount) === 0) {
-          // Hold: an escalated Block that did not resolve positive keeps its
-          // level instead of climbing further, until a positive result
-          // restores the base. Without it the level walks to the cap on a
-          // long losing run — the opposite of the rule.
-          level = holdWhileNegative && level > 1 ? level : Math.min(stepCap, level + 1)
+          // Hold applies at the LAST step: once the final configured step is
+          // reached, a following Block that loses KEEPS the escalation rather
+          // than resetting it. Below the last step the escalation simply
+          // advances as normal.
+          const atLastStep = level >= stepCap
+          level = atLastStep && holdWhileNegative ? level : Math.min(stepCap, level + 1)
         }
       }
       count = fixedCount ?? Math.min(maxStack, count + 1)

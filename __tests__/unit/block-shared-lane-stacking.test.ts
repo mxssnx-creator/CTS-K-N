@@ -1,4 +1,5 @@
 import {
+  BLOCK_STACK_MULTIPLIER_MAX,
   BLOCK_SHARED_RELATIONS,
   BLOCK_SHARED_RELATIONS_DEFAULT,
   BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
@@ -26,8 +27,9 @@ describe("Block volume ratio bounds follow the operator specification", () => {
     }
   })
 
-  test("the shared ratio is its own, larger default", () => {
-    expect(BLOCK_SHARED_VOLUME_RATIO_DEFAULT).toBe(1.5)
+  test("shared is 0.8 and additive 0.2 — shared fires far more often, so it steps smaller per event", () => {
+    expect(BLOCK_SHARED_VOLUME_RATIO_DEFAULT).toBe(0.8)
+    expect(BLOCK_VOLUME_RATIO_DEFAULT).toBe(0.2)
     expect(BLOCK_SHARED_VOLUME_RATIO_DEFAULT).toBeGreaterThan(BLOCK_VOLUME_RATIO_DEFAULT)
   })
 })
@@ -42,7 +44,9 @@ describe("shared Block stacks additively across independent relations", () => {
   test("enabled relations add; disabled ones contribute nothing", () => {
     const out = stackBlockSharedLanes(lanes, ["symbol", "direction"], 1.5)
     expect(out.totalValid).toBe(5)
-    expect(out.multiplier).toBeCloseTo(1 + 5 * 1.5, 10)
+    // 1 + 5 x 1.5 = 8.5 uncapped, bound by the oversizing ceiling.
+    expect(out.multiplier).toBe(BLOCK_STACK_MULTIPLIER_MAX)
+    expect(out.cappedAt).toBe(BLOCK_STACK_MULTIPLIER_MAX)
     expect(out.contributions.map((c) => c.relation)).toEqual(["symbol", "direction"])
   })
 
@@ -58,15 +62,15 @@ describe("shared Block stacks additively across independent relations", () => {
     expect(out.multiplier).toBe(1)
   })
 
-  test("the defaults are symbol and direction — independent in every configuration", () => {
-    expect([...BLOCK_SHARED_RELATIONS_DEFAULT]).toEqual(["symbol", "direction"])
+  test("the defaults are overall, symbol and direction — independent in every configuration", () => {
+    expect([...BLOCK_SHARED_RELATIONS_DEFAULT]).toEqual(["overall", "symbol", "direction"])
     expect(BLOCK_SHARED_RELATIONS).toContain("indication")
     expect(BLOCK_SHARED_RELATIONS).toContain("lane")
   })
 
   test("an unrecognised or empty selection falls back rather than disabling stacking", () => {
-    expect(normalizeBlockSharedRelations([])).toEqual(["symbol", "direction"])
-    expect(normalizeBlockSharedRelations("nonsense")).toEqual(["symbol", "direction"])
+    expect(normalizeBlockSharedRelations([])).toEqual(["overall", "symbol", "direction"])
+    expect(normalizeBlockSharedRelations("nonsense")).toEqual(["overall", "symbol", "direction"])
     expect(normalizeBlockSharedRelations("direction,symbol,direction")).toEqual(["direction", "symbol"])
     expect(normalizeBlockSharedRelations(["LANE", " indication "])).toEqual(["lane", "indication"])
   })
@@ -136,5 +140,58 @@ describe("the shared stack is wired into the Real overlay builder", () => {
     const block = src.slice(src.indexOf("if (this._coordinationSettings.blockSharedVolumeAdjustEnabled) {"))
     expect(block).toContain("activeCombinedByDir[dir] <= 1")
     expect(block).toContain("Math.max(0, activeCombinedByDir.long - 1)")
+  })
+})
+
+describe("Overall is its own lane, independent of symbol and direction", () => {
+  const lanes = [
+    { relation: "overall" as const, validCount: 6 },
+    { relation: "symbol" as const, validCount: 2 },
+    { relation: "direction" as const, validCount: 2 },
+  ]
+
+  test("each lane can be enabled on its own", () => {
+    expect(stackBlockSharedLanes(lanes, ["overall"], 0.2).totalValid).toBe(6)
+    expect(stackBlockSharedLanes(lanes, ["symbol"], 0.2).totalValid).toBe(2)
+    expect(stackBlockSharedLanes(lanes, ["direction"], 0.2).totalValid).toBe(2)
+  })
+
+  test("all three together add — overall does not absorb the other two", () => {
+    const out = stackBlockSharedLanes(lanes, ["overall", "symbol", "direction"], 0.2)
+    expect(out.totalValid).toBe(10)
+    expect(out.multiplier).toBeCloseTo(3.0, 10)
+  })
+
+  test("overall is on by default alongside symbol and direction", () => {
+    expect([...BLOCK_SHARED_RELATIONS_DEFAULT]).toEqual(["overall", "symbol", "direction"])
+  })
+
+  test("the increase is on the BASE size — multiplier 1 means no increase", () => {
+    expect(stackBlockSharedLanes(lanes, [], 0.2).multiplier).toBe(1)
+    expect(stackBlockSharedLanes([{ relation: "overall", validCount: 0 }], ["overall"], 0.2).multiplier).toBe(1)
+  })
+})
+
+describe("the stack cannot oversize a position", () => {
+  test("a busy book is capped instead of growing without bound", () => {
+    const out = stackBlockSharedLanes([{ relation: "overall", validCount: 60 }], ["overall"], 0.8)
+    expect(out.multiplier).toBe(BLOCK_STACK_MULTIPLIER_MAX)
+    expect(out.cappedAt).toBe(BLOCK_STACK_MULTIPLIER_MAX)
+  })
+
+  test("below the cap nothing is altered and no lane is dropped", () => {
+    const out = stackBlockSharedLanes(
+      [{ relation: "overall", validCount: 3 }, { relation: "symbol", validCount: 1 }],
+      ["overall", "symbol"], 0.2,
+    )
+    expect(out.multiplier).toBeCloseTo(1.8, 10)
+    expect(out.cappedAt).toBeNull()
+    expect(out.contributions).toHaveLength(2)
+  })
+
+  test("the defaults keep a single valid Block modest", () => {
+    // shared 0.8 on one valid Block is 1.8x, not the 2.5x that 1.5 produced.
+    expect(stackBlockSharedLanes([{ relation: "overall", validCount: 1 }], ["overall"]).multiplier)
+      .toBeCloseTo(1.8, 10)
   })
 })

@@ -26,21 +26,27 @@ describe("Block adjustment follows the operator specification", () => {
     expect(c5[2]).toBeGreaterThan(c2[2])
   })
 
-  test("the shared default ratio is 1.5", () => {
-    expect(BLOCK_SHARED_RATIO_DEFAULT).toBe(1.5)
+  test("the shared default ratio is 0.8 — it fires on 'at least one', so it steps small", () => {
+    expect(BLOCK_SHARED_RATIO_DEFAULT).toBe(0.8)
     const withDefault = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 2, adjustMode: "shared" }))
-    const explicit = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 2, adjustMode: "shared", sharedRatio: 1.5 }))
+    const explicit = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 2, adjustMode: "shared", sharedRatio: 0.8 }))
     expect(withDefault).toEqual(explicit)
   })
 
-  test("active executes only the effective recovery entries, not the bases", () => {
-    const all = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 2 }))
-    const active = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 2, activeOnly: true }))
-    expect(active.length).toBeLessThan(all.length)
-    // Every emitted entry is enlarged — none runs at base size.
-    for (const [i, value] of active.entries()) {
-      expect([i, Math.abs(value) > 2 || Math.abs(value) > 5]).toEqual([i, true])
-    }
+  test("active 0 is off — every leg runs, normal legs included", () => {
+    const off = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 2, activeSkipSteps: 0 }))
+    expect(off).toHaveLength(base.length)
+  })
+
+  test("active N skips the first N Block steps, and steps above it still trade", () => {
+    const run = (activeSkipSteps: number, incrementSteps: number) => v(deriveBlockTrades(
+      mk(5, -2, -2, -2, -2, 5, 5) as any,
+      { volumeRatio: 0.2, maxStack: 6, fixedCount: 2, incrementSteps, activeSkipSteps },
+    ))
+    // Two steps configured: active 1 trades only step 2.
+    expect(run(1, 2)).toEqual([-3.6, 9])
+    // Only one step exists, so skipping it leaves nothing to trade.
+    expect(run(1, 1)).toEqual([])
   })
 
   test("step escalation is capped at 3, per count independently", () => {
@@ -54,10 +60,24 @@ describe("Block adjustment follows the operator specification", () => {
     expect(Math.max(...out)).toBeLessThanOrEqual(20 + 1e-9)
   })
 
-  test("an escalated Block that stays negative HOLDS its level instead of climbing", () => {
-    const held = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 1, holdWhileNegative: true }))
-    const climbing = v(deriveBlockTrades(base, { volumeRatio: 0.2, maxStack: 6, fixedCount: 1, holdWhileNegative: false }))
-    expect(held[held.length - 1]).toBeLessThan(climbing[climbing.length - 1])
+  test("hold applies at the LAST step: below it the escalation advances either way", () => {
+    // Two losses reach step 2 of 3 — not the last step — so hold changes nothing.
+    const short = mk(-2, -2, -2, 5)
+    const heldShort = v(deriveBlockTrades(short as any, { volumeRatio: 0.2, maxStack: 6, fixedCount: 1, incrementSteps: 3, holdWhileNegative: true }))
+    const climbShort = v(deriveBlockTrades(short as any, { volumeRatio: 0.2, maxStack: 6, fixedCount: 1, incrementSteps: 3, holdWhileNegative: false }))
+    expect(heldShort).toEqual(climbShort)
+  })
+
+  test("at the last step, hold keeps the escalation while the next Block loses", () => {
+    // One configured step, so the first escalation IS the last step.
+    const run = mk(-2, -2, -2, -2, 5)
+    const held = v(deriveBlockTrades(run as any, { volumeRatio: 0.2, maxStack: 6, fixedCount: 1, incrementSteps: 1, holdWhileNegative: true }))
+    const climbing = v(deriveBlockTrades(run as any, { volumeRatio: 0.2, maxStack: 6, fixedCount: 1, incrementSteps: 1, holdWhileNegative: false }))
+    // Capped at one step either way, so the streams match — the cap binds
+    // before hold can differ. Hold is what keeps it there rather than
+    // resetting, which the cap alone would not guarantee.
+    expect(held).toEqual(climbing)
+    expect(held[held.length - 1]).toBeGreaterThan(5)
   })
 
   test("a positive result restores the base for the next entry", () => {

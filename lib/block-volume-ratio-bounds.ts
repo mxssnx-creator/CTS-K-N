@@ -15,7 +15,7 @@ export const BLOCK_VOLUME_RATIO_MAX = 2.0
 export const BLOCK_VOLUME_RATIO_STEP = 0.1
 export const BLOCK_VOLUME_RATIO_DEFAULT = 0.2
 
-export const BLOCK_SHARED_VOLUME_RATIO_DEFAULT = 1.5
+export const BLOCK_SHARED_VOLUME_RATIO_DEFAULT = 0.8
 
 /** Clamp a raw ratio into the configurable range; a non-positive value falls back to the default. */
 export function clampBlockVolumeRatio(raw: unknown, fallback = BLOCK_VOLUME_RATIO_DEFAULT): number {
@@ -43,9 +43,14 @@ export function clampBlockVolumeRatio(raw: unknown, fallback = BLOCK_VOLUME_RATI
  * running one direction per symbol wants `symbol` alone, while one running
  * hedged lanes wants `symbol` and `direction` counted separately.
  */
-export type BlockSharedRelation = "symbol" | "direction" | "indication" | "lane"
+export type BlockSharedRelation = "overall" | "symbol" | "direction" | "indication" | "lane"
 
 export const BLOCK_SHARED_RELATIONS: readonly BlockSharedRelation[] = [
+  // "overall" is the book-wide lane: it counts valid Blocks across every
+  // symbol and direction at once, and it is independent of the per-symbol and
+  // per-direction lanes — all three may be enabled together, each
+  // contributing its own count to the additive stack.
+  "overall",
   "symbol",
   "direction",
   "indication",
@@ -61,6 +66,7 @@ export const BLOCK_SHARED_RELATIONS: readonly BlockSharedRelation[] = [
  * not actually independent inflates the stack without adding information.
  */
 export const BLOCK_SHARED_RELATIONS_DEFAULT: readonly BlockSharedRelation[] = [
+  "overall",
   "symbol",
   "direction",
 ] as const
@@ -81,6 +87,21 @@ export function normalizeBlockSharedRelations(raw: unknown): BlockSharedRelation
   return seen.size > 0 ? [...seen] : [...BLOCK_SHARED_RELATIONS_DEFAULT]
 }
 
+/**
+ * Hard ceiling on the combined Block multiplier.
+ *
+ * With three relations enabled and several valid Blocks in each, the additive
+ * stack grows without bound: overall 6 + symbol 2 + direction 2 at ratio 0.2
+ * is already 3.0x, and a busy book reaches far higher. The venue sizes the
+ * order from this multiplier, so an unbounded stack is real oversizing — the
+ * position would exceed the exposure the operator budgeted for the lane.
+ *
+ * The cap is applied to the FINAL multiplier rather than to any single
+ * relation, so no relation is silently dropped: every enabled lane still
+ * contributes, the total simply cannot exceed what the book allows.
+ */
+export const BLOCK_STACK_MULTIPLIER_MAX = 5
+
 /** One relation's contribution: how many valid Blocks it currently carries. */
 export interface BlockSharedLaneCount {
   relation: BlockSharedRelation
@@ -100,17 +121,26 @@ export function stackBlockSharedLanes(
   lanes: readonly BlockSharedLaneCount[],
   enabled: readonly BlockSharedRelation[],
   sharedRatio: number = BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
-): { totalValid: number; multiplier: number; contributions: BlockSharedLaneCount[] } {
+): {
+  totalValid: number
+  multiplier: number
+  /** Set when the cap bound the result, so the caller can report it. */
+  cappedAt: number | null
+  contributions: BlockSharedLaneCount[]
+} {
   const active = new Set(enabled)
   const contributions = lanes.filter((lane) =>
     active.has(lane.relation) && Number(lane.validCount) > 0)
   const totalValid = contributions.reduce((sum, lane) => sum + Math.max(0, Math.floor(Number(lane.validCount) || 0)), 0)
   const ratio = Number(sharedRatio) > 0 ? Number(sharedRatio) : BLOCK_SHARED_VOLUME_RATIO_DEFAULT
+  const uncapped = 1 + totalValid * ratio
+  const multiplier = Math.min(BLOCK_STACK_MULTIPLIER_MAX, uncapped)
   return {
     totalValid,
     // Base 1.0 plus the additive stack: no valid Blocks means no increase,
-    // never a zero-size order.
-    multiplier: 1 + totalValid * ratio,
+    // never a zero-size order. Capped so a busy book cannot oversize.
+    multiplier,
+    cappedAt: uncapped > multiplier ? BLOCK_STACK_MULTIPLIER_MAX : null,
     contributions,
   }
 }
