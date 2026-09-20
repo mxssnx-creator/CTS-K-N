@@ -411,6 +411,7 @@ __tests__/unit/trade-engine-status-settings.test.ts
 __tests__/unit/trade-history-attribution.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
+__tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trailing-family-replay-wiring.test.ts
@@ -1586,6 +1587,7 @@ lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts
 lib/trading-pair-keys.ts
+lib/trading-round-trip-cost.ts
 lib/trading.ts
 lib/trailing-settings.ts
 lib/trend-indication.ts
