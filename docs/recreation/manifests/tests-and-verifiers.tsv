@@ -72,6 +72,7 @@ unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/bingx-vst-soak-plan.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
+unit	__tests__/unit/block-adjust-semantics.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/block-defaults-and-ceiling.test.ts
 unit	__tests__/unit/block-recovery-only.test.ts

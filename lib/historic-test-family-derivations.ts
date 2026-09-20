@@ -33,6 +33,31 @@ export interface BlockDerivationParams {
   /** Highest count the lane may reach. */
   maxStack: number
   /**
+   * Sizing once at least one Block is valid to increase.
+   *
+   * "shared"   — ONE uniform ratio (`sharedRatio`), however many counts are
+   *              valid. "if at least one block is valid to increase, a single
+   *              ratio is used".
+   * "additive" — one ratio per valid count, summed: the per-count multiple.
+   */
+  adjustMode?: "shared" | "additive"
+  /** The uniform ratio the shared mode applies. */
+  sharedRatio?: number
+  /**
+   * "Active" Block: the base legs (stage 1 and below) are NOT executed, only
+   * the effective recovery entries after them. The base still drives the
+   * recovery state; it simply produces no trade of its own.
+   */
+  activeOnly?: boolean
+  /**
+   * Hold an escalated level while results stay non-positive.
+   *
+   * An increased Block that does not resolve positive KEEPS its level instead
+   * of climbing further, until a generally positive result restores the base.
+   * Per config, per lane and per count independently.
+   */
+  holdWhileNegative?: boolean
+  /**
    * Replay ONE independent Block count instead of the evolving lane.
    *
    * Each count is its own config: with `fixedCount` set to N every attempt of
@@ -44,10 +69,19 @@ export interface BlockDerivationParams {
   fixedCount?: number
 }
 
+/** Uniform ratio the shared mode applies. */
+export const BLOCK_SHARED_RATIO_DEFAULT = 1.5
+/** Continuous escalation is capped at 3 steps, per count, independently. */
+export const BLOCK_STEP_MAX = 3
+
 export const DEFAULT_BLOCK_DERIVATION: BlockDerivationParams = {
   volumeRatio: 1,
-  incrementSteps: 3,
+  incrementSteps: BLOCK_STEP_MAX,
   maxStack: 3,
+  adjustMode: "additive",
+  sharedRatio: BLOCK_SHARED_RATIO_DEFAULT,
+  activeOnly: false,
+  holdWhileNegative: true,
 }
 
 /**
@@ -88,17 +122,29 @@ export function deriveBlockTrades(
   // now gates the multiplier.
   let inRecovery = false
 
+  const adjustMode = config.adjustMode === "shared" ? "shared" : "additive"
+  const sharedRatio = Number(config.sharedRatio) > 0 ? Number(config.sharedRatio) : BLOCK_SHARED_RATIO_DEFAULT
+  const stepCap = Math.max(1, Math.min(BLOCK_STEP_MAX, Math.floor(Number(config.incrementSteps) || BLOCK_STEP_MAX)))
+  const activeOnly = config.activeOnly === true
+  const holdWhileNegative = config.holdWhileNegative !== false
+
   for (const trade of baseline || []) {
     const ranAtCount = inRecovery ? count : 0
     const multiplier = ranAtCount > 0
-      ? blockVolume.blockVolumeMultiplier(ranAtCount, config.volumeRatio, config.incrementSteps, level)
+      ? (adjustMode === "shared"
+        // Shared: one uniform ratio, independent of how many counts are valid.
+        ? 1 + sharedRatio * level
+        // Additive: a ratio per valid count, summed.
+        : blockVolume.blockVolumeMultiplier(ranAtCount, config.volumeRatio, stepCap, level))
       : 1
     const result = Number(trade?.signedResultR) || 0
-    out.push({
-      signedResultR: Number((result * (multiplier > 0 ? multiplier : 1)).toFixed(12)),
-      openedAt: trade?.openedAt,
-      closedAt: trade?.closedAt,
-    })
+    if (!activeOnly || ranAtCount > 0) {
+      out.push({
+        signedResultR: Number((result * (multiplier > 0 ? multiplier : 1)).toFixed(12)),
+        openedAt: trade?.openedAt,
+        closedAt: trade?.closedAt,
+      })
+    }
 
     if (result > 0) {
       // A positive result ends the recovery. An independent count keeps its
@@ -115,7 +161,11 @@ export function deriveBlockTrades(
       if (ranAtCount > 0) {
         nonPositiveRun++
         if (nonPositiveRun % Math.max(1, ranAtCount) === 0) {
-          level = Math.min(Math.max(1, Math.floor(Number(config.incrementSteps) || 1)), level + 1)
+          // Hold: an escalated Block that did not resolve positive keeps its
+          // level instead of climbing further, until a positive result
+          // restores the base. Without it the level walks to the cap on a
+          // long losing run — the opposite of the rule.
+          level = holdWhileNegative && level > 1 ? level : Math.min(stepCap, level + 1)
         }
       }
       count = fixedCount ?? Math.min(maxStack, count + 1)
