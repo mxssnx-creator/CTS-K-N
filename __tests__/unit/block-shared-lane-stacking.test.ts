@@ -110,3 +110,31 @@ describe("the UI cannot drift from the canonical bounds", () => {
     }
   })
 })
+
+describe("the shared stack is wired into the Real overlay builder", () => {
+  const { readFileSync } = require("node:fs")
+  const { resolve } = require("node:path")
+  const src = readFileSync(resolve(process.cwd(), "lib/strategy-coordinator.ts"), "utf8")
+
+  test("shared mode replaces the per-direction candidate, it does not add a second one", () => {
+    expect(src).toContain("if (this._coordinationSettings.blockSharedVolumeAdjustEnabled) {")
+    // The per-direction loop survives as the else branch — exactly one of the
+    // two paths runs, so a Set can never be sized twice.
+    expect(src).toContain("addCandidate(source, stacked.totalValid, \"global\")")
+    expect(src).toContain("addCandidate(source, activeCount, \"global\")")
+  })
+
+  test("the operator's relation selection is normalised before use", () => {
+    expect(src).toContain("normalizeBlockSharedRelations(this._coordinationSettings.blockSharedRelations)")
+  })
+
+  test("an empty stack falls through to no candidate rather than a zero-sized one", () => {
+    expect(src).toContain("if (stacked.totalValid > 0) {")
+  })
+
+  test("count 1 stays the base entry in shared mode too", () => {
+    const block = src.slice(src.indexOf("if (this._coordinationSettings.blockSharedVolumeAdjustEnabled) {"))
+    expect(block).toContain("activeCombinedByDir[dir] <= 1")
+    expect(block).toContain("Math.max(0, activeCombinedByDir.long - 1)")
+  })
+})

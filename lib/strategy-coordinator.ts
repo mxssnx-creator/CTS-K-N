@@ -1,4 +1,11 @@
-import { clampBlockVolumeRatio } from "@/lib/block-volume-ratio-bounds"
+import {
+  BLOCK_SHARED_RELATIONS_DEFAULT,
+  BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+  BLOCK_VOLUME_RATIO_DEFAULT,
+  clampBlockVolumeRatio,
+  normalizeBlockSharedRelations,
+  stackBlockSharedLanes,
+} from "@/lib/block-volume-ratio-bounds"
 import { filterHistoricAdmittedSets } from "@/lib/historic-test-admission"
 import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
@@ -2680,6 +2687,10 @@ export class StrategyCoordinator {
      * completed-position block count is not the driver for that cycle.
      */
     blockVolumeRatio: number
+    /** Shared Block adjustment: one additive stack instead of per-Set sizing. */
+    blockSharedVolumeAdjustEnabled: boolean
+    blockSharedVolumeRatio: number
+    blockSharedRelations: string[]
     blockProfitFactorRatio: number
     blockIncrementSteps: number
     blockMaxStack:    number
@@ -2721,7 +2732,10 @@ export class StrategyCoordinator {
       dca:      false, // ← OFF by default (per spec); parser also defaults false
     },
     indicationVariants: defaultStrategyIndicationVariantPolicy(),
-    blockVolumeRatio: 1.0,
+    blockVolumeRatio: BLOCK_VOLUME_RATIO_DEFAULT,
+    blockSharedVolumeAdjustEnabled: false,
+    blockSharedVolumeRatio: BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+    blockSharedRelations: [...BLOCK_SHARED_RELATIONS_DEFAULT],
     blockProfitFactorRatio: 1.1,
     blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockMaxStack:    6,
@@ -6101,11 +6115,37 @@ export class StrategyCoordinator {
     // The first confirmed position (count 1) is the base entry, not a Block
     // in the stacking sense -- the active overlay only applies once there is
     // real stacking beyond it, so count 1 is ignored the same as count 0.
-    for (const dir of ["long", "short"] as const) {
-      const activeCount = activeCombinedByDir[dir]
-      if (activeCount <= 1) continue
-      const source = eligibleSources.find((set) => set.direction === dir)
-      if (source) addCandidate(source, activeCount, "global")
+    // Shared adjustment, when enabled, replaces the per-direction candidate
+    // with ONE additive stack across the operator's enabled relations. The
+    // direction counts are the `direction` relation; the symbol this builder
+    // runs for is the `symbol` relation, contributing its own valid count.
+    if (this._coordinationSettings.blockSharedVolumeAdjustEnabled) {
+      const relations = normalizeBlockSharedRelations(this._coordinationSettings.blockSharedRelations)
+      const symbolValid = Math.max(0, (activeCombinedByDir.long > 1 ? 1 : 0) + (activeCombinedByDir.short > 1 ? 1 : 0))
+      const stacked = stackBlockSharedLanes(
+        [
+          { relation: "symbol", validCount: symbolValid },
+          { relation: "direction", validCount: Math.max(0, activeCombinedByDir.long - 1) + Math.max(0, activeCombinedByDir.short - 1) },
+        ],
+        relations,
+        this._coordinationSettings.blockSharedVolumeRatio,
+      )
+      if (stacked.totalValid > 0) {
+        // One candidate per direction that actually holds exposure, sized by
+        // the shared stack rather than by that direction's own count.
+        for (const dir of ["long", "short"] as const) {
+          if (activeCombinedByDir[dir] <= 1) continue
+          const source = eligibleSources.find((set) => set.direction === dir)
+          if (source) addCandidate(source, stacked.totalValid, "global")
+        }
+      }
+    } else {
+      for (const dir of ["long", "short"] as const) {
+        const activeCount = activeCombinedByDir[dir]
+        if (activeCount <= 1) continue
+        const source = eligibleSources.find((set) => set.direction === dir)
+        if (source) addCandidate(source, activeCount, "global")
+      }
     }
 
     // Exact per-Set calculation. Counts come from confirmed position
