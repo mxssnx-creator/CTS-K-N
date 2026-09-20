@@ -72,9 +72,24 @@ export function deriveBlockTrades(
   let count = fixedCount ?? 0
   let level = 1
   let nonPositiveRun = 0
+  // Block enlarges RECOVERY entries only. An entry that follows a positive
+  // result — including the very first entry of a stream — runs at base size.
+  //
+  // Without `fixedCount` this fell out of `count` starting at 0 and resetting
+  // to 0 on every win. With `fixedCount` it did not: the count both started
+  // and reset to N, so `ranAtCount > 0` held for every trade and the lane
+  // became a CONSTANT leverage multiplier rather than a recovery mechanism —
+  // it enlarged winners, and it enlarged the losses too. Measured on
+  // 5,5,-2,5,5 at ratio 0.2 / count 2 it produced 7,7,-2.8,7,7 where the
+  // correct result is 5,5,-2,6,5.
+  //
+  // The count identity stays fixed, which is what makes each count an
+  // independently evaluated lane; only whether a given entry is IN recovery
+  // now gates the multiplier.
+  let inRecovery = false
 
   for (const trade of baseline || []) {
-    const ranAtCount = count
+    const ranAtCount = inRecovery ? count : 0
     const multiplier = ranAtCount > 0
       ? blockVolume.blockVolumeMultiplier(ranAtCount, config.volumeRatio, config.incrementSteps, level)
       : 1
@@ -91,7 +106,9 @@ export function deriveBlockTrades(
       count = fixedCount ?? 0
       level = 1
       nonPositiveRun = 0
+      inRecovery = false
     } else {
+      inRecovery = true
       // Only a settled BLOCK attempt advances the recovery level. The trade
       // that merely opened the streak ran at base volume, so it establishes
       // the count without escalating the level.
