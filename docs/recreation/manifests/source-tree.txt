@@ -90,6 +90,7 @@ __tests__/unit/block-count-state.test.ts
 __tests__/unit/block-defaults-and-ceiling.test.ts
 __tests__/unit/block-row-eval-window.test.ts
 __tests__/unit/block-settings-migration.test.ts
+__tests__/unit/block-shared-lane-stacking.test.ts
 __tests__/unit/blocked-reason-visibility.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
@@ -353,6 +354,7 @@ __tests__/unit/settings-continuity.test.ts
 __tests__/unit/settings-hot-reload.test.ts
 __tests__/unit/settings-propagation.test.ts
 __tests__/unit/settled-rows-auto-close.test.ts
+__tests__/unit/short-range-grid.test.ts
 __tests__/unit/signal-analytics.test.ts
 __tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-indication.test.ts
@@ -1179,6 +1181,7 @@ lib/block-count-lifecycle.ts
 lib/block-count-outcomes.ts
 lib/block-count-state.ts
 lib/block-settings-migration.ts
+lib/block-volume-ratio-bounds.ts
 lib/block-volume-ratio.cjs
 lib/boolean-utils.ts
 lib/bounded-concurrency.ts
@@ -1493,6 +1496,7 @@ lib/settings-backup.ts
 lib/settings-coordinator.ts
 lib/settings-diff.ts
 lib/settings-storage.ts
+lib/short-range-grid.ts
 lib/signal-analytics.ts
 lib/signal-config-matrix.ts
 lib/signal-indication.ts

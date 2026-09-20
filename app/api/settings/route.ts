@@ -7,6 +7,11 @@ import {
 } from "@/lib/constants"
 import { NextResponse } from "next/server"
 import {
+  BLOCK_SHARED_RELATIONS_DEFAULT,
+  BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+  BLOCK_VOLUME_RATIO_DEFAULT,
+} from "@/lib/block-volume-ratio-bounds"
+import {
   getAppSettings,
   setAppSettings,
   initRedis,
@@ -318,7 +323,16 @@ function getDefaultSettings(): Record<string, any> {
     axisEnabled: true,
     blockAdjustment: true,
     variantBlockEnabled: true,
-    blockVolumeRatio: 1,
+    // Operator specification: 0.1 to 2.0 in steps of 0.1, default 0.2. The
+    // previous default of 1.0 was five times that, and the coordinator clamped
+    // the field to 0.25-3.0 so the configurable low end was unreachable.
+    blockVolumeRatio: BLOCK_VOLUME_RATIO_DEFAULT,
+    // Shared Block adjustment: the increase is computed once against whatever
+    // is currently valid, stacking ADDITIVELY across the enabled relations,
+    // and carries its own larger ratio.
+    blockSharedVolumeAdjustEnabled: false,
+    blockSharedVolumeRatio: BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+    blockSharedRelations: [...BLOCK_SHARED_RELATIONS_DEFAULT],
     blockProfitFactorRatio: 1.1,
     blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     presetBlockProfitFactorRatio: 1.1,
