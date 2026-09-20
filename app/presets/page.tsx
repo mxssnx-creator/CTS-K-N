@@ -35,6 +35,11 @@ import {
 } from "@/lib/preset-optimizer"
 import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import { toast } from "@/lib/simple-toast"
+import {
+  BLOCK_VOLUME_RATIO_MAX,
+  BLOCK_VOLUME_RATIO_MIN,
+  BLOCK_VOLUME_RATIO_STEP,
+} from "@/lib/block-volume-ratio-bounds"
 
 type IndicatorType = PresetIndicatorType
 
@@ -632,7 +637,7 @@ export default function PresetsPage() {
                 </div>
               </div>
               <div className={draft.blockEnabled ? "grid gap-2 md:grid-cols-2 xl:grid-cols-5" : "grid gap-2 md:grid-cols-2 xl:grid-cols-5 pointer-events-none"}>
-                <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={0.25} max={3} step={0.05} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
+                <NumberField label="Volume ratio" value={draft.blockVolumeRatio} min={BLOCK_VOLUME_RATIO_MIN} max={BLOCK_VOLUME_RATIO_MAX} step={BLOCK_VOLUME_RATIO_STEP} onChange={(value) => setDraft({ ...draft, blockVolumeRatio: value })} />
                 <SliderField label="ProfitFactor factor" value={draft.blockProfitFactorRatio} min={0.2} max={5} step={0.1} onChange={(value) => setDraft({ ...draft, blockProfitFactorRatio: value })} />
                 <NumberField label="Recovery levels" value={draft.blockIncrementSteps} min={1} max={6} step={1} onChange={(value) => setDraft({ ...draft, blockIncrementSteps: value })} />
                   <NumberField label="Independent counts" value={draft.blockMaxStack} min={1} max={6} step={1} onChange={(value) => setDraft({ ...draft, blockMaxStack: value })} />
