@@ -39,6 +39,11 @@ import {
   type DcaTakeProfitMode,
 } from "@/lib/dca-strategy"
 import { HIGH_SCALE_SYMBOL_STRESS_TARGET } from "@/lib/symbol-capacity"
+import {
+  BLOCK_VOLUME_RATIO_MAX,
+  BLOCK_VOLUME_RATIO_MIN,
+  BLOCK_VOLUME_RATIO_STEP,
+} from "@/lib/block-volume-ratio-bounds"
 
 type DirectTradeState = {
   enabled: boolean
@@ -462,7 +467,7 @@ export function DirectTradeSettings() {
             <Range label="SL ratio step" value={state.slRatioStep} min={0.25} max={0.75} step={0.25} onChange={(value) => update("slRatioStep", value)} />
             <Range label="Block minimum" value={state.blockRange[0]} min={0} max={state.blockRange[1]} step={1} onChange={(value) => update("blockRange", [value, state.blockRange[1]])} />
             <Range label="Block maximum" value={state.blockRange[1]} min={state.blockRange[0]} max={6} step={1} onChange={(value) => update("blockRange", [state.blockRange[0], value])} />
-            <Range label="Block increase ratio / valid block" value={state.blockVolumeRatio} min={0.1} max={10} step={0.1} onChange={(value) => update("blockVolumeRatio", value)} />
+            <Range label="Block increase ratio / valid block" value={state.blockVolumeRatio} min={BLOCK_VOLUME_RATIO_MIN} max={BLOCK_VOLUME_RATIO_MAX} step={BLOCK_VOLUME_RATIO_STEP} onChange={(value) => update("blockVolumeRatio", value)} />
             <Range label="Block additive recovery levels" value={state.blockIncrementSteps} min={1} max={6} step={1} onChange={(value) => update("blockIncrementSteps", Math.round(value))} />
             <Range label="Block minimum-PF factor" value={state.blockProfitFactorRatio} min={0.2} max={5} step={0.1} suffix="×" onChange={(value) => update("blockProfitFactorRatio", value)} />
             <div className="flex items-center justify-between rounded-md border p-3"><div><Label>Trailing protection</Label><p className="text-xs text-muted-foreground">Fixed, Auto and Combination remain independent lanes.</p></div><Switch checked={state.trailingEnabled} onCheckedChange={(value) => update("trailingEnabled", value)} /></div>

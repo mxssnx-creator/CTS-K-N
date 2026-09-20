@@ -79,3 +79,34 @@ describe("shared Block stacks additively across independent relations", () => {
     expect(out.totalValid).toBe(2)
   })
 })
+
+describe("the UI cannot drift from the canonical bounds", () => {
+  const { readFileSync } = require("node:fs")
+  const { resolve } = require("node:path")
+  const surfaces = [
+    "components/settings/direct-trade-settings.tsx",
+    "app/presets/page.tsx",
+  ]
+
+  test("every Block volume-ratio control reads the shared constants", () => {
+    for (const path of surfaces) {
+      const src = readFileSync(resolve(process.cwd(), path), "utf8")
+      expect([path, src.includes("block-volume-ratio-bounds")]).toEqual([path, true])
+      expect([path, src.includes("min={BLOCK_VOLUME_RATIO_MIN}")]).toEqual([path, true])
+      expect([path, src.includes("max={BLOCK_VOLUME_RATIO_MAX}")]).toEqual([path, true])
+      expect([path, src.includes("step={BLOCK_VOLUME_RATIO_STEP}")]).toEqual([path, true])
+    }
+  })
+
+  test("no hardcoded bound survives on those controls", () => {
+    for (const path of surfaces) {
+      const src = readFileSync(resolve(process.cwd(), path), "utf8")
+      for (const line of src.split("\n")) {
+        if (!line.includes("blockVolumeRatio")) continue
+        // The old bounds were 0.25/3 and 0.1/10 — both are now wrong.
+        expect([path, /min=\{0\.\d+\}/.test(line)]).toEqual([path, false])
+        expect([path, /max=\{\d+\}/.test(line)]).toEqual([path, false])
+      }
+    }
+  })
+})
