@@ -819,29 +819,82 @@ function setCachedPositions(connId: string, positions: any[]): void {
       // Without venue order objects, numeric ids cannot be classified safely.
       systemOrderCount = input.liveOrderIds.size
     }
-    return input.localOpenPositionCount === 0
-      && input.liveOrderIds instanceof Set
-      && Array.isArray(input.venuePositions)
-      && isAuthoritativeVenueBookFlat(input.venuePositions, input.connectionId)
-      && systemOrderCount === 0
+    const failing = emptyBookFailingConditions({
+      localOpenPositionCount: input.localOpenPositionCount,
+      liveOrderIdsReadable: input.liveOrderIds instanceof Set,
+      venuePositionsReadable: Array.isArray(input.venuePositions),
+      venueBookFlat: Array.isArray(input.venuePositions)
+        && isAuthoritativeVenueBookFlat(input.venuePositions, input.connectionId),
+      systemOrderCount,
+    })
+    reportEmptyBookBlocker(input.connectionId, failing)
+    return failing.length === 0
+  }
+  /**
+   * Which empty-book conditions currently fail, by name.
+   *
+   * The retirement is a conjunction of five conditions and used to return a
+   * bare boolean, so when the halt would not clear there was no way to tell
+   * which one held it: production sat on a 24 h rollback halt over an empty
+   * book with the observation key never written and nothing in the log.
+   */
+  function emptyBookFailingConditions(state: {
+    localOpenPositionCount: number
+    liveOrderIdsReadable: boolean
+    venuePositionsReadable: boolean
+    venueBookFlat: boolean
+    systemOrderCount: number
+  }): string[] {
+    const failing: string[] = []
+    if (state.localOpenPositionCount !== 0) failing.push(`local_open_rows=${state.localOpenPositionCount}`)
+    if (!state.liveOrderIdsReadable) failing.push("open_orders_unreadable")
+    if (!state.venuePositionsReadable) failing.push("venue_positions_unreadable")
+    else if (!state.venueBookFlat) failing.push("venue_book_not_flat")
+    if (state.systemOrderCount !== 0) failing.push(`own_open_orders=${state.systemOrderCount}`)
+    return failing
+  }
+  const lastEmptyBookBlocker = new Map<string, string>()
+  /** Log the blocking conditions once per change, never every cycle. */
+  function reportEmptyBookBlocker(connectionId: string, failing: readonly string[]): void {
+    const signature = failing.join(",")
+    if (lastEmptyBookBlocker.get(connectionId) === signature) return
+    lastEmptyBookBlocker.set(connectionId, signature)
+    if (failing.length > 0) {
+      console.warn(`${LOG_PREFIX} [empty-book] ${connectionId}: halt retirement blocked by ${signature}`)
+    }
   }
 
+  /**
+   * Fingerprint of the state that proves OUR book is empty — and nothing else.
+   *
+   * It used to hash every venue position and every open order id, including
+   * another system's. On the shared X02 account that system trades actively:
+   * its quantities and orders change between any two snapshots, so two
+   * "identical" observations never occurred and the rollback halt could not
+   * retire even with no CTS exposure at all — it ran its full 24 h while
+   * foreign churn kept resetting the proof. #414 removed foreign rows from the
+   * flat check; the fingerprint still carried them.
+   *
+   * The empty-book proof already requires zero CTS-owned local rows and zero
+   * CTS-owned open orders before the fingerprint is taken. What must stay
+   * stable across the two snapshots is therefore exactly that owned state, so
+   * that is what is hashed. Foreign exposure is never ours to confirm.
+   */
   function emptyBookProtectionFingerprint(
     connectionId: string,
-    venuePositions: readonly Record<string, any>[],
-    liveOrderIds: Set<string>,
+    _venuePositions: readonly Record<string, any>[],
+    liveOrderIds: LiveOrderIdSet,
   ): string {
-    const venue = venuePositions.map((row) => ({
-      symbol: String(row?.symbol || row?.Symbol || "").toUpperCase().replace(/[-_]/g, ""),
-      direction: String(row?.positionSide || row?.position_side || row?.side || "").toLowerCase(),
-      quantity: venuePositionQuantityForEmptyBook(row),
-    })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
+    const ownOrderIds: string[] = []
+    const observed = liveOrderIds?.observedOrdersById
+    if (observed instanceof Map) {
+      for (const [orderId, order] of observed.entries()) {
+        const clientOrderId = order?.clientOrderID ?? order?.clientOrderId ?? order?.client_oid ?? order?.clOrdId
+        if (isConnectionOwnedClientOrderId(clientOrderId, connectionId)) ownOrderIds.push(String(orderId))
+      }
+    }
     return createHash("sha256")
-      .update(JSON.stringify({
-        connectionId,
-        venue,
-        orderIds: [...liveOrderIds].map(String).sort(),
-      }))
+      .update(JSON.stringify({ connectionId, ownOrderIds: ownOrderIds.sort() }))
       .digest("hex")
   }
 

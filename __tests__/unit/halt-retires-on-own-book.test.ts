@@ -39,7 +39,10 @@ describe("the rollback halt retires on OUR book, not the whole venue", () => {
 
   test("own open orders still block retirement", () => {
     const safe = src.slice(src.indexOf("function isEmptyBookProtectionSafe("))
-    expect(safe).toContain("systemOrderCount === 0")
+    // Own orders are counted by client-order-id prefix and any nonzero count
+    // is a named blocking condition; retirement requires no conditions at all.
     expect(safe).toContain("isConnectionOwnedClientOrderId(clientOrderId, input.connectionId)")
+    expect(src).toContain("if (state.systemOrderCount !== 0) failing.push(`own_open_orders=")
+    expect(safe).toContain("return failing.length === 0")
   })
 })
