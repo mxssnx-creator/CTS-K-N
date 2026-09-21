@@ -10,6 +10,7 @@ import {
 import { hasKiloDatabaseBackend } from "@/lib/kilo-database-client"
 import { isForexExchange, normalizeMarketType } from "@/lib/market-types"
 import { isForexBridgeSelected, isValidForexBridgeUrl, resolveForexExecutionMode } from "@/lib/forex-market"
+import { getBaseConnectionCredentials, type BaseConnectionId } from "@/lib/base-connection-credentials"
 
 export type RealTradeBlockCode =
   | "disabled"
@@ -141,19 +142,47 @@ function isInlineRedisLiveTradingAllowed(): boolean {
   return true
 }
 
+function isMaskedOrPlaceholderSecret(value: string): boolean {
+  const normalized = value.trim()
+  if (!normalized) return true
+  if (normalized.includes("••••")) return true
+  if (/^[•*]+/.test(normalized)) return true
+  return false
+}
+
+function isUsableCredentialPair(key: string, secret: string): boolean {
+  if (isMaskedOrPlaceholderSecret(key) || isMaskedOrPlaceholderSecret(secret)) return false
+  if (key.length < 10 || secret.length < 10) return false
+  const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[•*]+$/i
+  return !banned.test(key) && !banned.test(secret)
+}
+
 /**
  * Shape-only credential validation used by every Main live-order entry point.
  * Exchange authentication is still verified by the connector; this prevents a
- * placeholder, masked value, or empty secret from ever selecting the real-order
- * branch while keeping the check cheap enough for the per-position hot path.
+ * placeholder, masked list value, or empty secret from ever selecting the real-order
+ * branch. Masked UI echoes such as `••••VhEQ` are 8 characters and must never
+ * count as a live key. When the row is masked/short, fall back to the current
+ * process env for known base connections so an import-time snapshot cannot
+ * keep Live paused after keys were provided.
  */
 export function hasUsableLiveCredentials(settings: Record<string, any>): boolean {
   if (isForexConnection(settings)) return usableForexAccountId(settings)
   const key = String(settings.api_key || settings.apiKey || "").trim()
   const secret = String(settings.api_secret || settings.apiSecret || "").trim()
-  if (key.length < 10 || secret.length < 10) return false
-  const banned = /PLACEHOLDER|00998877|^test|^replace_me|^[•*]+$/i
-  return !banned.test(key) && !banned.test(secret)
+  if (isUsableCredentialPair(key, secret)) return true
+  const connectionId = String(settings.id ?? settings.connection_id ?? settings.connectionId ?? "").trim()
+  if (
+    connectionId === "bingx-x01" ||
+    connectionId === "bingx-x02" ||
+    connectionId === "bybit-x03" ||
+    connectionId === "pionex-x01" ||
+    connectionId === "orangex-x01"
+  ) {
+    const fallback = getBaseConnectionCredentials(connectionId as BaseConnectionId)
+    if (isUsableCredentialPair(fallback.apiKey, fallback.apiSecret)) return true
+  }
+  return false
 }
 
 /**

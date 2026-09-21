@@ -1096,7 +1096,10 @@ export function QuickstartSection() {
   // /api/settings/connections/[id]/live-trade. The server validates that
   // credentials exist and starts the independent live-trade engine.
   const refreshLiveTradeStatus = useCallback(async () => {
-    const id = activeConnectionId || connectionId
+    // Selected connection wins. A stale last-start id (for example Bybit
+    // without keys) must not keep showing "Live paused: valid API key" over
+    // the BingX connection the operator currently has selected.
+    const id = connectionId || activeConnectionId
     if (!id) {
       setLiveReadiness(null)
       return
@@ -1138,7 +1141,7 @@ export function QuickstartSection() {
 
   const handleToggleLiveTrade = async () => {
     if (liveTradeLoading) return
-    const id = activeConnectionId || connectionId
+    const id = connectionId || activeConnectionId
     if (!id) {
       addLog("No connection selected — start the engine first", "warning")
       return

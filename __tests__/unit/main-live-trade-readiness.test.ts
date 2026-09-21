@@ -99,6 +99,40 @@ describe("Main Trade Engine live execution readiness", () => {
     expect(hasUsableLiveCredentials(credentialed)).toBe(true)
   })
 
+  test("rejects masked list echoes and unused sibling connections without keys", () => {
+    process.env.REDIS_URL = "redis://shared-test"
+    delete process.env.BINGX_API_KEY
+    delete process.env.BINGX_API_SECRET
+    delete process.env.BINGX_X01_API_KEY
+    delete process.env.BINGX_X01_API_SECRET
+    delete process.env.BYBIT_API_KEY
+    delete process.env.BYBIT_API_SECRET
+
+    expect(hasUsableLiveCredentials({
+      id: "bingx-x01",
+      api_key: "••••VhEQ",
+      api_secret: "••••xXDA",
+    })).toBe(false)
+    expect(hasUsableLiveCredentials({
+      id: "bybit-x03",
+      api_key: "",
+      api_secret: "",
+    })).toBe(false)
+
+    process.env.BINGX_API_KEY = "live-bingx-key-1234567890"
+    process.env.BINGX_API_SECRET = "live-bingx-secret-abcdefghij"
+    expect(hasUsableLiveCredentials({
+      id: "bingx-x01",
+      api_key: "••••VhEQ",
+      api_secret: "••••xXDA",
+    })).toBe(true)
+    expect(hasUsableLiveCredentials({
+      id: "bybit-x03",
+      api_key: "••••VhEQ",
+      api_secret: "••••xXDA",
+    })).toBe(false)
+  })
+
   test("keeps paper simulation only for an operator-disabled Main Live switch", () => {
     process.env.REDIS_URL = "redis://shared-test"
     const result = evaluateRealTradeReadiness({

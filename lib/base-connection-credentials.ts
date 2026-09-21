@@ -9,8 +9,8 @@ export type BaseConnectionCredentials = {
 
 const ENV_ALIASES: Record<BaseConnectionId, { key: string[]; secret: string[] }> = {
   "bingx-x01": {
-    key: ["BINGX_API_KEY", "BINGX_APIKEY", "NEXT_BINGX_API_KEY"],
-    secret: ["BINGX_API_SECRET", "BINGX_SECRET_KEY", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"],
+    key: ["BINGX_X01_API_KEY", "BINGX_API_KEY", "BINGX_APIKEY", "NEXT_BINGX_API_KEY"],
+    secret: ["BINGX_X01_API_SECRET", "BINGX_API_SECRET", "BINGX_SECRET_KEY", "BINGX_SECRET", "NEXT_BINGX_API_SECRET"],
   },
   // X02 is the dedicated BingX Prod-VST connection. It intentionally uses
   // distinct variables so demo credentials can never be injected into X01.

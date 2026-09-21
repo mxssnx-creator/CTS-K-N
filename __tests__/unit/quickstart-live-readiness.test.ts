@@ -8,6 +8,8 @@ describe("QuickStart live admission presentation", () => {
     const source = read("components/dashboard/quickstart-section.tsx")
 
     expect(source).toContain("/api/connections/${encodeURIComponent(id)}/engine-states")
+    expect(source).toContain("const id = connectionId || activeConnectionId")
+    expect(source).not.toContain("const id = activeConnectionId || connectionId")
     expect(source).toContain("liveReadiness?.executionMode === \"blocked\"")
     expect(source).toContain("Live angefordert; neue Entries pausiert")
     expect(source).not.toContain('label:  stats.liveDispatchBlocked > 0 && stats.liveOrdersFilled === 0 ? "Live blocked"')

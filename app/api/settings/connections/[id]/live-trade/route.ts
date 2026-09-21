@@ -5,7 +5,7 @@ import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { parseBooleanInput, toRedisFlag } from "@/lib/boolean-utils"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
-import { BASE_CONNECTION_CREDENTIALS } from "@/lib/base-connection-credentials"
+import { BASE_CONNECTION_CREDENTIALS, getBaseConnectionCredentials, type BaseConnectionId } from "@/lib/base-connection-credentials"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
@@ -95,15 +95,14 @@ async function handlePost(request: NextRequest, { params }: { params: Promise<{ 
     let liveTradeBlockCode: string | null = null
     let injectedCredentials = false
     if (isLiveTrade) {
-      if (
-        !hasCredentials &&
-        BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]?.apiKey &&
-        BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]?.apiSecret
-      ) {
-        const creds = BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]
-        apiKey = creds.apiKey
-        apiSecret = creds.apiSecret
-        hasCredentials = hasUsableLiveCredentials({ ...connection, api_key: apiKey, api_secret: apiSecret })
+      const baseIds: BaseConnectionId[] = ["bingx-x01", "bingx-x02", "bybit-x03", "pionex-x01", "orangex-x01"]
+      const envCreds = (baseIds as string[]).includes(connectionId)
+        ? getBaseConnectionCredentials(connectionId as BaseConnectionId)
+        : BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]
+      if (!hasCredentials && envCreds?.apiKey && envCreds?.apiSecret) {
+        apiKey = envCreds.apiKey
+        apiSecret = envCreds.apiSecret
+        hasCredentials = hasUsableLiveCredentials({ ...connection, api_key: apiKey, api_secret: apiSecret, id: connectionId })
         injectedCredentials = true
         console.log(`[v0] [LiveTrade] Injected predefined credentials for ${connName}`)
       }

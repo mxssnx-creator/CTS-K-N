@@ -255,7 +255,8 @@ describe("requested regression guardrails", () => {
   test("live-trade enable preserves requested state when credentials are missing", () => {
     const source = read("app/api/settings/connections/[id]/live-trade/route.ts")
 
-    expect(source).toContain("BASE_CONNECTION_CREDENTIALS[connectionId as keyof typeof BASE_CONNECTION_CREDENTIALS]?.apiKey")
+    expect(source).toContain("getBaseConnectionCredentials(connectionId as BaseConnectionId)")
+    expect(source).toContain("Injected predefined credentials")
     expect(source).toContain("liveTradeBlockedReason = prospectiveReadiness.blockReason")
     expect(source).toContain("is_live_trade: toRedisFlag(liveTradeEffective)")
     expect(source).toContain("evaluateRealTradeReadiness")
