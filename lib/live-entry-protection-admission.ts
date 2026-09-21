@@ -265,13 +265,28 @@ export function auditLiveEntryProtectionAdmission(input: {
     venueSlotQuantity * 1e-8,
   )
   if (venueRows.length > 1) violations.push("venue_physical_slot_ambiguous")
-  if (venueSlotQuantity > 0 && systemSlotQuantity <= 0) {
-    violations.push("venue_physical_slot_external")
-  } else if (systemSlotQuantity > 0 && venueSlotQuantity <= 0) {
+  // The same rule the protection planner applies: we protect and account for
+  // our OWN watermarked quantity; another system's quantity sharing the slot
+  // is ignored.
+  //
+  // Both checks below used to treat any venue quantity we had not placed as a
+  // reason to refuse. That made sense while the full-slot security stop was
+  // sized to the whole venue slot — entering a shared slot would have pulled
+  // the other system's quantity into our stop. The planner now sizes every
+  // protection order to our share, so a shared slot is safe to enter and to
+  // hold. Production: after the planner fix this audit alone was still
+  // rolling entries back as `venue_physical_slot_external` and
+  // `venue_physical_slot_quantity_not_fully_owned`.
+  //
+  // What stays a violation is the direction that matters: our own tracked
+  // quantity missing from the venue.
+  if (systemSlotQuantity > 0 && venueSlotQuantity <= 0) {
     violations.push("owned_physical_slot_missing_on_venue")
-  } else if (Math.abs(systemSlotQuantity - venueSlotQuantity) > slotTolerance) {
+  } else if (systemSlotQuantity > 0 && venueSlotQuantity + slotTolerance < systemSlotQuantity) {
+    // Less on the venue than we track: part of OUR exposure is unaccounted for.
     violations.push("venue_physical_slot_quantity_not_fully_owned")
   }
+  // venueSlotQuantity > systemSlotQuantity: the excess is another system's.
 
   return {
     safe: violations.length === 0,
