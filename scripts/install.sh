@@ -1430,9 +1430,9 @@ configure_environment_and_redis() {
   local bingx_vst_origin="${BINGX_VST_ORIGIN:-$(env_value BINGX_VST_ORIGIN)}"
   [[ -n "$bingx_vst_origin" ]] || bingx_vst_origin="https://open-api-vst.bingx.com"
   local bingx_environment="${BINGX_ENVIRONMENT:-$(env_value BINGX_ENVIRONMENT)}"
-  # New long-lived deployments start on BingX's virtual-funds endpoint.  A
-  # real-funds target must always be selected explicitly via prod-live.
-  [[ -n "$bingx_environment" ]] || bingx_environment="prod-vst"
+  # New deployments default to BingX mainnet. Prod-VST is only the explicit
+  # X02 demo connection, never the process-wide default.
+  [[ -n "$bingx_environment" ]] || bingx_environment="prod-live"
   case "${bingx_environment,,}" in
     prod-live|live|mainnet|production)
       bingx_environment="prod-live"
@@ -1504,8 +1504,6 @@ configure_environment_and_redis() {
   elif [[ "$direct_x02_live_requested" == "1" ]]; then
     [[ "${direct_x02_connection_ids,,}" == "bingx-x02" ]] \
       || fatal "Direct-Trade live placement allow-list must be exactly bingx-x02"
-    [[ "$bingx_environment" == "prod-vst" ]] \
-      || fatal "Direct-Trade X02 live placement requires BINGX_ENVIRONMENT=prod-vst"
     ! placeholder_secret "$bingx_vst_key" && ! placeholder_secret "$bingx_vst_secret" \
       || fatal "Direct-Trade X02 live placement requires distinct Prod-VST credentials"
     upsert_env DIRECT_TRADE_LIVE_ORDER_PLACEMENT 1

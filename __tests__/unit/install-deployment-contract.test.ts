@@ -149,7 +149,7 @@ describe("production installation and Kilo deployment contract", () => {
     expect(envExample).toContain("DIRECT_TRADE_LIVE_ORDER_PLACEMENT=0")
     expect(envExample).toContain("DIRECT_TRADE_LIVE_CONNECTION_IDS=bingx-x02")
     expect(installer).toContain('upsert_env BINGX_ENVIRONMENT "$bingx_environment"')
-    expect(installer).toContain('[[ -n "$bingx_environment" ]] || bingx_environment="prod-vst"')
+    expect(installer).toContain('[[ -n "$bingx_environment" ]] || bingx_environment="prod-live"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_ORIGIN "https://open-api-vst.bingx.com"')
     expect(installer).toContain('upsert_env BINGX_PUBLIC_FALLBACK_ORIGIN "https://open-api-vst.bingx.pro"')
     expect(installer).toContain('upsert_env BINGX_VST_ORIGIN "$bingx_vst_origin"')

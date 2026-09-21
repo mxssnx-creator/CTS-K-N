@@ -8,7 +8,7 @@ import {
   normalizeBaseVolumeFactor,
   normalizeIdentityVolumeFactor,
 } from "@/lib/constants"
-import { BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
+import { BINGX_PROD_LIVE_ORIGIN, BINGX_PROD_VST_ORIGIN } from "@/lib/bingx-environment"
 import { normalizeExchangeId, normalizeMarketType } from "@/lib/market-types"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import {
@@ -59,12 +59,19 @@ function finiteBounded(value: unknown, fallback: number, min: number, max: numbe
 }
 
 function enforceImmutableConnectionIdentity(id: string, body: Record<string, any>): void {
-  if (id !== "bingx-x02") return
-  body.is_testnet = true
-  body.is_predefined = true
-  body.exchange = "bingx"
-  body.environment = "prod-vst"
-  body.base_url = BINGX_PROD_VST_ORIGIN
+  if (id === "bingx-x02" || id === "bingx-x02-vst-futures") {
+    body.is_testnet = true
+    body.is_predefined = true
+    body.exchange = "bingx"
+    body.environment = "prod-vst"
+    body.base_url = BINGX_PROD_VST_ORIGIN
+    return
+  }
+  if (id === "bingx-x01" || id === "bingx-x01-futures") {
+    body.is_testnet = false
+    body.environment = "prod-live"
+    body.base_url = BINGX_PROD_LIVE_ORIGIN
+  }
 }
 
 function normalizeIdentityVolumePatch<T extends Record<string, any>>(value: T): T {

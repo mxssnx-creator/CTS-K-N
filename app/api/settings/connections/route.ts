@@ -246,7 +246,7 @@ export async function POST(request: Request) {
       margin_type: body.margin_type || "cross",
       position_mode: isInstaForex ? "one_way" : (body.position_mode || "hedge"),
       contract_type: isInstaForex ? "forex" : (body.contract_type || "usdt-perpetual"),
-      is_testnet: isInstaForex ? false : (isProdVstTemplate || truthy(body.is_testnet)),
+      is_testnet: isInstaForex ? false : isProdVstTemplate,
       is_enabled: body.is_enabled === true, // Settings: enabled by default for base connections
       is_inserted: true, // User-created connection is "inserted" (available for use)
       is_dashboard_inserted: false, // Not yet added to Active Connections dashboard

@@ -34,6 +34,11 @@ function isBingXProdLiveConnection(connection: { id?: string } | null | undefine
   return id === "bingx-x01" || id === "bingx-x01-futures"
 }
 
+function isBingXVirtualFundsConnection(connection: { id?: string } | null | undefined): boolean {
+  const id = String(connection?.id || "").trim().toLowerCase()
+  return id === "bingx-x02" || id === "bingx-x02-vst-futures"
+}
+
 export class ExchangeConnectorFactory {
   private static instance: ExchangeConnectorFactory
   private connectors: Map<string, BaseExchangeConnector> = new Map()
@@ -120,7 +125,7 @@ export class ExchangeConnectorFactory {
       spreadBufferPips: finiteOptional(connection.spread_buffer_pips),
       spreadMultiplier: finiteOptional(connection.spread_multiplier),
       marketType,
-      isTestnet: isInstaForex ? false : isBingXProdLiveConnection(connection) ? false : isTruthyFlag(connection.is_testnet),
+      isTestnet: isInstaForex ? false : isBingXVirtualFundsConnection(connection) ? true : isBingXProdLiveConnection(connection) ? false : isTruthyFlag(connection.is_testnet),
       apiType: connection.api_type || (isInstaForex ? "forex" : undefined),
       contractType: connection.contract_type || (isInstaForex ? "forex" : undefined),
       marginType: connection.margin_type,

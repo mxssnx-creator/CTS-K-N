@@ -8389,9 +8389,9 @@ async function ensureBaseConnections(client: any): Promise<{ createdOrUpdated: n
     const hasRealCredentials = apiKey.length > 10 && apiSecret.length > 10
     const desiredBingxTestnet = cfg.id === "bingx-x02" || cfg.environment === "prod-vst"
       ? "1"
-      : cfg.id === "bingx-x01" || cfg.id === "bingx-x01-futures"
+      : cfg.exchange === "bingx"
         ? "0"
-        : cfg.exchange === "bingx" ? bingxTestnetOverride : null
+        : null
 
     // ── OPERATOR-STATE PRESERVATION CONTRACT ──────────────────────────
     // Bug being fixed (operator report): "after removing main connections,
