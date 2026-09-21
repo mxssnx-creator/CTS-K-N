@@ -12117,6 +12117,23 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
     // full hold.
     const transientOnly = decision.violations.length > 0
       && decision.violations.every((violation) => TRANSIENT_PROTECTION_VIOLATIONS.has(violation))
+    // A transient decision must never DOWNGRADE a genuine halt already in
+    // place. A read failure proves nothing about exposure, so it cannot be a
+    // reason to shorten a hold that a proven condition set — e.g. a rollback
+    // of owned exposure that could not be confirmed. Production showed exactly
+    // that: a 24 h `entry_protection_rollback_unconfirmed` halt was replaced a
+    // minute later by a 65 s transient one because the next venue read failed,
+    // cutting a safety hold on possibly-unprotected exposure to seconds.
+    if (transientOnly) {
+      const existingRaw = await client.get(haltKey).catch(() => null)
+      if (existingRaw) {
+        let existing: { transient?: boolean } | null = null
+        try { existing = JSON.parse(String(existingRaw)) } catch { existing = null }
+        // Anything not explicitly marked transient is treated as genuine —
+        // an unparseable or legacy halt is kept, never shortened.
+        if (!existing || existing.transient !== true) return decision
+      }
+    }
     await client.setex(
       haltKey,
       transientOnly ? TRANSIENT_ENTRY_HALT_TTL_SECONDS : GENUINE_ENTRY_HALT_TTL_SECONDS,
