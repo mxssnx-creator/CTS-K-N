@@ -16,6 +16,15 @@ export type MarginCallSession = {
   lastError?: string
 }
 
+export function marginCallEnabled(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return true
+  if (value === false || value === 0) return false
+  const normalized = String(value).trim().toLowerCase()
+  if (["0", "false", "off", "no", "disabled"].includes(normalized)) return false
+  if (["1", "true", "on", "yes", "enabled"].includes(normalized)) return true
+  return true
+}
+
 export function marginCallPercent(value: unknown): number {
   if (value === undefined || value === null || value === "") return DEFAULT_MARGIN_CALL_EQUITY_PERCENT
   const number = Number(value)

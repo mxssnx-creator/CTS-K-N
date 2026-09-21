@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { DEFAULT_MARGIN_CALL_EQUITY_PERCENT, type MarginCallSession } from "@/lib/margin-call-policy"
 
-type Snapshot = { equityPercent: number; session: MarginCallSession | null; entriesBlocked: boolean; lastError?: string }
+type Snapshot = { enabled?: boolean; equityPercent: number; session: MarginCallSession | null; entriesBlocked: boolean; lastError?: string }
 
 export function MarginCallPanel({ connectionId }: { connectionId: string }) {
   const [data, setData] = useState<Snapshot | null>(null)
@@ -40,7 +40,7 @@ export function MarginCallPanel({ connectionId }: { connectionId: string }) {
     return () => { mounted.current = false; controller.abort(); clearTimeout(timer) }
   }, [url])
 
-  const submit = async (action: "save" | "new-session") => {
+  const submit = async (action: "save" | "new-session" | "disable" | "enable") => {
     if (mutation.current) return
     mutation.current = true
     setPending(true)
@@ -52,9 +52,14 @@ export function MarginCallPanel({ connectionId }: { connectionId: string }) {
         throw new Error("Enter a percentage greater than 0 and at most 100")
       }
       const response = await fetch(url, {
-        method: action === "save" ? "PATCH" : "POST",
+        method: action === "new-session" ? "POST" : "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(action === "save" ? { equityPercent: percent } : { action }),
+        body: JSON.stringify(
+          action === "save" ? { equityPercent: percent }
+            : action === "disable" ? { enabled: false }
+            : action === "enable" ? { enabled: true }
+            : { action },
+        ),
         signal: AbortSignal.timeout(30_000),
       })
       const result = await response.json()
@@ -64,7 +69,12 @@ export function MarginCallPanel({ connectionId }: { connectionId: string }) {
       if (mounted.current) {
         setData(result)
         setDraft(null)
-        setNotice(action === "save" ? "Margin-call limit saved for this connection." : "New session started from current equity.")
+        setNotice(
+          action === "save" ? "Margin-call limit saved for this connection."
+            : action === "disable" ? "Margin call disabled for this connection."
+            : action === "enable" ? "Margin call enabled for this connection."
+            : "New session started from current equity.",
+        )
       }
     } catch (cause) {
       if (mounted.current) setError(cause instanceof Error ? cause.message : "Margin-call update failed")
@@ -86,8 +96,9 @@ export function MarginCallPanel({ connectionId }: { connectionId: string }) {
         </Badge>
       </div>
       <p className="text-xs text-muted-foreground">
-        Close every position on this connection when equity falls below {percent}% of the session’s starting equity.
-        New entries and accumulation stay locked after a margin call.
+        {data?.enabled === false
+          ? "Margin call is disabled. Live entries are not locked or flattened by session equity."
+          : `Close every position on this connection when equity falls below ${percent}% of the session’s starting equity. New entries and accumulation stay locked after a margin call.`}
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">
@@ -97,6 +108,10 @@ export function MarginCallPanel({ connectionId }: { connectionId: string }) {
             onChange={(event) => setDraft(event.target.value)} disabled={pending || !data} />
         </div>
         <Button size="sm" variant="outline" disabled={pending || !data} onClick={() => void submit("save")}>Save margin limit</Button>
+        <Button size="sm" variant="outline" disabled={pending || !data}
+          onClick={() => void submit(data?.enabled === false ? "enable" : "disable")}>
+          {data?.enabled === false ? "Enable margin call" : "Disable margin call"}
+        </Button>
         <Button size="sm" variant="outline" disabled={pending || !data || session?.status === "closing"}
           onClick={() => void submit("new-session")}>Start new session</Button>
       </div>

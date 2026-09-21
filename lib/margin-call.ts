@@ -5,6 +5,7 @@ import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { SimulatedConnector } from "@/lib/exchange-connectors/simulated-connector"
 import {
   finiteAccountNumber,
+  marginCallEnabled,
   marginCallIsBreached,
   marginCallPercent,
   MARGIN_CALL_OBSERVATION_MS,
@@ -233,19 +234,28 @@ export async function getMarginCallSnapshot(id: string) {
   ])
   return {
     connectionId: id,
+    enabled: marginCallEnabled(settings?.enabled),
     equityPercent: marginCallPercent(settings?.equity_percent),
     session,
     events: recent.map((raw) => JSON.parse(raw)),
     lastError,
-    entriesBlocked: Boolean(lastError || session?.lastError || session && session.status !== "active"),
+    entriesBlocked: marginCallEnabled(settings?.enabled) && Boolean(lastError || session?.lastError || session && session.status !== "active"),
   }
 }
 
-export async function saveMarginCallSettings(id: string, percent: unknown): Promise<void> {
+export async function saveMarginCallSettings(id: string, percent: unknown, enabled?: unknown): Promise<void> {
   validId(id)
-  const validated = marginCallPercent(percent)
+  const patch: Record<string, string> = { equity_percent: String(marginCallPercent(percent)) }
+  if (enabled !== undefined) patch.enabled = marginCallEnabled(enabled) ? "1" : "0"
   await initRedis()
-  await getRedisClient().hset(settingsKey(id), { equity_percent: String(validated) })
+  await getRedisClient().hset(settingsKey(id), patch)
+  if (getRedisBackend() !== "redis-network" && await persistNow() === false) throw riskError("Could not persist margin-call settings")
+}
+
+export async function saveMarginCallEnabled(id: string, enabled: unknown): Promise<void> {
+  validId(id)
+  await initRedis()
+  await getRedisClient().hset(settingsKey(id), { enabled: marginCallEnabled(enabled) ? "1" : "0" })
   if (getRedisBackend() !== "redis-network" && await persistNow() === false) throw riskError("Could not persist margin-call settings")
 }
 
@@ -258,6 +268,8 @@ export async function monitorConnectionMarginCall(
   if (inFlight.has(id)) return inFlight.get(id)!
   const pending = (async () => {
     await initRedis()
+    const settings = await getRedisClient().hgetall(settingsKey(id))
+    if (!marginCallEnabled(settings?.enabled)) return await readSession(id)
     const [cached, fault] = await Promise.all([readSession(id), getRedisClient().get(faultKey(id))])
     if (!options.force && fault) throw riskError(fault, "margin_call_snapshot_unavailable")
     if (!options.force && cached && Date.now() - cached.lastObservedAt < MARGIN_CALL_OBSERVATION_MS) return cached
@@ -319,6 +331,10 @@ export async function monitorConnectionMarginCall(
 }
 
 export async function assertMarginCallEntryAllowed(id: string, connector: any): Promise<void> {
+  validId(id)
+  await initRedis()
+  const settings = await getRedisClient().hgetall(settingsKey(id))
+  if (!marginCallEnabled(settings?.enabled)) return
   const state = await monitorConnectionMarginCall(id, connector, { startSession: true })
   if (!state || state.status !== "active" || state.lastError) {
     throw riskError("Margin call: this connection is locked for new entries and accumulation")

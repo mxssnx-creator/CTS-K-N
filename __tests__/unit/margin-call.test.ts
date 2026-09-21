@@ -239,3 +239,16 @@ test("closes native tickets with the exact numeric quantity", async () => {
   expect(closePositionByTicket).toHaveBeenCalledWith("EURUSD", 42, 0.02, expect.objectContaining({ clientOrderId: expect.any(String) }))
   expect(connector.closePosition).not.toHaveBeenCalled()
 })
+
+test("disabled margin call never locks entries or closes positions", async () => {
+  const { connector, state } = account()
+  mockHashes.set("settings:margin_call:a", { enabled: "0" })
+  await expect(assertMarginCallEntryAllowed("a", connector)).resolves.toBeUndefined()
+  state.equity = 0
+  state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 }]
+  await expect(monitorConnectionMarginCall("a", connector, { force: true, startSession: true })).resolves.toBeNull()
+  expect(connector.closePosition).not.toHaveBeenCalled()
+  expect((await getMarginCallSnapshot("a")).entriesBlocked).toBe(false)
+  expect((await getMarginCallSnapshot("a")).enabled).toBe(false)
+})
+

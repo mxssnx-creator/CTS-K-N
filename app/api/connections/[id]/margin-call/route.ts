@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { authorizeAdminRequest } from "@/lib/admin-auth"
 import { getConnection, initRedis } from "@/lib/redis-db"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
-import { getMarginCallSnapshot, saveMarginCallSettings, startNewMarginCallSession } from "@/lib/margin-call"
+import { getMarginCallSnapshot, saveMarginCallEnabled, saveMarginCallSettings, startNewMarginCallSession } from "@/lib/margin-call"
 import { marginCallPercent } from "@/lib/margin-call-policy"
 
 export const dynamic = "force-dynamic"
@@ -34,12 +34,22 @@ export async function PATCH(request: NextRequest, context: Context) {
   try {
     const id = await connectionId(context)
     const body = await request.json()
-    let percent: number
-    try {
-      if (typeof body.equityPercent !== "number") throw new Error("Equity threshold must be a number")
-      percent = marginCallPercent(body.equityPercent)
-    } catch (error) { return NextResponse.json({ success: false, error: (error as Error).message }, { status: 400 }) }
-    await saveMarginCallSettings(id, percent)
+    const hasPercent = Object.prototype.hasOwnProperty.call(body, "equityPercent")
+    const hasEnabled = Object.prototype.hasOwnProperty.call(body, "enabled")
+    if (!hasPercent && !hasEnabled) {
+      return NextResponse.json({ success: false, error: "Expected equityPercent or enabled" }, { status: 400 })
+    }
+    if (hasPercent) {
+      let percent: number
+      try {
+        if (typeof body.equityPercent !== "number") throw new Error("Equity threshold must be a number")
+        percent = marginCallPercent(body.equityPercent)
+      } catch (error) { return NextResponse.json({ success: false, error: (error as Error).message }, { status: 400 }) }
+      if (hasEnabled) await saveMarginCallSettings(id, percent, body.enabled)
+      else await saveMarginCallSettings(id, percent)
+    } else {
+      await saveMarginCallEnabled(id, body.enabled)
+    }
     return NextResponse.json({ success: true, ...await getMarginCallSnapshot(id) })
   } catch (error) { return failure(error) }
 }

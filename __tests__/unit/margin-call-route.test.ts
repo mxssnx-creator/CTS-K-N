@@ -2,7 +2,7 @@ import { NextRequest } from "next/server"
 import { GET, PATCH, POST } from "@/app/api/connections/[id]/margin-call/route"
 import { authorizeAdminRequest } from "@/lib/admin-auth"
 import { getConnection } from "@/lib/redis-db"
-import { saveMarginCallSettings, startNewMarginCallSession } from "@/lib/margin-call"
+import { saveMarginCallEnabled, saveMarginCallSettings, startNewMarginCallSession } from "@/lib/margin-call"
 
 jest.mock("@/lib/admin-auth", () => ({ authorizeAdminRequest: jest.fn(async () => ({ ok: true })) }))
 jest.mock("@/lib/redis-db", () => ({ initRedis: jest.fn(async () => undefined), getConnection: jest.fn(async () => ({ id: "a" })) }))
@@ -10,8 +10,9 @@ jest.mock("@/lib/exchange-connectors/factory", () => ({
   exchangeConnectorFactory: { getOrCreateConnector: jest.fn(async () => ({ account: "selected" })) },
 }))
 jest.mock("@/lib/margin-call", () => ({
-  getMarginCallSnapshot: jest.fn(async (id: string) => ({ connectionId: id, equityPercent: 30, session: null })),
+  getMarginCallSnapshot: jest.fn(async (id: string) => ({ connectionId: id, equityPercent: 30, session: null, enabled: true })),
   saveMarginCallSettings: jest.fn(async () => undefined),
+  saveMarginCallEnabled: jest.fn(async () => undefined),
   startNewMarginCallSession: jest.fn(async () => undefined),
 }))
 
@@ -57,3 +58,10 @@ test("rejects unknown connections and propagates the flat-account reset requirem
   expect(response.status).toBe(409)
   expect(startNewMarginCallSession).toHaveBeenCalledWith("a", { account: "selected" })
 })
+
+test("disables margin call without requiring a threshold", async () => {
+  expect((await PATCH(request("PATCH", { enabled: false }), context("a"))).status).toBe(200)
+  expect(saveMarginCallEnabled).toHaveBeenCalledWith("a", false)
+  expect(saveMarginCallSettings).not.toHaveBeenCalled()
+})
+
