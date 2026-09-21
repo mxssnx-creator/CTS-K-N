@@ -353,6 +353,7 @@ unit	__tests__/unit/signal-indication.test.ts
 unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
+unit	__tests__/unit/slot-scoped-halts.test.ts
 unit	__tests__/unit/special-strategy.test.ts
 unit	__tests__/unit/special-vst-validator-contract.test.ts
 unit	__tests__/unit/stable-baseline-2026-09-19.test.ts

@@ -27,14 +27,16 @@ describe("a transient venue read failure cannot freeze entries for a day", () =>
     expect(window).toContain("TRANSIENT_ENTRY_HALT_TTL_SECONDS")
   })
 
-  test("genuinely risky halts keep the full hold", () => {
+  test("genuinely risky holds keep the full 24 h — on their own slot", () => {
     // An ambiguous fill may already sit on the venue: a second entry would
     // double the exposure. A rollback that could not be confirmed may leave
-    // owned exposure unprotected. Neither is shortened.
+    // owned exposure unprotected. Neither is shortened; both are scoped to
+    // the affected slot rather than the whole connection.
+    expect(src).toContain("export const UNCONFIRMED_SLOT_HOLD_SECONDS = 24 * 60 * 60")
     for (const reason of ["entry_fill_unconfirmed", "entry_protection_rollback_unconfirmed"]) {
       const i = src.indexOf(`reason: "${reason}"`)
       expect([reason, i > 0]).toEqual([reason, true])
-      expect([reason, src.slice(i - 260, i).includes("24 * 60 * 60")]).toEqual([reason, true])
+      expect([reason, src.slice(i - 420, i).includes("UNCONFIRMED_SLOT_HOLD_SECONDS")]).toEqual([reason, true])
     }
   })
 
