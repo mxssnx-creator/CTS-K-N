@@ -80,7 +80,7 @@ import {
   DEFAULT_MAIN_INDICATION_PROFILE,
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
-import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import { MAX_BASE_STEP, MAX_INDICATION_WINDOW, normalizeBaseMinStep } from "@/lib/constants"
 import {
   getCanonicalConnectionSettingsOverlay,
   overlayNonEmpty,
@@ -1215,8 +1215,10 @@ export class IndicationSetsProcessor {
         // minStep is only the inclusive lower bound. Every integer through 30
         // is evaluated; legacy sparse sample arrays cannot drop configurations.
         const minStep = normalizeBaseMinStep(settings.minStep)
+        // Windows run to MAX_INDICATION_WINDOW, not MAX_BASE_STEP: the latter
+        // also clamps the trailing step, and the two must move independently.
         this.directionMoveRanges = Array.from(
-          { length: MAX_BASE_STEP - minStep + 1 },
+          { length: MAX_INDICATION_WINDOW - minStep + 1 },
           (_, index) => index + minStep,
         )
         this.optimalRanges = [...this.directionMoveRanges]
