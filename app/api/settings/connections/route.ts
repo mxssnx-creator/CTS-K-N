@@ -4,6 +4,7 @@ import { generateConnectionIdFromApiKey, isApiKeyInUse } from "@/lib/connection-
 import { CONNECTION_PREDEFINITIONS } from "@/lib/connection-predefinitions"
 import { API_VERSIONS } from "@/lib/system-version"
 import { maskConnectionSecrets } from "@/lib/connection-secrets"
+import { MAX_VOLUME_FACTOR, MIN_VOLUME_FACTOR } from "@/lib/constants"
 import { normalizeExchangeId, normalizeMarketType } from "@/lib/market-types"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import {
@@ -24,7 +25,9 @@ const API_VERSION = API_VERSIONS.connections
 
 function identityVolumeFactor(value: unknown): number {
   const parsed = Number(value)
-  return Number.isFinite(parsed) ? Math.max(1, Math.min(10, parsed)) : 1
+  return Number.isFinite(parsed)
+    ? Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, parsed))
+    : MIN_VOLUME_FACTOR
 }
 
 function truthy(value: unknown): boolean {

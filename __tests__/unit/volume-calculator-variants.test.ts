@@ -20,13 +20,13 @@ describe("live volume coordination by strategy variant", () => {
   }
 
   test("normalizes only shared channel factors to the identity range", () => {
-    expect(normalizeIdentityVolumeFactor(0.1)).toBe(1)
-    expect(normalizeIdentityVolumeFactor("0.75")).toBe(1)
+    expect(normalizeIdentityVolumeFactor(0.1)).toBe(0.1)
+    expect(normalizeIdentityVolumeFactor("0.75")).toBe(0.75)
     expect(normalizeIdentityVolumeFactor(1)).toBe(1)
     expect(normalizeIdentityVolumeFactor("1.5")).toBe(1.5)
     expect(normalizeIdentityVolumeFactor(99)).toBe(10)
     expect(normalizeIdentityVolumeFactor("invalid", 2)).toBe(2)
-    expect(normalizeIdentityVolumeFactor("invalid", 0.2)).toBe(1)
+    expect(normalizeIdentityVolumeFactor("invalid", 0.2)).toBe(0.2)
     expect(normalizeVolumeStepRatio(0.2)).toBe(0.2)
     expect(normalizeVolumeStepRatio("0.8")).toBe(0.8)
     expect(normalizeVolumeStepRatio(1)).toBe(1)
@@ -162,7 +162,7 @@ describe("live volume coordination by strategy variant", () => {
     expect(presetSignal.finalVolume).toBeCloseTo(0.05, 10)
   })
 
-  test("keeps channel basis at one while preserving independent sub-unit strategy ratios", () => {
+  test("keeps the lowest live channel factor and independent sub-unit strategy ratios", () => {
     const clampedChannel = VolumeCalculator.calculatePositionVolume({
       ...base,
       indicationType: "signal",
@@ -184,7 +184,7 @@ describe("live volume coordination by strategy variant", () => {
       sizeMultiplier: 1,
     })
 
-    expect(clampedChannel.liveEngineFactor).toBe(1)
+    expect(clampedChannel.liveEngineFactor).toBeCloseTo(0.02, 10)
     expect(clampedChannel.finalVolume).toBeCloseTo(0.05, 10)
     expect(subUnitPosCount.sizeMultiplier).toBe(0.05)
     expect(subUnitPosCount.calculatedVolume).toBeCloseTo(0.001, 10)
@@ -212,8 +212,8 @@ describe("live volume coordination by strategy variant", () => {
       { signalTradeVolumeFactor: "1.75" },
     )).toMatchObject({
       tradeMode: "preset",
-      mainVolumeFactor: 1,
-      presetVolumeFactor: 1,
+      mainVolumeFactor: 0.1,
+      presetVolumeFactor: 0.1,
       signalVolumeFactor: 1.75,
     })
   })

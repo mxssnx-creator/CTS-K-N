@@ -26,7 +26,7 @@ function normalizePresetVolumeFactors(value: unknown): number[] {
     ? raw
         .map(Number)
         .filter(Number.isFinite)
-        .map((factor) => Math.max(1, Math.min(10, factor)))
+        .map((factor) => Math.max(0.1, Math.min(10, factor)))
     : []
   return [...new Set(factors.length > 0 ? factors : [1, 1.5, 2])]
 }

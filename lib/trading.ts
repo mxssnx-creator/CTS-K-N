@@ -1,5 +1,5 @@
 import type { RealPosition } from "./types"
-import { applySystemVolumeFactor, SYSTEM_VOLUME_FACTOR_MULTIPLIER } from "./constants"
+import { applySystemVolumeFactor, MAX_VOLUME_FACTOR, MIN_VOLUME_FACTOR, SYSTEM_VOLUME_FACTOR_MULTIPLIER } from "./constants"
 import { resolveConsistentTradeDirection } from "./trade-direction"
 
 function tradingPositionId(): string {
@@ -71,8 +71,8 @@ export class TradingEngine {
     const base = Number.isFinite(parsedBase) && parsedBase > 0 ? parsedBase : 0
     const parsedFactor = Number(volumeFactor)
     const factor = Number.isFinite(parsedFactor)
-      ? Math.max(1, Math.min(10, parsedFactor))
-      : 1
+      ? Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, parsedFactor))
+      : MIN_VOLUME_FACTOR
     const effectiveFactor = factor * SYSTEM_VOLUME_FACTOR_MULTIPLIER
     const adjusted = applySystemVolumeFactor(base * factor)
     return {

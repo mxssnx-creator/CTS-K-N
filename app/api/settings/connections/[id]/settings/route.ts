@@ -25,6 +25,8 @@ import {
 import {
   DEFAULT_BASE_MIN_STEP,
   MAX_BASE_STEP,
+  MAX_VOLUME_FACTOR,
+  MIN_VOLUME_FACTOR,
   normalizeBaseMinStep,
 } from "@/lib/constants"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
@@ -284,7 +286,7 @@ function normalizeIdentityVolumeFactors<T extends Record<string, any>>(settings:
   for (const key of CHANNEL_VOLUME_FACTOR_KEYS) {
     if (mutable[key] === undefined || mutable[key] === null || mutable[key] === "") continue
     const value = Number(mutable[key])
-    mutable[key] = Number.isFinite(value) ? Math.max(1, Math.min(10, value)) : 1
+    mutable[key] = Number.isFinite(value) ? Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, value)) : MIN_VOLUME_FACTOR
   }
   return settings
 }
@@ -1274,7 +1276,7 @@ export async function PATCH(
       merged.baseVolumeFactorLive,
     )
     if (Number.isFinite(vfl) && vfl > 0) {
-      flatKnobs.volume_factor_live = String(Math.max(1, Math.min(10, vfl)))
+      flatKnobs.volume_factor_live = String(Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, vfl)))
       flatKnobs.live_volume_factor = flatKnobs.volume_factor_live
       connectionPatch.live_volume_factor = flatKnobs.volume_factor_live
     }
@@ -1284,7 +1286,7 @@ export async function PATCH(
       merged.baseVolumeFactorPreset,
     )
     if (Number.isFinite(vfp) && vfp > 0) {
-      flatKnobs.volume_factor_preset = String(Math.max(1, Math.min(10, vfp)))
+      flatKnobs.volume_factor_preset = String(Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, vfp)))
       flatKnobs.preset_volume_factor = flatKnobs.volume_factor_preset
       connectionPatch.preset_volume_factor = flatKnobs.volume_factor_preset
     }
@@ -1294,7 +1296,7 @@ export async function PATCH(
       merged.baseVolumeFactorSignal,
     )
     if (Number.isFinite(vfs) && vfs > 0) {
-      flatKnobs.volume_factor_signal = String(Math.max(1, Math.min(10, vfs)))
+      flatKnobs.volume_factor_signal = String(Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, vfs)))
       flatKnobs.signal_volume_factor = flatKnobs.volume_factor_signal
       connectionPatch.signal_volume_factor = flatKnobs.volume_factor_signal
     }

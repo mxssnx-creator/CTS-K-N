@@ -6,7 +6,7 @@
  * RATIO-BASED SYSTEM:
  *   - Ratio 1.0 (default): Base volume for live trading (system internal default)
  *   - Ratio > 1.0: Higher volumes for strategy evaluations and optimizations
- *   - Channel/base ratios below 1.0 are normalized to identity 1.0
+ *   - Live/channel ratios may sit at 0.1 (lowest) through 10; Base stays 1.0
  *   - Final calculated quantity = base_notional * ratios, then venue floors
  *   - Strategy internal calculations use higher ratios
  * 
@@ -27,7 +27,9 @@ import {
   applySystemVolumeFactor,
   BASE_VOLUME_RATIO,
   DEFAULT_VOLUME_STEP_RATIO,
+  MAX_VOLUME_FACTOR,
   MAX_VOLUME_STEP_RATIO,
+  MIN_VOLUME_FACTOR,
   MIN_VOLUME_STEP_RATIO,
   SYSTEM_VOLUME_FACTOR_MULTIPLIER,
 } from "@/lib/constants"
@@ -94,10 +96,12 @@ function isAuthorizedVstConnection(connection: Record<string, unknown> | null | 
 }
 
 /**
- * One venue-minimum live order is allowed when PositionCost math sits under
- * the exchange floor but the wallet can still post the initial margin.
- * VST keeps the original account-wide PositionCost budget cap. Empty wallets
- * that cannot cover 1.2x of (min notional / leverage) stay blocked.
+ * Venue-minimum live orders are allowed on every slot when PositionCost math
+ * sits under the exchange floor but the wallet can still post the initial
+ * margin. This is per-position, not an account-wide one-order cap: remaining
+ * margin keeps admitting further min-size entries. VST keeps the original
+ * account-wide PositionCost budget cap. Empty wallets that cannot cover
+ * min-notional / leverage stay blocked.
  */
 function liveMinimumNotionalAllowanceUsd(input: {
   connection: Record<string, unknown> | null | undefined
@@ -116,7 +120,7 @@ function liveMinimumNotionalAllowanceUsd(input: {
   }
   const leverage = Math.max(1, Number(input.leverage) || 1)
   const requiredMargin = minNotional / leverage
-  if (balance + Number.EPSILON < requiredMargin * 1.2) return undefined
+  if (balance + Number.EPSILON < requiredMargin) return undefined
   return minNotional
 }
 
@@ -311,16 +315,17 @@ export class VolumeCalculator {
     let balanceIsFallback = true
     try {
       const cachedBalance = await getSettings(`connection_balance:${connectionId}`)
-      if (cachedBalance?.balance && parseFloat(String(cachedBalance.balance)) > 0) {
-        balance = parseFloat(String(cachedBalance.balance))
-        // Old cache entries predate the provenance marker. Treat them as
-        // unverified rather than allowing a stale/default balance to authorize
-        // a live order. A fresh connector read below is the only path that can
-        // explicitly mark the value authoritative.
-        const fallbackMarker = cachedBalance.is_fallback ?? cachedBalance.isFallback
-        balanceIsFallback = fallbackMarker === undefined
-          ? true
-          : isTruthyFlag(fallbackMarker)
+      const cachedNumeric = cachedBalance?.balance ? parseFloat(String(cachedBalance.balance)) : 0
+      const fallbackMarker = cachedBalance?.is_fallback ?? cachedBalance?.isFallback
+      const cachedIsFallback = fallbackMarker === undefined
+        ? true
+        : isTruthyFlag(fallbackMarker)
+      // Authoritative venue cache only. A synthetic $10k fallback must not
+      // size live orders — it over-sizes, then the venue rejects and the
+      // engine stops processing remaining slots.
+      if (cachedNumeric > 0 && !cachedIsFallback) {
+        balance = cachedNumeric
+        balanceIsFallback = false
       } else {
         const connection = await getConnection(connectionId)
         const connectionMarketType = normalizeMarketType(
@@ -511,9 +516,9 @@ export class VolumeCalculator {
     // Ratio multipliers:
     //   - 1.0 = identity (default, no engine scaling)
     //   - >1.0 = higher volumes for aggregation and optimization
-    //   - <1.0 = invalid for base/channel ratios and normalized to 1.0
+    //   - 0.1 = lowest live/channel factor (more concurrent min-size orders)
     //
-    // Bounds: [1, 10]. Ratio 1 is the exchange-minimum baseline.
+    // Bounds: [0.1, 10]. Ratio 0.1 is the live default.
     // Sub-unit Position-Count coordination is a separate variant multiplier
     // and is retained by `clampVariant`; it must never leak into a channel
     // factor or silently reduce the global basis. Clipping here means the
@@ -521,8 +526,8 @@ export class VolumeCalculator {
     // malformed POST bypasses the UI.
     const clampFactor = (raw: number | undefined): number => {
       const n = Number(raw)
-      if (!Number.isFinite(n) || n <= 0) return 1
-      return Math.max(1, Math.min(10, n))
+      if (!Number.isFinite(n) || n <= 0) return MIN_VOLUME_FACTOR
+      return Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, n))
     }
     const channelVolumeFactor =
       tradeMode === "preset" ? clampFactor(presetVolumeFactor)
@@ -1019,7 +1024,7 @@ export class VolumeCalculator {
       const n = Number(v)
       return Number.isFinite(n) && n > 0 ? n : fallback
     }
-    const factor = (v: unknown): number => Math.max(1, Math.min(10, num(v, 1)))
+    const factor = (v: unknown): number => Math.max(MIN_VOLUME_FACTOR, Math.min(MAX_VOLUME_FACTOR, num(v, MIN_VOLUME_FACTOR)))
     const conn = connection || {}
     const app = appSettings || {}
 

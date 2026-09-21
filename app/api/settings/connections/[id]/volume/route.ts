@@ -28,7 +28,7 @@ import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinato
  *     consolidated save would land here in one shot).
  *   - Exposes GET so the dashboard can hydrate the sliders on mount
  *     without reaching into the connections list payload.
- *   - Bounds each factor to [1, 10] — ratio 1 is the venue-minimum baseline
+ *   - Bounds each factor to [0.1, 10] — ratio 0.1 is the lowest live baseline
  *     AND the server-side clamp in `calculatePositionVolume`, so a
  *     malformed client POST cannot bypass either layer.
  */

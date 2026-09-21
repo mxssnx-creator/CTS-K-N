@@ -8,9 +8,12 @@ import {
   POS_COUNT_VOLUME_RATIO_MIN,
 } from "./pos-count-volume-ratio"
 
-// Volume factor for live exchange positions (scaling multiplier)
-export const MIN_VOLUME_FACTOR = 1
+// Volume factor for live exchange positions (scaling multiplier).
+// 0.1 is the lowest live/channel factor: it sizes more concurrent
+// venue-minimum orders on a small wallet. Base coordination stays 1.0.
+export const MIN_VOLUME_FACTOR = 0.1
 export const MAX_VOLUME_FACTOR = 10
+export const DEFAULT_VOLUME_FACTOR = MIN_VOLUME_FACTOR
 export const BASE_VOLUME_RATIO = 1.0
 // Explicit global execution ratio. Every pseudo/live sizing result carries
 // this provenance as `systemVolumeFactor`, and adjustment reasons surface it,
@@ -41,9 +44,10 @@ export function normalizeBaseVolumeFactor(_raw?: unknown): number {
 /**
  * Canonical shared/channel volume factor.
  *
- * Base, Main, Preset and Signal all use ratio 1 as their identity basis.
- * Sub-unit ratios belong only to explicitly independent adjustment lanes
- * (Position-Count, DCA and Block) and must never leak into these factors.
+ * Live/Main/Preset/Signal may sit anywhere in [MIN_VOLUME_FACTOR, MAX].
+ * 0.1 is the operator default so multiple small live orders process.
+ * Base coordination remains the immutable identity 1.0 via
+ * `normalizeBaseVolumeFactor`.
  */
 export function normalizeIdentityVolumeFactor(
   raw: unknown,
@@ -123,10 +127,9 @@ export function normalizeVolumeStepRatio(
 }
 
 // Volume calculation is ratio-based:
-// - Ratio 1.0 (default): Base volume for live trading
+// - Ratio 0.1 (live default): lowest channel factor, more concurrent min orders
+// - Ratio 1.0: Base coordination identity (pseudo/strategy path)
 // - Ratio > 1.0: Higher volume for strategy evaluations and optimizations
-// - Ratio < 1.0: Reserved for explicit Position-Count/DCA variants only;
-//   shared Base/channel factors normalize to identity 1.0
 // Pos-count axis Set volume ratio (independent from Base volume)
 export const DEFAULT_POS_COUNT_VOLUME_RATIO = POS_COUNT_VOLUME_RATIO_DEFAULT
 export const MIN_POS_COUNT_VOLUME_RATIO = POS_COUNT_VOLUME_RATIO_MIN

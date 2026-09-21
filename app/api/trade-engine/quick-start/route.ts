@@ -169,7 +169,7 @@ const DEFAULT_SYMBOLS = ["DRIFTUSDT"]
 // Start safely with one dynamically selected symbol. Explicit UI/API choices
 // can still scale up to the exchange/runtime limit.
 const QUICKSTART_DEFAULT_SYMBOL_COUNT = DEFAULT_SYMBOL_COUNT
-const QUICKSTART_LIVE_VOLUME_FACTOR = "1"
+const QUICKSTART_LIVE_VOLUME_FACTOR = "0.1"
 const QUICKSTART_PRODUCTION_ENGINE_BOOT_WAIT_MS = resolveQuickStartEngineBootWaitMs(
   process.env.QUICKSTART_ENGINE_BOOT_WAIT_MS,
 )
@@ -403,12 +403,12 @@ async function handlePost(request: Request) {
     const effectiveVolumeFactorPreset = firstExistingSetting(
       existingConnectionSettings,
       ["volume_factor_preset", "preset_volume_factor"],
-      "1.0",
+      "0.1",
     )
     const effectivePresetVolumeFactor = firstExistingSetting(
       existingConnectionSettings,
       ["preset_volume_factor", "volume_factor_preset"],
-      "1.0",
+      "0.1",
     )
     const effectiveVolumeStepRatio = firstExistingSetting(
       existingConnectionSettings,
@@ -778,7 +778,7 @@ async function handlePost(request: Request) {
          existingQuickStartSettings,
          ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
          ["volume_factor_preset", "preset_volume_factor", "presetVolumeFactor"],
-         "1.0",
+         "0.1",
        ),
      ))
      const resolvedSignalVolumeFactor = String(normalizeIdentityVolumeFactor(
@@ -787,7 +787,7 @@ async function handlePost(request: Request) {
          existingQuickStartSettings,
          ["volume_factor_signal", "signal_volume_factor", "signalVolumeFactor"],
          ["volume_factor_signal", "signal_volume_factor", "signalVolumeFactor"],
-         "1.0",
+         "0.1",
        ),
      ))
      const rawVolumeStepRatio = Number(resolveQuickStartValue(

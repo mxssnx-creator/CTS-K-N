@@ -99,7 +99,7 @@ describe("mainnet dust live sizing", () => {
     base_url: "https://open-api.bingx.com",
     is_testnet: false,
     is_live_trade: true,
-    live_volume_factor: 1,
+    live_volume_factor: 0.1,
     average_count: 20,
     positionCost: 0.1,
     useMaximalLeverage: true,

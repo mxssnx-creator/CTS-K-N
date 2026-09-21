@@ -934,11 +934,19 @@ export class BingXConnector extends BaseExchangeConnector {
           const settlement = rows.find((asset: any) => String(asset.asset).toUpperCase() === "USDT")
           const accountEquity = settlement?.equity == null || settlement.equity === ""
             ? Number.NaN : Number(settlement.equity)
+          const sdkPositive = Math.max(
+            usdtBalance,
+            Number.isFinite(accountEquity) ? accountEquity : 0,
+            ...balances.map((asset) => Math.max(Number(asset.free) || 0, Number(asset.total) || 0)),
+          )
+          if (!(sdkPositive > 0)) {
+            throw new Error("Library balance was zero; falling back to REST")
+          }
           this.sdkLastError = ""
-          this.appendLog(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${usdtBalance.toFixed(4)} USDT`)
+          this.appendLog(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${sdkPositive.toFixed(4)} USDT`)
           return {
             success: true,
-            balance: usdtBalance,
+            balance: sdkPositive,
             ...(Number.isFinite(accountEquity) ? { equity: accountEquity } : {}),
             balances,
             capabilities: this.getCapabilities(),

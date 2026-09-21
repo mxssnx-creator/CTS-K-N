@@ -2227,7 +2227,7 @@ function VolumeSlider({
         className="py-1"
       />
       <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>1.0× basis</span><span>5.0×</span><span>10.0×</span>
+        <span>0.1× lowest</span><span>1.0×</span><span>10.0×</span>
       </div>
     </div>
   )
