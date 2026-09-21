@@ -4956,10 +4956,22 @@ function attachIndexedConnectionIdentity(
   // Older partial writes sometimes omitted the embedded `id`, which otherwise
   // makes the row disappear from getAllConnections() or fail the scoped live
   // order allow-list even though connection:{id} exists.
-  if (!hasConnectionValue(connection.id) && indexedId.trim()) {
-    return { ...connection, id: indexedId }
+  const id = String((hasConnectionValue(connection.id) ? connection.id : indexedId) || "").trim()
+  const pinned: Record<string, any> = { ...connection }
+  if (!hasConnectionValue(pinned.id) && indexedId.trim()) pinned.id = indexedId
+  const key = id.toLowerCase()
+  if (key === "bingx-x01" || key === "bingx-x01-futures") {
+    pinned.is_testnet = false
+    pinned.isTestnet = false
+    pinned.environment = "prod-live"
+    pinned.base_url = "https://open-api.bingx.com"
+  } else if (key === "bingx-x02" || key === "bingx-x02-vst-futures") {
+    pinned.is_testnet = true
+    pinned.isTestnet = true
+    pinned.environment = "prod-vst"
+    pinned.base_url = "https://open-api-vst.bingx.com"
   }
-  return connection
+  return pinned
 }
 
 export async function getConnection(id: string): Promise<any | null> {

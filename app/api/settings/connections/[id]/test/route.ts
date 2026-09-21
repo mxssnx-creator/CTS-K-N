@@ -231,11 +231,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const testedConnectionLibrary = isBingX
       ? "sdk"
       : isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (body.connection_library || connection.connection_library || "native")
-    const isProdVst = id === "bingx-x02"
+    const isProdLive = id === "bingx-x01" || id === "bingx-x01-futures"
+    const isProdVst = id === "bingx-x02" || id === "bingx-x02-vst-futures"
     const requestedTestnet = body.is_testnet !== undefined
       ? isTruthyFlag(body.is_testnet)
       : isTruthyFlag(connection.is_testnet)
-    const isTestnet = isInstaForex ? false : (isProdVst || requestedTestnet)
+    const isTestnet = isInstaForex || isProdLive ? false : (isProdVst || requestedTestnet)
     testLog.push(`[${new Date().toISOString()}] Market: ${marketType}`)
     testLog.push(`[${new Date().toISOString()}] Environment: ${isInstaForex ? (bridgeSelected ? "private terminal bridge" : "official read-only account/quote API") : (isTestnet ? "Prod-VST authenticated demo (virtual funds)" : "Prod-Live (real funds)")}`)
 

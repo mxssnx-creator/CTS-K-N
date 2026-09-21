@@ -49,3 +49,31 @@ describe("Redis connection identity recovery", () => {
     ])
   })
 })
+
+  test("cannot inherit testnet from a stale settings overlay on BingX X01", async () => {
+    const redisDb = await import("@/lib/redis-db")
+    await redisDb.initRedis()
+    const client = redisDb.getRedisClient()
+    await client.flushDb()
+    await client.sadd("connections", "bingx-x01")
+    await client.hset("connection:bingx-x01", {
+      name: "BingX X01",
+      exchange: "bingx",
+      is_testnet: "0",
+      environment: "prod-live",
+      updated_at: "2026-09-21T12:00:00.000Z",
+    })
+    await client.hset("settings:connection:bingx-x01", {
+      is_testnet: "1",
+      environment: "prod-vst",
+      updated_at: "2026-09-21T13:00:00.000Z",
+    })
+
+    await expect(redisDb.getConnection("bingx-x01")).resolves.toMatchObject({
+      id: "bingx-x01",
+      is_testnet: false,
+      environment: "prod-live",
+      base_url: "https://open-api.bingx.com",
+    })
+  })
+

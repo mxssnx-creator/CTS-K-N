@@ -173,7 +173,7 @@ export class ExchangeConnectorFactory {
       forex_execution_mode: forexExecutionMode || "",
       execution_mode: isInstaForex ? (forexExecutionMode || "read_only") : (connection.execution_mode || ""),
       read_only: isInstaForex ? !bridgeSelected : connection.read_only || "",
-      is_testnet: isTruthyFlag(connection.is_testnet),
+      is_testnet: isInstaForex ? false : isBingXVirtualFundsConnection(connection) ? true : isBingXProdLiveConnection(connection) ? false : isTruthyFlag(connection.is_testnet),
       api_type: connection.api_type || "",
       contract_type: connection.contract_type || "",
       margin_type: connection.margin_type || "",
