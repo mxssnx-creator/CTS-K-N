@@ -43,3 +43,30 @@ describe("a transient venue read failure cannot freeze entries for a day", () =>
       .toBeLessThan(src.indexOf("async function verifyConnectionProtectionAndPersistHalt("))
   })
 })
+
+describe("a transient decision never shortens a genuine halt", () => {
+  const fn = src.slice(src.indexOf("async function verifyConnectionProtectionAndPersistHalt("))
+  const body = fn.slice(0, fn.indexOf("\n}\n") + 3)
+
+  test("an existing halt is read before a transient one would be written", () => {
+    const read = body.indexOf("await client.get(haltKey)")
+    const write = body.indexOf("await client.setex(")
+    expect(read).toBeGreaterThan(0)
+    expect(read).toBeLessThan(write)
+  })
+
+  test("a genuine halt in place is kept — the transient write is skipped", () => {
+    expect(body).toContain("if (!existing || existing.transient !== true) return decision")
+  })
+
+  test("only a halt explicitly marked transient may be replaced by another transient one", () => {
+    // Unparseable or legacy halts carry no marker and are treated as genuine.
+    expect(body).toContain("try { existing = JSON.parse(String(existingRaw)) } catch { existing = null }")
+  })
+
+  test("a genuine decision still writes its full hold unconditionally", () => {
+    // The guard is inside `if (transientOnly)`; genuine violations bypass it.
+    expect(body).toContain("if (transientOnly) {")
+    expect(body).toContain("transientOnly ? TRANSIENT_ENTRY_HALT_TTL_SECONDS : GENUINE_ENTRY_HALT_TTL_SECONDS")
+  })
+})
