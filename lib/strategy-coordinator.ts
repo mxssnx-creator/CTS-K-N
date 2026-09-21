@@ -101,6 +101,7 @@ import {
   mainTradePfRatioToGrossMovePct,
   movePctToMainTradePfRatio,
   normalizeMainTradeStagePfRatio,
+  resolveCoherentStageThresholds,
   scaleMainTradePfCoordinate,
 } from "@/lib/main-trade-profit-factor"
 import {
@@ -3059,6 +3060,8 @@ export class StrategyCoordinator {
   // Base Total represents every complete configuration Set. The Base PF
   // setting therefore validates the completed Set after creation; it must
   // never prune individual entries and silently reduce Total.
+  /** Last reported threshold adjustment, so the warning fires once per change. */
+  private _lastThresholdSignature = ""
   private PF_MAIN_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.main
   private PF_REAL_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.real
   private PF_LIVE_MIN = MAIN_TRADE_STAGE_PF_DEFAULTS.live
@@ -3179,10 +3182,30 @@ export class StrategyCoordinator {
         { ...(globalS as Record<string, unknown>) },
         connS as Record<string, unknown>,
       )
-      const basePF = normalizeMainTradeStagePfRatio("base", s.baseProfitFactor)
-      const mainPF = normalizeMainTradeStagePfRatio("main", s.mainProfitFactor)
-      const realPF = normalizeMainTradeStagePfRatio("real", s.realProfitFactor)
-      const livePF = normalizeMainTradeStagePfRatio("live", s.liveProfitFactor)
+      // One coherent pipeline: each stage at least as strict as the one before,
+      // so no stage is a dead gate and none silently re-qualifies the same PF
+      // looser than an earlier stage already did. Lifted or clamped values are
+      // logged so the operator's settings are never rewritten silently.
+      const coherent = resolveCoherentStageThresholds({
+        base: s.baseProfitFactor,
+        main: s.mainProfitFactor,
+        real: s.realProfitFactor,
+        live: s.liveProfitFactor,
+      })
+      const basePF = coherent.base
+      const mainPF = coherent.main
+      const realPF = coherent.real
+      const livePF = coherent.live
+      const thresholdSignature = JSON.stringify([coherent.lifted, coherent.clamped])
+      if ((coherent.lifted.length || coherent.clamped.length)
+        && this._lastThresholdSignature !== thresholdSignature) {
+        this._lastThresholdSignature = thresholdSignature
+        console.warn(
+          `[v0] [StageThresholds] ${this.connectionId}: effective base=${basePF} main=${mainPF} real=${realPF} live=${livePF}` +
+          (coherent.clamped.length ? ` | clamped (unreachable): ${coherent.clamped.map((c) => `${c.stage} ${c.configured}->${c.effective}`).join(", ")}` : "") +
+          (coherent.lifted.length ? ` | lifted (was looser than the stage before): ${coherent.lifted.map((c) => `${c.stage} ${c.configured}->${c.effective}`).join(", ")}` : ""),
+        )
+      }
 
       this.PF_MAIN_MIN = mainPF
       this.PF_REAL_MIN = realPF

@@ -249,3 +249,57 @@ export function mainTradePfRatioPasses(
   return movePctToMainTradePfRatio(movePct, positionCostPct) + Number.EPSILON >=
     normalizeMainTradePfRatio(minimumRatio)
 }
+
+/**
+ * Coherent ProfitFactor thresholds across the stage pipeline.
+ *
+ * Every stage compares the same kind of figure (`avgProfitFactor`) against its
+ * own threshold, and a stage only ever sees what the stages before it passed.
+ * Two consequences follow, and both caused real faults in production:
+ *
+ *  - A LATER stage looser than an earlier one is a dead gate. With Base 1.1
+ *    and Main/Real/Live 1.02, everything reaching Real already had PF >= 1.1,
+ *    so Real's 1.02 check rejected nothing and reported created == passed.
+ *  - An unreachable threshold is a silent blocker. Base 7 was clamped to 2.3,
+ *    no Set reaches 2.3 under real cost, and 58 of 63 symbols stopped between
+ *    Base and Main with no error anywhere.
+ *
+ * The thresholds are therefore resolved as a running maximum: each stage is at
+ * least as strict as the one before it. This is outcome-neutral for a Set whose
+ * PF is unchanged between stages, and it makes a stage's own check meaningful
+ * instead of dead. Every raised value is reported, so nothing is rewritten
+ * silently — the operator sees exactly which setting was lifted and why.
+ */
+export interface CoherentStageThresholds {
+  base: number
+  main: number
+  real: number
+  live: number
+  /** Stages whose configured value was below the stage before and was lifted. */
+  lifted: Array<{ stage: MainTradeStage; configured: number; effective: number }>
+  /** Stages whose configured value exceeded the reachable ceiling and was clamped. */
+  clamped: Array<{ stage: MainTradeStage; configured: number; effective: number }>
+}
+
+export function resolveCoherentStageThresholds(raw: {
+  base: unknown
+  main: unknown
+  real: unknown
+  live: unknown
+}): CoherentStageThresholds {
+  const stages: MainTradeStage[] = ["base", "main", "real", "live"]
+  const out = { lifted: [], clamped: [] } as unknown as CoherentStageThresholds
+  let floor = -Infinity
+  for (const stage of stages) {
+    const configured = Number((raw as Record<string, unknown>)[stage])
+    const normalized = normalizeMainTradeStagePfRatio(stage, raw[stage as keyof typeof raw])
+    if (Number.isFinite(configured) && configured > MAIN_TRADE_PF_RATIO_MAX) {
+      out.clamped.push({ stage, configured, effective: normalized })
+    }
+    const effective = Math.max(normalized, floor)
+    if (effective > normalized) out.lifted.push({ stage, configured: normalized, effective })
+    ;(out as unknown as Record<string, number>)[stage] = effective
+    floor = effective
+  }
+  return out
+}
