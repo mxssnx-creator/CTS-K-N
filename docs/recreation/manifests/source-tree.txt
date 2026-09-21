@@ -290,6 +290,7 @@ __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
 __tests__/unit/position-cost-net-results.test.ts
 __tests__/unit/position-flow-calculations.test.ts
+__tests__/unit/position-index-established-with-hash.test.ts
 __tests__/unit/positions-stats-route.test.ts
 __tests__/unit/post-entry-audit-retry.test.ts
 __tests__/unit/prehistoric-bootstrap-handoff.test.ts
