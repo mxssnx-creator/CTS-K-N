@@ -94,6 +94,33 @@ function isAuthorizedVstConnection(connection: Record<string, unknown> | null | 
 }
 
 /**
+ * One venue-minimum live order is allowed when PositionCost math sits under
+ * the exchange floor but the wallet can still post the initial margin.
+ * VST keeps the original account-wide PositionCost budget cap. Empty wallets
+ * that cannot cover 1.2x of (min notional / leverage) stay blocked.
+ */
+function liveMinimumNotionalAllowanceUsd(input: {
+  connection: Record<string, unknown> | null | undefined
+  resolvedMode?: "main" | "preset"
+  sizingBalance: number
+  positionCostPercent: number
+  executableMinimumNotional: number
+  leverage: number
+}): number | undefined {
+  if (input.resolvedMode !== "main" && input.resolvedMode !== "preset") return undefined
+  const minNotional = Number(input.executableMinimumNotional)
+  const balance = Number(input.sizingBalance)
+  if (!(minNotional > 0) || !(balance > 0)) return undefined
+  if (isAuthorizedVstConnection(input.connection)) {
+    return Math.min(balance * (Number(input.positionCostPercent) / 100), minNotional)
+  }
+  const leverage = Math.max(1, Number(input.leverage) || 1)
+  const requiredMargin = minNotional / leverage
+  if (balance + Number.EPSILON < requiredMargin * 1.2) return undefined
+  return minNotional
+}
+
+/**
  * Volume calculations are diagnostics, not trading state. Keep a useful
  * audit window without creating one Redis detail key per calculation forever.
  */
@@ -1331,13 +1358,14 @@ export class VolumeCalculator {
         ? resolveExecutableQuantity(effectiveMinimumNotional / currentPrice, currentPrice, pairQuantityRules,
             { universalMinNotionalUsdt: VolumeCalculator.UNIVERSAL_MIN_NOTIONAL_USD }).quantity * currentPrice
         : 0
-      const minimumNotionalCeilingAllowanceUsd = isAuthorizedVstConnection(connection)
-        && (resolvedMode === "main" || resolvedMode === "preset")
-        ? Math.min(
-            steppedBalance.sizingBalance * (clampedPositionCostPercent / 100),
-            executableMinimumNotional,
-          )
-        : undefined
+      const minimumNotionalCeilingAllowanceUsd = liveMinimumNotionalAllowanceUsd({
+        connection,
+        resolvedMode,
+        sizingBalance: steppedBalance.sizingBalance,
+        positionCostPercent: clampedPositionCostPercent,
+        executableMinimumNotional,
+        leverage: maxLeverage,
+      })
 
       const result = this.calculatePositionVolume({
         positionCostPercent: clampedPositionCostPercent,

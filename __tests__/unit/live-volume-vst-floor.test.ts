@@ -28,7 +28,7 @@ jest.mock("@/lib/redis-db", () => ({
   getConnection: jest.fn(async () => mockConnection),
 }))
 
-import { getConnection } from "@/lib/redis-db"
+import { getConnection, getSettings } from "@/lib/redis-db"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 
 describe("X02 Prod-VST live minimum sizing", () => {
@@ -67,11 +67,12 @@ describe("X02 Prod-VST live minimum sizing", () => {
   test.each([
     { id: "bingx-x01" }, { base_url: "https://open-api.bingx.com" },
     { environment: "prod-live" }, { is_testnet: false }, { exchange: "bybit" },
-  ])("does not grant VST allowance to conflicting connection metadata %j", async override => {
+  ])("still sizes one venue minimum when VST identity is absent but margin fits %j", async override => {
     jest.mocked(getConnection).mockResolvedValue({ ...mockConnection, ...override } as any)
     const result = await VolumeCalculator.calculateVolumeForConnection("bingx-x02", "BTCUSDT", 100, { tradeMode: "main" })
-    expect(result.maxExecutionNotionalUsd).toBeCloseTo(1.8322)
-    expect(result.finalVolume).toBe(0)
+    expect(result.maxExecutionNotionalUsd).toBeGreaterThanOrEqual(5)
+    expect(result.finalVolume).toBeGreaterThan(0)
+    expect(result.volumeUsd).toBeGreaterThanOrEqual(5)
   })
 
   test("does not grant the minimum allowance to another or mainnet connection", () => {
@@ -89,3 +90,55 @@ describe("X02 Prod-VST live minimum sizing", () => {
     expect(ordinary.finalVolume).toBe(0)
   })
 })
+
+describe("mainnet dust live sizing", () => {
+  const liveConnection = {
+    id: "bingx-x01",
+    exchange: "bingx",
+    environment: "prod-live",
+    base_url: "https://open-api.bingx.com",
+    is_testnet: false,
+    is_live_trade: true,
+    live_volume_factor: 1,
+    average_count: 20,
+    positionCost: 0.1,
+    useMaximalLeverage: true,
+    api_key: "x".repeat(24),
+    api_secret: "secret",
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockRedis.hgetall.mockImplementation(async () => ({}))
+    jest.mocked(getConnection).mockResolvedValue(liveConnection as any)
+  })
+
+  test("places one exchange-minimum order when $0.22 can cover 150x margin", async () => {
+    jest.mocked(getSettings).mockImplementation(async (key: string) => key.startsWith("connection_balance:")
+      ? { balance: "0.2174", is_fallback: "0" }
+      : null)
+    const result = await VolumeCalculator.calculateVolumeForConnection(
+      "bingx-x01",
+      "BTCUSDT",
+      100,
+      { tradeMode: "main" },
+    )
+    expect(result.finalVolume).toBeGreaterThan(0)
+    expect(result.volumeUsd).toBeGreaterThanOrEqual(5)
+    expect(result.maxExecutionNotionalUsd).toBeGreaterThanOrEqual(5)
+  })
+
+  test("blocks when the wallet cannot post 1.2x of min-notional margin", async () => {
+    jest.mocked(getSettings).mockImplementation(async (key: string) => key.startsWith("connection_balance:")
+      ? { balance: "0.01", is_fallback: "0" }
+      : null)
+    const result = await VolumeCalculator.calculateVolumeForConnection(
+      "bingx-x01",
+      "BTCUSDT",
+      100,
+      { tradeMode: "main" },
+    )
+    expect(result.finalVolume).toBe(0)
+  })
+})
+
