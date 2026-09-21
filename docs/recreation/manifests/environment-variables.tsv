@@ -75,6 +75,7 @@ CRON_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-indications/
 CTS_BACKUP_RETENTION_COUNT	test-or-operator-tool	no	yes	1	.env.example
 CTS_BACKUP_ROOT	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_BASE_REQUIRE_MEASURED_HISTORY	application-runtime	no	no	2	__tests__/unit/validate-only-measured-sets.test.ts,lib/strategy-coordinator.ts
+CTS_BASELINE_CANDLES	test-or-operator-tool	no	no	2	scripts/baseline/fetch-candles-1m.mjs,scripts/baseline/simulate-24h-portfolio.ts
 CTS_BINGX_RATE_LIMIT_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPM	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPS	test-or-operator-tool	no	yes	1	.env.example

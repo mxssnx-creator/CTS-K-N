@@ -367,6 +367,7 @@ __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/special-strategy.test.ts
 __tests__/unit/special-vst-validator-contract.test.ts
+__tests__/unit/stable-baseline-2026-09-19.test.ts
 __tests__/unit/stage-row-snapshot.test.ts
 __tests__/unit/startup-coordinator-cleanup.test.ts
 __tests__/unit/startup-global-liveness.test.ts
@@ -1065,6 +1066,8 @@ docs/PROJECT-CONTINUATION.md
 docs/REMOTE-CHISEL-WORKMODE.md
 docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
+docs/baseline/STABLE-BASELINE-2026-09-19.md
+docs/baseline/candles-2026-09-19-1m.json.gz
 docs/chisel-client.service.example
 docs/dca-optimization-7d-2026-08-11.md
 docs/direct-trade-async-scale-48h.json
@@ -1650,6 +1653,8 @@ scripts/audit-dca-sl-candidates.ts
 scripts/audit-live-position-ledgers.mjs
 scripts/autotest-drift.mjs
 scripts/backup-local-redis.mjs
+scripts/baseline/fetch-candles-1m.mjs
+scripts/baseline/simulate-24h-portfolio.ts
 scripts/benchmark-direct-trade-symbol-coordination.cjs
 scripts/bingx-comprehensive-test.mjs
 scripts/bootstrap-install.sh
