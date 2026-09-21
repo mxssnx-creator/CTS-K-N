@@ -15,7 +15,20 @@ import { DEFAULT_SYMBOL_ORDER } from "@/lib/symbol-selection-defaults"
 import { normalizeMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 
 export const HISTORIC_TEST_PERIOD_HOURS = { min: 5, max: 85, step: 5, default: 20 } as const
-export const HISTORIC_TEST_MIN_PROFIT_FACTOR_DEFAULT = 1.2
+/**
+ * Minimum ProfitFactor a combination must reach to be validated.
+ *
+ * Lowered from 1.2 to 1.1 by operator decision after the replay was corrected
+ * to charge real round-trip cost (0.26%, taker fee both sides plus slippage)
+ * instead of borrowing the PositionCost sizing setting (0.10%). That
+ * correction moved every measured ProfitFactor down by about 0.16, so a 1.2
+ * threshold against honest costs validated nothing: across 29 symbols and the
+ * full indication grid the best achievable per symbol was 1.15-1.19.
+ *
+ * 1.1 is therefore the same strictness as the old 1.2 was against the
+ * optimistic cost basis — not a relaxation of the standard.
+ */
+export const HISTORIC_TEST_MIN_PROFIT_FACTOR_DEFAULT = 1.1
 export const HISTORIC_TEST_SYMBOL_COUNT = { min: 1, max: 50, default: 15 } as const
 export const HISTORIC_TEST_RECALC_INTERVAL_HOURS = { min: 1, max: 8, default: 2 } as const
 export const HISTORIC_TEST_MAX_PROGRESS_COUNT = { min: 10, max: 300, default: 200 } as const

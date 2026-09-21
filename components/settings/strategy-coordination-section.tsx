@@ -231,7 +231,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
     block:    true,
     dca:      true, // all four families are enabled by default
   },
-  blockVolumeRatio: 1.0,
+  blockVolumeRatio: 0.4,
   blockProfitFactorRatio: 1.1,
   blockIncrementSteps: 2,
   blockMaxStack:    6,
@@ -240,7 +240,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockActiveRealEnabled: true,
   blockActiveLiveEnabled: true,
   blockRowLiveEnabled: true,
-  blockRowLiveVolumeRatio: 1.0,
+  blockRowLiveVolumeRatio: 0.4,
   blockRowLiveProfitFactorRatio: 1.1,
   blockRowLiveIncrementSteps: 2,
   blockRowLiveMaxStack: 6,
@@ -940,15 +940,15 @@ export function StrategyCoordinationSection({
                 </p>
               </div>
               <Badge variant="outline" className="text-[10px] tabular-nums">
-                0.25–3.0
+                0.1–3.0
               </Badge>
             </div>
             <div className="flex items-center gap-3 pt-1">
               <Slider
                 value={[value.blockVolumeRatio]}
-                min={0.25}
+                min={0.1}
                 max={3.0}
-                step={0.05}
+                step={0.1}
                 onValueChange={(v) =>
                   onChange({ ...value, blockVolumeRatio: Number(v[0].toFixed(2)) })
                 }
@@ -1102,9 +1102,9 @@ export function StrategyCoordinationSection({
                 <Label className="text-[11px]">Volume ratio</Label>
                 <Slider
                   value={[value.blockRowLiveVolumeRatio]}
-                  min={0.25}
+                  min={0.1}
                   max={3}
-                  step={0.05}
+                  step={0.1}
                   onValueChange={([next]) => onChange({ ...value, blockRowLiveVolumeRatio: Number(next.toFixed(2)) })}
                   disabled={!value.variants.block || !value.blockRowLiveEnabled}
                 />

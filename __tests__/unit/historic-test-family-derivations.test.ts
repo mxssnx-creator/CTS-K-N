@@ -91,12 +91,19 @@ describe("each Block count is an independent config", () => {
     expect(parseBlockCountVariant("0")).toBeNull()
   })
 
-  test("a fixed count runs every attempt at that count's add-on, unlike the evolving lane", () => {
+  test("a fixed count sizes its RECOVERY attempts at that count's add-on", () => {
     const evolving = deriveBlockTrades(baseline, { volumeRatio: 1, incrementSteps: 3, maxStack: 3 })
     const count2 = deriveBlockTrades(baseline, { volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 2 })
-    // The evolving lane starts at base volume; count 2 never does.
+    // Superseded intent: a fixed count used to run EVERY attempt at its add-on,
+    // including the first entry and every entry after a win. That made each
+    // count lane a constant rescaling of the same stream — ProfitFactor minus
+    // one scaled linearly with the count, so comparing counts carried no
+    // information, and the lane amplified winners and losses alike.
+    // A fixed count now fixes the count's IDENTITY, not the sizing of entries
+    // that are not recovering, so the lanes differ in WHICH entries they
+    // enlarge and the comparison is meaningful.
     expect(evolving[0].signedResultR).toBeCloseTo(-1, 10)
-    expect(count2[0].signedResultR).toBeCloseTo(-3, 10) // 1 + 2 x 1 x level 1 = 3
+    expect(count2[0].signedResultR).toBeCloseTo(-1, 10)
     // Different counts must produce different results — that is the point of
     // validating them independently.
     const count1 = deriveBlockTrades(baseline, { volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 1 })
@@ -107,7 +114,14 @@ describe("each Block count is an independent config", () => {
     const count2 = deriveBlockTrades([{ signedResultR: -1 }, { signedResultR: 5 }, { signedResultR: -1 }], {
       volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 2,
     })
-    // After the win the lane is still count 2 at level 1 -> multiplier 3.
-    expect(count2[2].signedResultR).toBeCloseTo(-3, 10)
+    // The lane is still count 2 after the win — its identity never resets —
+    // but the entry that FOLLOWS a win is not a recovery entry, so it runs at
+    // base size. The count reasserts itself on the next recovery attempt.
+    expect(count2[2].signedResultR).toBeCloseTo(-1, 10)
+    const recovering = deriveBlockTrades(
+      [{ signedResultR: -1 }, { signedResultR: 5 }, { signedResultR: -1 }, { signedResultR: 5 }],
+      { volumeRatio: 1, incrementSteps: 3, maxStack: 3, fixedCount: 2 },
+    )
+    expect(recovering[3].signedResultR).toBeCloseTo(15, 10) // 5 x (1 + 2 x 1)
   })
 })

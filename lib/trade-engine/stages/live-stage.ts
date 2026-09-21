@@ -762,12 +762,38 @@ function setCachedPositions(connId: string, positions: any[]): void {
     return Math.max(...parsed.map((value) => Math.abs(value)))
   }
 
+  /**
+   * Whether OUR book on the venue is flat.
+   *
+   * This used to require every venue row to be flat, including rows belonging
+   * to another system on a shared account. On the shared X02 account that
+   * condition is permanently unsatisfiable — a second system holds 13 open
+   * positions — so the empty-book observation was never recorded, the two
+   * confirmations never accumulated, and a rollback halt ran its full 24 h TTL
+   * while this connection held no exposure at all. Every entry stayed blocked
+   * by exposure that is not ours to manage, which is the same mistake the slot
+   * book made before ownership was applied before counting.
+   *
+   * A row we cannot attribute is still treated as blocking: unreadable state
+   * must not retire a safety halt.
+   */
   function isAuthoritativeVenueBookFlat(
     venuePositions: readonly Record<string, any>[],
+    connectionId?: string,
   ): boolean {
-    return Array.isArray(venuePositions) && venuePositions.every((row) => {
+    if (!Array.isArray(venuePositions)) return false
+    const scope = String(connectionId || "").trim()
+    return venuePositions.every((row) => {
       const quantity = venuePositionQuantityForEmptyBook(row)
-      return quantity !== null && quantity <= 1e-10
+      if (quantity === null) return false
+      if (quantity <= 1e-10) return true
+      // A non-flat row blocks unless it is PROVABLY another system's. Without
+      // a connection to attribute against, nothing is provable, so the strict
+      // behaviour stands: any open row blocks. Treating "not provably ours" as
+      // foreign would fail open and retire a halt over exposure that might be
+      // ours after all.
+      if (!scope) return false
+      return !isExactSystemPositionOwner(row, scope)
     })
   }
 
@@ -796,7 +822,7 @@ function setCachedPositions(connId: string, positions: any[]): void {
     return input.localOpenPositionCount === 0
       && input.liveOrderIds instanceof Set
       && Array.isArray(input.venuePositions)
-      && isAuthoritativeVenueBookFlat(input.venuePositions)
+      && isAuthoritativeVenueBookFlat(input.venuePositions, input.connectionId)
       && systemOrderCount === 0
   }
 
@@ -3533,6 +3559,39 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       if (moved) return
     }
     if (!position.version) position.version = 0
+
+    // Protection identity must survive a concurrent write.
+    //
+    // savePosition overwrites the whole hash and bumps the version blindly, so
+    // a pass that read the row BEFORE its controls were armed and saves after
+    // silently drops stopLossOrderId / takeProfitOrderId / securityStopOrderId.
+    // Production showed exactly that: the update_sl_tp step logged the venue
+    // ids it had just written to the row (SL 2101351899508334592), and a later
+    // read found all three fields empty. The admission audit then treats the
+    // filled position as unprotected and holds the connection-wide entry halt
+    // until it settles — which is why only ONE position is ever open at a time
+    // despite 1,292 completed rows.
+    //
+    // A stale writer is identified by its version, not by the absent value: a
+    // deliberate clear (re-arm, liveness-verify) carries the CURRENT version
+    // and is honoured, while a writer whose version is behind the stored row
+    // keeps the stored ids. Cost is one HMGET on writes that would drop an id.
+    const dropsProtectionIdentity =
+      !String(position.stopLossOrderId ?? "").trim()
+      || !String(position.takeProfitOrderId ?? "").trim()
+      || !String(position.securityStopOrderId ?? "").trim()
+    if (dropsProtectionIdentity) {
+      const stored = await client.hgetall(posKey).catch(() => null) as Record<string, any> | null
+      const storedVersion = Number(stored?.version || 0) || 0
+      if (stored && storedVersion > Number(position.version || 0)) {
+        const keep = (value: unknown): string => String(value ?? "").trim()
+        if (!keep(position.stopLossOrderId) && keep(stored.stopLossOrderId)) position.stopLossOrderId = keep(stored.stopLossOrderId)
+        if (!keep(position.takeProfitOrderId) && keep(stored.takeProfitOrderId)) position.takeProfitOrderId = keep(stored.takeProfitOrderId)
+        if (!keep(position.securityStopOrderId) && keep(stored.securityStopOrderId)) position.securityStopOrderId = keep(stored.securityStopOrderId)
+        position.version = storedVersion
+      }
+    }
+
     position.version++
     position.updatedAt = Date.now()
     await client.hset(posKey, {
@@ -17873,7 +17932,122 @@ export function isStuckPreFillPlacement(
  * scan is bounded and additive: index rows keep their order and orphans are
  * appended, de-duplicated by id.
  */
+/**
+ * Remove open-index entries whose row hash no longer exists.
+ *
+ * The mirror image of the orphaned-hash case: there a hash had no index entry,
+ * here an index entry points at nothing. Both are one-sided writes, and this
+ * direction is just as damaging — every consumer that counts "own open rows"
+ * counts a row that cannot be read, so the connection looks like it holds
+ * exposure it does not have. Production showed four such entries alongside one
+ * real row, and a dangling entry is enough to keep a connection-wide entry
+ * halt from ever retiring.
+ *
+ * Purely local: no venue position or order is touched, and an entry is removed
+ * only when its hash is verifiably absent — never when the read merely failed.
+ */
+/**
+ * Close rows whose position was settled by its own protection.
+ *
+ * A filled row that reached the venue, armed its stop-loss, take-profit and
+ * security stop, and was then closed by one of them leaves NOTHING on the
+ * exchange: no position, no open order. The row, however, still reads
+ * `filled`. The admission audit inspects it, finds no protection orders —
+ * correctly, they executed — and reports `owned_shared_stopLoss_missing`,
+ * re-arming the connection-wide entry halt over a position that no longer
+ * exists.
+ *
+ * Production ran the full lifecycle correctly three times today (BATONUSDT,
+ * MICRODUCKUSDT, NUDESUSDT): placed, protected, settled. Each time the halt
+ * returned minutes later because the settlement was never written back.
+ *
+ * The conditions are deliberately narrow, because closing a row that IS still
+ * open would abandon real exposure:
+ *   * the row must have reached the venue (a venue order id), otherwise the
+ *     stuck-placement sweep owns it;
+ *   * the venue snapshot must be READABLE — an unreadable snapshot leaves
+ *     every row untouched;
+ *   * the symbol must show no position for this row's direction AND no order
+ *     this connection owns.
+ */
+async function closeRowsSettledOnVenue(
+  connectionId: string,
+  connector: any,
+): Promise<number> {
+  if (!connector || typeof connector.getPositions !== "function") return 0
+  const rows = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+  const candidates = rows.filter((row) => {
+    const status = String(row?.status || "").toLowerCase()
+    if (status !== "filled" && status !== "open") return false
+    if (Number(row?.executedQuantity || 0) <= 0) return false
+    return Boolean(hasSystemVenueHandle(row))
+  })
+  if (candidates.length === 0) return 0
+
+  const venue = await readAuthoritativeProtectionPositions(connector).catch(() => null)
+  const orders = await readAuthoritativeProtectionOrders(connector).catch(() => null)
+  // Unreadable venue state must never close a row.
+  if (!Array.isArray(venue) || !Array.isArray(orders)) return 0
+
+  const normalize = (value: unknown): string =>
+    String(value ?? "").replace(/[-_/]/g, "").toUpperCase()
+  let closed = 0
+  for (const row of candidates) {
+    const symbol = normalize(row.symbol)
+    const direction = String(row.direction || "").toLowerCase()
+    const stillOnVenue = venue.some((position: any) =>
+      normalize(position?.symbol) === symbol
+      && Math.abs(Number(position?.positionAmt ?? position?.quantity ?? position?.size ?? 0)) > 0)
+    if (stillOnVenue) continue
+    const ownOrderOpen = orders.some((order: any) =>
+      normalize(order?.symbol) === symbol
+      && isConnectionOwnedProtectionOrderForSlot(order, connectionId, String(row.symbol || ""), direction as any))
+    if (ownOrderOpen) continue
+
+    const current = await readLivePositionSnapshot(getRedisClient() as any, connectionId, String(row.id)).catch(() => null)
+    // Re-read before mutating: another pass may have closed it already.
+    if (!current || !isActiveLiveSlotStatus(String(current.status || ""))) continue
+    current.status = "closed"
+    current.closedAt = Date.now()
+    current.statusReason =
+      "settled_by_protection: venue reports no position and no own open order for this symbol"
+    pushStep(current, "settled_on_venue_reconciled", true, current.statusReason)
+    await savePosition(current).catch(() => undefined)
+    closed++
+  }
+  if (closed > 0) {
+    console.warn(
+      `${LOG_PREFIX} [settled-rows] ${connectionId}: closed ${closed} row(s) already settled on the venue`,
+    )
+  }
+  return closed
+}
+
+async function pruneDanglingLiveIndexEntries(connectionId: string): Promise<number> {
+  const client = getRedisClient() as any
+  if (typeof client?.lrange !== "function" || typeof client?.lrem !== "function") return 0
+  const indexKey = `live:positions:${connectionId}`
+  const ids: string[] = await client.lrange(indexKey, 0, -1).catch(() => [])
+  let pruned = 0
+  for (const rawId of ids) {
+    const id = String(rawId || "").trim()
+    if (!id) continue
+    const exists = await client.exists(`live_positions:${connectionId}:${id}`).catch(() => 1)
+    // Only a definite "absent" prunes; a failed read leaves the entry alone.
+    if (Number(exists) !== 0) continue
+    const removed = await client.lrem(indexKey, 0, rawId).catch(() => 0)
+    if (Number(removed) > 0) pruned += Number(removed)
+  }
+  if (pruned > 0) {
+    console.warn(
+      `${LOG_PREFIX} [live-index] ${connectionId}: pruned ${pruned} open-index entr(ies) whose row hash no longer exists`,
+    )
+  }
+  return pruned
+}
+
 async function collectSweepableLivePositions(connectionId: string): Promise<LivePosition[]> {
+  await pruneDanglingLiveIndexEntries(connectionId).catch(() => 0)
   const indexed = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
   const seen = new Set(indexed.map((row) => String(row.id)))
   const orphans: LivePosition[] = []
@@ -18512,6 +18686,10 @@ export async function reconcileLivePositions(
       } catch { /* processSimulatedPositions is self-defensive */ }
     }
     // ── Step 1b: Stuck pre-fill placement sweep (no connector required) ──
+    // Settled rows are reconciled before the stuck-placement sweep so the
+    // halt logic that follows sees a book free of phantom exposure.
+    await closeRowsSettledOnVenue(connectionId, exchangeConnector).catch(() => 0)
+
     try {
       const stuck = await sweepStuckPreFillPlacements(connectionId)
       summary.closed += stuck.closed

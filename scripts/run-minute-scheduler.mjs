@@ -10,6 +10,7 @@ export const CRON_PATHS = [
   "/api/cron/server-continuity",
   "/api/cron/sync-live-positions",
   "/api/cron/direct-trade-continuity",
+  "/api/cron/historic-test",
 ]
 
 export function runtimeMaintenanceActive(env = process.env, cwd = process.cwd()) {

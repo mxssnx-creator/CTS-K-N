@@ -352,16 +352,19 @@ describe("Real-stage Block overlays", () => {
       { long: 0, short: 0 },
     ) as StrategySet[]
 
+    // Count 1 is the base entry, not Block stacking: both the direction-wide
+    // active overlay and the per-Set exact overlay skip activeCount <= 1
+    // (commits 09f29842 / f3042721), so only counts of 2 and above produce an
+    // overlay — and every figure derived from a skipped direction drops with
+    // it. The counters behind these stats are written from confirmed
+    // memberships ABOVE that skip, so no count is lost; only overlay-derived
+    // values change.
     expect(new Set(overlays.map((set) => set.setKey))).toEqual(new Set([
       `${sources[0].setKey}#block:active:2`,
-      `${sources[2].setKey}#block:active:1`,
-      `${sources[0].setKey}#block:set:1`,
-      `${sources[1].setKey}#block:set:1`,
-      `${sources[2].setKey}#block:set:1`,
     ]))
     expect(overlays.every((set) => set.variant === "block" && set.status === "valid_real")).toBe(true)
     expect(overlays.find((set) => set.setKey.endsWith("#block:active:2"))?.axisWindows?.cont).toBe(2)
-    expect(overlays.filter((set) => set.setKey.includes("#block:set:"))).toHaveLength(3)
+    expect(overlays.filter((set) => set.setKey.includes("#block:set:"))).toHaveLength(0)
     // Persisted legacy 0.8 is migrated to the neutral-base coordination factor 1.1.
     expect(overlays.every((set) => set.blockProfitFactorRatio === 1.1)).toBe(true)
     expect(overlays.every((set) => Number(set.blockMinimumProfitFactor) > 0)).toBe(true)
@@ -619,19 +622,20 @@ describe("Real-stage Block overlays", () => {
       activeBySymbol.BTCUSDT,
       { long: 0, short: 0 },
     ) as StrategySet[]
+    // Short is at count 1 (the base entry) and produces no overlay. The
+    // invariant under test is unchanged: Pos-Count Sets stay out of the
+    // ladders while their POSITIONS still feed the active counts.
     expect(active.map((set) => set.setKey)).toEqual(expect.arrayContaining([
       `${baseLong.setKey}#block:active:2`,
-      `${baseShort.setKey}#block:active:1`,
     ]))
+    expect(active.map((set) => set.setKey)).not.toContain(`${baseShort.setKey}#block:active:1`)
     expect(active.some((set) => set.setKey.startsWith(posCountLong.setKey))).toBe(false)
     expect(active.some((set) => set.setKey.startsWith(combinedPosCountShort.setKey))).toBe(false)
 
     const statsKey = `strategy_block_pf_stats:${connectionId}-source-scope`
     const stats = await getRedisClient().hgetall(statsKey)
     expect(stats["s:BTCUSDT:active:real:long"]).toBe("2")
-    expect(stats["s:BTCUSDT:active:real:short"]).toBe("1")
     expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("2")
-    expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("1")
     await getRedisClient().del(statsKey)
   })
 
@@ -1077,17 +1081,19 @@ describe("Real-stage Block overlays", () => {
       expect(overlays.map((set) => set.setKey)).toEqual([activeLongKey])
       const stats = await client.hgetall(`strategy_block_pf_stats:${activeConnectionId}`)
       expect(stats["s:BTCUSDT:active:strategy_enabled"]).toBe("0")
-      expect(stats["s:BTCUSDT:active:calculated"]).toBe("2")
+      expect(stats["s:BTCUSDT:active:calculated"]).toBe("1")
       expect(stats["s:BTCUSDT:active:evaluated"]).toBe("0")
-      expect(stats["s:BTCUSDT:active:eligible"]).toBe("2")
-      expect(stats["s:BTCUSDT:active:disabled"]).toBe("2")
+      expect(stats["s:BTCUSDT:active:eligible"]).toBe("1")
+      expect(stats["s:BTCUSDT:active:disabled"]).toBe("1")
       expect(stats["s:BTCUSDT:active:emitted"]).toBe("1")
       expect(stats["s:BTCUSDT:active:open"]).toBe("1")
-      expect(stats["s:BTCUSDT:active:cold_start"]).toBe("2")
+      expect(stats["s:BTCUSDT:active:cold_start"]).toBe("1")
+      // combined:* come from the membership counters and keep both directions;
+      // volume_increment:* is derived from an overlay, so the skipped short
+      // side has none.
       expect(stats["s:BTCUSDT:active:combined:long"]).toBe("2")
       expect(stats["s:BTCUSDT:active:combined:short"]).toBe("1")
       expect(stats["s:BTCUSDT:active:volume_increment:long"]).toBe("3")
-      expect(stats["s:BTCUSDT:active:volume_increment:short"]).toBe("1.5")
       expect(stats["s:BTCUSDT:active:avg_normal_pf"]).toBe("2")
     } finally {
       await client.del(

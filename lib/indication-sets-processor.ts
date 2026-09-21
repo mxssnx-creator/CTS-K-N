@@ -80,7 +80,7 @@ import {
   DEFAULT_MAIN_INDICATION_PROFILE,
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
-import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import { MAX_BASE_STEP, MAX_INDICATION_WINDOW, normalizeBaseMinStep } from "@/lib/constants"
 import {
   getCanonicalConnectionSettingsOverlay,
   overlayNonEmpty,
@@ -114,6 +114,7 @@ import {
 } from "@/lib/special-strategy"
 import { INDICATION_SET_RETENTION_SECONDS } from "@/lib/redis-retention"
 import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
+import { roundTripCostFraction } from "@/lib/trading-round-trip-cost"
 
 // Default limits per indication type (independently configurable)
 const DEFAULT_LIMITS = {
@@ -1214,8 +1215,10 @@ export class IndicationSetsProcessor {
         // minStep is only the inclusive lower bound. Every integer through 30
         // is evaluated; legacy sparse sample arrays cannot drop configurations.
         const minStep = normalizeBaseMinStep(settings.minStep)
+        // Windows run to MAX_INDICATION_WINDOW, not MAX_BASE_STEP: the latter
+        // also clamps the trailing step, and the two must move independently.
         this.directionMoveRanges = Array.from(
-          { length: MAX_BASE_STEP - minStep + 1 },
+          { length: MAX_INDICATION_WINDOW - minStep + 1 },
           (_, index) => index + minStep,
         )
         this.optimalRanges = [...this.directionMoveRanges]
@@ -4238,7 +4241,12 @@ export class IndicationSetsProcessor {
     if (candles.length < 2) return { completed: false, reason: "insufficient_forward_candles" }
     const entry = Number(marketData.executionPrice ?? candles[1].open ?? candles[1].close ?? candles[1].price)
     if (!Number.isFinite(entry) || entry <= 0) return { completed: false, reason: "invalid_entry_price" }
-    const cost = this.outcomeTakerFeePct * 2 + this.outcomeSlippagePct
+    // Same definition the Historic Test replay charges, so a simulated result
+    // and a live one are measured on identical terms.
+    const cost = roundTripCostFraction({
+      takerFeeFraction: this.outcomeTakerFeePct,
+      slippageFraction: this.outcomeSlippagePct,
+    })
     const configuredTakeProfitPct = Number(activeProtection?.takeProfitPct)
     const configuredStopLossPct = Number(activeProtection?.stopLossPct)
     const takeProfitRatio = Number.isFinite(configuredTakeProfitPct) && configuredTakeProfitPct > 0

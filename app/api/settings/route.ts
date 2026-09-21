@@ -7,6 +7,11 @@ import {
 } from "@/lib/constants"
 import { NextResponse } from "next/server"
 import {
+  BLOCK_SHARED_RELATIONS_DEFAULT,
+  BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+  BLOCK_VOLUME_RATIO_DEFAULT,
+} from "@/lib/block-volume-ratio-bounds"
+import {
   getAppSettings,
   setAppSettings,
   initRedis,
@@ -305,7 +310,11 @@ function getDefaultSettings(): Record<string, any> {
     maxDrawdownTimeLiveHours: 4,
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
-    blockRowRealEvalPosCount: 20,
+    // Block rows are evaluated over a LONGER history than the Set lanes.
+    // A Block count only becomes meaningful once its recovery ladder has been
+    // exercised repeatedly, so a 20-position window judges it on too few
+    // escalations. Operator setting: 30.
+    blockRowRealEvalPosCount: 30,
     liveEvalPosCount: 20,
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     strategyBaseTrailingEnabled: true,
@@ -314,20 +323,31 @@ function getDefaultSettings(): Record<string, any> {
     axisEnabled: true,
     blockAdjustment: true,
     variantBlockEnabled: true,
-    blockVolumeRatio: 1,
+    // Operator specification: 0.1 to 2.0 in steps of 0.1, default 0.2. The
+    // previous default of 1.0 was five times that, and the coordinator clamped
+    // the field to 0.25-3.0 so the configurable low end was unreachable.
+    blockVolumeRatio: BLOCK_VOLUME_RATIO_DEFAULT,
+    // Shared Block adjustment: the increase is computed once against whatever
+    // is currently valid, stacking ADDITIVELY across the enabled relations,
+    // and carries its own larger ratio.
+    blockSharedVolumeAdjustEnabled: false,
+    blockSharedVolumeRatio: BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+    blockSharedRelations: [...BLOCK_SHARED_RELATIONS_DEFAULT],
     blockProfitFactorRatio: 1.1,
     blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     presetBlockProfitFactorRatio: 1.1,
     presetBlockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
-    // Measured over 10.4 days of real BingX candles, 1,728 independently
-    // scored configs on a positive (axis-gated) base: ProfitFactor saturates
-    // at a stack of 3 — 1→1.2086, 2→1.2111, 3→1.2119, 4→1.2119, 6→1.2119.
-    // Stacks beyond 3 add NO ProfitFactor while raising the nominal volume
-    // multiplier from 10x to 19x, all of which the volume calculator truncates
-    // to its 5x ceiling anyway. A deeper stack therefore buys nothing and only
-    // widens the gap between configured and executed size. 3 is also the
-    // lowest-drawdown point of the sweep (maxDD 867R vs 1202R at stack 1).
-    blockMaxStack: 3,
+    // Operator decision: the Block position count runs the full 1-6 range the
+    // system supports (BLOCK_COUNT_MAX), so every count is available as an
+    // independent lane.
+    //
+    // Recorded for context, not as a contradiction: measured over 10.4 days of
+    // real candles on a positive base, ProfitFactor saturates at a stack of 3
+    // (1 -> 1.2086, 2 -> 1.2111, 3/4/6 -> 1.2119). Counts above 3 did not add
+    // return in that sample; they do add independently evaluated lanes, and
+    // with the 15x variant ceiling their nominal multipliers now reach the
+    // venue instead of being truncated.
+    blockMaxStack: BLOCK_COUNT_MAX,
     blockPauseCountRatio: 1,
     blockActiveRealEnabled: true,
     blockActiveLiveEnabled: true,

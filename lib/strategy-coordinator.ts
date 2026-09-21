@@ -1,3 +1,11 @@
+import {
+  BLOCK_SHARED_RELATIONS_DEFAULT,
+  BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+  BLOCK_VOLUME_RATIO_DEFAULT,
+  clampBlockVolumeRatio,
+  normalizeBlockSharedRelations,
+  stackBlockSharedLanes,
+} from "@/lib/block-volume-ratio-bounds"
 import { filterHistoricAdmittedSets } from "@/lib/historic-test-admission"
 import { readLiveEntryReadiness } from "@/lib/live-entry-readiness"
 import { evaluateRealTradeReadiness } from "@/lib/real-trade-gates"
@@ -2679,6 +2687,10 @@ export class StrategyCoordinator {
      * completed-position block count is not the driver for that cycle.
      */
     blockVolumeRatio: number
+    /** Shared Block adjustment: one additive stack instead of per-Set sizing. */
+    blockSharedVolumeAdjustEnabled: boolean
+    blockSharedVolumeRatio: number
+    blockSharedRelations: string[]
     blockProfitFactorRatio: number
     blockIncrementSteps: number
     blockMaxStack:    number
@@ -2720,7 +2732,10 @@ export class StrategyCoordinator {
       dca:      false, // ← OFF by default (per spec); parser also defaults false
     },
     indicationVariants: defaultStrategyIndicationVariantPolicy(),
-    blockVolumeRatio: 1.0,
+    blockVolumeRatio: BLOCK_VOLUME_RATIO_DEFAULT,
+    blockSharedVolumeAdjustEnabled: false,
+    blockSharedVolumeRatio: BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
+    blockSharedRelations: [...BLOCK_SHARED_RELATIONS_DEFAULT],
     blockProfitFactorRatio: 1.1,
     blockIncrementSteps: BLOCK_INCREMENT_STEPS_DEFAULT,
     blockMaxStack:    6,
@@ -2742,7 +2757,11 @@ export class StrategyCoordinator {
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     mainEvalPosCount: 25,
     realEvalPosCount: 20,
-    blockRowRealEvalPosCount: 20,
+    // Block rows are evaluated over a LONGER history than the Set lanes.
+    // A Block count only becomes meaningful once its recovery ladder has been
+    // exercised repeatedly, so a 20-position window judges it on too few
+    // escalations. Operator setting: 30.
+    blockRowRealEvalPosCount: 30,
     liveEvalPosCount: 20,
   }
   private _coordinationLoadedAt = 0
@@ -3361,7 +3380,9 @@ export class StrategyCoordinator {
       // the engine always used coded defaults regardless of operator changes.
       const bvr = Number(s.blockVolumeRatio)
       if (Number.isFinite(bvr) && bvr > 0) {
-        this._coordinationSettings.blockVolumeRatio = Math.max(0.25, Math.min(3.0, bvr))
+        // Canonical bounds: 0.1-2.0. The old 0.25-3.0 clamp silently rejected
+        // the lower half of the configurable range.
+        this._coordinationSettings.blockVolumeRatio = clampBlockVolumeRatio(bvr)
       }
       this._coordinationSettings.blockProfitFactorRatio = normalizeBlockProfitFactorRatio(
         s.blockProfitFactorRatio ?? s.blockProfitFactor,
@@ -4971,6 +4992,22 @@ export class StrategyCoordinator {
     const buildTasks: Array<() => Promise<VariantBuildResult>> = []
 
     let scannedBaseSets = 0
+    // Sets validate on measured results. Both knobs are read once per pass:
+    // CTS_BASE_REQUIRE_MEASURED_HISTORY=0 restores the previous behaviour
+    // (validate on the bootstrap estimate) without a code change, and the
+    // minimum reuses the operator's existing prevPosMinCount so there is one
+    // place that defines "enough history".
+    const requireMeasuredHistoryForBaseValidity =
+      String(process.env.CTS_BASE_REQUIRE_MEASURED_HISTORY ?? "1").trim() !== "0"
+    // The operator's existing "enough history" definition, resolved and cached
+    // by createBaseSets earlier in the same pass. Reusing it keeps one source
+    // of truth rather than introducing a second threshold; the fallback
+    // matches that resolver's own default.
+    const baseHistoryMinCount = Math.max(
+      1,
+      this._prevPosMinCountValue >= 0 ? this._prevPosMinCountValue : 5,
+    )
+
     for (const baseSet of baseSets) {
       if (scannedBaseSets > 0 && scannedBaseSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
         await yieldStrategyScheduler(false, shouldContinue)
@@ -4992,6 +5029,29 @@ export class StrategyCoordinator {
       // Base Valid is independent from Main Valid. Every complete Base Set is
       // counted in Base Total; this first gate applies only the Base-specific
       // PF/DDT contract and forms the input pool for Main.
+      // A Set validates on MEASURED results, never on an expectation.
+      //
+      // Without sufficient position history the PF carried here is the raw
+      // indication-derived estimate (the documented bootstrap path), not an
+      // outcome. Production showed what that means in practice: 29 result
+      // rings existed for thousands of Sets, so nearly every Set was judged on
+      // its estimate — base `apf` reported a median of 2.01 while the measured
+      // outcome stats for 400 Sets ran from 0.86 to 0.94 with NOT ONE above
+      // 1.00. Validating against the estimate let ~70% through at any
+      // threshold, and no threshold could fix it because the two numbers
+      // describe different things.
+      //
+      // A Set below the history threshold is still created, evaluated and
+      // reported — it simply does not become an input for Main until it has
+      // results to show. That also removes the bulk of the downstream work:
+      // only Sets with measured history reach Main, Real and Live.
+      const measuredCount = Number(baseSet.prevPos?.positionCostRatioCount ?? 0)
+      if (requireMeasuredHistoryForBaseValidity && measuredCount < baseHistoryMinCount) {
+        baseSet.status = "invalid"
+        baseSet.rejectionReason =
+          `base_awaiting_measured_history: ${measuredCount} < ${baseHistoryMinCount}`
+        continue
+      }
       if (
         baseSet.avgProfitFactor < metricsBase.minProfitFactor ||
         baseSet.avgDrawdownTime > metricsBase.maxDrawdownTime
@@ -6052,11 +6112,40 @@ export class StrategyCoordinator {
     }
 
     // Direction-wide active Real/Live exposure calculation.
-    for (const dir of ["long", "short"] as const) {
-      const activeCount = activeCombinedByDir[dir]
-      if (activeCount <= 0) continue
-      const source = eligibleSources.find((set) => set.direction === dir)
-      if (source) addCandidate(source, activeCount, "global")
+    // The first confirmed position (count 1) is the base entry, not a Block
+    // in the stacking sense -- the active overlay only applies once there is
+    // real stacking beyond it, so count 1 is ignored the same as count 0.
+    // Shared adjustment, when enabled, replaces the per-direction candidate
+    // with ONE additive stack across the operator's enabled relations. The
+    // direction counts are the `direction` relation; the symbol this builder
+    // runs for is the `symbol` relation, contributing its own valid count.
+    if (this._coordinationSettings.blockSharedVolumeAdjustEnabled) {
+      const relations = normalizeBlockSharedRelations(this._coordinationSettings.blockSharedRelations)
+      const symbolValid = Math.max(0, (activeCombinedByDir.long > 1 ? 1 : 0) + (activeCombinedByDir.short > 1 ? 1 : 0))
+      const stacked = stackBlockSharedLanes(
+        [
+          { relation: "symbol", validCount: symbolValid },
+          { relation: "direction", validCount: Math.max(0, activeCombinedByDir.long - 1) + Math.max(0, activeCombinedByDir.short - 1) },
+        ],
+        relations,
+        this._coordinationSettings.blockSharedVolumeRatio,
+      )
+      if (stacked.totalValid > 0) {
+        // One candidate per direction that actually holds exposure, sized by
+        // the shared stack rather than by that direction's own count.
+        for (const dir of ["long", "short"] as const) {
+          if (activeCombinedByDir[dir] <= 1) continue
+          const source = eligibleSources.find((set) => set.direction === dir)
+          if (source) addCandidate(source, stacked.totalValid, "global")
+        }
+      }
+    } else {
+      for (const dir of ["long", "short"] as const) {
+        const activeCount = activeCombinedByDir[dir]
+        if (activeCount <= 1) continue
+        const source = eligibleSources.find((set) => set.direction === dir)
+        if (source) addCandidate(source, activeCount, "global")
+      }
     }
 
     // Exact per-Set calculation. Counts come from confirmed position
@@ -6065,7 +6154,7 @@ export class StrategyCoordinator {
     for (const source of eligibleSources) {
       const directionActive = activeCombinedByDir[source.direction]
       const exactCount = exactActiveLedger.active[source.setKey] || 0
-      if (directionActive > 0 && exactCount > 0) addCandidate(source, exactCount, "set")
+      if (directionActive > 0 && exactCount > 1) addCandidate(source, exactCount, "set")
     }
 
     const resultWindow = Math.max(1, Math.min(600, this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25))
@@ -7907,6 +7996,9 @@ export class StrategyCoordinator {
     // deterministic observability. A positive diagnostic materialisation
     // ceiling can bound only the downstream object graph after this complete
     // evaluation; production/default zero remains unlimited.
+    // Candidates this stage evaluated, before de-duplication by Set key and
+    // before any materialisation ceiling.
+    const realCandidateCount = realPostHedge.length
     const qualifiedRealSets = Array.from(new Map(
       realPostHedge.map((set) => [set.setKey, set]),
     ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
@@ -8252,13 +8344,27 @@ export class StrategyCoordinator {
           // (Overall is pulled from `strategies_real_total` on read.)
           updated_at:         String(Date.now()),
           // Per-symbol fields — see createBaseSets for rationale.
-          [`s:${symbol}:created`]:    String(realSets.length),
+          // `created` is the candidate pool this stage actually evaluated;
+          // `passed` is what survived it. Both used to be written from
+          // `realSets.length`, so Real could only ever report a 100% pass rate
+          // — a tautology, not a measurement. Whether the stage coordinates at
+          // all was therefore invisible in the metrics, and it read as a stage
+          // with no effect in every diagnostic.
+          [`s:${symbol}:created`]:    String(realCandidateCount),
           [`s:${symbol}:entries`]:    String(realEntriesTotal),
           [`s:${symbol}:running`]:    String(realRunningNow),
           [`s:${symbol}:progressing`]: String(
             realSets.filter((s) => (s.entryCount || 0) > 0).length,
           ),
           [`s:${symbol}:passed`]:     String(realSets.length),
+          // The two reductions that separate them, so a drop can be attributed
+          // rather than guessed at.
+          [`s:${symbol}:deduplicated`]: String(
+            Math.max(0, realCandidateCount - qualifiedRealSets.length),
+          ),
+          [`s:${symbol}:materialization_truncated`]: String(
+            Math.max(0, qualifiedRealSets.length - realSets.length),
+          ),
           [`s:${symbol}:evaluated`]:  String(realLogicalInput),
           [`s:${symbol}:input_sets`]: String(realLogicalInput),
           [`s:${symbol}:logical_passed_sets`]: String(realLogicalPassed),
@@ -9068,6 +9174,8 @@ export class StrategyCoordinator {
     // selector independently deduplicates Signal source/config slots and
     // ordinary adjustment variants per direction and cycle.
     const qualifying = allQualifying
+    // Same pool minus the internal Block overlay, for the Set-level metrics.
+    const qualifyingExcludingBlock = qualifying.filter((set) => set.variant !== "block")
 
     const liveKey = `strategies:${this.connectionId}:${symbol}:live:sets`
     if (!isCurrent()) return cancelled()
@@ -9216,8 +9324,18 @@ export class StrategyCoordinator {
           // Live doesn't compute avg_pos_per_set / avg_pos_eval_real;
           // those keys are intentionally omitted from the per-symbol
           // bundle so /stats's weighted-mean calculator skips them.
-          [`s:${symbol}:created`]:    String(qualifying.length),
-          [`s:${symbol}:entries`]:    String(qualifying.reduce((s, st) => s + (st.entryCount || 0), 0)),
+          // Block Sets are a SYSTEM-INTERNAL overlay at Live: they exist so
+          // recovery volume can be coordinated, not as separate Live Sets an
+          // operator dispatches. Counting them here inflated `created` well
+          // beyond the Real stage it is meant to be compared against
+          // (production: live 70,573 against real 9,540) and made the stage
+          // ratios unreadable. They keep their own dedicated counters below —
+          // row_live_block_created and row_live_block_valid — so nothing is
+          // hidden, it is simply not mixed into the Set totals.
+          [`s:${symbol}:created`]:    String(qualifyingExcludingBlock.length),
+          [`s:${symbol}:entries`]:    String(
+            qualifyingExcludingBlock.reduce((s, st) => s + (st.entryCount || 0), 0),
+          ),
           [`s:${symbol}:running`]:    String(liveRunningNow),
           [`s:${symbol}:progressing`]: String(realRowCount),
           [`s:${symbol}:passed`]:     String(rowLive.rows.length),
@@ -9505,6 +9623,40 @@ export class StrategyCoordinator {
             let pending = 0
             let blocked = 0
             let deferred = 0
+            const deferralReasons = new Map<string, { count: number; example: string }>()
+            const blockedReasons = new Map<string, { count: number; example: string }>()
+            const recordOutcomeReason = (
+              bucket: Map<string, { count: number; example: string }>,
+              result: any,
+              candidate: any,
+            ): void => {
+              const text = [result?.statusReason, result?.error, result?.message]
+                .map((value: unknown) => String(value ?? "").trim())
+                .filter(Boolean)
+                .join(" | ")
+              const status = String(result?.status ?? "").trim() || "(no status)"
+              const key = `${status}::${text || "(no reason)"}`.slice(0, 220)
+              const entry = bucket.get(key)
+              if (entry) entry.count++
+              else bucket.set(key, { count: 1, example: String(candidate?.setKey ?? "").slice(0, 120) })
+            }
+            // Blocked is the dominant outcome in production — 5,129 of 5,643
+            // attempts on one symbol — and it had no reason breakdown at all,
+            // so the last step before an order stayed invisible even after the
+            // deferral reasons were instrumented.
+            const recordBlockedReason = (result: any, candidate: any): void =>
+              recordOutcomeReason(blockedReasons, result, candidate)
+            const recordDeferralReason = (result: any, candidate: any): void => {
+              const text = [result?.statusReason, result?.error, result?.message]
+                .map((value: unknown) => String(value ?? "").trim())
+                .filter(Boolean)
+                .join(" | ")
+              const status = String(result?.status ?? "").trim() || "(no status)"
+              const key = `${status}::${text || "(no reason)"}`.slice(0, 220)
+              const entry = deferralReasons.get(key)
+              if (entry) entry.count++
+              else deferralReasons.set(key, { count: 1, example: String(candidate?.setKey ?? "").slice(0, 120) })
+            }
             const dispatchStartedAt = Date.now()
             const physicallyExecutedSets: StrategySet[] = []
 
@@ -9794,8 +9946,16 @@ export class StrategyCoordinator {
                   pending++
                 } else if (outcome === "blocked") {
                   blocked++
+                  recordBlockedReason(liveResult as any, set)
                 } else if (outcome === "deferred") {
                   deferred++
+                  // The main path: a deferral used to be a bare number.
+                  // Production reached 540 attempts / 540 deferred / 0 placed
+                  // with nothing in the row, nothing in the journal and no
+                  // admission lock held — the dispatcher counted a reason
+                  // nobody recorded, so the last step before an order could
+                  // not be diagnosed at all.
+                  recordDeferralReason(liveResult as any, set)
                 } else if (outcome === "rejected") {
                   rejected++
                 } else if (outcome === "errored") {
@@ -9815,8 +9975,16 @@ export class StrategyCoordinator {
                   error: errorMessage,
                   errorCode: (err as any)?.errorCode ?? (err as any)?.code,
                 })
-                if (outcome === "blocked") blocked++
-                else if (outcome === "deferred") deferred++
+                if (outcome === "blocked") {
+                  blocked++
+                  recordBlockedReason({ status: "error", statusReason: errorMessage }, set)
+                }
+                else if (outcome === "deferred") {
+                  deferred++
+                  // An exception classified as an expected deferral is just as
+                  // invisible as a returned one; record it with its message.
+                  recordDeferralReason({ status: "error", statusReason: errorMessage }, set)
+                }
                 else if (outcome === "rejected") rejected++
                 else errored++
                 console.warn(
@@ -9837,6 +10005,18 @@ export class StrategyCoordinator {
                 dispatch_pending_count: String(pending),
                 dispatch_blocked_count: String(blocked),
                 dispatch_deferred_count: String(deferred),
+                dispatch_blocked_reasons: JSON.stringify(
+                  [...blockedReasons.entries()]
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 8)
+                    .map(([key, value]) => ({ reason: key, count: value.count, exampleSetKey: value.example })),
+                ),
+                dispatch_deferred_reasons: JSON.stringify(
+                  [...deferralReasons.entries()]
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 8)
+                    .map(([key, value]) => ({ reason: key, count: value.count, exampleSetKey: value.example })),
+                ),
                 dispatch_rejected_count: String(rejected),
                 dispatch_errored_count: String(errored),
                 dispatch_missing_entry_count: String(missingEntry),
@@ -10942,9 +11122,16 @@ export class StrategyCoordinator {
       {
         name: "default",
         gate: () => true,
+        // ONE configuration per Base Set. The Main stage is a 1:1 re-evaluation
+        // of Base under Main thresholds, not a fan-out: a second leverage
+        // tuple doubled every Base Set before the axis expansion doubled it
+        // again, so Main ran at ~4x Base (measured: base 9,462 -> main 36,936)
+        // and every downstream stage inherited the multiple — Real reached
+        // 118,644 and Live 147,824 evaluated entries per pass. Axis adds its
+        // own Set per valid Base Set on top; that is the intended expansion,
+        // and it is only visible as such when the default lane stays 1:1.
         configs: [
-          { size: 1.0, leverage: 1, state: "new", pfBias: 1.00, ddtBias: 0  },
-          { size: 1.0, leverage: 2, state: "new", pfBias: 1.05, ddtBias: 15 },
+          { size: 1.0, leverage: 1, state: "new", pfBias: 1.00, ddtBias: 0 },
         ],
       },
       {

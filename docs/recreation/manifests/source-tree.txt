@@ -68,6 +68,7 @@ __tests__/unit/aggregate-protection-coordination.test.ts
 __tests__/unit/api-stats-fetcher.test.ts
 __tests__/unit/auth-runtime-secret.test.ts
 __tests__/unit/authoritative-snapshot-cache.test.ts
+__tests__/unit/axis-default-engages.test.ts
 __tests__/unit/backtest-result-accounting.test.ts
 __tests__/unit/balanced-config-selection.test.ts
 __tests__/unit/base-position-batch-coordination.test.ts
@@ -85,9 +86,14 @@ __tests__/unit/bingx-vst-runtime-routing.test.ts
 __tests__/unit/bingx-vst-soak-audit.test.ts
 __tests__/unit/bingx-vst-soak-plan.test.ts
 __tests__/unit/block-additive-lifecycle.test.ts
+__tests__/unit/block-adjust-semantics.test.ts
 __tests__/unit/block-count-state.test.ts
 __tests__/unit/block-defaults-and-ceiling.test.ts
+__tests__/unit/block-recovery-only.test.ts
+__tests__/unit/block-row-eval-window.test.ts
 __tests__/unit/block-settings-migration.test.ts
+__tests__/unit/block-shared-lane-stacking.test.ts
+__tests__/unit/blocked-reason-visibility.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
@@ -111,6 +117,7 @@ __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/create-checkpoint-script.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
 __tests__/unit/cycle-diagnostic-timing.test.ts
+__tests__/unit/dangling-live-index.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
 __tests__/unit/database-validator-migration-contract.test.ts
@@ -118,6 +125,7 @@ __tests__/unit/dca-backtest.test.ts
 __tests__/unit/dca-step-outcomes.test.ts
 __tests__/unit/dca-step-recovery-level.test.ts
 __tests__/unit/default-indication-direction.test.ts
+__tests__/unit/deferral-reason-visibility.test.ts
 __tests__/unit/deploy-keeps-runtime-up.test.ts
 __tests__/unit/design-theme-consistency.test.ts
 __tests__/unit/direct-trade-calculate-route.test.ts
@@ -170,12 +178,14 @@ __tests__/unit/exchange-live-summary-route.test.ts
 __tests__/unit/exchange-position-symbols-stats.test.ts
 __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
+__tests__/unit/family-statistics-surface.test.ts
 __tests__/unit/forced-symbols.test.ts
 __tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
 __tests__/unit/functional-overview-stage-snapshot.test.ts
 __tests__/unit/futures-connectors-contract.test.ts
+__tests__/unit/halt-retires-on-own-book.test.ts
 __tests__/unit/health-route-liveness-budget.test.ts
 __tests__/unit/health-runtime-contract.test.ts
 __tests__/unit/historic-candle-window.test.ts
@@ -203,10 +213,12 @@ __tests__/unit/indication-lane-identity.test.ts
 __tests__/unit/indication-outcome-cost-basis.test.ts
 __tests__/unit/indication-set-type-coordination.test.ts
 __tests__/unit/indication-set-write-pressure.test.ts
+__tests__/unit/indication-window-bound.test.ts
 __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/live-config-performance.test.ts
+__tests__/unit/live-counts-exclude-block.test.ts
 __tests__/unit/live-dispatch-outcome.test.ts
 __tests__/unit/live-entry-budget-block-cache.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
@@ -246,6 +258,7 @@ __tests__/unit/logistics-workflow.test.ts
 __tests__/unit/main-indication-settings.test.ts
 __tests__/unit/main-indications-stats-route.test.ts
 __tests__/unit/main-live-trade-readiness.test.ts
+__tests__/unit/main-stage-one-per-base.test.ts
 __tests__/unit/main-trade-profit-factor.test.ts
 __tests__/unit/margin-call-route.test.ts
 __tests__/unit/margin-call.test.ts
@@ -297,6 +310,7 @@ __tests__/unit/progression-operator-symbols.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
+__tests__/unit/protection-ids-lost-update.test.ts
 __tests__/unit/protection-slot-order-audit.test.ts
 __tests__/unit/pseudo-position-close-idempotency.test.ts
 __tests__/unit/pseudo-position-semantics.test.ts
@@ -308,6 +322,7 @@ __tests__/unit/quickstart-ordering.test.ts
 __tests__/unit/quickstart-timeouts.test.ts
 __tests__/unit/rate-limiter-queue.test.ts
 __tests__/unit/real-position-durability.test.ts
+__tests__/unit/real-stage-accounting.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/realtime-cycle-phase-timing.test.ts
 __tests__/unit/realtime-rotation-progress.test.ts
@@ -336,11 +351,14 @@ __tests__/unit/security-hardening-encryption.test.ts
 __tests__/unit/security-stop-projection.test.ts
 __tests__/unit/serialized-response-swr.test.ts
 __tests__/unit/server-autoboot-script.test.ts
+__tests__/unit/set-key-casing-symmetry.test.ts
 __tests__/unit/sets-compaction-settings.test.ts
 __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
 __tests__/unit/settings-hot-reload.test.ts
 __tests__/unit/settings-propagation.test.ts
+__tests__/unit/settled-rows-auto-close.test.ts
+__tests__/unit/short-range-grid.test.ts
 __tests__/unit/signal-analytics.test.ts
 __tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-indication.test.ts
@@ -397,12 +415,15 @@ __tests__/unit/trade-engine-status-settings.test.ts
 __tests__/unit/trade-history-attribution.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
+__tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trailing-family-replay-wiring.test.ts
 __tests__/unit/trend-indication.test.ts
 __tests__/unit/trend-wiring.test.ts
+__tests__/unit/unplaced-rows-not-exposure.test.ts
 __tests__/unit/unsubmitted-live-retention.test.ts
+__tests__/unit/validate-only-measured-sets.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
 __tests__/unit/x02-slot-protection-operator.test.ts
@@ -640,6 +661,7 @@ app/api/settings/set-limits/route.ts
 app/api/settings/system/route.ts
 app/api/startup/initialize/route.ts
 app/api/statistics/deactivated-configs/route.ts
+app/api/statistics/families/route.ts
 app/api/statistics/indications/route.ts
 app/api/strategies/overview/route.ts
 app/api/strategies/route.ts
@@ -969,6 +991,7 @@ components/statistics/analytics-filters.tsx
 components/statistics/block-strategy-stats.tsx
 components/statistics/deactivated-live-configs.tsx
 components/statistics/direct-trade-statistics.tsx
+components/statistics/family-performance-panel.tsx
 components/statistics/indication-analytics-dashboard.tsx
 components/statistics/preset-trade-stats.tsx
 components/statistics/statistics-section-nav.tsx
@@ -1162,6 +1185,7 @@ lib/block-count-lifecycle.ts
 lib/block-count-outcomes.ts
 lib/block-count-state.ts
 lib/block-settings-migration.ts
+lib/block-volume-ratio-bounds.ts
 lib/block-volume-ratio.cjs
 lib/boolean-utils.ts
 lib/bounded-concurrency.ts
@@ -1476,6 +1500,7 @@ lib/settings-backup.ts
 lib/settings-coordinator.ts
 lib/settings-diff.ts
 lib/settings-storage.ts
+lib/short-range-grid.ts
 lib/signal-analytics.ts
 lib/signal-config-matrix.ts
 lib/signal-indication.ts
@@ -1566,6 +1591,7 @@ lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts
 lib/trading-pair-keys.ts
+lib/trading-round-trip-cost.ts
 lib/trading.ts
 lib/trailing-settings.ts
 lib/trend-indication.ts
