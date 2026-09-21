@@ -11859,6 +11859,12 @@ function entryProtectionAdmissionLockKeyOf(connectionId: string): string {
 // that failed the audit is usually unchanged, so each retry only pays entry
 // and close costs (observed: four ATOMUSDT entries in eleven minutes).
 export const ENTRY_ROLLBACK_COOLDOWN_SECONDS = 15 * 60
+/**
+ * Hold on ONE slot whose rollback or fill could not be confirmed. As long as
+ * the previous connection-wide halt, because the uncertainty about that slot
+ * is the same — but only that slot waits.
+ */
+export const UNCONFIRMED_SLOT_HOLD_SECONDS = 24 * 60 * 60
 export function entryRollbackCooldownKeyOf(connectionId: string, symbol: string, direction: string): string {
   return `live:entry-rollback-cooldown:${connectionId}:${String(symbol).toUpperCase()}:${String(direction).toLowerCase()}`
 }
@@ -13176,13 +13182,24 @@ export async function executeLivePosition(
       return
     }
 
-    // Do not permit another entry after an exact-owned rollback could not be
-    // confirmed. Existing reconciliation/close processing remains active;
-    // only new exposure is halted until an operator audit clears this key.
+    // An unconfirmed rollback means THIS slot may still hold exposure on the
+    // venue, so this slot must not add more. It says nothing about any other
+    // symbol or direction. This used to arm the connection-wide halt, which
+    // stopped all 50 symbols for 24 h over one uncertain slot — production
+    // traded a single position at a time for exactly that reason.
+    //
+    // The hold is now scoped to the affected slot and extended to the full
+    // reconciliation window. Slot keys are per symbol and direction, so a
+    // second unconfirmed slot adds its own hold instead of overwriting the
+    // first one — a single shared key could not have done that.
     await client.setex(
-      entryProtectionHaltKey,
-      24 * 60 * 60,
-      JSON.stringify({ at: Date.now(), reason: "entry_protection_rollback_unconfirmed" }),
+      entryRollbackCooldownKeyOf(connectionId, realPosition.symbol, realPosition.direction),
+      UNCONFIRMED_SLOT_HOLD_SECONDS,
+      JSON.stringify({
+        at: Date.now(),
+        reason: "entry_protection_rollback_unconfirmed",
+        positionId: livePosition.id,
+      }),
     ).catch(() => {})
     livePosition.statusReason =
       "Entry protection rollback could not be confirmed; new entries halted for reconciliation"
@@ -16003,10 +16020,13 @@ export async function executeLivePosition(
       // Never open another row behind it. Reconciliation keeps recovering this
       // exact client/order id and will arm protection as soon as quantity is
       // authoritative; the halt expires only as a last-resort operator guard.
+      // An ambiguous market entry may already sit on the venue for THIS slot;
+      // a second entry here could double it. Other slots are unaffected, so
+      // the hold is scoped to this symbol and direction.
       await client.setex(
-        entryProtectionHaltKey,
-        24 * 60 * 60,
-        JSON.stringify({ at: Date.now(), reason: "entry_fill_unconfirmed" }),
+        entryRollbackCooldownKeyOf(connectionId, realPosition.symbol, realPosition.direction),
+        UNCONFIRMED_SLOT_HOLD_SECONDS,
+        JSON.stringify({ at: Date.now(), reason: "entry_fill_unconfirmed", positionId: livePosition.id }),
       ).catch(() => {})
       livePosition.statusReason =
         "Entry fill is unconfirmed; new entries halted until exact recovery and protection reconciliation"
