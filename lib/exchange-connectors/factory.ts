@@ -29,6 +29,11 @@ const FAILED_CONNECTOR_BACKOFF_MS = Math.max(
   Math.min(300_000, Number(process.env.CTS_CONNECTOR_FAILURE_BACKOFF_MS || 30_000)),
 )
 
+function isBingXProdLiveConnection(connection: { id?: string } | null | undefined): boolean {
+  const id = String(connection?.id || "").trim().toLowerCase()
+  return id === "bingx-x01" || id === "bingx-x01-futures"
+}
+
 export class ExchangeConnectorFactory {
   private static instance: ExchangeConnectorFactory
   private connectors: Map<string, BaseExchangeConnector> = new Map()
@@ -115,7 +120,7 @@ export class ExchangeConnectorFactory {
       spreadBufferPips: finiteOptional(connection.spread_buffer_pips),
       spreadMultiplier: finiteOptional(connection.spread_multiplier),
       marketType,
-      isTestnet: isInstaForex ? false : isTruthyFlag(connection.is_testnet),
+      isTestnet: isInstaForex ? false : isBingXProdLiveConnection(connection) ? false : isTruthyFlag(connection.is_testnet),
       apiType: connection.api_type || (isInstaForex ? "forex" : undefined),
       contractType: connection.contract_type || (isInstaForex ? "forex" : undefined),
       marginType: connection.margin_type,

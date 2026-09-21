@@ -129,6 +129,9 @@ export class BingXConnector extends BaseExchangeConnector {
   private static bingxCooldownWait: Promise<void> | null = null
   private static bingxCallTail: Promise<void> = Promise.resolve()
   private static lastCooldownLogAt = 0
+  private static readonly rateLimitUntilByScope = new Map<string, number>()
+  private static readonly cooldownWaitByScope = new Map<string, Promise<void> | null>()
+  private static readonly callTailByScope = new Map<string, Promise<void>>()
 
   // ── 109421 "order does not exist" handling ─────────────────────────────
   // 109421 is a routine business response (order filled/cancelled/never
@@ -252,9 +255,23 @@ export class BingXConnector extends BaseExchangeConnector {
   }
 
   private currentBingXRetryAt(): number | undefined {
-    return BingXConnector.bingxRateLimitUntil > Date.now()
-      ? BingXConnector.bingxRateLimitUntil
-      : undefined
+    const until = this.getRateLimitUntil()
+    return until > Date.now() ? until : undefined
+  }
+
+  private rateLimitScope(): string {
+    return this.credentials.isTestnet ? "prod-vst" : "prod-live"
+  }
+
+  private getRateLimitUntil(): number {
+    return BingXConnector.rateLimitUntilByScope.get(this.rateLimitScope()) || 0
+  }
+
+  private setRateLimitUntil(ts: number): void {
+    const scope = this.rateLimitScope()
+    const current = BingXConnector.rateLimitUntilByScope.get(scope) || 0
+    if (ts > current) BingXConnector.rateLimitUntilByScope.set(scope, ts)
+    if (scope === "prod-live") BingXConnector.bingxRateLimitUntil = Math.max(BingXConnector.bingxRateLimitUntil, ts)
   }
 
   // ── Native bingx-api package client ───────────────────────────────────────
@@ -1975,29 +1992,35 @@ export class BingXConnector extends BaseExchangeConnector {
     // All order/reconciliation calls share one FIFO lane. This prevents the
     // per-symbol Promise pools from waking together after cooldown and firing
     // another burst that immediately re-trips BingX.
-    const previous = BingXConnector.bingxCallTail
+    const scope = this.rateLimitScope()
+    const previous = BingXConnector.callTailByScope.get(scope) || BingXConnector.bingxCallTail
     let release!: () => void
-    BingXConnector.bingxCallTail = new Promise<void>((resolve) => { release = resolve })
+    const tail = new Promise<void>((resolve) => { release = resolve })
+    BingXConnector.callTailByScope.set(scope, tail)
+    if (scope === "prod-live") BingXConnector.bingxCallTail = tail
     await previous
 
     // Recheck after waiting for the FIFO predecessor. A predecessor can trip
     // the circuit breaker after this caller's initial check, so never let a
     // queued request bypass a newly-established cooldown.
-    while (BingXConnector.bingxRateLimitUntil > Date.now()) {
-      const waitMs = BingXConnector.bingxRateLimitUntil - Date.now()
-      if (!BingXConnector.bingxCooldownWait) {
+    while (this.getRateLimitUntil() > Date.now()) {
+      const waitMs = this.getRateLimitUntil() - Date.now()
+      if (!BingXConnector.cooldownWaitByScope.get(scope)) {
         const delayMs = waitMs + 2_000
-        BingXConnector.bingxCooldownWait = new Promise<void>((resolve) => {
+        const wait = new Promise<void>((resolve) => {
           setTimeout(resolve, delayMs)
         }).finally(() => {
-          BingXConnector.bingxCooldownWait = null
+          BingXConnector.cooldownWaitByScope.set(scope, null)
+          if (scope === "prod-live") BingXConnector.bingxCooldownWait = null
         })
+        BingXConnector.cooldownWaitByScope.set(scope, wait)
+        if (scope === "prod-live") BingXConnector.bingxCooldownWait = wait
       }
       if (Date.now() - BingXConnector.lastCooldownLogAt > 30_000) {
         BingXConnector.lastCooldownLogAt = Date.now()
-        console.warn(`[v0] [BingXConnector] ${operation}: shared rate-limit cooldown active; requests gated`)
+        console.warn(`[v0] [BingXConnector] ${operation}: ${scope} rate-limit cooldown active; requests gated`)
       }
-      await BingXConnector.bingxCooldownWait
+      await (BingXConnector.cooldownWaitByScope.get(scope) || Promise.resolve())
     }
 
     return release
@@ -2041,14 +2064,12 @@ export class BingXConnector extends BaseExchangeConnector {
       ? (bingxDelay ?? ENDPOINT_FALLBACK_COOLDOWN_MS) + UNBLOCK_BUFFER_MS
       : Math.max(bingxDelay ?? 0, ROLLING_WINDOW_COOLDOWN_MS)
     const retryTs = Date.now() + candidate
-    if (retryTs > BingXConnector.bingxRateLimitUntil) {
-      BingXConnector.bingxRateLimitUntil = retryTs
-    }
-    const remaining = BingXConnector.bingxRateLimitUntil - Date.now()
+    this.setRateLimitUntil(retryTs)
+    const remaining = this.getRateLimitUntil() - Date.now()
     console.warn(
       `[v0] [BingXConnector] ${operation}: BingX rate-limit ` +
       `(${isEndpointFrequencyLimit ? "100410 endpoint" : "109429 rolling"}) ` +
-      `observed — global cooldown set for ${remaining}ms`,
+      `observed — ${this.rateLimitScope()} cooldown set for ${remaining}ms`,
     )
   }
 
@@ -2261,7 +2282,7 @@ export class BingXConnector extends BaseExchangeConnector {
     // Do not wake another signed request while the shared BingX circuit breaker
     // is active. Preserve the last authoritative snapshot when available; an
     // empty fallback is retained for the existing connector contract.
-    if (BingXConnector.bingxRateLimitUntil > now) {
+    if (this.getRateLimitUntil() > now) {
       this.lastOpenOrdersSnapshotStatus = { ok: false, at: now, error: "rate_limit_cooldown" }
       return cached ? cached.orders.map((order) => ({ ...order })) : []
     }
@@ -2376,22 +2397,25 @@ export class BingXConnector extends BaseExchangeConnector {
     const cached = BingXConnector.positionsSnapshotCache.get(cacheKey)
     if (
       cached &&
-      now - cached.at < BingXConnector.positionsSnapshotTtlMs &&
-      BingXConnector.bingxRateLimitUntil <= now
+      now - cached.at < BingXConnector.positionsSnapshotTtlMs
     ) {
       this.lastPositionsSnapshotStatus = { ok: true, at: cached.at, error: "cache" }
       return cached.positions.map((position) => ({ ...position }))
     }
 
-    // A stale/empty position result is never authoritative during a provider
-    // lockout. Fail closed instead of waking another request or handing the
-    // entry pipeline an error-shaped empty account.
-    if (BingXConnector.bingxRateLimitUntil > now) {
+    // Keep the last good book during a same-environment cooldown so Live
+    // (prod-live) is not frozen by a Prod-VST 429, and so x01 can still
+    // process orders from a fresh cached snapshot.
+    if (this.getRateLimitUntil() > now) {
+      if (cached) {
+        this.lastPositionsSnapshotStatus = { ok: true, at: cached.at, error: "cache_during_cooldown" }
+        return cached.positions.map((position) => ({ ...position }))
+      }
       this.lastPositionsSnapshotStatus = {
         ok: false,
         at: now,
         error: "rate_limit_cooldown",
-        retryAt: BingXConnector.bingxRateLimitUntil,
+        retryAt: this.getRateLimitUntil(),
       }
       return []
     }
@@ -4197,10 +4221,10 @@ export class BingXConnector extends BaseExchangeConnector {
       return { success: false, error: "BingX order lookup cooldown active after missing-order pressure" }
     }
     const now = Date.now()
-    if (BingXConnector.bingxRateLimitUntil > now) {
+    if (this.getRateLimitUntil() > now) {
       return {
         success: false,
-        error: `BingX private API cooldown active until ${new Date(BingXConnector.bingxRateLimitUntil).toISOString()}`,
+        error: `BingX private API cooldown active until ${new Date(this.getRateLimitUntil()).toISOString()}`,
       }
     }
 
