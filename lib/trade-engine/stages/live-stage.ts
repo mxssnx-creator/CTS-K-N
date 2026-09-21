@@ -5325,6 +5325,8 @@ async function accumulateIntoLivePosition(
       direction,
       connector,
       reason,
+      // This accumulation mutates `existing`; its own marker must not halt it.
+      mutatingRowId: existing.id,
     })
     if (decision.safe) {
       pushStep(
@@ -11233,6 +11235,11 @@ async function reconcileAggregateProtectionBook(
     if (!leader) continue
     const desiredScope: ControlOrderScope = overall ? "symbol_direction" : "per_order"
     const scopeChanging = members.some((member) => (member.controlOrderScope || "per_order") !== desiredScope)
+    // Whether any member already holds a real venue control order. Only real
+    // ids are ever stored on a row (sentinels such as SYSTEM_FALLBACK are
+    // rejected at placement), so a stored id means a venue order exists.
+    const slotHadVenueControls = members.some((member) =>
+      Boolean(member.stopLossOrderId || member.takeProfitOrderId || member.securityStopOrderId))
     if (scopeChanging || policy.systemCloseOnly) {
       let settled = true
       for (const member of members) {
@@ -11251,8 +11258,27 @@ async function reconcileAggregateProtectionBook(
           await savePosition(member)
         }
       }
-      if (!settled || scopeChanging) (result.pendingControlSlots ??= new Set()).add(plan.key)
-      continue // Replacement requires the next authoritative order/quantity snapshot.
+      // Waiting for the next authoritative snapshot is required when existing
+      // venue controls were REPLACED: the cancellations must be confirmed
+      // before new orders go up, or old and new would overlap. A fresh slot
+      // in overall mode has nothing to replace — its rows start as
+      // "per_order" only because no scope has been assigned yet — so the
+      // scope assignment above is the whole transition and the shared
+      // controls can be armed in this same pass.
+      //
+      // Deferring it anyway left a gap the post-entry audit fell into: the
+      // leader held no shared stop loss, the audit reported
+      // `owned_shared_stopLoss_missing`, and every overall entry was rolled
+      // back — the second market order (a sell) seen in the dispatch test.
+      const freshOverallSlot = settled
+        && overall
+        && scopeChanging
+        && !slotHadVenueControls
+        && !policy.systemCloseOnly
+      if (!freshOverallSlot) {
+        if (!settled || scopeChanging) (result.pendingControlSlots ??= new Set()).add(plan.key)
+        continue // Replacement requires the next authoritative order/quantity snapshot.
+      }
     }
 
     const leaderBefore = protectionStateSignature(leader)
@@ -11929,6 +11955,7 @@ async function acquireEntryProtectionAdmissionLease(
 async function auditEntryProtectionBeforeVenueMutation(input: {
   connectionId: string
   candidateId?: string
+  mutatingRowId?: string
   symbol: string
   direction: ProtectionSlotDirection
   connector: any
@@ -11951,6 +11978,7 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     overallControlOrdersOnly: protectionPolicy.overallControlOrdersOnly,
     connectionId: input.connectionId,
     candidateId: input.candidateId,
+    mutatingRowId: input.mutatingRowId,
     symbol: input.symbol,
     direction: input.direction,
     positions,
@@ -12073,6 +12101,8 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
   direction: ProtectionSlotDirection
   connector: any
   reason: string
+  /** The row whose own mutation is running this verification. */
+  mutatingRowId?: string
 }): Promise<EntryProtectionAdmissionDecision> {
   const client = getRedisClient() as any
   let decision: EntryProtectionAdmissionDecision
@@ -12083,6 +12113,7 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
       direction: input.direction,
       connector: input.connector,
       requireCapacity: false,
+      mutatingRowId: input.mutatingRowId,
     })
   } catch (error) {
     decision = {

@@ -119,6 +119,12 @@ export function auditLiveEntryProtectionAdmission(input: {
   positions: readonly Record<string, any>[]
   venuePositions: readonly Record<string, any>[]
   overallControlOrdersOnly?: boolean
+  /**
+   * The row whose own add/reduce is running this audit. Its pending-mutation
+   * marker is not treated as a barrier against itself; its protection is still
+   * verified. Distinct from candidateId, which removes a row from the audit.
+   */
+  mutatingRowId?: string
   liveOrderIds: ReadonlySet<string>
 }): LiveEntryProtectionAdmissionAudit {
   const violations: string[] = []
@@ -152,7 +158,14 @@ export function auditLiveEntryProtectionAdmission(input: {
   if (owned.some((row) => text(row.status).toLowerCase().startsWith("closing"))) {
     violations.push("owned_quantity_mutation_pending")
   }
-  if (owned.some((row) => Boolean(
+  // The row whose own mutation is driving this audit does not wait for itself.
+  // The barrier exists so OTHER entries wait while a mutation is in flight;
+  // counting the mutating row's own marker made every overall-mode
+  // accumulation halt itself (`owned_quantity_mutation_pending`) at the very
+  // step that sets the marker. The mutating row stays in `owned`, so its
+  // protection is still fully verified — only its own marker is not a barrier.
+  const mutatingRowId = text(input.mutatingRowId)
+  if (owned.some((row) => (!mutatingRowId || text(row.id) !== mutatingRowId) && Boolean(
     row.pendingSystemAction
     || row.pendingQuantityMutation
     || row.pendingReduction
