@@ -68,7 +68,11 @@ describe("live entry protectability and physical ownership", () => {
     expect(result.violations).toContain("owned_quantity_mutation_pending")
   })
 
-  test("blocks a foreign or mixed physical venue slot without adopting it", () => {
+  // Operator policy: foreign positions sharing a slot are IGNORED, not a reason
+  // to refuse. Protection is sized to our own watermarked share, so a shared
+  // slot is safe to enter and hold. What must never happen is ADOPTING foreign
+  // quantity — booking it as ours — and that is asserted explicitly below.
+  test("ignores a foreign-only slot and never adopts it", () => {
     const external = auditLiveEntryProtectionAdmission({
       connectionId: "bingx-x02",
       symbol: "SOLUSDT",
@@ -77,8 +81,15 @@ describe("live entry protectability and physical ownership", () => {
       venuePositions: [{ symbol: "SOL-USDT", positionSide: "SHORT", size: 3 }],
       liveOrderIds: new Set(),
     })
-    expect(external.violations).toContain("venue_physical_slot_external")
+    expect(external.violations).not.toContain("venue_physical_slot_external")
+    // Not adopted: the 3 foreign units are never counted as ours.
+    expect(external.systemSlotQuantity).toBe(0)
+    expect(external.ownedActiveRows).toBe(0)
+    expect(external.physicalSlotAlreadyExists).toBe(false)
+  })
 
+  test("ignores foreign excess on a mixed slot, and never adopts it", () => {
+    // Ours 0.01, venue 0.02: the other 0.01 belongs to another system.
     const mixed = auditLiveEntryProtectionAdmission({
       connectionId: "bingx-x02",
       symbol: "BTCUSDT",
@@ -87,7 +98,32 @@ describe("live entry protectability and physical ownership", () => {
       venuePositions: [{ symbol: "BTCUSDT", positionSide: "LONG", size: 0.02 }],
       liveOrderIds: new Set(["sl-a", "tp-a", "sec-slot"]),
     })
-    expect(mixed.violations).toContain("venue_physical_slot_quantity_not_fully_owned")
+    expect(mixed.violations).not.toContain("venue_physical_slot_quantity_not_fully_owned")
+    // Our share is exactly what we track — the foreign 0.01 is not adopted.
+    expect(mixed.systemSlotQuantity).toBeCloseTo(0.01, 10)
+    expect(mixed.venueSlotQuantity).toBeCloseTo(0.02, 10)
+  })
+
+  test("our own quantity missing from the venue is still refused", () => {
+    // Ours 0.01, venue 0.004: part of OUR exposure is unaccounted for.
+    const short = auditLiveEntryProtectionAdmission({
+      connectionId: "bingx-x02",
+      symbol: "BTCUSDT",
+      direction: "long",
+      positions: [owned()],
+      venuePositions: [{ symbol: "BTCUSDT", positionSide: "LONG", size: 0.004 }],
+      liveOrderIds: new Set(["sl-a", "tp-a", "sec-slot"]),
+    })
+    expect(short.violations).toContain("venue_physical_slot_quantity_not_fully_owned")
+    const gone = auditLiveEntryProtectionAdmission({
+      connectionId: "bingx-x02",
+      symbol: "BTCUSDT",
+      direction: "long",
+      positions: [owned()],
+      venuePositions: [],
+      liveOrderIds: new Set(["sl-a", "tp-a", "sec-slot"]),
+    })
+    expect(gone.violations).toContain("owned_physical_slot_missing_on_venue")
   })
 
   test("ignores rows owned by another connection and reserves three controls for a new slot", () => {
