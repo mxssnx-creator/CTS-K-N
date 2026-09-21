@@ -36,6 +36,8 @@ export interface AggregateProtectionPlan {
   venueQuantity: number
   quantityTolerance: number
   ownershipMatches: boolean
+  /** Raw venue slot quantity before another system's share is excluded. */
+  rawVenueQuantity?: number
   desiredStopLoss: number
   desiredTakeProfit: number
   /** The farthest strategy-row stop for this physical slot. */
@@ -185,6 +187,29 @@ export function buildAggregateProtectionPlans(
     const leader = selectLeader(activeRows)
     const systemQuantity = activeRows.reduce((sum, row) => sum + finitePositive(row.quantity), 0)
     const security = securityStopForRows(leader.direction, activeRows)
+    // Protection acts on the system's OWN, watermarked quantity — never on
+    // another system's exposure sharing the venue slot.
+    //
+    // On a shared account one symbol/direction is one venue position holding
+    // both systems' quantity. The full-slot security stop is placed with this
+    // plan's venue quantity, so the planner used to require the venue slot to
+    // EQUAL the system quantity: anything else might mean the stop would also
+    // close the other system's position. That guard was right, but on a shared
+    // slot it could never pass, the security stop was withheld, and the
+    // post-entry audit then rolled every entry back as
+    // `owned_slot_controls_incomplete` — production kept one position open
+    // while entries on the other symbols were rolled back one by one.
+    //
+    // When the venue holds MORE than our tracked quantity, the excess is not
+    // ours and is ignored: the plan describes our share of the slot, so every
+    // downstream protection order — placement, drift checks, recovery — is
+    // sized to it, and a reduce-only stop for exactly our quantity closes only
+    // our portion. When the venue holds LESS than our tracked quantity, some of
+    // our exposure is unaccounted for; that stays a genuine mismatch.
+    const ownQuantityPresent = systemQuantity > 0
+      && venueQuantity > 0
+      && venueQuantity + quantityTolerance >= systemQuantity
+    const protectedQuantity = ownQuantityPresent ? systemQuantity : venueQuantity
     return {
       key,
       leaderId: leader.id,
@@ -194,9 +219,12 @@ export function buildAggregateProtectionPlans(
       symbol: leader.symbol,
       reportedSystemQuantity,
       systemQuantity,
-      venueQuantity,
+      // Our share of the venue slot: foreign excess removed.
+      venueQuantity: protectedQuantity,
+      /** The raw venue slot quantity, including any other system's share. */
+      rawVenueQuantity: venueQuantity,
       quantityTolerance,
-      ownershipMatches: venueQuantity > 0 && Math.abs(systemQuantity - venueQuantity) <= quantityTolerance,
+      ownershipMatches: ownQuantityPresent,
       desiredStopLoss: outerStopLoss(leader.direction, activeRows.map((row) => row.desiredStopLoss)),
       desiredTakeProfit: outerTakeProfit(leader.direction, activeRows.map((row) => row.desiredTakeProfit)),
       ...security,

@@ -82,7 +82,15 @@ describe("aggregate venue protection coordination", () => {
     })
   })
 
-  test("refuses aggregate ownership when venue quantity includes an independent position", () => {
+  test("an independent position sharing the slot is never included in protection", () => {
+    // The venue slot holds 12: our 10 plus 2 belonging to another system.
+    //
+    // The invariant this test guards is that protection must never act on
+    // the other system's 2. It used to be enforced by REFUSING ownership,
+    // which kept the 2 safe but also left our own 10 without a security stop
+    // and made the post-entry audit roll every such entry back. Protection is
+    // now sized to our share instead, which keeps the 2 safe AND protects
+    // the 10.
     const [plan] = buildAggregateProtectionPlans([
       {
         id: "cts-row",
@@ -97,9 +105,29 @@ describe("aggregate venue protection coordination", () => {
     expect(plan).toMatchObject({
       reportedSystemQuantity: 10,
       systemQuantity: 10,
-      venueQuantity: 12,
-      ownershipMatches: false,
+      ownershipMatches: true,
+      // The quantity every protection order is sized from: ours only.
+      venueQuantity: 10,
+      rawVenueQuantity: 12,
     })
+    // The independent position's 2 units are excluded from protection.
+    expect(plan.venueQuantity).toBeLessThan(plan.rawVenueQuantity as number)
+  })
+
+  test("our own quantity missing from the venue is still a mismatch", () => {
+    // Venue holds less than our tracked rows: part of OUR exposure is
+    // unaccounted for. That is never guessed away.
+    const [plan] = buildAggregateProtectionPlans([
+      { id: "cts-row", symbol: "XRPUSDT", direction: "long", quantity: 10, desiredStopLoss: 0.9, desiredTakeProfit: 1.1 },
+    ], [{ symbol: "XRPUSDT", direction: "long", quantity: 7 }])
+    expect(plan.ownershipMatches).toBe(false)
+  })
+
+  test("a slot held only by us is unchanged", () => {
+    const [plan] = buildAggregateProtectionPlans([
+      { id: "cts-row", symbol: "XRPUSDT", direction: "long", quantity: 10, desiredStopLoss: 0.9, desiredTakeProfit: 1.1 },
+    ], [{ symbol: "XRPUSDT", direction: "long", quantity: 10 }])
+    expect(plan).toMatchObject({ ownershipMatches: true, venueQuantity: 10, rawVenueQuantity: 10 })
   })
 
   test("never guesses Set ownership from an ambiguous aggregate quantity shrink", () => {
