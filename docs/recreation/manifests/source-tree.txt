@@ -421,6 +421,7 @@ __tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trailing-family-replay-wiring.test.ts
+__tests__/unit/transient-halt-short-ttl.test.ts
 __tests__/unit/trend-indication.test.ts
 __tests__/unit/trend-wiring.test.ts
 __tests__/unit/unplaced-rows-not-exposure.test.ts

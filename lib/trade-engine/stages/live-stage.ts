@@ -11995,6 +11995,19 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
  * recovery cycle may clear the halt only by producing a fully clean audit;
  * elapsed time or a process restart is never treated as proof of safety.
  */
+/**
+ * Violations that describe a failure to READ the venue, not an unsafe book.
+ * They never prove exposure is unprotected, so they must not hold entries for
+ * as long as a proven violation does.
+ */
+const TRANSIENT_PROTECTION_VIOLATIONS: ReadonlySet<string> = new Set([
+  "authoritative_protection_snapshot_unavailable",
+])
+/** Long enough to skip the failing cycle, short enough to re-audit on the next. */
+const TRANSIENT_ENTRY_HALT_TTL_SECONDS = 90
+/** A proven protection violation keeps the full hold until reconciliation. */
+const GENUINE_ENTRY_HALT_TTL_SECONDS = 24 * 60 * 60
+
 async function verifyConnectionProtectionAndPersistHalt(input: {
   connectionId: string
   symbol: string
@@ -12040,18 +12053,32 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
   if (decision.safe) {
     await client.del(haltKey).catch(() => 0)
   } else {
+    // A transient venue READ failure is not evidence that the book is unsafe —
+    // it is the absence of evidence. It used to arm the same 24-hour halt as a
+    // genuine protection violation, and since this audit only runs when an
+    // entry is attempted while the halt blocks every entry, a single failed
+    // API call froze the connection for a day: production held
+    // `authoritative_protection_snapshot_unavailable` for 21+ minutes with
+    // nothing able to clear it. Transient-only decisions now hold just long
+    // enough for the next cycle to re-audit; a genuine violation keeps the
+    // full hold.
+    const transientOnly = decision.violations.length > 0
+      && decision.violations.every((violation) => TRANSIENT_PROTECTION_VIOLATIONS.has(violation))
     await client.setex(
       haltKey,
-      24 * 60 * 60,
+      transientOnly ? TRANSIENT_ENTRY_HALT_TTL_SECONDS : GENUINE_ENTRY_HALT_TTL_SECONDS,
       JSON.stringify({
         at: Date.now(),
         reason: input.reason,
+        transient: transientOnly,
         violations: decision.violations.slice(0, 24),
       }),
     ).catch(() => {})
   }
   return decision
 }
+
+
 
 /**
  * Reconcile one CTS-owned physical symbol/direction slot only. The caller must
@@ -16041,10 +16068,15 @@ export async function executeLivePosition(
         pushStep(livePosition, "post_entry_audit_deferred", false, detail)
         livePosition.statusReason = `post_entry_audit_deferred: ${detail}`
         await savePosition(livePosition)
+        // A READ failure while the row's protection legs are already armed:
+        // not proof of unsafe exposure, and the full 24-hour hold deadlocked
+        // the connection because the audit that would clear it only runs on
+        // the next entry attempt, which the halt itself blocks. Hold for the
+        // transient window so the next cycle re-audits.
         await client.setex(
           entryProtectionHaltKeyOf(connectionId),
-          24 * 60 * 60,
-          JSON.stringify({ at: Date.now(), reason: "post_entry_audit_unavailable", violations: [detail].slice(0, 24) }),
+          TRANSIENT_ENTRY_HALT_TTL_SECONDS,
+          JSON.stringify({ at: Date.now(), reason: "post_entry_audit_unavailable", transient: true, violations: [detail].slice(0, 24) }),
         ).catch(() => {})
         await logProgressionEvent(
           connectionId,
