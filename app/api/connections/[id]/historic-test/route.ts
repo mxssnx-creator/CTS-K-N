@@ -27,11 +27,11 @@ function parse<T>(raw: unknown, fallback: T): T {
 
 export async function GET(
   _request: Request,
-  context: { params: Promise<{ id: string }> } | { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const params = await (context as any).params
-    const connectionId = String(params?.id || "").trim()
+    const resolved = await params
+    const connectionId = String(resolved?.id || "").trim()
     if (!connectionId) {
       return NextResponse.json({ success: false, error: "connectionId is required" }, { status: 400 })
     }
