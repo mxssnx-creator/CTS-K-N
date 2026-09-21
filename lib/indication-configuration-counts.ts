@@ -19,7 +19,7 @@ import {
   SIGNAL_SOURCE_DEFINITIONS,
 } from "@/lib/signal-source-registry"
 import { buildSignalTradeConfigurations } from "@/lib/signal-config-matrix"
-import { MAX_BASE_STEP, normalizeBaseMinStep } from "@/lib/constants"
+import { MAX_INDICATION_WINDOW, normalizeBaseMinStep } from "@/lib/constants"
 import {
   ACTIVE_MARKET_EXIT_SITUATIONS,
   DEFAULT_ACTIVE_OUTBREAK_RANGES,
@@ -208,7 +208,9 @@ export function calculateIndicationConfigurationCounts(
     : {}
   const minStep = normalizeBaseMinStep(settings.minStep)
   const fallbackRanges = Array.from(
-    { length: MAX_BASE_STEP - minStep + 1 },
+    // The window grid runs to MAX_INDICATION_WINDOW; MAX_BASE_STEP is the
+    // trailing step clamp and must not move with it.
+    { length: MAX_INDICATION_WINDOW - minStep + 1 },
     (_, index) => index + minStep,
   )
   const fallbackFactors = [0.9, 1, 1.1]
@@ -582,7 +584,7 @@ export function calculateIndicationConfigurationCounts(
     maxStorablePositions: totalPossibleSets * perSetDbCapacity,
     settings: {
       indicationRangeMin: ranges[0] ?? minStep,
-      indicationRangeMax: ranges[ranges.length - 1] ?? MAX_BASE_STEP,
+      indicationRangeMax: ranges[ranges.length - 1] ?? MAX_INDICATION_WINDOW,
       indicationRangeStep: 1,
       takeProfitRangeDivisor: positiveInteger(settings.takeProfitRangeDivisor, 3),
       validRangeCount: ranges.length,
