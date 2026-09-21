@@ -72,8 +72,10 @@ unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/bingx-vst-soak-plan.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
+unit	__tests__/unit/block-adjust-semantics.test.ts
 unit	__tests__/unit/block-count-state.test.ts
 unit	__tests__/unit/block-defaults-and-ceiling.test.ts
+unit	__tests__/unit/block-recovery-only.test.ts
 unit	__tests__/unit/block-row-eval-window.test.ts
 unit	__tests__/unit/block-settings-migration.test.ts
 unit	__tests__/unit/block-shared-lane-stacking.test.ts
@@ -197,6 +199,7 @@ unit	__tests__/unit/indication-lane-identity.test.ts
 unit	__tests__/unit/indication-outcome-cost-basis.test.ts
 unit	__tests__/unit/indication-set-type-coordination.test.ts
 unit	__tests__/unit/indication-set-write-pressure.test.ts
+unit	__tests__/unit/indication-window-bound.test.ts
 unit	__tests__/unit/inline-local-redis.test.ts
 unit	__tests__/unit/instaforex-base-connection.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts

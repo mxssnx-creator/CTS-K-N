@@ -1,3 +1,4 @@
+import { MAX_INDICATION_WINDOW } from "@/lib/constants"
 import { calculateIndicationConfigurationCounts } from "@/lib/indication-configuration-counts"
 
 describe("indication configuration counts", () => {
@@ -6,17 +7,17 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 5 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(39_976)
-    expect(result.totalEvaluationConfigurations).toBe(13_717)
+    expect(result.totalPossibleSets).toBe(41_380)
+    expect(result.totalEvaluationConfigurations).toBe(14_419)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(17)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
-      direction: 942,
-      move: 942,
+      direction: 1_590,
+      move: 1_590,
       active: 9_774,
       active_advanced: 36,
       special: 520,
-      optimal: 156,
+      optimal: 264,
       auto: 0,
       signal: 12_312,
       trend: 102,
@@ -141,13 +142,15 @@ describe("indication configuration counts", () => {
     expect(advanced?.possibleSets).toBe(16)
   })
 
-  it("honours the configured Base minimum while retaining every window through 30", () => {
+  it("honours the configured Base minimum while retaining every window through the ceiling", () => {
     const baseline = calculateIndicationConfigurationCounts({}, undefined)
     const legacyCeiling = calculateIndicationConfigurationCounts({ minStep: 30 }, undefined)
 
+    // minStep 30 moves the FLOOR; the ceiling is MAX_INDICATION_WINDOW, so
+    // windows 30..48 remain — it no longer collapses the grid to one window.
     expect(legacyCeiling.settings.indicationRangeMin).toBe(30)
-    expect(legacyCeiling.settings.indicationRangeMax).toBe(30)
-    expect(legacyCeiling.settings.validRangeCount).toBe(1)
+    expect(legacyCeiling.settings.indicationRangeMax).toBe(MAX_INDICATION_WINDOW)
+    expect(legacyCeiling.settings.validRangeCount).toBe(MAX_INDICATION_WINDOW - 30 + 1)
     expect(legacyCeiling.totalEvaluationConfigurations).toBeLessThan(
       baseline.totalEvaluationConfigurations,
     )

@@ -33,6 +33,41 @@ export interface BlockDerivationParams {
   /** Highest count the lane may reach. */
   maxStack: number
   /**
+   * Sizing once at least one Block is valid to increase.
+   *
+   * "shared"   — ONE uniform ratio (`sharedRatio`), however many counts are
+   *              valid. "if at least one block is valid to increase, a single
+   *              ratio is used".
+   * "additive" — one ratio per valid count, summed: the per-count multiple.
+   */
+  adjustMode?: "shared" | "additive"
+  /** The uniform ratio the shared mode applies. */
+  sharedRatio?: number
+  /**
+   * "Active" — an ADD-ON that skips the opening Block steps.
+   *
+   * Counted in Block STEPS, 0..3:
+   *   0  off; every Block step is executed
+   *   1  the normal (general) Block step is not executed, only those after it
+   *   2  the first two Block steps are not executed
+   *   3  the first three are not executed
+   *
+   * This is independent of `incrementSteps`, which says how many steps exist
+   * at all — the two carry an offset of one against each other: with
+   * `incrementSteps` 3 and `activeSkipSteps` 1, steps 2 and 3 are traded.
+   *
+   * A skipped step still drives the recovery state; it produces no trade.
+   */
+  activeSkipSteps?: number
+  /**
+   * Hold an escalated level while results stay non-positive.
+   *
+   * An increased Block that does not resolve positive KEEPS its level instead
+   * of climbing further, until a generally positive result restores the base.
+   * Per config, per lane and per count independently.
+   */
+  holdWhileNegative?: boolean
+  /**
    * Replay ONE independent Block count instead of the evolving lane.
    *
    * Each count is its own config: with `fixedCount` set to N every attempt of
@@ -44,10 +79,47 @@ export interface BlockDerivationParams {
   fixedCount?: number
 }
 
+/**
+ * Uniform ratio the shared mode applies.
+ *
+ * Shared fires on "at least one valid Block" and therefore applies to every
+ * recovery entry, so its ratio must be well below the additive one: at 1.5 a
+ * single valid Block produced a 2.5x position, which is oversizing for a
+ * condition that is nearly always true once a lane is recovering.
+ */
+export const BLOCK_SHARED_RATIO_DEFAULT = 0.8
+/** Continuous escalation is capped at 3 steps, per count, independently. */
+export const BLOCK_STEP_MAX = 3
+
+/**
+ * Hard ceiling on the Block multiplier: 5x the order's BASE volume.
+ *
+ * Without it the stack compounds without bound — ratio x valid count x
+ * escalation level — and with several counts valid at once a busy book reaches
+ * multiples the operator never budgeted. The venue sizes the real order from
+ * this number, so an unbounded stack is real oversizing.
+ *
+ * Applied to the FINAL multiplier rather than to any single factor, so no
+ * factor is silently dropped: every component still contributes, the product
+ * simply cannot exceed what the book allows.
+ */
+export const BLOCK_MAX_STACK_RATIO = 5
+/** "Active" skip: 0 is off, 1..3 skip that many opening Block steps. */
+export const ACTIVE_SKIP_STEPS_MIN = 0
+export const ACTIVE_SKIP_STEPS_MAX = 3
+export const ACTIVE_SKIP_STEPS_DEFAULT = 0
+
 export const DEFAULT_BLOCK_DERIVATION: BlockDerivationParams = {
-  volumeRatio: 1,
-  incrementSteps: 3,
+  // Additive adds a ratio PER valid count, so a small step compounds across
+  // counts; 0.2 keeps a 6-count stack at 2.2x rather than 7x.
+  volumeRatio: 0.2,
+  incrementSteps: BLOCK_STEP_MAX,
   maxStack: 3,
+  adjustMode: "additive",
+  sharedRatio: BLOCK_SHARED_RATIO_DEFAULT,
+  activeSkipSteps: ACTIVE_SKIP_STEPS_DEFAULT,
+  // Hold is the general rule; it is switched OFF explicitly, never on.
+  holdWhileNegative: true,
 }
 
 /**
@@ -72,18 +144,55 @@ export function deriveBlockTrades(
   let count = fixedCount ?? 0
   let level = 1
   let nonPositiveRun = 0
+  // Block enlarges RECOVERY entries only. An entry that follows a positive
+  // result — including the very first entry of a stream — runs at base size.
+  //
+  // Without `fixedCount` this fell out of `count` starting at 0 and resetting
+  // to 0 on every win. With `fixedCount` it did not: the count both started
+  // and reset to N, so `ranAtCount > 0` held for every trade and the lane
+  // became a CONSTANT leverage multiplier rather than a recovery mechanism —
+  // it enlarged winners, and it enlarged the losses too. Measured on
+  // 5,5,-2,5,5 at ratio 0.2 / count 2 it produced 7,7,-2.8,7,7 where the
+  // correct result is 5,5,-2,6,5.
+  //
+  // The count identity stays fixed, which is what makes each count an
+  // independently evaluated lane; only whether a given entry is IN recovery
+  // now gates the multiplier.
+  let inRecovery = false
+
+  const adjustMode = config.adjustMode === "shared" ? "shared" : "additive"
+  const sharedRatio = Number(config.sharedRatio) > 0 ? Number(config.sharedRatio) : BLOCK_SHARED_RATIO_DEFAULT
+  const stepCap = Math.max(1, Math.min(BLOCK_STEP_MAX, Math.floor(Number(config.incrementSteps) || BLOCK_STEP_MAX)))
+  const activeSkipSteps = Math.max(
+    ACTIVE_SKIP_STEPS_MIN,
+    Math.min(ACTIVE_SKIP_STEPS_MAX, Math.floor(Number(config.activeSkipSteps) || 0)),
+  )
+  const holdWhileNegative = config.holdWhileNegative !== false
 
   for (const trade of baseline || []) {
-    const ranAtCount = count
+    const ranAtCount = inRecovery ? count : 0
     const multiplier = ranAtCount > 0
-      ? blockVolume.blockVolumeMultiplier(ranAtCount, config.volumeRatio, config.incrementSteps, level)
+      ? Math.min(BLOCK_MAX_STACK_RATIO, adjustMode === "shared"
+        // Shared: one uniform ratio, independent of how many counts are valid.
+        ? 1 + sharedRatio * level
+        // Additive: a ratio per valid count, summed.
+        : blockVolume.blockVolumeMultiplier(ranAtCount, config.volumeRatio, stepCap, level))
       : 1
     const result = Number(trade?.signedResultR) || 0
-    out.push({
-      signedResultR: Number((result * (multiplier > 0 ? multiplier : 1)).toFixed(12)),
-      openedAt: trade?.openedAt,
-      closedAt: trade?.closedAt,
-    })
+    // The Block STEP this leg runs at: 0 when it is not a Block leg at all,
+    // otherwise 1 for the normal (general) step, 2 for the first escalation,
+    // and so on. Active skips the opening steps.
+    const legStep = ranAtCount > 0 ? level : 0
+    // Active off (0) executes everything, normal legs included. Active N skips
+    // Block steps 1..N; a normal leg is not a Block step and is skipped too,
+    // because Active exists precisely to trade only the later Block steps.
+    if (activeSkipSteps === 0 || legStep > activeSkipSteps) {
+      out.push({
+        signedResultR: Number((result * (multiplier > 0 ? multiplier : 1)).toFixed(12)),
+        openedAt: trade?.openedAt,
+        closedAt: trade?.closedAt,
+      })
+    }
 
     if (result > 0) {
       // A positive result ends the recovery. An independent count keeps its
@@ -91,14 +200,21 @@ export function deriveBlockTrades(
       count = fixedCount ?? 0
       level = 1
       nonPositiveRun = 0
+      inRecovery = false
     } else {
+      inRecovery = true
       // Only a settled BLOCK attempt advances the recovery level. The trade
       // that merely opened the streak ran at base volume, so it establishes
       // the count without escalating the level.
       if (ranAtCount > 0) {
         nonPositiveRun++
         if (nonPositiveRun % Math.max(1, ranAtCount) === 0) {
-          level = Math.min(Math.max(1, Math.floor(Number(config.incrementSteps) || 1)), level + 1)
+          // Hold applies at the LAST step: once the final configured step is
+          // reached, a following Block that loses KEEPS the escalation rather
+          // than resetting it. Below the last step the escalation simply
+          // advances as normal.
+          const atLastStep = level >= stepCap
+          level = atLastStep && holdWhileNegative ? level : Math.min(stepCap, level + 1)
         }
       }
       count = fixedCount ?? Math.min(maxStack, count + 1)

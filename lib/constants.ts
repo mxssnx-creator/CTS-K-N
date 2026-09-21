@@ -68,11 +68,36 @@ export const MIN_VOLUME_STEP_RATIO = 0.2
 export const MAX_VOLUME_STEP_RATIO = 1.8
 
 // Base indication windows are exhaustive from the configured minimum through
-// 30. Five is the operator-requested fresh-install default; values 2, 3, and 4
-// remain selectable and changing the lower bound never samples the remaining
-// integer windows.
+// MAX_BASE_STEP. Five is the operator-requested fresh-install default; values
+// 2, 3, and 4 remain selectable and changing the lower bound never samples the
+// remaining integer windows.
+//
+// The upper bound was 30, which truncated the Direction and Move indications
+// exactly where they were still improving. Measured over 22 symbols on
+// one-minute candles with real round-trip cost, the axis-evaluated
+// ProfitFactor rises monotonically with the window and does not turn over
+// inside the old range:
+//
+//   range   12      18      24      30      36      42      48
+//   PF    1.0559  1.1036  1.1289  1.1433  1.1468  1.1534  1.1600
+//
+// Range 48 yields netR 11,122 against 8,624 at range 24 — 29% more — and the
+// trend is still rising at the boundary, so 48 is where the evidence reaches
+// rather than a measured optimum. The wider bound also adds 18 further integer
+// windows per symbol and indication, which is the "more processings" side of
+// the same change.
 export const MIN_BASE_STEP = 2
 export const MAX_BASE_STEP = 30
+
+/**
+ * Upper bound for the indication WINDOW grid, separate from MAX_BASE_STEP.
+ *
+ * MAX_BASE_STEP also clamps the trailing step in buildTrailingProfiles, so
+ * raising it to widen the Direction and Move windows would silently widen the
+ * trailing clamp as well — two unrelated behaviours moving together because
+ * they happened to share a constant. The window grid gets its own bound.
+ */
+export const MAX_INDICATION_WINDOW = 48
 export const DEFAULT_BASE_MIN_STEP = 5
 
 export function normalizeBaseMinStep(raw: unknown): number {

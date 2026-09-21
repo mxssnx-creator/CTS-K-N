@@ -8,9 +8,12 @@ const settingsRoute = readFileSync(resolve(process.cwd(), "app/api/settings/rout
 const calculator = readFileSync(resolve(process.cwd(), "lib/volume-calculator.ts"), "utf8")
 
 describe("Block defaults follow the measured saturation point", () => {
-  test("the stack default is 3, where ProfitFactor stops improving", () => {
-    expect(settingsRoute).toContain("blockMaxStack: 3,")
-    expect(settingsRoute).not.toContain("blockMaxStack: 6,")
+  test("the stack default spans the full supported count range", () => {
+    // Operator decision: every count 1-6 is an independently evaluated lane.
+    // The saturation measurement (PF flat from 3 upward) is recorded beside
+    // the value as context, not as a competing default.
+    expect(settingsRoute).toContain("blockMaxStack: BLOCK_COUNT_MAX,")
+    expect(settingsRoute).toContain("ProfitFactor saturates at a stack of 3")
   })
 
   test("a deeper stack only raises a multiplier the ceiling already truncates", () => {

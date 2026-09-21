@@ -6,11 +6,11 @@ import {
 } from "@/lib/historic-test-settings"
 
 describe("Historic Test settings contract", () => {
-  test("defaults: disabled, 20h, PF 1.20, 15 symbols, 2h recalc, every family on, 1H volatility, 200 steps", () => {
+  test("defaults: disabled, 20h, PF 1.10, 15 symbols, 2h recalc, every family on, 1H volatility, 200 steps", () => {
     expect(DEFAULT_HISTORIC_TEST_SETTINGS).toEqual({
       enabled: false,
       periodHours: 20,
-      minProfitFactor: 1.2,
+      minProfitFactor: 1.1,
       symbolCount: 15,
       recalcIntervalHours: 2,
       liveCheckPositions: 15,
@@ -37,10 +37,10 @@ describe("Historic Test settings contract", () => {
     expect(normalizeHistoricTestSettings({ symbols: { maxProgressCount: 5 } }).symbols.maxProgressCount).toBe(10)
     expect(normalizeHistoricTestSettings({ symbols: { maxProgressCount: 301 } }).symbols.maxProgressCount).toBe(300)
     // The PF threshold lives on the PositionCost-relative 1.02 + n x 0.02 grid.
-    expect(normalizeHistoricTestSettings({ minProfitFactor: 1.2 }).minProfitFactor).toBe(1.2)
+    expect(normalizeHistoricTestSettings({ minProfitFactor: 1.1 }).minProfitFactor).toBe(1.1)
     expect(normalizeHistoricTestSettings({ minProfitFactor: 1.205 }).minProfitFactor).toBe(1.2)
     expect(normalizeHistoricTestSettings({ minProfitFactor: 1.239 }).minProfitFactor).toBe(1.24)
-    expect(normalizeHistoricTestSettings({ minProfitFactor: "x" }).minProfitFactor).toBe(1.2)
+    expect(normalizeHistoricTestSettings({ minProfitFactor: "x" }).minProfitFactor).toBe(1.1)
   })
 
   test("accepts nested, flat-mirror and JSON-encoded shapes", () => {
