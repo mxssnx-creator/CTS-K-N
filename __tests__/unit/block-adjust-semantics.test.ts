@@ -1,4 +1,4 @@
-import { BLOCK_SHARED_RATIO_DEFAULT, BLOCK_STEP_MAX, deriveBlockTrades } from "@/lib/historic-test-family-derivations"
+import { BLOCK_MAX_STACK_RATIO, BLOCK_SHARED_RATIO_DEFAULT, BLOCK_STEP_MAX, deriveBlockTrades } from "@/lib/historic-test-family-derivations"
 
 const mk = (...r: number[]) => r.map((v, i) => ({ signedResultR: v, openedAt: i * 1000, closedAt: i * 1000 + 500 })) as any
 const v = (rows: readonly any[]) => rows.map((r) => Number(r.signedResultR.toFixed(4)))
@@ -85,5 +85,34 @@ describe("Block adjustment follows the operator specification", () => {
     expect(out[0]).toBe(-2)          // trigger, unscaled
     expect(out[1]).toBeGreaterThan(5) // recovery entry, enlarged
     expect(out[2]).toBe(5)            // after the win, back to base
+  })
+})
+
+describe("the Block multiplier cannot oversize an order", () => {
+  test("the ceiling is 5x the order's base volume", () => {
+    expect(BLOCK_MAX_STACK_RATIO).toBe(5)
+  })
+
+  test("a large additive stack is bound, not allowed to compound", () => {
+    // count 6 x ratio 2 x level 3 would be 37x uncapped.
+    const out = v(deriveBlockTrades(mk(-2, 5) as any, {
+      volumeRatio: 2, maxStack: 6, fixedCount: 6, incrementSteps: 3,
+    }))
+    expect(out[1]).toBeLessThanOrEqual(5 * 5 + 1e-9)
+  })
+
+  test("a large shared ratio is bound the same way", () => {
+    const out = v(deriveBlockTrades(mk(-2, 5) as any, {
+      maxStack: 6, fixedCount: 1, adjustMode: "shared", sharedRatio: 10,
+    }))
+    expect(out[1]).toBeLessThanOrEqual(5 * 5 + 1e-9)
+  })
+
+  test("below the ceiling nothing is altered", () => {
+    // count 2 x ratio 0.2 x level 1 = 1.4x, well under the cap.
+    const out = v(deriveBlockTrades(mk(-2, 5) as any, {
+      volumeRatio: 0.2, maxStack: 6, fixedCount: 2,
+    }))
+    expect(out[1]).toBeCloseTo(7, 6)
   })
 })

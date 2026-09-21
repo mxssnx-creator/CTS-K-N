@@ -90,6 +90,20 @@ export interface BlockDerivationParams {
 export const BLOCK_SHARED_RATIO_DEFAULT = 0.8
 /** Continuous escalation is capped at 3 steps, per count, independently. */
 export const BLOCK_STEP_MAX = 3
+
+/**
+ * Hard ceiling on the Block multiplier: 5x the order's BASE volume.
+ *
+ * Without it the stack compounds without bound — ratio x valid count x
+ * escalation level — and with several counts valid at once a busy book reaches
+ * multiples the operator never budgeted. The venue sizes the real order from
+ * this number, so an unbounded stack is real oversizing.
+ *
+ * Applied to the FINAL multiplier rather than to any single factor, so no
+ * factor is silently dropped: every component still contributes, the product
+ * simply cannot exceed what the book allows.
+ */
+export const BLOCK_MAX_STACK_RATIO = 5
 /** "Active" skip: 0 is off, 1..3 skip that many opening Block steps. */
 export const ACTIVE_SKIP_STEPS_MIN = 0
 export const ACTIVE_SKIP_STEPS_MAX = 3
@@ -158,7 +172,7 @@ export function deriveBlockTrades(
   for (const trade of baseline || []) {
     const ranAtCount = inRecovery ? count : 0
     const multiplier = ranAtCount > 0
-      ? (adjustMode === "shared"
+      ? Math.min(BLOCK_MAX_STACK_RATIO, adjustMode === "shared"
         // Shared: one uniform ratio, independent of how many counts are valid.
         ? 1 + sharedRatio * level
         // Additive: a ratio per valid count, summed.
