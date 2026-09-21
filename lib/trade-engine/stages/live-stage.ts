@@ -16003,7 +16003,16 @@ export async function executeLivePosition(
           protectionLegArmedQuantity(livePosition, "take_profit")
           - Number(livePosition.executedQuantity || 0)
         ) <= rowQuantityTolerance
-      if (!rowProtectionComplete) {
+      // In overall mode a partial row deliberately has NO venue SL/TP of its
+      // own: the slot's 1-3 control orders cover every partial together at the
+      // widest levels, armed by reconcileAggregateProtectionBook immediately
+      // below. Requiring row-level controls here rolled back every overall
+      // entry before that reconcile could run. Protection is still verified —
+      // at the slot level, by the post-entry audit, which knows overall scope
+      // and rolls back if the slot's leader does not hold the controls.
+      const overallSlotControls = initialPolicy.overallControlOrdersOnly === true
+        && initialPolicy.systemCloseOnly !== true
+      if (!overallSlotControls && !rowProtectionComplete) {
         await rollbackEntryWithoutCompleteProtection(
           "Initial entry did not receive its exact-quantity venue Stop Loss and Take Profit",
           [

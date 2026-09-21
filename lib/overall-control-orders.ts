@@ -1,6 +1,19 @@
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 
 /** One protection policy per connection: all engines share physical venue slots. */
+/**
+ * Overall control orders: one position (symbol/direction slot) carries 1-3
+ * control orders covering ALL of its partial orders together, at the widest of
+ * the individual orders' levels; partial exits are handled by the system.
+ *
+ * Kept OFF as the global default for now, deliberately. Under overall mode the
+ * dispatch integration suite (32 scenarios written for per-order protection)
+ * fails 22, and the simplest entry scenario produces an unexplained second
+ * market order (buy + sell within one dispatch) while the position ends open
+ * with no failed step. Partials, DCA, Block accumulation and quantity reduction
+ * are therefore not validated under overall mode. Enable it per connection;
+ * make it the default once an overall-mode integration suite passes.
+ */
 export const OVERALL_CONTROL_ORDERS_DEFAULT = false
 
 export function parseProtectionBoolean(value: unknown): boolean {

@@ -402,7 +402,7 @@ jest.mock("@/lib/redis-db", () => ({
     ])
   }),
   getConnection: jest.fn(async () => ({ ...connection })),
-  getAppSettings: jest.fn(async () => ({})),
+  getAppSettings: jest.fn(async () => ({ overallControlOrdersOnly: false })),
   setSettings: jest.fn(async () => undefined),
   getMarketData: jest.fn(async () => ({ latest: { close: 100 } })),
 }))
@@ -497,6 +497,13 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     lists.clear()
     sets.clear()
     sortedSets.clear()
+    // This suite exercises PER-ORDER protection: a venue SL/TP on every
+    // partial row. Overall control orders became the system default, so the
+    // suite states the mode it tests (via the mocked app settings) instead of
+    // inheriting it — otherwise it would silently test a different model than
+    // the one its assertions describe.
+    const { invalidateLiveStageSettingsCache } = await import("@/lib/trade-engine/stages/live-stage")
+    invalidateLiveStageSettingsCache()
     cancelledVenueOrderIds.clear()
     venueQuantityOverrides.clear()
     jest.clearAllMocks()
