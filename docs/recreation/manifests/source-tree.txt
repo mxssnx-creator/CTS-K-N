@@ -281,6 +281,7 @@ __tests__/unit/orphaned-position-sweep.test.ts
 __tests__/unit/overall-control-lifecycle.test.ts
 __tests__/unit/overall-control-orders.test.ts
 __tests__/unit/overall-mode-entry-check.test.ts
+__tests__/unit/overall-mode-fixes.test.ts
 __tests__/unit/overall-stats-relevant-connections.test.ts
 __tests__/unit/overview-poller.test.ts
 __tests__/unit/owned-only-protection-book.test.ts
