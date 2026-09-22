@@ -21,8 +21,8 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { BOT_TUNING, prepare, roundTripCostFor, signal, type Candle, type Dir } from "@/lib/bots/backtest"
 import { candleUniverse, contractRules, type ContractRules } from "@/lib/bots/market-data"
-import { readBotSettings } from "@/lib/bots/store"
-import type { BotSettings, BotType } from "@/lib/bots/settings"
+import { readBotGroup, readBotSettings } from "@/lib/bots/store"
+import { BOT_RISK_LEVELS, type BotSettings, type BotType } from "@/lib/bots/settings"
 
 const TYPE_CODE: Record<BotType, string> = {
   sandwich: "sw", liquidity_sweep: "ls", vwap_reversion: "vw",
@@ -47,6 +47,30 @@ const posKey = (c: string, t: BotType) => `bots:positions:${c}:${t}`
 const tradesKey = (c: string, t: BotType) => `bots:trades:${c}:${t}`
 const cooldownKey = (c: string, t: BotType) => `bots:cooldown:${c}:${t}`
 const lockKey = (c: string, t: BotType) => `bots:lock:${c}:${t}`
+const riskKey = (c: string, t: BotType) => `bots:risk:${c}:${t}`
+
+/**
+ * Live drawdown throttle, the same rule the backtest applies: measured on the
+ * bot's own realised results since its last reference point. At the level's
+ * throttle threshold entries are halved; at the pause threshold new entries
+ * stop for an hour and the reference resets to where the bot stands.
+ */
+async function riskGate(client: any, c: string, t: BotType, level: keyof typeof BOT_RISK_LEVELS, balance: number) {
+  const cfg = BOT_RISK_LEVELS[level]
+  const raw = await client.hgetall(riskKey(c, t)).catch(() => ({})) || {}
+  const now = Date.now()
+  const refAt = Number(raw.refAt || 0), pausedUntil = Number(raw.pausedUntil || 0)
+  if (pausedUntil > now) return { multiplier: 0, paused: true, drawdownPct: Number(raw.ddPct || 0) }
+  const trades = await readLiveTrades(c, t, 2000)
+  let cum = 0, peak = 0
+  for (const x of [...trades].reverse()) { if (x.closedAt < refAt) continue; cum += x.pnl; peak = Math.max(peak, cum) }
+  const ddPct = balance > 0 ? Math.max(0, (peak - cum) / balance * 100) : 0
+  if (ddPct >= cfg.pauseDdPct) {
+    await client.hset(riskKey(c, t), { pausedUntil: String(now + 3600_000), refAt: String(now + 3600_000), ddPct: String(ddPct) })
+    return { multiplier: 0, paused: true, drawdownPct: ddPct }
+  }
+  return { multiplier: cfg.sizeMultiplier * (ddPct >= cfg.throttleDdPct ? 0.5 : 1), paused: false, drawdownPct: ddPct }
+}
 const venue = (s: string) => (s.includes("-") ? s : s.replace(/USDT$/, "-USDT"))
 const decimalsOf = (step: number) => Math.max(0, Math.min(12, Math.round(-Math.log10(step))))
 // Snapped to the step AND printed at the step's precision: 10580.400000000001
@@ -233,6 +257,9 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     const bal = await connector.getBalance().catch(() => null)
     const balance = Number(bal?.availableBalance ?? bal?.balance ?? bal?.data?.availableBalance ?? 0)
     if (!(balance > 0)) return { ...report, skipped: "balance unavailable" }
+    const group = await readBotGroup(connectionId)
+    const gate = await riskGate(client, connectionId, type, group.riskLevel, balance)
+    if (gate.paused) return { ...report, skipped: `risk pause (${group.riskLevel}, drawdown ${gate.drawdownPct.toFixed(2)}%)` }
     const rulesAll = await contractRules()
     const cool: Record<string, string> = (await client.hgetall(cooldownKey(connectionId, type)).catch(() => ({}))) || {}
     const ownSymbols = new Set(positions.map((p) => p.symbol))
@@ -254,8 +281,10 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
       const entryPx = type === "sandwich"
         ? (dir === "long" ? Math.min(s.close[i], s.bbMid[i] - 2 * s.bbStd[i]) : Math.max(s.close[i], s.bbMid[i] + 2 * s.bbStd[i]))
         : s.close[i]
-      const riskNotional = (balance * RISK_PER_STOP_PCT / 100) / ((slPct + roundTripCostFor(true, "sl")) / 100) * settings.volumeFactor
-      let notional = Math.min(riskNotional, balance * MAX_POSITION_SHARE * settings.volumeFactor)
+      // Volume factor (per bot) x risk level (group) x drawdown throttle.
+      const sizeFactor = settings.volumeFactor * gate.multiplier
+      const riskNotional = (balance * RISK_PER_STOP_PCT / 100) / ((slPct + roundTripCostFor(true, "sl")) / 100) * sizeFactor
+      let notional = Math.min(riskNotional, balance * MAX_POSITION_SHARE * sizeFactor)
       if (notional < rules.minNotional) notional = rules.minNotional * 1.02
       if (openNotional + notional > balance * MAX_OPEN_NOTIONAL_SHARE) break
       const qty = floorTo(notional / entryPx, rules.quantityStep)

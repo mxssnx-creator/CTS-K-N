@@ -7,6 +7,30 @@
 export type BotType = "sandwich" | "momentum_breakout" | "trend_pullback" | "vwap_reversion" | "liquidity_sweep" | "volatility_squeeze"
 export type SymbolRanking = "volatility_1h" | "volume_24h" | "range_1h"
 export type BotStrategy = "normal" | "trailing" | "axis" | "block" | "dca"
+export type BotRiskLevel = "secure" | "normal" | "active"
+
+/**
+ * Risk levels scale position size on top of each bot's own volume factor (the
+ * volume factor stays independently adjustable) and throttle by drawdown:
+ * at `throttleDdPct` new entries are halved; at `pauseDdPct` the bot pauses
+ * new entries for an hour, then resumes throttled from its new reference.
+ */
+export const BOT_RISK_LEVELS: Record<BotRiskLevel, { label: string; sizeMultiplier: number; throttleDdPct: number; pauseDdPct: number }> = {
+  secure: { label: "Secure", sizeMultiplier: 0.5, throttleDdPct: 1, pauseDdPct: 2 },
+  normal: { label: "Normal", sizeMultiplier: 1, throttleDdPct: 2, pauseDdPct: 4 },
+  active: { label: "Active", sizeMultiplier: 1.5, throttleDdPct: 4, pauseDdPct: 8 },
+}
+
+/** Connection-wide bot group settings: run every validated bot at once, at one risk level. */
+export interface BotGroupSettings { runAll: boolean; riskLevel: BotRiskLevel }
+export const DEFAULT_BOT_GROUP: BotGroupSettings = { runAll: false, riskLevel: "normal" }
+export function normalizeBotGroup(raw: Partial<BotGroupSettings> | null | undefined): BotGroupSettings {
+  const levels = Object.keys(BOT_RISK_LEVELS) as BotRiskLevel[]
+  return {
+    runAll: raw?.runAll === true,
+    riskLevel: levels.includes(raw?.riskLevel as BotRiskLevel) ? (raw!.riskLevel as BotRiskLevel) : DEFAULT_BOT_GROUP.riskLevel,
+  }
+}
 
 export interface BotSettings {
   type: BotType
