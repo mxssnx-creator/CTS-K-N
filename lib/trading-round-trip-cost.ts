@@ -17,28 +17,18 @@
  */
 
 /** Exchange taker fee per side, as a fraction (0.001 = 0.10%). */
-export const DEFAULT_TAKER_FEE_FRACTION = 0.001
-/** Expected slippage across the round trip, as a fraction (0.0006 = 0.06%). */
-export const DEFAULT_SLIPPAGE_FRACTION = 0.0006
+import roundTripCost from "./trading-round-trip-cost.cjs"
 
+// One implementation, shared with the plain-Node Direct-Trade processor.
+export const DEFAULT_TAKER_FEE_FRACTION: number = roundTripCost.DEFAULT_TAKER_FEE_FRACTION
+export const DEFAULT_SLIPPAGE_FRACTION: number = roundTripCost.DEFAULT_SLIPPAGE_FRACTION
 export interface RoundTripCostInput {
-  /** Taker fee per side, as a fraction. Both sides are charged. */
   takerFeeFraction?: number
-  /** Round-trip slippage, as a fraction. */
   slippageFraction?: number
 }
-
-/** Round-trip cost as a FRACTION of notional (entry + exit fees plus slippage). */
 export function roundTripCostFraction(input: RoundTripCostInput = {}): number {
-  const fee = Number(input.takerFeeFraction)
-  const slip = Number(input.slippageFraction)
-  const takerFee = Number.isFinite(fee) && fee >= 0 ? fee : DEFAULT_TAKER_FEE_FRACTION
-  const slippage = Number.isFinite(slip) && slip >= 0 ? slip : DEFAULT_SLIPPAGE_FRACTION
-  // Two sides: the position is opened and closed.
-  return takerFee * 2 + slippage
+  return roundTripCost.roundTripCostFraction(input)
 }
-
-/** Round-trip cost in PERCENT, which is the unit the replay and the outcome model both carry. */
 export function roundTripCostPercent(input: RoundTripCostInput = {}): number {
-  return roundTripCostFraction(input) * 100
+  return roundTripCost.roundTripCostPercent(input)
 }

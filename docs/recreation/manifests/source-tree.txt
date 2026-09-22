@@ -137,6 +137,7 @@ __tests__/unit/direct-trade-config-store.test.ts
 __tests__/unit/direct-trade-continuity-cron.test.ts
 __tests__/unit/direct-trade-control-order-route.test.ts
 __tests__/unit/direct-trade-coordination.test.ts
+__tests__/unit/direct-trade-cost-basis.test.ts
 __tests__/unit/direct-trade-history-policy.test.ts
 __tests__/unit/direct-trade-indication-stats.test.ts
 __tests__/unit/direct-trade-ledger-recovery.test.ts
@@ -1613,6 +1614,7 @@ lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts
 lib/trading-pair-keys.ts
+lib/trading-round-trip-cost.cjs
 lib/trading-round-trip-cost.ts
 lib/trading.ts
 lib/trailing-settings.ts
