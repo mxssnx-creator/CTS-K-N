@@ -102,13 +102,26 @@ async function closeAtMarket(connector: any, p: BotLivePosition, connectionId: s
   }).catch((e: any) => ({ success: false, error: String(e?.message || e) }))
 }
 
-export interface BotTickReport { connectionId: string; type: BotType; skipped?: string; managed: number; entries: number; closed: number; errors: string[] }
+export interface BotTickReport { connectionId: string; type: BotType; skipped?: string; managed: number; entries: number; closed: number; errors: string[]; durationMs?: number }
+
+/**
+ * The lock must outlive the slowest tick. It was 55 s — shorter than a tick
+ * that fetches candles for up to 60 symbols and queues its orders behind the
+ * engine's rate-limited order lane. When a tick ran past 55 s the lock
+ * expired, the next minute's tick started alongside it, and both entered the
+ * same symbol (two CRVUSDT entries at 0.3556 and 0.3564 — prices from two
+ * different minutes). The lock now covers any tick; new entries stop after
+ * ENTRY_DEADLINE_MS so a tick always ends well inside it.
+ */
+const TICK_LOCK_MS = 4 * 60_000
+const ENTRY_DEADLINE_MS = 40_000
 
 export async function runBotTick(connectionId: string, type: BotType, connector: any, connection: Record<string, any>): Promise<BotTickReport> {
+  const startedAt = Date.now()
   const report: BotTickReport = { connectionId, type, managed: 0, entries: 0, closed: 0, errors: [] }
   await initRedis()
   const client: any = getRedisClient()
-  const got = await client.set(lockKey(connectionId, type), String(Date.now()), { PX: 55_000, NX: true }).catch(() => null)
+  const got = await client.set(lockKey(connectionId, type), String(Date.now()), { PX: TICK_LOCK_MS, NX: true }).catch(() => null)
   if (!got) return { ...report, skipped: "tick already running" }
   try {
     const settings = await readBotSettings(connectionId, type)
@@ -215,6 +228,7 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     const series = Object.entries(universe).map(([sym, c]) => [sym, prepare(c.slice(0, -1) as Candle[])] as const)
     const ranked = rankForLive(series, settings)
     for (const [sym, s] of ranked) {
+      if (Date.now() - startedAt > ENTRY_DEADLINE_MS) { report.errors.push("entry deadline reached; remaining symbols next tick"); break }
       if (ownSymbols.has(sym) || Number(cool[sym] || 0) > Date.now()) continue
       const i = s.c.length - 1
       const dir = signal(type, s, i)
@@ -251,6 +265,7 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     }
     return report
   } finally {
+    report.durationMs = Date.now() - startedAt
     await client.del(lockKey(connectionId, type)).catch(() => undefined)
   }
 }

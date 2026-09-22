@@ -198,3 +198,15 @@ describe("live bot runner", () => {
     expect(v.placeOrder).not.toHaveBeenCalled()
   })
 })
+
+describe("tick timing", () => {
+  const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "lib/bots/runner.ts"), "utf8")
+  test("the lock outlives the entry deadline by a wide margin", () => {
+    expect(src).toContain("const TICK_LOCK_MS = 4 * 60_000")
+    expect(src).toContain("const ENTRY_DEADLINE_MS = 40_000")
+    expect(src).toContain("{ PX: TICK_LOCK_MS, NX: true }")
+  })
+  test("new entries stop at the deadline", () => {
+    expect(src).toContain("if (Date.now() - startedAt > ENTRY_DEADLINE_MS)")
+  })
+})
