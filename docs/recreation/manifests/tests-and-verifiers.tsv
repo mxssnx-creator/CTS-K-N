@@ -123,6 +123,7 @@ unit	__tests__/unit/direct-trade-config-store.test.ts
 unit	__tests__/unit/direct-trade-continuity-cron.test.ts
 unit	__tests__/unit/direct-trade-control-order-route.test.ts
 unit	__tests__/unit/direct-trade-coordination.test.ts
+unit	__tests__/unit/direct-trade-cost-basis.test.ts
 unit	__tests__/unit/direct-trade-history-policy.test.ts
 unit	__tests__/unit/direct-trade-indication-stats.test.ts
 unit	__tests__/unit/direct-trade-ledger-recovery.test.ts

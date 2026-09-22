@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import blockVolume from "../lib/block-volume-ratio.cjs"
+import roundTripCost from "../lib/trading-round-trip-cost.cjs"
 const { advanceBlockCountLifecycle, normalizeBlockIncrementSteps, blockEffectiveIncrementStep, blockVolumeMultiplier: canonicalBlockVolumeMultiplier, BLOCK_INCREMENT_STEPS_DEFAULT } = blockVolume
 /**
  * Direct-Trade Continuous Processor
@@ -2846,7 +2847,12 @@ async function closePosition(pos, exitPrice, reason) {
   // The configured PositionCost is charged against every realised leg's
   // notional. This keeps staged Block PnL/PF on the same ratio basis as the
   // historical simulation instead of charging one cost to a multi-leg book.
-  const positionCostPercent = Math.max(0.02, Math.min(1, Number(pos.positionCostPercent) || Number(state.positionCostPercent) || 0.1))
+  // A simulated close pays the platform's round-trip cost — the same cost the
+  // live outcome model and the Historic Test replay charge. It used to charge
+  // PositionCost (default 0.1 %), which is a SIZING setting, not a fee: the
+  // simulation then ran on a cheaper cost basis than live and overstated
+  // every simulated result (#429 fixed the same mismatch in the replay).
+  const positionCostPercent = roundTripCost.roundTripCostPercent()
   const positionCostUsdt = pos.mode === "simulated"
     ? totalEntryNotionalUsdt * (positionCostPercent / 100)
     : 0
