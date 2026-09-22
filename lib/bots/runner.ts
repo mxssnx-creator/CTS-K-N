@@ -129,6 +129,32 @@ async function closeAtMarket(connector: any, p: BotLivePosition, connectionId: s
   }).catch((e: any) => ({ success: false, error: String(e?.message || e) }))
 }
 
+/**
+ * Stop placement right after a fill failed on 3 of 17 live trades, each time
+ * for a TRANSIENT reason: BingX answered `109420 position not exist` because
+ * the fill was not yet reflected, or the shared rate-limit lane gated the
+ * request until it timed out. The runner treated every failure as final and
+ * closed at market — a needless loss each time. Transient failures are now
+ * retried with growing pauses inside the same tick, so the position is at
+ * most seconds without a stop; anything else, or a stop that still fails after
+ * the retries, is closed at market exactly as before.
+ */
+export const STOP_RETRY_DELAYS_MS = [1_500, 3_000, 5_000]
+const TRANSIENT_STOP_ERROR = /109420|position not exist|rate.?limit|cooldown|gated|timed? ?out|timeout|ECONNRESET|503|502/i
+export async function placeStopWithRetry(
+  place: () => Promise<any>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<any> {
+  let result = await place()
+  for (const delay of STOP_RETRY_DELAYS_MS) {
+    if (result?.success && result.orderId) return result
+    if (!TRANSIENT_STOP_ERROR.test(String(result?.error || ""))) return result
+    await sleep(delay)
+    result = await place()
+  }
+  return result
+}
+
 export interface BotTickReport { connectionId: string; type: BotType; skipped?: string; managed: number; entries: number; closed: number; errors: string[]; durationMs?: number }
 
 /**
@@ -190,8 +216,8 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
             const tick = rules?.priceTick || 0.0001
             const slPx = roundTo(p.direction === "long" ? p.entryPrice * (1 - p.slPct / 100) : p.entryPrice * (1 + p.slPct / 100), tick)
             const tpPx = roundTo(p.direction === "long" ? p.entryPrice * (1 + p.tpPct / 100) : p.entryPrice * (1 - p.tpPct / 100), tick)
-            const sl = await connector.placeStopOrder(p.venueSymbol, closeSide, p.quantity, slPx, "stop_loss", {
-              positionSide: posSide, clientOrderId: botClientOrderId(connectionId, type, "s") }).catch((e: any) => ({ success: false, error: String(e?.message || e) }))
+            const sl = await placeStopWithRetry(() => connector.placeStopOrder(p.venueSymbol, closeSide, p.quantity, slPx, "stop_loss", {
+              positionSide: posSide, clientOrderId: botClientOrderId(connectionId, type, "s") }).catch((e: any) => ({ success: false, error: String(e?.message || e) })))
             if (!sl?.success || !sl.orderId) {
               // Never hold exposure without a venue stop.
               report.errors.push(`${p.symbol}: stop not placed (${sl?.error || "unknown"}), closing`)
