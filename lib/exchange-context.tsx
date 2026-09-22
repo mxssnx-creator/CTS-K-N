@@ -81,7 +81,14 @@ export function ExchangeProvider({ children }: { children: ReactNode }) {
                   toBoolean(c.is_dashboard_inserted) ||
                   toBoolean(c.is_assigned)
                 const isDashboardActive = toBoolean(c.is_enabled_dashboard)
-                return isConnectionVisibleInServerOverview(c) && (isInserted || isDashboardActive)
+                // A connection the engine runs must never be hidden from the UI.
+                // BingX X02 was assigned to Main and live-trading while its
+                // base-panel flag (is_inserted) was false, so it failed the
+                // visibility check, the list came out empty and no connection
+                // was ever selected: every page opened empty (or on a stopped
+                // connection while it was still visible).
+                const runByEngine = toBoolean(c.is_assigned) && toBoolean(c.is_enabled)
+                return (isConnectionVisibleInServerOverview(c) || runByEngine) && (isInserted || isDashboardActive)
               })
 
               setActiveConnections(mainConnections)
