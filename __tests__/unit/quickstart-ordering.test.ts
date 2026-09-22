@@ -146,8 +146,10 @@ describe("QuickStart route ordering", () => {
     expect(redisDb.updateConnection).not.toHaveBeenCalled()
     expect(recoordinator.applyMainConnectionSettingsChange).toHaveBeenCalledTimes(1)
     expect(recoordinator.applyMainConnectionSettingsChange).toHaveBeenCalledWith("conn-1", expect.objectContaining({ id: "conn-1" }), expect.objectContaining({
-      connectionPatch: expect.objectContaining({ live_volume_factor: "1" }),
-      settingsPatch: expect.objectContaining({ live_volume_factor: "1", volume_factor_live: "1" }),
+      // The live engine factor defaults to 0.1 since b4797115 (more
+      // concurrent minimum-size orders); Paper mode commits that default.
+      connectionPatch: expect.objectContaining({ live_volume_factor: "0.1" }),
+      settingsPatch: expect.objectContaining({ live_volume_factor: "0.1", volume_factor_live: "0.1" }),
       changedFieldsOverride: expect.arrayContaining(["live_volume_factor", "connection_settings.live_volume_factor"]),
       // The persistence/recoordination phase must not race the explicit
       // targeted start below.
