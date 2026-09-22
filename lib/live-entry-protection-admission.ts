@@ -224,6 +224,24 @@ export function auditLiveEntryProtectionAdmission(input: {
     bySlot.set(key, rows)
   }
   for (const rows of bySlot.values()) {
+    // An overall slot resizes its shared controls by first cancelling them
+    // (settle-first, so two workers never mutate the net venue quantity at
+    // once), then adding quantity, then re-arming for the new total. The
+    // pre-accumulation check runs inside that window and used to demand the
+    // very controls the hand-off had just removed on purpose, halting every
+    // overall addition: `owned_shared_stopLoss_missing` right after
+    // `aggregate_protection_mutation_ready`.
+    //
+    // Exempt only a hand-off that is SETTLED and owned by the row driving
+    // this audit. SettledAt is written only after every control's
+    // cancellation is authoritatively confirmed, so it marks "removed on
+    // purpose for this resize", never merely "missing". Once quantity is
+    // added the markers clear and the controls must be present again.
+    const settledHandoff = Boolean(mutatingRowId)
+      && rows.some((row) => text(row.id) === mutatingRowId)
+      && rows.some((row) =>
+        finite(row.aggregateProtectionMutationRequestedAt) > 0
+        && finite(row.aggregateProtectionMutationSettledAt) > 0)
     if (rows.some((row) => row.controlOrderScope === "symbol_direction")) {
       const leaders = rows.filter((row) => row.aggregateProtectionOwner === true)
       if (leaders.length !== 1 || rows.some((row) => row.controlOrderScope !== "symbol_direction")) {
@@ -234,9 +252,11 @@ export function auditLiveEntryProtectionAdmission(input: {
         const tolerance = Math.max(...rows.map(quantityTolerance), 1e-10)
         for (const leg of ["stopLoss", "takeProfit"] as const) {
           const id = text(leader[`${leg}OrderId`])
-          if (!id || !input.liveOrderIds.has(id)) violations.push(`owned_shared_${leg}_missing`)
-          if (!armedQuantityMatches(quantity, leader[`${leg}ArmedQuantity`], tolerance)) {
-            violations.push(`owned_shared_${leg}_quantity_mismatch`)
+          if (!settledHandoff) {
+            if (!id || !input.liveOrderIds.has(id)) violations.push(`owned_shared_${leg}_missing`)
+            if (!armedQuantityMatches(quantity, leader[`${leg}ArmedQuantity`], tolerance)) {
+              violations.push(`owned_shared_${leg}_quantity_mismatch`)
+            }
           }
           if (rows.some((row) => row.id !== leader.id && text(row[`${leg}OrderId`]))) {
             violations.push("owned_shared_child_control_present")
@@ -250,12 +270,15 @@ export function auditLiveEntryProtectionAdmission(input: {
         if (input.liveOrderIds.has(id)) orderIds.add(id)
       }
     }
-    if (orderIds.size !== 1) violations.push("owned_slot_security_stop_incomplete")
-    const owner = rows.find((row) => text(row.securityStopOrderId) && input.liveOrderIds.has(text(row.securityStopOrderId)))
-    const expected = rows.reduce((sum, row) => sum + quantityOf(row), 0)
-    const tolerance = Math.max(...rows.map(quantityTolerance), 1e-10)
-    if (!owner || !armedQuantityMatches(expected, owner.securityStopArmedQuantity, tolerance)) {
-      violations.push("owned_slot_security_quantity_mismatch")
+    // The security stop is cancelled by the same settled hand-off.
+    if (!settledHandoff) {
+      if (orderIds.size !== 1) violations.push("owned_slot_security_stop_incomplete")
+      const owner = rows.find((row) => text(row.securityStopOrderId) && input.liveOrderIds.has(text(row.securityStopOrderId)))
+      const expected = rows.reduce((sum, row) => sum + quantityOf(row), 0)
+      const tolerance = Math.max(...rows.map(quantityTolerance), 1e-10)
+      if (!owner || !armedQuantityMatches(expected, owner.securityStopArmedQuantity, tolerance)) {
+        violations.push("owned_slot_security_quantity_mismatch")
+      }
     }
   }
 

@@ -12033,7 +12033,17 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
       plan,
       openOrders,
     })
-    if (!slotAudit.complete) {
+    // Same rule as the admission audit: a hand-off SETTLED for the row driving
+    // this audit has cancelled the slot's controls on purpose, to re-arm them
+    // for the new total once quantity is added. Their absence is the expected
+    // state of that window, not an incomplete book. SettledAt is written only
+    // after every cancellation is authoritatively confirmed.
+    const settledHandoff = Boolean(input.mutatingRowId)
+      && members.some((member) => String(member.id) === String(input.mutatingRowId))
+      && members.some((member) =>
+        Number(member.aggregateProtectionMutationRequestedAt || 0) > 0
+        && Number(member.aggregateProtectionMutationSettledAt || 0) > 0)
+    if (!slotAudit.complete && !settledHandoff) {
       violations.push("owned_slot_controls_incomplete")
       violations.push(...slotAudit.violations.map((violation) => `owned_slot_${violation}`))
       if (slotAudit.orphanOrders.length > 0) violations.push("owned_slot_orphan_controls_present")
