@@ -95,6 +95,7 @@ __tests__/unit/block-settings-migration.test.ts
 __tests__/unit/block-shared-lane-stacking.test.ts
 __tests__/unit/blocked-reason-visibility.test.ts
 __tests__/unit/bots-backtest.test.ts
+__tests__/unit/bots-runner.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
@@ -490,6 +491,7 @@ app/api/connections/route.ts
 app/api/connections/status/[id]/route.ts
 app/api/connections/status/route.ts
 app/api/connections/validation/[id]/route.ts
+app/api/cron/bots/route.ts
 app/api/cron/direct-trade-continuity/route.ts
 app/api/cron/generate-indications/route.ts
 app/api/cron/historic-test/route.ts
@@ -1203,7 +1205,9 @@ lib/block-volume-ratio-bounds.ts
 lib/block-volume-ratio.cjs
 lib/boolean-utils.ts
 lib/bots/backtest.ts
+lib/bots/live-stats.ts
 lib/bots/market-data.ts
+lib/bots/runner.ts
 lib/bots/settings.ts
 lib/bots/store.ts
 lib/bounded-concurrency.ts

@@ -43,3 +43,24 @@ export async function candleUniverse(symbolCount: number, hours: number): Promis
   }
   return out
 }
+
+export interface ContractRules { quantityStep: number; priceTick: number; minQuantity: number; minNotional: number }
+let contractsCache: { at: number; rules: Map<string, ContractRules> } | null = null
+
+/** Quantity/price precision and venue minimums for USDT perpetuals, cached for an hour. */
+export async function contractRules(): Promise<Map<string, ContractRules>> {
+  if (contractsCache && Date.now() - contractsCache.at < 3600_000) return contractsCache.rules
+  const r: any = await fetch(`${BASE}/openApi/swap/v2/quote/contracts`, { cache: "no-store" }).then((x) => x.json())
+  const rules = new Map<string, ContractRules>()
+  for (const c of (Array.isArray(r?.data) ? r.data : [])) {
+    const qp = Number(c.quantityPrecision), pp = Number(c.pricePrecision)
+    rules.set(String(c.symbol), {
+      quantityStep: Number.isFinite(qp) ? 10 ** -qp : 0.001,
+      priceTick: Number.isFinite(pp) ? 10 ** -pp : 0.0001,
+      minQuantity: Number(c.tradeMinQuantity) || 0,
+      minNotional: Number(c.tradeMinUSDT) || 2,
+    })
+  }
+  contractsCache = { at: Date.now(), rules }
+  return rules
+}
