@@ -94,6 +94,7 @@ __tests__/unit/block-row-eval-window.test.ts
 __tests__/unit/block-settings-migration.test.ts
 __tests__/unit/block-shared-lane-stacking.test.ts
 __tests__/unit/blocked-reason-visibility.test.ts
+__tests__/unit/bots-backtest.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
@@ -1198,6 +1199,8 @@ lib/block-settings-migration.ts
 lib/block-volume-ratio-bounds.ts
 lib/block-volume-ratio.cjs
 lib/boolean-utils.ts
+lib/bots/backtest.ts
+lib/bots/settings.ts
 lib/bounded-concurrency.ts
 lib/broadcast-helpers.ts
 lib/cache-invalidation.ts
