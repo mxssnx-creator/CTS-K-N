@@ -236,3 +236,28 @@ describe("live risk gate", () => {
     expect(src).toContain("pausedUntil: String(now + 3600_000), refAt: String(now + 3600_000)")
   })
 })
+
+describe("stop placement retries transient venue failures", () => {
+  const { placeStopWithRetry, STOP_RETRY_DELAYS_MS } = require("@/lib/bots/runner")
+  const noSleep = async () => undefined
+  test("109420 'position not exist' right after a fill is retried until it succeeds", async () => {
+    let n = 0
+    const r = await placeStopWithRetry(async () => (++n < 3 ? { success: false, error: "BingX stop order error (code=109420): position not exist" } : { success: true, orderId: "s1" }), noSleep)
+    expect(r).toEqual({ success: true, orderId: "s1" }); expect(n).toBe(3)
+  })
+  test("a rate-limit gate or timeout is retried", async () => {
+    let n = 0
+    const r = await placeStopWithRetry(async () => (++n < 2 ? { success: false, error: "prod-vst rate-limit cooldown active; requests gated" } : { success: true, orderId: "s2" }), noSleep)
+    expect(r.orderId).toBe("s2")
+  })
+  test("a non-transient rejection is not retried", async () => {
+    let n = 0
+    const r = await placeStopWithRetry(async () => { n++; return { success: false, error: "invalid price precision" } }, noSleep)
+    expect(r.success).toBe(false); expect(n).toBe(1)
+  })
+  test("retries are bounded; a stop still failing afterwards is returned as failed", async () => {
+    let n = 0
+    const r = await placeStopWithRetry(async () => { n++; return { success: false, error: "code=109420 position not exist" } }, noSleep)
+    expect(r.success).toBe(false); expect(n).toBe(STOP_RETRY_DELAYS_MS.length + 1)
+  })
+})
