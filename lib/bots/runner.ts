@@ -48,8 +48,11 @@ const tradesKey = (c: string, t: BotType) => `bots:trades:${c}:${t}`
 const cooldownKey = (c: string, t: BotType) => `bots:cooldown:${c}:${t}`
 const lockKey = (c: string, t: BotType) => `bots:lock:${c}:${t}`
 const venue = (s: string) => (s.includes("-") ? s : s.replace(/USDT$/, "-USDT"))
-const floorTo = (v: number, step: number) => Math.floor(v / step + 1e-9) * step
-const roundTo = (v: number, step: number) => Number((Math.round(v / step) * step).toFixed(10))
+const decimalsOf = (step: number) => Math.max(0, Math.min(12, Math.round(-Math.log10(step))))
+// Snapped to the step AND printed at the step's precision: 10580.400000000001
+// reached the venue before, which a stricter check would reject.
+const floorTo = (v: number, step: number) => Number((Math.floor(v / step + 1e-9) * step).toFixed(decimalsOf(step)))
+const roundTo = (v: number, step: number) => Number((Math.round(v / step) * step).toFixed(decimalsOf(step)))
 
 export function botClientOrderId(connectionId: string, type: BotType, leg: "e" | "s" | "t" | "x"): string {
   const conn = connectionId.replace(/[^a-z0-9]/gi, "").slice(-3).toLowerCase()
@@ -102,13 +105,26 @@ async function closeAtMarket(connector: any, p: BotLivePosition, connectionId: s
   }).catch((e: any) => ({ success: false, error: String(e?.message || e) }))
 }
 
-export interface BotTickReport { connectionId: string; type: BotType; skipped?: string; managed: number; entries: number; closed: number; errors: string[] }
+export interface BotTickReport { connectionId: string; type: BotType; skipped?: string; managed: number; entries: number; closed: number; errors: string[]; durationMs?: number }
+
+/**
+ * The lock must outlive the slowest tick. It was 55 s — shorter than a tick
+ * that fetches candles for up to 60 symbols and queues its orders behind the
+ * engine's rate-limited order lane. When a tick ran past 55 s the lock
+ * expired, the next minute's tick started alongside it, and both entered the
+ * same symbol (two CRVUSDT entries at 0.3556 and 0.3564 — prices from two
+ * different minutes). The lock now covers any tick; new entries stop after
+ * ENTRY_DEADLINE_MS so a tick always ends well inside it.
+ */
+const TICK_LOCK_MS = 4 * 60_000
+const ENTRY_DEADLINE_MS = 40_000
 
 export async function runBotTick(connectionId: string, type: BotType, connector: any, connection: Record<string, any>): Promise<BotTickReport> {
+  const startedAt = Date.now()
   const report: BotTickReport = { connectionId, type, managed: 0, entries: 0, closed: 0, errors: [] }
   await initRedis()
   const client: any = getRedisClient()
-  const got = await client.set(lockKey(connectionId, type), String(Date.now()), { PX: 55_000, NX: true }).catch(() => null)
+  const got = await client.set(lockKey(connectionId, type), String(Date.now()), { PX: TICK_LOCK_MS, NX: true }).catch(() => null)
   if (!got) return { ...report, skipped: "tick already running" }
   try {
     const settings = await readBotSettings(connectionId, type)
@@ -182,6 +198,16 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
           await recordTrade(client, connectionId, type, p, px, hit)
           await dropPosition(client, connectionId, type, p); report.closed++; continue
         }
+        if (!p.tpOrderId || isDead(tpO)) {
+          // A take profit rejected at entry — or cancelled since — is re-armed
+          // every tick; the stop keeps the position safe meanwhile.
+          const rules = (await contractRules()).get(p.venueSymbol)
+          const tpPx = roundTo(p.direction === "long" ? p.entryPrice * (1 + p.tpPct / 100) : p.entryPrice * (1 - p.tpPct / 100), rules?.priceTick || 0.0001)
+          const tp = await connector.placeOrder(p.venueSymbol, p.direction === "long" ? "sell" : "buy", p.quantity, tpPx, "limit", {
+            reduceOnly: true, positionSide: p.direction === "long" ? "LONG" : "SHORT", clientOrderId: botClientOrderId(connectionId, type, "t") }).catch(() => null)
+          if (tp?.success && tp.orderId) p.tpOrderId = tp.orderId
+          else report.errors.push(`${p.symbol}: take profit re-arm failed (${tp?.error || "unknown"})`)
+        }
         const px = lastClose(p.symbol)
         if (px > 0) {
           const fav = (p.direction === "long" ? px - p.entryPrice : p.entryPrice - px) / p.entryPrice * 100
@@ -215,6 +241,7 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     const series = Object.entries(universe).map(([sym, c]) => [sym, prepare(c.slice(0, -1) as Candle[])] as const)
     const ranked = rankForLive(series, settings)
     for (const [sym, s] of ranked) {
+      if (Date.now() - startedAt > ENTRY_DEADLINE_MS) { report.errors.push("entry deadline reached; remaining symbols next tick"); break }
       if (ownSymbols.has(sym) || Number(cool[sym] || 0) > Date.now()) continue
       const i = s.c.length - 1
       const dir = signal(type, s, i)
@@ -251,6 +278,7 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     }
     return report
   } finally {
+    report.durationMs = Date.now() - startedAt
     await client.del(lockKey(connectionId, type)).catch(() => undefined)
   }
 }
