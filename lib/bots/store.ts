@@ -1,5 +1,5 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
-import { BOT_TYPES, normalizeBotSettings, type BotSettings, type BotType } from "@/lib/bots/settings"
+import { BOT_TYPES, normalizeBotGroup, normalizeBotSettings, type BotGroupSettings, type BotSettings, type BotType } from "@/lib/bots/settings"
 import { BOT_TUNING } from "@/lib/bots/backtest"
 
 /** Bot state is scoped to one connection and one bot type — each fully independent. */
@@ -38,4 +38,23 @@ export async function readBotResult(connectionId: string, type: BotType): Promis
 
 export async function writeBotResult(connectionId: string, type: BotType, result: unknown): Promise<void> {
   await (getRedisClient() as any).set(resultKey(connectionId, type), JSON.stringify(result))
+}
+
+const groupKey = (connectionId: string) => `bots:group:${connectionId}`
+export async function readBotGroup(connectionId: string): Promise<BotGroupSettings> {
+  await initRedis()
+  const raw = await (getRedisClient() as any).get(groupKey(connectionId)).catch(() => null)
+  try { return normalizeBotGroup(raw ? JSON.parse(String(raw)) : null) } catch { return normalizeBotGroup(null) }
+}
+/** Save the group; "run all" starts every validated bot and stops them all when turned off. */
+export async function writeBotGroup(connectionId: string, patch: Partial<BotGroupSettings>): Promise<BotGroupSettings> {
+  const next = normalizeBotGroup({ ...(await readBotGroup(connectionId)), ...patch })
+  await (getRedisClient() as any).set(groupKey(connectionId), JSON.stringify(next))
+  if (patch.runAll !== undefined) {
+    for (const type of BOT_TYPE_IDS) {
+      if (!BOT_TUNING[type].validated) continue
+      await writeBotSettings(connectionId, type, { running: next.runAll })
+    }
+  }
+  return next
 }

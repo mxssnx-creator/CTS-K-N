@@ -224,3 +224,15 @@ describe("precision and take-profit re-arm", () => {
     expect(src).toContain("if (!p.tpOrderId || isDead(tpO)) {")
   })
 })
+
+describe("live risk gate", () => {
+  const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "lib/bots/runner.ts"), "utf8")
+  test("size is the per-bot volume factor times the group level times the drawdown throttle", () => {
+    expect(src).toContain("const sizeFactor = settings.volumeFactor * gate.multiplier")
+    expect(src).toContain("cfg.sizeMultiplier * (ddPct >= cfg.throttleDdPct ? 0.5 : 1)")
+  })
+  test("reaching the pause threshold stops new entries for an hour and resets the reference", () => {
+    expect(src).toContain("if (ddPct >= cfg.pauseDdPct) {")
+    expect(src).toContain("pausedUntil: String(now + 3600_000), refAt: String(now + 3600_000)")
+  })
+})

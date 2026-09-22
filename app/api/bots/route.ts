@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
-import { BOT_BOUNDS, BOT_TYPES } from "@/lib/bots/settings"
+import { BOT_BOUNDS, BOT_RISK_LEVELS, BOT_TYPES } from "@/lib/bots/settings"
 import { BOT_TUNING } from "@/lib/bots/backtest"
-import { BOT_TYPE_IDS, isBotType, readBotResult, readBotSettings, writeBotSettings } from "@/lib/bots/store"
+import { BOT_TYPE_IDS, isBotType, readBotGroup, readBotResult, readBotSettings, writeBotGroup, writeBotSettings } from "@/lib/bots/store"
 import { readLivePositions, readLiveTrades } from "@/lib/bots/runner"
 import { liveSummary } from "@/lib/bots/live-stats"
 
@@ -21,13 +21,18 @@ export async function GET(request: Request) {
       live: { openPositions: open.length, pending: open.filter((p) => p.state === "pending").length, ...liveSummary(trades, 24),
         recent: trades.slice(0, 20) } }
   }))
-  return NextResponse.json({ connectionId, bounds: BOT_BOUNDS, bots })
+  const [group, portfolio] = await Promise.all([readBotGroup(connectionId), readBotResult(connectionId, "portfolio" as any)])
+  return NextResponse.json({ connectionId, bounds: BOT_BOUNDS, riskLevels: BOT_RISK_LEVELS, group, portfolio, bots })
 }
 
 /** Save one bot type's settings, or start/stop it. Each type is independent. */
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}))
   const { connectionId, type, action, settings } = body || {}
+  if (connectionId && action === "group") {
+    const group = await writeBotGroup(connectionId, body.group || {})
+    return NextResponse.json({ ok: true, group })
+  }
   if (!connectionId || !isBotType(type)) return NextResponse.json({ error: "connectionId and a valid type are required" }, { status: 400 })
   if (action === "start" && !BOT_TUNING[type].validated) {
     return NextResponse.json({ error: `${BOT_TYPES[type].label} is not validated and cannot run live` }, { status: 409 })

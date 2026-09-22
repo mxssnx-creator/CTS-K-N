@@ -62,12 +62,18 @@ export default function BotsPage() {
   const [busy, setBusy] = useState<Record<string, string>>({})
   const [error, setError] = useState<string>("")
   const [view, setView] = useState<"backtest" | "live">("backtest")
+  const [group, setGroup] = useState<{ runAll: boolean; riskLevel: "secure" | "normal" | "active" }>({ runAll: false, riskLevel: "normal" })
+  const [riskLevels, setRiskLevels] = useState<Record<string, { label: string; sizeMultiplier: number; throttleDdPct: number; pauseDdPct: number }>>({})
+  const [portfolio, setPortfolio] = useState<any>(null)
 
   const load = useCallback(async () => {
     if (!selectedConnectionId) return
     const r = await fetch(`/api/bots?connectionId=${encodeURIComponent(selectedConnectionId)}`, { cache: "no-store" })
     if (!r.ok) { setError(`Could not load bots (${r.status})`); return }
     const d = await r.json(); setBots(d.bots); setBounds(d.bounds); setError("")
+    if (d.group) setGroup(d.group)
+    if (d.riskLevels) setRiskLevels(d.riskLevels)
+    setPortfolio(d.portfolio || null)
   }, [selectedConnectionId])
   useEffect(() => { void load() }, [load])
   const anyRunning = bots.some((b) => b.settings.running || (b.live?.openPositions || 0) > 0)
@@ -100,6 +106,25 @@ export default function BotsPage() {
     setBusy((b) => { const n = { ...b }; delete n[type]; return n })
   }
 
+  const saveGroup = async (patch: Partial<typeof group>) => {
+    setBusy((b) => ({ ...b, group: "save" }))
+    const r = await fetch("/api/bots", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionId: selectedConnectionId, action: "group", group: patch }) })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) setError(d.error || `Request failed (${r.status})`)
+    else { setGroup(d.group); await load() }
+    setBusy((b) => { const n = { ...b }; delete n.group; return n })
+  }
+  const portfolioBacktest = async () => {
+    setBusy((b) => ({ ...b, portfolio: "backtest" }))
+    const r = await fetch("/api/bots/backtest", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connectionId: selectedConnectionId, portfolio: true, hours: 24 }) })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) setError(d.error || `Portfolio backtest failed (${r.status})`)
+    else setPortfolio(d)
+    setBusy((b) => { const n = { ...b }; delete n.portfolio; return n })
+  }
+
   const set = (patch: any) => bot && setBots((all) => all.map((b) => (b.type === bot.type ? { ...b, settings: { ...b.settings, ...patch } } : b)))
 
   return (
@@ -116,6 +141,49 @@ export default function BotsPage() {
         </Button>
       </div>
       {error && <div className="rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2 text-sm text-rose-600">{error}</div>}
+
+      {/* All bots together */}
+      <div className="rounded-lg border p-3">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={group.runAll} disabled={!!busy.group} onCheckedChange={(v) => saveGroup({ runAll: v })} />
+            <span className="font-medium">Run all validated bots</span>
+          </label>
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Risk</span>
+            <div className="inline-flex rounded-md border p-0.5 text-xs">
+              {(["secure", "normal", "active"] as const).map((lv) => (
+                <button key={lv} type="button" disabled={!!busy.group} onClick={() => saveGroup({ riskLevel: lv })}
+                  title={riskLevels[lv] ? `${riskLevels[lv].sizeMultiplier}× size · halve at ${riskLevels[lv].throttleDdPct}% drawdown · pause 1 h at ${riskLevels[lv].pauseDdPct}%` : undefined}
+                  className={`rounded px-2.5 py-1 ${group.riskLevel === lv ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+                  {riskLevels[lv]?.label || lv}
+                </button>
+              ))}
+            </div>
+          </div>
+          {riskLevels[group.riskLevel] && (
+            <span className="text-xs text-muted-foreground">
+              {riskLevels[group.riskLevel].sizeMultiplier}× each bot's volume factor · halves at {riskLevels[group.riskLevel].throttleDdPct}% drawdown · pauses 1 h at {riskLevels[group.riskLevel].pauseDdPct}%
+            </span>
+          )}
+          <Button size="sm" variant="outline" className="ml-auto" disabled={!!busy.portfolio} onClick={portfolioBacktest}>
+            {busy.portfolio ? "Backtesting all…" : "Portfolio backtest (24 h)"}
+          </Button>
+        </div>
+        {portfolio?.summary && (
+          <div className="mt-3 space-y-1.5">
+            <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs">
+              <span>All bots · {portfolio.riskLevel}</span>
+              <span className={pfTone(portfolio.summary.pf)}>PF {fmtPf(portfolio.summary.pf)}</span>
+              <span>{portfolio.summary.returnPct >= 0 ? "+" : ""}{portfolio.summary.returnPct.toFixed(2)}%</span>
+              <span>{portfolio.summary.positions} positions · {portfolio.summary.orders} orders</span>
+              <span>max DD {portfolio.summary.maxDrawdownPct.toFixed(2)}%</span>
+              <span>{portfolio.summary.positiveHours}/{portfolio.summary.activeHours} hours positive</span>
+            </div>
+            <HourStrip hours={portfolio.hours || []} />
+          </div>
+        )}
+      </div>
 
       {/* Bots side by side */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

@@ -10,7 +10,7 @@
  * leaves 0.14 % net per win, so signal quality — not trade count — decides
  * whether a bot is profitable. The filters below exist for that reason.
  */
-import type { BotSettings, BotType } from "@/lib/bots/settings"
+import { BOT_RISK_LEVELS, type BotRiskLevel, type BotSettings, type BotType } from "@/lib/bots/settings"
 
 export interface Candle { time: number; open: number; high: number; low: number; close: number; volume: number }
 
@@ -175,6 +175,7 @@ export interface BotBacktestResult {
     pfLastHours: Record<2 | 6 | 20, number>
     ddtLastHours: Record<2 | 6 | 20, number>
     skippedByStrategies: number
+    riskPauses: number
   }
 }
 
@@ -212,6 +213,8 @@ export interface BotBacktestOptions {
   slAtr?: number
   /** Close at market after this many minutes. */
   maxHoldBars?: number
+  /** Risk level: size multiplier and drawdown throttle on top of the volume factor. */
+  riskLevel?: BotRiskLevel
 }
 
 /**
@@ -239,6 +242,15 @@ export function roundTripCostFor(limitEntry: boolean, reason: "tp" | "sl" | "tra
  *   momentum_breakout   unseen PF 1.07 (10) / 0.76 (20) — not robust
  *   volatility_squeeze  PF < 1 in training and out of sample — loses
  *   trend_pullback      never reached PF 1 in training — loses
+ *
+ * Seven-day portfolio run (all three validated bots, 20 symbols, Secure):
+ * PF 1.089, +2.74 %, max DD 2.42 %, 10,569 orders, 60 % of hours positive,
+ * 5 of 7 days positive. Per bot over the seven days: vwap_reversion PF 1.33,
+ * liquidity_sweep 1.05 (highest drawdown), sandwich 0.98 — its 24 h result did
+ * not hold over a week. On the first four days alone, which the parameter
+ * search never saw, the portfolio PF was 1.037: the edge is real but thin.
+ * Tested and rejected as not paying off: trailing-PF allocation between bots
+ * and a same-direction concentration cap (the cap pushed PF below 1).
  *
  * Re-validate on fresh data before trusting any of these with live funds.
  */
@@ -270,6 +282,11 @@ export function runBotBacktest(
 
   let balance = startBalance, rebaseBalance = startBalance, peak = startBalance
   let underwaterSince = -1, maxDdMinutes = 0, maxDdPct = 0, skipped = 0
+  const risk = BOT_RISK_LEVELS[options.riskLevel ?? "normal"]
+  // Throttle reference: reset after a pause so the bot resumes from where it
+  // stands instead of staying paused until it recovers a peak it cannot reach
+  // without trading.
+  let riskPeak = startBalance, pausedUntilBar = -1, pauses = 0
   const trades: BotTrade[] = []
   const open = new Map<string, {
     dir: Dir; entry: number; avgEntry: number; qtyUnits: number; openedAt: number; openedBar: number
@@ -348,8 +365,14 @@ export function runBotBacktest(
       }
       if (bar - p.openedBar >= (options.maxHoldBars ?? 60)) closePos(sym, bar, k.close, "time")
     }
-    // new entries — never while the account is exhausted
-    for (const sym of balance > startBalance * 0.05 ? active : []) {
+    // risk throttle from the bot's own drawdown
+    riskPeak = Math.max(riskPeak, balance)
+    const riskDd = riskPeak > 0 ? (riskPeak - balance) / riskPeak * 100 : 0
+    if (riskDd >= risk.pauseDdPct && pausedUntilBar < bar) { pausedUntilBar = bar + 60; riskPeak = balance; pauses++ }
+    const throttle = riskDd >= risk.throttleDdPct ? 0.5 : 1
+    const entryMult = risk.sizeMultiplier * throttle
+    // new entries — never while the account is exhausted or the bot is paused
+    for (const sym of balance > startBalance * 0.05 && bar >= pausedUntilBar ? active : []) {
       if (open.has(sym) || (cooldown.get(sym) || 0) > bar) continue
       const s = series.get(sym)!
       const dir = signal(settings.type, s, bar)
@@ -380,7 +403,7 @@ export function runBotBacktest(
           // VWAP and sweep limits rest at the close of the signal bar and fill on it.
           : s.close[bar]
       open.set(sym, { dir, entry: entryPx, avgEntry: entryPx, qtyUnits: 1, openedAt: s.c[bar].time, openedBar: bar,
-        tp, sl, trailOn: false, peakFav: 0, legs: 1, dcaLeft: settings.strategies.dca ? 1 : 0, mult })
+        tp, sl, trailOn: false, peakFav: 0, legs: 1, dcaLeft: settings.strategies.dca ? 1 : 0, mult: mult * entryMult })
     }
     // equity & drawdown time
     if (balance > peak) { peak = balance; underwaterSince = -1 }
@@ -429,6 +452,47 @@ export function runBotBacktest(
       pfLastHours: { 2: pfOf(since(2)), 6: pfOf(since(6)), 20: pfOf(since(20)) },
       ddtLastHours: { 2: ddtSince(2), 6: ddtSince(6), 20: ddtSince(20) },
       skippedByStrategies: skipped,
+      riskPauses: pauses,
+    },
+  }
+}
+
+
+/**
+ * All bots at once: each runs independently on its own share of the balance
+ * (its own drawdown throttle, its own positions), and the portfolio is the
+ * hour-by-hour sum.
+ */
+export function runBotPortfolio(
+  candles: Record<string, Candle[]>,
+  settingsList: BotSettings[],
+  options: BotBacktestOptions = {},
+) {
+  const start = options.startBalance ?? 1000
+  const share = start / Math.max(1, settingsList.length)
+  const results = settingsList.map((s) => runBotBacktest(candles, s, { ...options, startBalance: share }))
+  const hours = results[0]?.hours.map((h, i) => {
+    const rows = results.map((r) => r.hours[i]).filter(Boolean)
+    const closed = rows.reduce((a, x) => a + x.closed, 0)
+    const pnl = rows.reduce((a, x) => a + x.pnl, 0)
+    return { hour: h.hour, startAt: h.startAt, closed, orders: rows.reduce((a, x) => a + x.orders, 0),
+      wins: rows.reduce((a, x) => a + x.wins, 0), losses: rows.reduce((a, x) => a + x.losses, 0),
+      pf: pfOf(results.flatMap((r) => r.trades.filter((t) => t.closedAt >= h.startAt && t.closedAt < h.startAt + 3600_000))),
+      pnl, balance: rows.reduce((a, x) => a + x.balance, 0), drawdownPct: 0, open: rows.reduce((a, x) => a + x.open, 0) }
+  }) || []
+  let peak = start, maxDd = 0
+  for (const h of hours) { peak = Math.max(peak, h.balance); h.drawdownPct = (peak - h.balance) / peak * 100; maxDd = Math.max(maxDd, h.drawdownPct) }
+  const trades = results.flatMap((r) => r.trades)
+  const active = hours.filter((h) => h.closed > 0)
+  return {
+    bots: results.map((r) => ({ type: r.type, summary: r.summary })),
+    hours,
+    summary: {
+      startBalance: start, endBalance: hours.at(-1)?.balance ?? start,
+      returnPct: ((hours.at(-1)?.balance ?? start) / start - 1) * 100,
+      positions: trades.length, orders: hours.reduce((a, h) => a + h.orders, 0), pf: pfOf(trades),
+      winRate: trades.length ? trades.filter((t) => t.pnl > 0).length / trades.length * 100 : 0,
+      maxDrawdownPct: maxDd, positiveHours: active.filter((h) => h.pnl > 0).length, activeHours: active.length,
     },
   }
 }

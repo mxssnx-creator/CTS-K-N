@@ -108,3 +108,37 @@ describe("bots API guards live execution", () => {
     expect(store).toContain("`bots:backtest:${connectionId}:${type}`")
   })
 })
+
+describe("risk levels and running all bots", () => {
+  const { BOT_RISK_LEVELS, normalizeBotGroup } = require("@/lib/bots/settings")
+  const { runBotPortfolio } = require("@/lib/bots/backtest")
+  test("three levels, ordered from secure to active", () => {
+    expect(Object.keys(BOT_RISK_LEVELS)).toEqual(["secure", "normal", "active"])
+    expect(BOT_RISK_LEVELS.secure.sizeMultiplier).toBeLessThan(BOT_RISK_LEVELS.normal.sizeMultiplier)
+    expect(BOT_RISK_LEVELS.normal.sizeMultiplier).toBeLessThan(BOT_RISK_LEVELS.active.sizeMultiplier)
+    expect(BOT_RISK_LEVELS.secure.pauseDdPct).toBeLessThan(BOT_RISK_LEVELS.active.pauseDdPct)
+    for (const lv of Object.values(BOT_RISK_LEVELS) as any[]) expect(lv.throttleDdPct).toBeLessThan(lv.pauseDdPct)
+  })
+  test("group settings normalise to safe defaults", () => {
+    expect(normalizeBotGroup(null)).toEqual({ runAll: false, riskLevel: "normal" })
+    expect(normalizeBotGroup({ runAll: true, riskLevel: "reckless" } as any)).toEqual({ runAll: true, riskLevel: "normal" })
+  })
+  test("a riskier level trades the same signals with more size", () => {
+    const candles = synthetic(10, 24 * 60 + 200)
+    const s = { ...defaultBotSettings("sandwich"), backtestHours: 24 }
+    const secure = runBotBacktest(candles, s, { riskLevel: "secure" })
+    const active = runBotBacktest(candles, s, { riskLevel: "active" })
+    expect(active.trades.length).toBeGreaterThanOrEqual(secure.trades.length - 2)
+    const avg = (r: any) => r.trades.reduce((a: number, t: any) => a + t.notional, 0) / Math.max(1, r.trades.length)
+    if (secure.trades.length && active.trades.length) expect(avg(active)).toBeGreaterThan(avg(secure))
+  })
+  test("the portfolio is the hour-by-hour sum of independent bots", () => {
+    const candles = synthetic(10, 24 * 60 + 200)
+    const list = ["sandwich", "vwap_reversion", "liquidity_sweep"].map((t) => ({ ...defaultBotSettings(t as any), backtestHours: 24 }))
+    const p = runBotPortfolio(candles, list, { startBalance: 900 })
+    expect(p.bots).toHaveLength(3)
+    expect(p.hours).toHaveLength(24)
+    const sumOfBots = p.bots.reduce((a: number, b: any) => a + b.summary.positions, 0)
+    expect(p.summary.positions).toBe(sumOfBots)
+  })
+})
