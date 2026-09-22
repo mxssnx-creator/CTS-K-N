@@ -21,6 +21,7 @@ interface Bot {
   type: string; label: string; summary: string; validated: boolean
   settings: any
   lastBacktest: { at: number; summary: Summary; hours: HourStat[] } | null
+  live?: { openPositions: number; pending: number; hours: HourStat[]; summary: any; recent: any[] }
 }
 
 const fmtPf = (v?: number) => (v === undefined || !Number.isFinite(v) ? "–" : v >= 99 ? "∞" : v.toFixed(2))
@@ -60,6 +61,7 @@ export default function BotsPage() {
   const [selected, setSelected] = useState<string>("sandwich")
   const [busy, setBusy] = useState<Record<string, string>>({})
   const [error, setError] = useState<string>("")
+  const [view, setView] = useState<"backtest" | "live">("backtest")
 
   const load = useCallback(async () => {
     if (!selectedConnectionId) return
@@ -68,6 +70,12 @@ export default function BotsPage() {
     const d = await r.json(); setBots(d.bots); setBounds(d.bounds); setError("")
   }, [selectedConnectionId])
   useEffect(() => { void load() }, [load])
+  const anyRunning = bots.some((b) => b.settings.running || (b.live?.openPositions || 0) > 0)
+  useEffect(() => {
+    if (!anyRunning) return
+    const t = setInterval(() => { void load() }, 30_000)
+    return () => clearInterval(t)
+  }, [anyRunning, load])
 
   const bot = useMemo(() => bots.find((b) => b.type === selected), [bots, selected])
 
@@ -132,8 +140,11 @@ export default function BotsPage() {
                 <div><div className="text-muted-foreground">Max DD</div><div className="font-semibold tabular-nums">{s ? `${s.maxDrawdownPct.toFixed(2)}%` : "–"}</div></div>
               </div>
               <div className="mt-2"><HourStrip hours={b.lastBacktest?.hours || []} /></div>
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                {s ? `${s.positiveHours}/${s.activeHours} hours positive` : busy[b.type] === "backtest" ? "Backtesting…" : "No backtest yet"}
+              <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
+                <span>{s ? `${s.positiveHours}/${s.activeHours} hours positive` : busy[b.type] === "backtest" ? "Backtesting…" : "No backtest yet"}</span>
+                {b.live && (b.live.openPositions > 0 || b.live.summary.positions > 0) && (
+                  <span>Live {b.live.openPositions} open · {b.live.summary.positions} closed 24h</span>
+                )}
               </div>
             </button>
           )
@@ -206,21 +217,42 @@ export default function BotsPage() {
           {/* Results */}
           <Card>
             <CardContent className="space-y-4 pt-5">
-              {!bot.lastBacktest ? (
+              <div className="flex items-center justify-between">
+                <div className="inline-flex rounded-md border p-0.5 text-xs">
+                  {(["backtest", "live"] as const).map((v) => (
+                    <button key={v} type="button" onClick={() => setView(v)}
+                      className={`rounded px-2.5 py-1 capitalize ${view === v ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>{v}</button>
+                  ))}
+                </div>
+                {view === "live" && bot.live && (
+                  <span className="text-xs text-muted-foreground">{bot.live.openPositions} open ({bot.live.pending} pending) · last 24 h</span>
+                )}
+              </div>
+              {view === "live" && bot.live && bot.live.summary.positions === 0 ? (
+                <div className="py-16 text-center text-sm text-muted-foreground">
+                  {bot.settings.running ? "Running — no closed live trades in the last 24 hours yet." : "Start the bot to trade live on this connection."}
+                </div>
+              ) : view === "backtest" && !bot.lastBacktest ? (
                 <div className="py-16 text-center text-sm text-muted-foreground">Run a backtest to see hour-by-hour results.</div>
               ) : (() => {
-                const s = bot.lastBacktest.summary, hours = bot.lastBacktest.hours
+                const src: any = view === "live" ? bot.live : bot.lastBacktest
+                const s = { maxDrawdownPct: 0, maxDrawdownMinutes: 0, returnPct: 0, ddtLastHours: { 2: 0, 6: 0, 20: 0 }, ...src.summary } as Summary
+                const hours = src.hours as HourStat[]
                 return (
                   <>
                     <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
                       <Metric label="Profit factor" value={fmtPf(s.pf)} tone={pfTone(s.pf)} />
-                      <Metric label="Return" value={`${s.returnPct >= 0 ? "+" : ""}${s.returnPct.toFixed(2)}%`} />
+                      {view === "live"
+                        ? <Metric label="PnL (24 h)" value={`${(src.summary.pnl >= 0 ? "+" : "")}${Number(src.summary.pnl).toFixed(2)} USDT`} />
+                        : <Metric label="Return" value={`${s.returnPct >= 0 ? "+" : ""}${s.returnPct.toFixed(2)}%`} />}
                       <Metric label="Positions / orders" value={`${s.positions} / ${s.orders}`} />
                       <Metric label="Win rate" value={`${s.winRate.toFixed(1)}%`} />
                       <Metric label="Max drawdown" value={`${s.maxDrawdownPct.toFixed(2)}%`} />
                       <Metric label="Max drawdown time" value={`${s.maxDrawdownMinutes} min`} />
                       <Metric label="Hours positive" value={`${s.positiveHours} / ${s.activeHours}`} />
-                      <Metric label="Tested" value={new Date(bot.lastBacktest.at).toLocaleString()} small />
+                      {view === "live"
+                        ? <Metric label="Protection failures" value={String(src.summary.protectionFailures ?? 0)} />
+                        : <Metric label="Tested" value={new Date(bot.lastBacktest!.at).toLocaleString()} small />}
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2">

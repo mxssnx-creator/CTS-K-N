@@ -82,6 +82,7 @@ CTS_BINGX_RATE_LIMIT_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPM	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPS	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_SHARE	test-or-operator-tool	no	yes	1	.env.example
+CTS_BOTS_ALLOW_MAINNET	application-runtime	no	no	1	lib/bots/runner.ts
 CTS_BUILD_NODE_OPTIONS	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 CTS_CONNECTOR_FAILURE_BACKOFF_MS	application-runtime	no	no	1	lib/exchange-connectors/factory.ts
 CTS_CPU_COUNT	test-or-operator-tool	no	yes	1	.env.example

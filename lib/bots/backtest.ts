@@ -57,13 +57,13 @@ function rollingStd(values: number[], period: number): number[] {
   return out
 }
 
-interface Series {
+export interface Series {
   c: Candle[]; close: number[]
   emaFast: number[]; emaSlow: number[]; atr: number[]; atrAvg: number[]
   bbMid: number[]; bbStd: number[]; rsi: number[]; vol1h: number[]
   vwap: number[]; vwapDev: number[]; bandWidth: number[]; bandWidthMin: number[]
 }
-function prepare(c: Candle[]): Series {
+export function prepare(c: Candle[]): Series {
   const close = c.map((x) => x.close)
   const atr = atrPct(c, 14)
   const ret = close.map((v, i) => (i === 0 ? 0 : Math.log(v / close[i - 1])))
@@ -101,8 +101,8 @@ function vwapAndSqueeze(c: Candle[], close: number[]) {
 }
 
 // ── signals ────────────────────────────────────────────────────────────────
-type Dir = "long" | "short"
-function signal(type: BotType, s: Series, i: number): Dir | null {
+export type Dir = "long" | "short"
+export function signal(type: BotType, s: Series, i: number): Dir | null {
   const px = s.close[i], f = s.emaFast[i], sl = s.emaSlow[i], a = s.atr[i]
   if (![px, f, sl, a, s.rsi[i], s.bbStd[i]].every(Number.isFinite)) return null
   const trend = (f - sl) / px * 100 // % separation of the fast/slow means
@@ -221,7 +221,7 @@ export interface BotBacktestOptions {
  * TAKER plus slippage. Market-entry bots pay taker on entry as well.
  */
 export const BOT_FEES = { makerPct: 0.02, takerPct: 0.05, slippagePct: 0.03 } as const
-function roundTripCostFor(limitEntry: boolean, reason: "tp" | "sl" | "trail" | "time"): number {
+export function roundTripCostFor(limitEntry: boolean, reason: "tp" | "sl" | "trail" | "time"): number {
   const entry = limitEntry ? BOT_FEES.makerPct : BOT_FEES.takerPct + BOT_FEES.slippagePct
   const exit = reason === "tp" ? BOT_FEES.makerPct : BOT_FEES.takerPct + BOT_FEES.slippagePct
   return entry + exit
