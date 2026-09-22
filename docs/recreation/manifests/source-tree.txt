@@ -297,6 +297,7 @@ __tests__/unit/position-flow-calculations.test.ts
 __tests__/unit/position-index-established-with-hash.test.ts
 __tests__/unit/positions-stats-route.test.ts
 __tests__/unit/post-entry-audit-retry.test.ts
+__tests__/unit/post-fill-snapshot-refresh.test.ts
 __tests__/unit/prehistoric-bootstrap-handoff.test.ts
 __tests__/unit/prehistoric-progress-tracker.test.ts
 __tests__/unit/prehistoric-runtime-stability.test.ts
