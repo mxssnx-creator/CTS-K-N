@@ -10,7 +10,10 @@ jest.mock("@/lib/redis-db", () => ({
   getRedisClient: jest.fn(() => ({ hgetall: jest.fn(async () => ({})) })),
   getRedisBackend: jest.fn(() => "redis-network"),
   getConnection: jest.fn(async () => null),
-  getAppSettings: jest.fn(async () => ({})),
+  // This suite exercises PER-ORDER row controls ("a drifted row control").
+  // Overall control orders are the system default, so the suite states the
+  // mode it tests instead of inheriting the default.
+  getAppSettings: jest.fn(async () => ({ overallControlOrdersOnly: false })),
   getMarketData: jest.fn(async () => null),
   persistNow: jest.fn(async () => true),
 }))

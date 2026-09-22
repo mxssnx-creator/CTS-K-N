@@ -4,8 +4,9 @@ import { isLiveSizingOnlyChange } from "@/lib/trade-engine/settings-change-field
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
 
 describe("overall control policy and cumulative allocation", () => {
-  test("defaults off and honors an explicit connection false over global true", () => {
-    expect(overallControlOrdersOnly()).toBe(false)
+  test("defaults on and honors an explicit connection false over global true", () => {
+    // Overall control orders are the default; a connection can still opt out.
+    expect(overallControlOrdersOnly()).toBe(true)
     expect(overallControlOrdersOnly({ overallControlOrdersOnly: true }, { overall_control_orders_only: "0" })).toBe(false)
     expect(overallControlOrdersOnly({ overallControlOrdersOnly: false }, { overall_control_orders_only: "1" })).toBe(true)
   })

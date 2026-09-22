@@ -16,7 +16,8 @@ describe("overall mode is not rolled back by the per-row entry check", () => {
     expect(src).toContain('"Initial entry did not receive its exact-quantity venue Stop Loss and Take Profit"')
   })
 
-  test("overall mode stays opt-in until an overall-mode integration suite passes", () => {
-    expect(OVERALL_CONTROL_ORDERS_DEFAULT).toBe(false)
+  test("overall control orders are the default, now that the overall integration group passes", () => {
+    // Validated by "overall control orders" in main-engine-live-dispatch.
+    expect(OVERALL_CONTROL_ORDERS_DEFAULT).toBe(true)
   })
 })

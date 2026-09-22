@@ -374,6 +374,22 @@ const recordingConnector = {
   getPositions: jest.fn(async () => venuePositionSnapshot()),
   getLastPositionsSnapshotStatus: jest.fn(() => ({ ok: true })),
   getOpenOrders: jest.fn(async () => venueOpenOrderSnapshot()),
+  // Mirrors the real BingX connector, which reads any order — conditional
+  // STOP_MARKET / TAKE_PROFIT_MARKET included — by id through
+  // GET /openApi/swap/v2/trade/order. Settling a slot's controls before a
+  // quantity change reads each control through getOrder before cancelling it;
+  // without this the harness could never settle an overall-mode control set,
+  // and every overall addition (DCA, Block, accumulation) stalled here even
+  // though it completes against the real venue.
+  getOrder: jest.fn(async (_symbol: string, orderId: string) => {
+    const open = venueOpenOrderSnapshot().find((order) =>
+      String(order.id) === String(orderId) || String(order.clientOrderId || "") === String(orderId))
+    if (open) return { ...open, orderId: open.id, status: "NEW", executedQty: 0 }
+    if (cancelledVenueOrderIds.has(String(orderId))) {
+      return { orderId, id: orderId, status: "CANCELED", executedQty: 0 }
+    }
+    return null
+  }),
   getLastOpenOrdersSnapshotStatus: jest.fn(() => ({ ok: true })),
   getCapabilities: jest.fn(() => ["position_close_all_stop"]),
 }
@@ -3082,6 +3098,97 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       assignedTakeProfit: 4,
       presetId: "preset-recording-1",
       presetIndicatorType: "rsi",
+    })
+  })
+
+  // ── Overall control orders ────────────────────────────────────────────────
+  // Per symbol+direction ONE set of control orders (SL, TP, security stop)
+  // covers the whole own position at the widest level of its partials; the
+  // system controls the partials. An addition resizes that set through a
+  // settle-first hand-off completed by the reconcile loop, so these tests run
+  // the loop between dispatches exactly as production does. The per-order
+  // tests above assert single-call per-order timing and stay valid for that
+  // mode; this group validates overall mode on its own terms.
+  describe("overall control orders", () => {
+    let redisDb: any
+    beforeEach(async () => {
+      redisDb = await import("@/lib/redis-db")
+      ;(redisDb.getAppSettings as jest.Mock).mockImplementation(async () => ({ overallControlOrdersOnly: true }))
+      const { invalidateLiveStageSettingsCache } = await import("@/lib/trade-engine/stages/live-stage")
+      invalidateLiveStageSettingsCache()
+      placeOrder.mockImplementation(async (symbol: string, _side: string, quantity: number) => ({
+        success: true, orderId: `overall-fill-${symbol}-${placeOrder.mock.calls.length}`,
+        status: "filled", filledQty: quantity, filledPrice: 100,
+      }))
+    })
+    afterEach(async () => {
+      ;(redisDb.getAppSettings as jest.Mock).mockImplementation(async () => ({ overallControlOrdersOnly: false }))
+      const { invalidateLiveStageSettingsCache } = await import("@/lib/trade-engine/stages/live-stage")
+      invalidateLiveStageSettingsCache()
+    })
+
+    const common = (direction: "long" | "short") => ({
+      connectionId: connection.id, symbol: "BTCUSDT", direction, quantity: 0, leverage: 2,
+      stopLoss: 1, takeProfit: 2, status: "pending" as const, timestamp: Date.now(),
+      parentSetKey: `BTCUSDT:direction:${direction}`, indicationType: "direction",
+    })
+    const slotLeader = (direction: "long" | "short") =>
+      [...hashes.values()].find((row: any) =>
+        row?.aggregateProtectionOwner === true && String(row?.direction) === direction && String(row?.symbol) === "BTCUSDT") as any
+    // Dispatch, then run the reconcile loop, until the target quantity is held.
+    const dispatchUntil = async (candidate: any, target: number) => {
+      const { executeLivePosition, reconcileLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
+      let pos: any = await executeLivePosition(connection.id, candidate, recordingConnector)
+      for (let cycle = 0; cycle < 8 && Number(pos?.executedQuantity) < target - 1e-9; cycle++) {
+        await reconcileLivePositions(connection.id, recordingConnector, { skipSimulatedSweep: true, skipOrphanAdoption: true } as any)
+        pos = await executeLivePosition(connection.id, candidate, recordingConnector)
+      }
+      return pos
+    }
+    const everHalted = (pos: any) => (pos?.progression || []).some((step: any) =>
+      step.step === "entry_protection_rollback" || step.step === "quantity_protection_halt")
+
+    test("a fresh position gets one shared SL/TP plus a security stop, and is not rolled back", async () => {
+      const pos = await dispatchUntil({ ...common("long"), id: "ov-fresh", entryPrice: 100, setKey: "BTCUSDT:direction:long", setVariant: "default" }, 0.01)
+      expect(pos).toMatchObject({ status: "open", executedQuantity: 0.01, controlOrderScope: "symbol_direction", aggregateProtectionOwner: true })
+      expect(pos.stopLossOrderId).toBeTruthy()
+      expect(pos.takeProfitOrderId).toBeTruthy()
+      expect(pos.securityStopOrderId).toBeTruthy()
+      expect(everHalted(pos)).toBe(false)
+      // One entry order: no rollback sell.
+      expect(placeOrder).toHaveBeenCalledTimes(1)
+    })
+
+    test("a Block addition resizes the ONE shared set to the new total", async () => {
+      const base = "BTCUSDT:direction:long"
+      await dispatchUntil({ ...common("long"), id: "ov-parent", entryPrice: 100, setKey: base, setVariant: "default" }, 0.01)
+      const pos = await dispatchUntil({
+        ...common("long"), id: "ov-block", entryPrice: 100, setKey: `${base}#block:2`, setVariant: "block",
+        blockCount: 2, blockVolumeRatio: 0.5, blockVolumeIncrementRatio: 1, blockBaseVolumeMultiplier: 1.25, blockCalculatedVolumeMultiplier: 1.25,
+      }, 0.02)
+      expect(pos.executedQuantity).toBeCloseTo(0.02, 10)
+      const leader = slotLeader("long")
+      // The shared stop covers the WHOLE position, not a single partial.
+      expect(Number(leader.stopLossArmedQuantity)).toBeCloseTo(0.02, 10)
+      expect(Number(leader.takeProfitArmedQuantity)).toBeCloseTo(0.02, 10)
+      expect(leader.securityStopOrderId).toBeTruthy()
+      // Exactly one leader owns the slot's controls; partials hold none.
+      const slotRows = [...hashes.values()].filter((row: any) => String(row?.symbol) === "BTCUSDT" && String(row?.direction) === "long" && Number(row?.executedQuantity) > 0) as any[]
+      expect(slotRows.filter((row) => row.aggregateProtectionOwner === true)).toHaveLength(1)
+      expect(everHalted(pos)).toBe(false)
+    })
+
+    test("long and short on one symbol are independent slots, each with its own shared set", async () => {
+      await dispatchUntil({ ...common("long"), id: "ov-long", entryPrice: 100, setKey: "BTCUSDT:direction:long", setVariant: "default" }, 0.01)
+      await dispatchUntil({ ...common("short"), id: "ov-short", entryPrice: 100, setKey: "BTCUSDT:direction:short", setVariant: "default" }, 0.01)
+      const long = slotLeader("long")
+      const short = slotLeader("short")
+      expect(long?.stopLossOrderId).toBeTruthy()
+      expect(short?.stopLossOrderId).toBeTruthy()
+      expect(long.stopLossOrderId).not.toBe(short.stopLossOrderId)
+      // Correctly sided: a long stop sits below entry, a short stop above.
+      expect(Number(long.stopLossPrice)).toBeLessThan(100)
+      expect(Number(short.stopLossPrice)).toBeGreaterThan(100)
     })
   })
 })
