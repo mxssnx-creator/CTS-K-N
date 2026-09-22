@@ -4879,6 +4879,34 @@ export class StrategyCoordinator {
    *      re-appears next cycle, we reuse the cached Set instead of
    *      regenerating ("IF NOT ALREADY CREATED").
    */
+  private _blockPfStatsPrunedAt = 0
+  /**
+   * Drop block PF stats of symbols that left the selection.
+   *
+   * The hash is merged with hset per symbol and count, so a symbol that was
+   * selected once stayed forever: production reached 14,196 fields, and the
+   * stats route's HGETALL on it blocked Redis for up to 125 ms per read
+   * (slowlog p95 72 ms). Symbols not updated for a day are removed; runs at
+   * most every 10 minutes.
+   */
+  private async pruneStaleBlockPfStats(client: any): Promise<void> {
+    const now = Date.now()
+    if (now - this._blockPfStatsPrunedAt < 10 * 60 * 1000) return
+    this._blockPfStatsPrunedAt = now
+    const key = `strategy_block_pf_stats:${this.connectionId}`
+    // One full read every 10 minutes on the write side keeps the hash small
+    // for the stats route, which reads it whole on every request.
+    const all: Record<string, string> = (await client.hgetall(key)) || {}
+    const stale = new Set<string>()
+    for (const [field, value] of Object.entries(all)) {
+      if (!field.endsWith(":stats_updated_at")) continue
+      if (now - Number(value || 0) > 24 * 60 * 60 * 1000) stale.add(field.split(":")[1])
+    }
+    if (stale.size === 0) return
+    const toDelete = Object.keys(all).filter((field) => stale.has(field.split(":")[1]))
+    for (let i = 0; i < toDelete.length; i += 200) await client.hdel(key, ...toDelete.slice(i, i + 200))
+  }
+
   private async createMainSets(
     symbol: string,
     inputSets?: StrategySet[],
@@ -6929,7 +6957,9 @@ export class StrategyCoordinator {
       snapshot[`${prefix}:sample_count`] = String(stats.sampleCount)
     }
     if (persistStats) {
+      snapshot[`s:${symbol}:stats_updated_at`] = String(Date.now())
       await client.hset(`strategy_block_pf_stats:${this.connectionId}`, snapshot).catch(() => 0)
+      await this.pruneStaleBlockPfStats(client).catch(() => undefined)
       await client.expire(`strategy_block_pf_stats:${this.connectionId}`, 7 * 24 * 60 * 60).catch(() => 0)
     }
     return overlays
