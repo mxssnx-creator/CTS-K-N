@@ -2,6 +2,7 @@
 
 import { isConnectionVisibleInServerOverview } from "@/lib/connection-state-utils"
 
+import { createThrottledRefresh } from "@/lib/throttled-refresh"
 import { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from "react"
 import { useDashboardEvents, type DashboardEventPayload } from "@/lib/dashboard-events"
 
@@ -146,12 +147,23 @@ export function ExchangeProvider({ children }: { children: ReactNode }) {
   const loadActiveConnectionsEventRef = useRef(loadActiveConnections)
   loadActiveConnectionsEventRef.current = loadActiveConnections
   const dashboardEventHandlers = useMemo(() => {
+    // A live stage change does not change any connection's configuration, but
+    // it maps to `connection.updated` for components that show live status.
+    // Here it forced a full reload of the connection list (~164 KB) past the
+    // 10 s cooldown on every message: with the engine running that was ~4
+    // events/s and 17-22 reloads per 30 s on /live-trading and the dashboard.
+    // It is ignored here, and any SSE-forced reload is throttled to one per
+    // SSE_REFRESH_MIN_MS with a single trailing reload so the last change is
+    // never lost. Reloads triggered by the user's own actions (window events
+    // below) stay immediate.
+    const SSE_REFRESH_MIN_MS = 5_000
+    const throttledReload = createThrottledRefresh(() => { void loadActiveConnectionsEventRef.current({ force: true }) }, SSE_REFRESH_MIN_MS)
     const refresh = (payload: DashboardEventPayload) => {
       const canonicalType = String(payload.canonicalType || "")
-      if (["strategy.stageChanged", "processing.progress", "position.updated", "indication.updated"].includes(canonicalType)) {
+      if (["live.stageChanged", "strategy.stageChanged", "processing.progress", "position.updated", "indication.updated"].includes(canonicalType)) {
         return
       }
-      void loadActiveConnectionsEventRef.current({ force: true })
+      throttledReload()
     }
     return {
       "connection.updated": refresh,

@@ -107,6 +107,7 @@ __tests__/unit/connection-card-stage-overview-contract.test.ts
 __tests__/unit/connection-coordinator.test.ts
 __tests__/unit/connection-rate-limiter-boundary.test.ts
 __tests__/unit/connection-recoordinator-concurrency.test.ts
+__tests__/unit/connection-refresh-storm.test.ts
 __tests__/unit/connection-scope-ui-contract.test.ts
 __tests__/unit/connection-secret-status.test.ts
 __tests__/unit/connection-settings-live-state-route.test.ts
@@ -1577,6 +1578,7 @@ lib/system-order-ownership.ts
 lib/system-resource-metrics.ts
 lib/system-version.ts
 lib/technical-indicators.ts
+lib/throttled-refresh.ts
 lib/top-info-layer.ts
 lib/top-symbols.ts
 lib/tp-sl-ratio.ts

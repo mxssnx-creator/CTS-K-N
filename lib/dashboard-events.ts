@@ -78,6 +78,9 @@ export function useDashboardEvents(
       { timer: ReturnType<typeof setTimeout>; payload: DashboardEventPayload; delay: number }
     >()
     const highFrequencyTypes = new Set([
+      // The live engine emits a stage change several times a second while it
+      // runs; handlers must see them batched, not one timer per message.
+      "live.stageChanged",
       "strategy.stageChanged",
       "processing.progress",
       "position.updated",

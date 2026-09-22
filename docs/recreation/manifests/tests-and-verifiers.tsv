@@ -93,6 +93,7 @@ unit	__tests__/unit/connection-card-stage-overview-contract.test.ts
 unit	__tests__/unit/connection-coordinator.test.ts
 unit	__tests__/unit/connection-rate-limiter-boundary.test.ts
 unit	__tests__/unit/connection-recoordinator-concurrency.test.ts
+unit	__tests__/unit/connection-refresh-storm.test.ts
 unit	__tests__/unit/connection-scope-ui-contract.test.ts
 unit	__tests__/unit/connection-secret-status.test.ts
 unit	__tests__/unit/connection-settings-live-state-route.test.ts
