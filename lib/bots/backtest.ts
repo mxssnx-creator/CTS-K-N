@@ -61,6 +61,7 @@ interface Series {
   c: Candle[]; close: number[]
   emaFast: number[]; emaSlow: number[]; atr: number[]; atrAvg: number[]
   bbMid: number[]; bbStd: number[]; rsi: number[]; vol1h: number[]
+  vwap: number[]; vwapDev: number[]; bandWidth: number[]; bandWidthMin: number[]
 }
 function prepare(c: Candle[]): Series {
   const close = c.map((x) => x.close)
@@ -73,7 +74,30 @@ function prepare(c: Candle[]): Series {
     bbMid: ema(close, 20), bbStd: rollingStd(close, 20),
     rsi: rsi(close, 14),
     vol1h: rollingStd(ret, 60).map((v) => v * 100),
+    ...vwapAndSqueeze(c, close),
   }
+}
+function vwapAndSqueeze(c: Candle[], close: number[]) {
+  const n = c.length, vwap = new Array(n).fill(NaN), vwapDev = new Array(n).fill(NaN)
+  let pv = 0, vv = 0
+  const tp = c.map((x) => (x.high + x.low + x.close) / 3)
+  for (let i = 0; i < n; i++) {
+    pv += tp[i] * c[i].volume; vv += c[i].volume
+    if (i >= 60) { pv -= tp[i - 60] * c[i - 60].volume; vv -= c[i - 60].volume }
+    if (i >= 59 && vv > 0) vwap[i] = pv / vv
+  }
+  const dev = close.map((v, i) => (Number.isFinite(vwap[i]) ? v - vwap[i] : NaN))
+  const devStd = rollingStd(dev.map((v) => (Number.isFinite(v) ? v : 0)), 60)
+  for (let i = 0; i < n; i++) vwapDev[i] = devStd[i] > 0 && Number.isFinite(dev[i]) ? dev[i] / devStd[i] : NaN
+  const bb = rollingStd(close, 20)
+  const bandWidth = bb.map((v, i) => (Number.isFinite(v) ? (4 * v) / close[i] * 100 : NaN))
+  const bandWidthMin = new Array(n).fill(NaN)
+  for (let i = 120; i < n; i++) {
+    let m = Infinity
+    for (let j = i - 120; j < i; j++) if (Number.isFinite(bandWidth[j])) m = Math.min(m, bandWidth[j])
+    bandWidthMin[i] = m
+  }
+  return { vwap, vwapDev, bandWidth, bandWidthMin }
 }
 
 // ── signals ────────────────────────────────────────────────────────────────
@@ -98,6 +122,31 @@ function signal(type: BotType, s: Series, i: number): Dir | null {
     for (let j = i - 30; j < i; j++) { if (j < 0) return null; hi = Math.max(hi, s.c[j].high); lo = Math.min(lo, s.c[j].low) }
     if (px > hi && trend > 0.05) return "long"
     if (px < lo && trend < -0.05) return "short"
+    return null
+  }
+  if (type === "vwap_reversion") {
+    // Stretched more than 2.5 deviations from the 60-minute VWAP, in a range.
+    if (Math.abs(trend) > 0.35 || !Number.isFinite(s.vwapDev[i])) return null
+    if (s.vwapDev[i] < -2.5 && s.rsi[i] < 35) return "long"
+    if (s.vwapDev[i] > 2.5 && s.rsi[i] > 65) return "short"
+    return null
+  }
+  if (type === "liquidity_sweep") {
+    // Wick through the prior 30-minute extreme that closes back inside: a stop run.
+    let hi = -Infinity, lo = Infinity
+    for (let j = i - 31; j < i - 1; j++) { if (j < 0) return null; hi = Math.max(hi, s.c[j].high); lo = Math.min(lo, s.c[j].low) }
+    const k = s.c[i]
+    if (k.low < lo && px > lo && (lo - k.low) / px * 100 > 0.3 * a) return "long"
+    if (k.high > hi && px < hi && (k.high - hi) / px * 100 > 0.3 * a) return "short"
+    return null
+  }
+  if (type === "volatility_squeeze") {
+    // Bands within 10 % of their 2-hour minimum width, then a close outside them.
+    const bw = s.bandWidth[i - 1], bwMin = s.bandWidthMin[i - 1]
+    if (!Number.isFinite(bw) || !Number.isFinite(bwMin) || bw > bwMin * 1.1) return null
+    const upper = s.bbMid[i] + 2 * s.bbStd[i], lower = s.bbMid[i] - 2 * s.bbStd[i]
+    if (px > upper && trend >= 0) return "long"
+    if (px < lower && trend <= 0) return "short"
     return null
   }
   // trend_pullback: established trend, price touched the fast mean and held.
@@ -179,17 +228,27 @@ function roundTripCostFor(limitEntry: boolean, reason: "tp" | "sl" | "trail" | "
 }
 
 /**
- * Per-type execution parameters, chosen on the first 48 h of a 72 h window
- * and validated on the last 24 h the search never saw (20 symbols):
- *   sandwich           PF 1.61, +0.81 %, max DD 0.58 %, 18/22 positive hours
- *   momentum_breakout  PF 1.07 at 10 symbols but 0.76 at 20 — NOT robust
- *   trend_pullback     no configuration reached PF 1 in training
- * Re-validate on fresh data before trusting any of these for live funds.
+ * Per-type execution parameters. Each was chosen on the first 48 h of a 72 h
+ * window of real BingX 1-minute data (29 symbols) and tested on the last 24 h
+ * the search never saw. A type is `validated` only if it stayed profitable
+ * out of sample at BOTH 10 and 20 symbols.
+ *
+ *   sandwich            unseen PF 1.04 (10) / 1.61 (20), DD 0.58 %
+ *   liquidity_sweep     unseen PF 1.24 (10) / 1.09 (20), 296 positions/day at 20
+ *   vwap_reversion      unseen PF 1.15 (10) / 1.05 (20) — positive but thin
+ *   momentum_breakout   unseen PF 1.07 (10) / 0.76 (20) — not robust
+ *   volatility_squeeze  PF < 1 in training and out of sample — loses
+ *   trend_pullback      never reached PF 1 in training — loses
+ *
+ * Re-validate on fresh data before trusting any of these with live funds.
  */
-export const BOT_TUNING: Record<BotType, { tpAtr: number; slAtr: number; maxHoldBars: number; validated: boolean }> = {
-  sandwich: { tpAtr: 4, slAtr: 16, maxHoldBars: 90, validated: true },
-  momentum_breakout: { tpAtr: 4, slAtr: 8, maxHoldBars: 90, validated: false },
-  trend_pullback: { tpAtr: 4, slAtr: 8, maxHoldBars: 90, validated: false },
+export const BOT_TUNING: Record<BotType, { tpAtr: number; slAtr: number; maxHoldBars: number; trailing: boolean; validated: boolean }> = {
+  sandwich: { tpAtr: 4, slAtr: 16, maxHoldBars: 90, trailing: true, validated: true },
+  liquidity_sweep: { tpAtr: 8, slAtr: 8, maxHoldBars: 90, trailing: false, validated: true },
+  vwap_reversion: { tpAtr: 8, slAtr: 16, maxHoldBars: 90, trailing: false, validated: true },
+  momentum_breakout: { tpAtr: 4, slAtr: 8, maxHoldBars: 90, trailing: true, validated: false },
+  volatility_squeeze: { tpAtr: 8, slAtr: 4, maxHoldBars: 90, trailing: false, validated: false },
+  trend_pullback: { tpAtr: 4, slAtr: 8, maxHoldBars: 90, trailing: false, validated: false },
 }
 
 export function runBotBacktest(
@@ -197,7 +256,7 @@ export function runBotBacktest(
   settings: BotSettings,
   options: BotBacktestOptions = {},
 ): BotBacktestResult {
-  const limitEntry = settings.type === "sandwich"
+  const limitEntry = settings.type === "sandwich" || settings.type === "vwap_reversion" || settings.type === "liquidity_sweep"
   const tuning = BOT_TUNING[settings.type]
   options = { tpAtr: tuning.tpAtr, slAtr: tuning.slAtr, maxHoldBars: tuning.maxHoldBars, ...options }
   const startBalance = options.startBalance ?? 1000
@@ -315,9 +374,11 @@ export function runBotBacktest(
       const tp = Math.max(settings.minTakeProfitPct, (options.tpAtr ?? 1.2) * a)
       const sl = Math.max(settings.minStopLossPct, (options.slAtr ?? 1.6) * a)
       // A bracket rests its limit at the band edge: filled at that price, not the close.
-      const entryPx = limitEntry
-        ? (dir === "long" ? Math.min(s.close[bar], s.bbMid[bar] - 2 * s.bbStd[bar]) : Math.max(s.close[bar], s.bbMid[bar] + 2 * s.bbStd[bar]))
-        : s.close[bar]
+      const entryPx = !limitEntry ? s.close[bar]
+        : settings.type === "sandwich"
+          ? (dir === "long" ? Math.min(s.close[bar], s.bbMid[bar] - 2 * s.bbStd[bar]) : Math.max(s.close[bar], s.bbMid[bar] + 2 * s.bbStd[bar]))
+          // VWAP and sweep limits rest at the close of the signal bar and fill on it.
+          : s.close[bar]
       open.set(sym, { dir, entry: entryPx, avgEntry: entryPx, qtyUnits: 1, openedAt: s.c[bar].time, openedBar: bar,
         tp, sl, trailOn: false, peakFav: 0, legs: 1, dcaLeft: settings.strategies.dca ? 1 : 0, mult })
     }

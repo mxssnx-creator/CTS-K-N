@@ -4,7 +4,7 @@
  * Every bound below is the operator's specification; the UI renders exactly
  * these ranges and steps, and the server clamps to them on save.
  */
-export type BotType = "sandwich" | "momentum_breakout" | "trend_pullback"
+export type BotType = "sandwich" | "momentum_breakout" | "trend_pullback" | "vwap_reversion" | "liquidity_sweep" | "volatility_squeeze"
 export type SymbolRanking = "volatility_1h" | "volume_24h" | "range_1h"
 export type BotStrategy = "normal" | "trailing" | "axis" | "block" | "dca"
 
@@ -51,6 +51,18 @@ export const BOT_TYPES: Record<BotType, { label: string; summary: string }> = {
     label: "Trend Pullback",
     summary: "Buys dips in an established up-trend (and sells rallies in a down-trend) at the fast mean.",
   },
+  vwap_reversion: {
+    label: "VWAP Reversion",
+    summary: "Rests limit orders at a stretched deviation from the rolling VWAP and exits on the return to fair value.",
+  },
+  liquidity_sweep: {
+    label: "Liquidity Sweep",
+    summary: "Fades a failed break of the 30-minute high or low — a stop run that closes back inside the range.",
+  },
+  volatility_squeeze: {
+    label: "Volatility Squeeze",
+    summary: "Waits for the bands to compress, then joins the first expansion out of the squeeze.",
+  },
 }
 
 function clampStep(v: unknown, b: { min: number; max: number; step: number; default: number }): number {
@@ -71,7 +83,8 @@ export function defaultBotSettings(type: BotType): BotSettings {
     trailingDistancePct: BOT_BOUNDS.trailingDistancePct.default,
     volumeFactor: BOT_BOUNDS.volumeFactor.default,
     rebaseRatio: 0.6,
-    strategies: { normal: true, trailing: true, axis: false, block: false, dca: false },
+    // Trailing default follows the validated configuration of each type.
+    strategies: { normal: true, trailing: type === "sandwich" || type === "momentum_breakout", axis: false, block: false, dca: false },
     activeSkip: { axis: 0, block: 0, dca: 0 },
     backtestHours: BOT_BOUNDS.backtestHours.default,
   }

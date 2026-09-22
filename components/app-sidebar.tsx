@@ -85,6 +85,7 @@ const navigationGroups: NavigationGroup[] = [
     label: "Strategy Lab",
     icon: Sparkles,
     items: [
+      { title: "Bots", href: "/bots", icon: Bot, description: "Sandwich and high-frequency bots with hourly backtests" },
       { title: "Presets", href: "/presets", icon: Bot, description: "Ranked preset progression" },
       { title: "Indications", href: "/indications", icon: Zap, description: "Signal types and calculation windows" },
       { title: "Strategies", href: "/strategies", icon: TrendingUp, description: "Independent strategy configurations" },

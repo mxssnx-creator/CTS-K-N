@@ -22,6 +22,8 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/backtest-results	GET	backtest-results	force-dynamic		none-detected	app/api/backtest-results/route.ts
 /api/backtest-results/[id]	GET	backtest-results	force-dynamic		none-detected	app/api/backtest-results/[id]/route.ts
 /api/backup/auto	GET,POST	backup	force-dynamic		none-detected	app/api/backup/auto/route.ts
+/api/bots	GET,POST	bots	force-dynamic		none-detected	app/api/bots/route.ts
+/api/bots/backtest	POST	bots	force-dynamic	120	none-detected	app/api/bots/backtest/route.ts
 /api/broadcast/health	GET	broadcast	force-dynamic		none-detected	app/api/broadcast/health/route.ts
 /api/broadcast/stats	GET	broadcast	force-dynamic		none-detected	app/api/broadcast/stats/route.ts
 /api/connections	GET	connections	force-dynamic	30	none-detected	app/api/connections/route.ts
