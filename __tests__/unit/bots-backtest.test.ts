@@ -76,3 +76,35 @@ describe("bot backtest engine", () => {
     expect(r.summary.endBalance).toBeGreaterThanOrEqual(0)
   })
 })
+
+describe("six independent bot types", () => {
+  const { BOT_TYPES } = require("@/lib/bots/settings")
+  test("all six are registered and each has tuning", () => {
+    expect(Object.keys(BOT_TYPES).sort()).toEqual(["liquidity_sweep", "momentum_breakout", "sandwich", "trend_pullback", "volatility_squeeze", "vwap_reversion"])
+    for (const t of Object.keys(BOT_TYPES)) expect(BOT_TUNING[t as keyof typeof BOT_TUNING]).toBeDefined()
+  })
+  test("only types that stayed profitable out of sample at 10 AND 20 symbols are validated", () => {
+    const validated = Object.entries(BOT_TUNING).filter(([, v]) => v.validated).map(([k]) => k).sort()
+    expect(validated).toEqual(["liquidity_sweep", "sandwich", "vwap_reversion"])
+  })
+  test("every type runs and reports the same hourly shape", () => {
+    const candles = synthetic(10, 24 * 60 + 200)
+    for (const t of Object.keys(BOT_TYPES)) {
+      const r = runBotBacktest(candles, { ...defaultBotSettings(t as any), backtestHours: 24 })
+      expect([t, r.hours.length]).toEqual([t, 24])
+    }
+  })
+})
+
+describe("bots API guards live execution", () => {
+  const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "app/api/bots/route.ts"), "utf8")
+  const store = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "lib/bots/store.ts"), "utf8")
+  test("an unvalidated bot cannot be started", () => {
+    expect(src).toContain('if (action === "start" && !BOT_TUNING[type].validated)')
+    expect(store).toContain("if (next.running && !BOT_TUNING[type].validated) next.running = false")
+  })
+  test("state is scoped per connection AND per bot type", () => {
+    expect(store).toContain("`bots:settings:${connectionId}:${type}`")
+    expect(store).toContain("`bots:backtest:${connectionId}:${type}`")
+  })
+})

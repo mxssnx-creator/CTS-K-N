@@ -1,10 +1,10 @@
 {
   "project": "CTS-K-N",
-  "sourceRevisionBeforeHandoffCommit": "c22ef14a8e4bc335d236a20aecf9ddd4b7554819",
-  "sourceTreeBeforeHandoffCommit": "73cf83e32297013760b3755c7c597fac94e4af80",
-  "sourceRevisionTimestamp": "2026-09-22T19:03:19+02:00",
+  "sourceRevisionBeforeHandoffCommit": "d6c966ffb3618a2d64c7f42b4f7df6d657d8463d",
+  "sourceTreeBeforeHandoffCommit": "5a75b547f514077fdd1ba741d79746e3a28f830f",
+  "sourceRevisionTimestamp": "2026-09-22T19:36:35+02:00",
   "workingTreeChangesIncluded": true,
-  "workingTreeStatusEntryCount": 3,
+  "workingTreeStatusEntryCount": 11,
   "nodeRequirement": ">=20.16",
   "packageManager": "pnpm@10.28.1",
   "framework": {
@@ -13,10 +13,10 @@
     "typescript": "^5.8.3"
   },
   "counts": {
-    "projectFilesExcludingGeneratedManifests": 1816,
-    "apiRoutes": 300,
-    "apiMethods": 387,
-    "uiPages": 41,
+    "projectFilesExcludingGeneratedManifests": 1821,
+    "apiRoutes": 302,
+    "apiMethods": 390,
+    "uiPages": 42,
     "environmentVariables": 510,
     "redisMigrations": 108,
     "testsAndVerifiers": 423
@@ -53,6 +53,10 @@
     "backup": {
       "routes": 1,
       "methods": 2
+    },
+    "bots": {
+      "routes": 2,
+      "methods": 3
     },
     "broadcast": {
       "routes": 2,
