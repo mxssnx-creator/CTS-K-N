@@ -13,7 +13,7 @@ describe("the post-entry audit never reads a pre-fill venue snapshot", () => {
   })
 
   test("a snapshot that does not yet show our symbol is re-read, bounded", () => {
-    expect(live).toContain("const POST_FILL_SNAPSHOT_RETRIES = 3")
+    expect(live).toContain("const POST_FILL_SNAPSHOT_RETRIES = 8")
     expect(live).toContain("if (venueSnapshotShowsSymbol(venueRows, livePosition.symbol)) break")
   })
 
@@ -27,5 +27,18 @@ describe("the post-entry audit never reads a pre-fill venue snapshot", () => {
     expect(cache.has(c.positionsCacheKey("BTCUSDT"))).toBe(false)
     expect(cache.has(c.positionsCacheKey(undefined))).toBe(false)
     jest.restoreAllMocks()
+  })
+
+  test("the post-entry audit retries while our own just-placed state settles, on the bounded schedule", () => {
+    expect(live).toContain("postEntryViolationsMaySettle(finalAdmission.violations)")
+    // Only our own artefacts qualify; foreign or quantity-mismatch codes are final on first read.
+    const set = live.slice(live.indexOf("const POST_ENTRY_SETTLING_VIOLATIONS"), live.indexOf("function postEntryViolationsMaySettle"))
+    expect(set).toContain('"owned_slot_controls_incomplete"')
+    expect(set).toContain('"owned_physical_slot_missing_on_venue"')
+    expect(set).not.toContain("venue_physical_slot_quantity_not_fully_owned")
+    expect(set).not.toContain("owned_shared_control_owner_mismatch")
+    // Every retry re-reads the venue, never a cached snapshot.
+    const i = live.indexOf("postEntryViolationsMaySettle(finalAdmission.violations)")
+    expect(live.slice(i, i + 400)).toContain("invalidateAuthoritativeSnapshot(exchangeConnector)")
   })
 })

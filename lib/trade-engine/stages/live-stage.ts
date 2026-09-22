@@ -1287,6 +1287,31 @@ const EXCHANGE_TIMEOUT_GET_POSITIONS_MS = 8_000   // position fetch for adoption
 // Post-entry protection audit: retry venue reads before treating an unreadable
 // snapshot as a failed audit (total ~25 s of patience after the entry burst).
 const POST_ENTRY_AUDIT_READ_DELAYS_MS_DEFAULT = [2_000, 5_000, 8_000, 10_000]
+/**
+ * Post-entry violations that can still settle: our own fill or our own
+ * just-placed controls not visible on the venue yet. Nothing here concerns
+ * another system's orders or a quantity that disagrees with ours.
+ */
+const POST_ENTRY_SETTLING_VIOLATIONS: ReadonlySet<string> = new Set([
+  "owned_physical_slot_missing_on_venue",
+  "owned_row_stop_loss_missing",
+  "owned_row_take_profit_missing",
+  "owned_shared_stopLoss_missing",
+  "owned_shared_takeProfit_missing",
+  "owned_slot_security_stop_incomplete",
+  "owned_slot_security_quantity_mismatch",
+  "owned_slot_controls_incomplete",
+  "owned_slot_row_stop_loss_id_missing",
+  "owned_slot_row_take_profit_id_missing",
+  "owned_slot_row_stop_loss_not_authoritatively_open",
+  "owned_slot_row_take_profit_not_authoritatively_open",
+  "owned_slot_security_stop_not_authoritatively_open",
+  "owned_slot_security_owner_count_mismatch",
+  "candidate_slot_open_controls_present",
+])
+function postEntryViolationsMaySettle(violations: readonly string[]): boolean {
+  return violations.length > 0 && violations.every((v) => POST_ENTRY_SETTLING_VIOLATIONS.has(v))
+}
 function postEntryAuditReadDelaysMs(): number[] {
   const raw = process.env.CTS_POST_ENTRY_AUDIT_READ_DELAYS_MS
   if (raw === undefined) return POST_ENTRY_AUDIT_READ_DELAYS_MS_DEFAULT
@@ -12103,8 +12128,12 @@ const TRANSIENT_PROTECTION_VIOLATIONS: ReadonlySet<string> = new Set([
 /** Long enough to skip the failing cycle, short enough to re-audit on the next. */
 const TRANSIENT_ENTRY_HALT_TTL_SECONDS = 90
 /** Re-reads of the venue book after a confirmed fill that does not show yet. */
-const POST_FILL_SNAPSHOT_RETRIES = 3
-const POST_FILL_SNAPSHOT_RETRY_MS = 400
+// 3 x 400 ms was not enough: production still saw `venue=0` in the same
+// second as `confirmed_fill` and booked the position as externally closed
+// before any protection was placed. BingX reflects a fill within a few
+// seconds; up to ~6 s covers what was observed with margin.
+const POST_FILL_SNAPSHOT_RETRIES = 8
+const POST_FILL_SNAPSHOT_RETRY_MS = 750
 function venueSnapshotShowsSymbol(rows: unknown, symbol: string): boolean {
   if (!Array.isArray(rows)) return false
   const wanted = String(symbol || "").replace(/[-_]/g, "").toUpperCase()
@@ -16213,6 +16242,27 @@ export async function executeLivePosition(
             requireCapacity: false,
           })
           auditReadError = null
+          // The retry schedule used to apply only to READ FAILURES. A read that
+          // succeeded but did not yet show what this process had just placed —
+          // the fill, or the SL/TP/security orders armed seconds earlier — was
+          // taken as final, and the entry was rolled back although its
+          // protection was on the venue. BingX reflects fills and conditional
+          // orders with a delay of several seconds. Production: rollbacks with
+          // `venue=0` in the same second as `confirmed_fill`, and
+          // `owned_slot_controls_incomplete` 2–5 s after the controls were
+          // placed, each holding the slot for 24 h.
+          //
+          // A not-yet-visible OWN artefact is now retried on the same bounded
+          // schedule. Only violations that describe our own just-placed state
+          // qualify; anything else (foreign controls, a genuine mismatch) is
+          // final on the first read, exactly as before.
+          if (!finalAdmission.safe && attempt < auditReadDelays.length
+            && postEntryViolationsMaySettle(finalAdmission.violations)) {
+            await new Promise((resolve) => setTimeout(resolve, auditReadDelays[attempt]))
+            invalidateAuthoritativeSnapshot(exchangeConnector)
+            exchangeConnector.invalidatePositionsSnapshot?.(realPosition.symbol)
+            continue
+          }
           break
         } catch (error) {
           auditReadError = error instanceof Error ? error.message : String(error)
