@@ -2399,6 +2399,19 @@ export class BingXConnector extends BaseExchangeConnector {
     return (await this.getOrderHistorySnapshot(symbol, limit)).rows
   }
 
+  /**
+   * Drop cached position snapshots so the next read hits the venue. Called
+   * after a confirmed fill: the 1 s snapshot cache otherwise hands the
+   * post-entry protection audit the book from BEFORE the fill, which reports
+   * our fresh position as absent (venue=0) and rolls the entry back.
+   */
+  invalidatePositionsSnapshot(symbol?: string): void {
+    if (symbol) {
+      BingXConnector.positionsSnapshotCache.delete(this.positionsCacheKey(symbol))
+    }
+    BingXConnector.positionsSnapshotCache.delete(this.positionsCacheKey(undefined))
+  }
+
   async getPositions(symbol?: string): Promise<any[]> {
     const cacheKey = this.positionsCacheKey(symbol)
     const now = Date.now()

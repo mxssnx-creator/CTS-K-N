@@ -12102,6 +12102,19 @@ const TRANSIENT_PROTECTION_VIOLATIONS: ReadonlySet<string> = new Set([
 ])
 /** Long enough to skip the failing cycle, short enough to re-audit on the next. */
 const TRANSIENT_ENTRY_HALT_TTL_SECONDS = 90
+/** Re-reads of the venue book after a confirmed fill that does not show yet. */
+const POST_FILL_SNAPSHOT_RETRIES = 3
+const POST_FILL_SNAPSHOT_RETRY_MS = 400
+function venueSnapshotShowsSymbol(rows: unknown, symbol: string): boolean {
+  if (!Array.isArray(rows)) return false
+  const wanted = String(symbol || "").replace(/[-_]/g, "").toUpperCase()
+  return rows.some((row: any) => {
+    const sym = String(row?.symbol || row?.Symbol || "").replace(/[-_]/g, "").toUpperCase()
+    if (sym !== wanted) return false
+    const qty = Number(row?.positionAmt ?? row?.contracts ?? row?.quantity ?? row?.size ?? 0)
+    return Number.isFinite(qty) && Math.abs(qty) > 0
+  })
+}
 /** A proven protection violation keeps the full hold until reconciliation. */
 const GENUINE_ENTRY_HALT_TTL_SECONDS = 24 * 60 * 60
 
@@ -16131,11 +16144,24 @@ export async function executeLivePosition(
     if (livePosition.executedQuantity > 0 && typeof exchangeConnector.getPositions === "function") {
       await savePosition(livePosition)
       try {
-        const [allRows, venueRows, orderIds] = await Promise.all([
+        // The fill was just confirmed, so any cached snapshot predates it.
+        // Read fresh, and if the venue still does not show our symbol's
+        // position, re-read a few times: BingX's position endpoint can lag
+        // a settlement by a moment. Production rolled entries back with
+        // `system=0.0001 venue=0` straight after `confirmed_fill`, then held
+        // the slot for 24 h — a stale/lagging snapshot, not a missing position.
+        exchangeConnector.invalidatePositionsSnapshot?.(livePosition.symbol)
+        const [allRows, orderIds] = await Promise.all([
           getLivePositions(connectionId),
-          exchangeConnector.getPositions(),
           fetchLiveOrderIdSet(exchangeConnector),
         ])
+        let venueRows: any = await exchangeConnector.getPositions()
+        for (let attempt = 0; attempt < POST_FILL_SNAPSHOT_RETRIES; attempt++) {
+          if (venueSnapshotShowsSymbol(venueRows, livePosition.symbol)) break
+          await new Promise((resolve) => setTimeout(resolve, POST_FILL_SNAPSHOT_RETRY_MS))
+          exchangeConnector.invalidatePositionsSnapshot?.(livePosition.symbol)
+          venueRows = await exchangeConnector.getPositions()
+        }
         const venueSnapshotOk = typeof exchangeConnector.getLastPositionsSnapshotStatus === "function"
           ? exchangeConnector.getLastPositionsSnapshotStatus()?.ok === true
           : Array.isArray(venueRows)
