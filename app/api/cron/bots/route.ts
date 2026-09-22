@@ -2,22 +2,30 @@ import { NextResponse } from "next/server"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 import { getAllConnections, initRedis } from "@/lib/redis-db"
 import { BOT_TYPE_IDS, readBotSettings } from "@/lib/bots/store"
-import { readLivePositions, runBotTick } from "@/lib/bots/runner"
+import { readLivePositions, runBotTick, type BotTickReport } from "@/lib/bots/runner"
 
 export const dynamic = "force-dynamic"
-export const maxDuration = 55
+export const maxDuration = 30
+
+/** Last completed tick per connection:type, for observability. */
+const lastReports = new Map<string, BotTickReport & { at: number }>()
 
 /**
- * Minute tick for the live bots. For every connection, every bot type that is
- * running — or still holds open bot positions after being stopped — gets one
- * tick. Bot types run independently and in parallel.
+ * Minute tick for the live bots.
+ *
+ * It returns at once and runs the ticks in the background. It used to await
+ * them: after a fresh install every bot fetched candles for ~30 symbols with
+ * cold caches, the request ran 58 s, the scheduler's 58 s timeout fired, and
+ * the installer's final verification failed on it — taking production down
+ * with it. A tick's work is independent of the scheduler's request; the per
+ * connection:type lock in runBotTick keeps ticks from overlapping.
  */
 export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
   await initRedis()
   const connections: any[] = await getAllConnections().catch(() => [])
-  const reports: any[] = []
+  const started: string[] = []
   const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
   for (const connection of connections) {
     const connectionId = String(connection?.id || "")
@@ -29,10 +37,14 @@ export async function GET(request: Request) {
     }
     if (!due.length) continue
     const connector: any = await exchangeConnectorFactory.getOrCreateConnector(connectionId).catch(() => null)
-    if (!connector) { reports.push({ connectionId, skipped: "no connector" }); continue }
-    reports.push(...await Promise.all(due.map((type) =>
-      runBotTick(connectionId, type as any, connector, connection).catch((e: any) => ({ connectionId, type, errors: [String(e?.message || e)] })))))
+    if (!connector) continue
+    for (const type of due) {
+      started.push(`${connectionId}:${type}`)
+      void runBotTick(connectionId, type as any, connector, connection)
+        .then((r) => { lastReports.set(`${connectionId}:${type}`, { ...r, at: Date.now() }) })
+        .catch((e: any) => { lastReports.set(`${connectionId}:${type}`, { connectionId, type: type as any, managed: 0, entries: 0, closed: 0, errors: [String(e?.message || e)], at: Date.now() }) })
+    }
   }
-  return NextResponse.json({ ok: true, at: Date.now(), reports })
+  return NextResponse.json({ ok: true, at: Date.now(), started, lastReports: Object.fromEntries(lastReports) })
 }
 export const POST = GET

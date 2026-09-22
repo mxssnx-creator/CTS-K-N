@@ -95,6 +95,7 @@ __tests__/unit/block-settings-migration.test.ts
 __tests__/unit/block-shared-lane-stacking.test.ts
 __tests__/unit/blocked-reason-visibility.test.ts
 __tests__/unit/bots-backtest.test.ts
+__tests__/unit/bots-cron-nonblocking.test.ts
 __tests__/unit/bots-runner.test.ts
 __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts

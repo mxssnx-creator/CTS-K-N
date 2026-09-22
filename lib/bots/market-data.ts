@@ -32,8 +32,21 @@ export async function minuteCandles(symbol: string, hours: number, end = Date.no
   return unique.slice(-bars)
 }
 
-/** Candles for a candidate universe larger than the bot's symbol count, so hourly ranking has room. */
-export async function candleUniverse(symbolCount: number, hours: number): Promise<Record<string, Candle[]>> {
+const universeCache = new Map<string, { at: number; value: Promise<Record<string, Candle[]>> }>()
+/**
+ * Candles for a candidate universe larger than the bot's symbol count, so
+ * hourly ranking has room. Shared for 45 s: every bot ticking in the same
+ * minute reuses one fetch instead of each pulling ~30 symbols on its own.
+ */
+export function candleUniverse(symbolCount: number, hours: number): Promise<Record<string, Candle[]>> {
+  const key = `${Math.min(60, symbolCount + 10)}:${hours}`
+  const hit = universeCache.get(key)
+  if (hit && Date.now() - hit.at < 45_000) return hit.value
+  const value = fetchCandleUniverse(symbolCount, hours).catch((e) => { universeCache.delete(key); throw e })
+  universeCache.set(key, { at: Date.now(), value })
+  return value
+}
+async function fetchCandleUniverse(symbolCount: number, hours: number): Promise<Record<string, Candle[]>> {
   const symbols = await liquidSymbols(Math.min(60, symbolCount + 10))
   const out: Record<string, Candle[]> = {}
   const batch = 6
