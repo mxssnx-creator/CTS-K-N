@@ -178,6 +178,7 @@ __tests__/unit/event-stream-stability.test.ts
 __tests__/unit/events/canonical-events.test.ts
 __tests__/unit/exchange-account-performance.test.ts
 __tests__/unit/exchange-connector-factory.test.ts
+__tests__/unit/exchange-context-default.test.ts
 __tests__/unit/exchange-control-order-options.test.ts
 __tests__/unit/exchange-force-simulated.test.ts
 __tests__/unit/exchange-live-state-summary.test.ts
@@ -375,6 +376,7 @@ __tests__/unit/signal-indication.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-trailing.test.ts
+__tests__/unit/site-logs-key.test.ts
 __tests__/unit/slot-scoped-halts.test.ts
 __tests__/unit/special-strategy.test.ts
 __tests__/unit/special-vst-validator-contract.test.ts

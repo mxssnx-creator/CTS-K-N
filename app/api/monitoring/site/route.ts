@@ -3,7 +3,14 @@ import { initRedis, getRedisClient } from "@/lib/redis-db"
 
 export const dynamic = "force-dynamic"
 
-const SITE_LOGS_KEY = "site_logs"
+/**
+ * The site-log history is a Redis LIST under its own key. It used to share the
+ * name `site_logs` with the SQL-compatibility layer, which creates its
+ * "tables" — site_logs among them (lib/db-verifier.ts) — as Redis SETs. On a
+ * server where the set existed first, every read and write here failed with
+ * WRONGTYPE: the monitoring page got HTTP 500 and no site log was ever stored.
+ */
+const SITE_LOGS_KEY = "site_logs:history"
 const MAX_LOGS = 1000
 
 export async function GET(request: Request) {
