@@ -92,7 +92,15 @@ export function ExchangeProvider({ children }: { children: ReactNode }) {
                 (connection: any) => connection.id === selectedConnectionIdRef.current,
               )
               if (mainConnections.length > 0 && !selectedStillExists) {
+                // Prefer the connection that is actually trading: assigned to
+                // the engine and live. "First BingX" used to win, which opened
+                // the dashboard on a stopped, unassigned connection while the
+                // running one sat second in the list.
+                const isAssigned = (c: any) => toBoolean(c.is_assigned) || toBoolean(c.is_active_inserted)
+                const isLive = (c: any) => toBoolean(c.is_live_trade)
                 const preferred =
+                  mainConnections.find((c: any) => isAssigned(c) && isLive(c)) ||
+                  mainConnections.find((c: any) => isAssigned(c)) ||
                   mainConnections.find((c: any) => (c.exchange || "").toLowerCase() === "bingx") ||
                   mainConnections[0]
                 setSelectedConnectionId(preferred.id)
