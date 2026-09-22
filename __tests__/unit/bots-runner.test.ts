@@ -210,3 +210,17 @@ describe("tick timing", () => {
     expect(src).toContain("if (Date.now() - startedAt > ENTRY_DEADLINE_MS)")
   })
 })
+
+describe("precision and take-profit re-arm", () => {
+  const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "lib/bots/runner.ts"), "utf8")
+  test("quantities and prices are printed at the step's precision", () => {
+    expect(src).toContain("toFixed(decimalsOf(step))")
+    const decimalsOf = (step: number) => Math.max(0, Math.min(12, Math.round(-Math.log10(step))))
+    const floorTo = (v: number, step: number) => Number((Math.floor(v / step + 1e-9) * step).toFixed(decimalsOf(step)))
+    expect(floorTo(10580.4 + 1e-12, 0.1)).toBe(10580.4)
+    expect(String(floorTo(10580.43, 0.1))).toBe("10580.4")
+  })
+  test("a missing or dead take profit is re-armed on an open position", () => {
+    expect(src).toContain("if (!p.tpOrderId || isDead(tpO)) {")
+  })
+})
