@@ -88,7 +88,9 @@ export async function readLivePositions(connectionId: string, type: BotType): Pr
 }
 
 const orderStatus = (o: any) => String(o?.status || o?.orderStatus || "").toUpperCase()
-const orderFillPrice = (o: any) => Number(o?.avgPrice || o?.averagePrice || o?.price || 0)
+// filledPrice is the venue's average execution price; `price` is the LIMIT price.
+const orderFillPrice = (o: any) => Number(o?.filledPrice || o?.avgPrice || o?.averagePrice || o?.price || 0)
+const orderFilledQty = (o: any) => Number(o?.filledQty ?? o?.executedQty ?? o?.cumQty ?? 0)
 const isFilled = (o: any) => orderStatus(o) === "FILLED"
 const isDead = (o: any) => ["CANCELED", "CANCELLED", "EXPIRED", "REJECTED", "FAILED"].includes(orderStatus(o))
 
@@ -125,8 +127,23 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
       try {
         if (p.state === "pending") {
           const o = await connector.getOrder(p.venueSymbol, p.entryOrderId).catch(() => null)
-          if (isFilled(o)) {
-            p.state = "open"; p.filledAt = Date.now(); p.entryPrice = orderFillPrice(o) || p.entryPrice
+          const status = orderStatus(o)
+          const expired = Date.now() - p.createdAt > ENTRY_TTL_MS
+          if (status !== "FILLED" && status !== "PARTIALLY_FILLED" && !isDead(o) && !expired) continue // still resting
+          let final = o
+          if (status !== "FILLED") {
+            // A partial fill, a dead order or an expired one: stop the remainder,
+            // then protect whatever DID fill right away. Waiting for the rest used
+            // to leave filled quantity without a stop — and a partial fill whose
+            // remainder was cancelled was never protected at all.
+            if (!isDead(o)) await connector.cancelOrder(p.venueSymbol, p.entryOrderId).catch(() => undefined)
+            final = (await connector.getOrder(p.venueSymbol, p.entryOrderId).catch(() => null)) || o
+          }
+          const filledQty = orderFilledQty(final) || (status === "FILLED" ? p.quantity : 0)
+          if (!(filledQty > 0)) { await dropPosition(client, connectionId, type, p); continue }
+          p.quantity = filledQty
+          p.state = "open"; p.filledAt = Date.now(); p.entryPrice = orderFillPrice(final) || p.entryPrice
+          {
             const closeSide = p.direction === "long" ? "sell" : "buy"
             const posSide = p.direction === "long" ? "LONG" : "SHORT"
             const rules = (await contractRules()).get(p.venueSymbol)
@@ -149,13 +166,6 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
             if (tp?.success && tp.orderId) p.tpOrderId = tp.orderId
             else report.errors.push(`${p.symbol}: take profit not placed; stop is active`)
             await savePosition(client, connectionId, type, p)
-          } else if (isDead(o) || Date.now() - p.createdAt > ENTRY_TTL_MS) {
-            if (!isDead(o)) await connector.cancelOrder(p.venueSymbol, p.entryOrderId).catch(() => undefined)
-            // A partial fill before the cancel still leaves exposure: re-check once.
-            const again = await connector.getOrder(p.venueSymbol, p.entryOrderId).catch(() => null)
-            const filledQty = Number(again?.executedQty || again?.filledQty || 0)
-            if (filledQty > 0) { p.quantity = filledQty; await savePosition(client, connectionId, type, p); continue }
-            await dropPosition(client, connectionId, type, p)
           }
           continue
         }
@@ -224,6 +234,12 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
       const qty = floorTo(notional / entryPx, rules.quantityStep)
       if (!(qty > 0) || qty < rules.minQuantity) continue
       const price = roundTo(entryPx, rules.priceTick)
+      // Atomic per-symbol claim: two overlapping ticks can never both enter the
+      // same symbol. Production saw two CRVUSDT entries 339 ms apart.
+      const claimKey = `bots:claim:${connectionId}:${type}:${sym}`
+      const claimed = Number(await client.incr(claimKey).catch(() => 0)) === 1
+      await client.expire(claimKey, 120).catch(() => undefined)
+      if (!claimed) continue
       const r = await connector.placeOrder(venue(sym), dir === "long" ? "buy" : "sell", qty, price, "limit", {
         positionSide: dir === "long" ? "LONG" : "SHORT", clientOrderId: botClientOrderId(connectionId, type, "e"),
       }).catch((e: any) => ({ success: false, error: String(e?.message || e) }))
