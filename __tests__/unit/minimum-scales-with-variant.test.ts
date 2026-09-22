@@ -3,6 +3,11 @@ import { VolumeCalculator } from "@/lib/volume-calculator"
 const base = {
   accountBalance: 10_000, currentPrice: 100, positionCostPercent: 0.1,
   positionsAverage: 10, leverage: 5, exchangeMinVolume: 0.001, tradeMode: "main" as const,
+  // This file tests VARIANT scaling against the exchange floor. The live
+  // engine factor is orthogonal to that, and its default moved from 1 to 0.1
+  // (b4797115: more concurrent minimum-size orders), so pin it to identity
+  // here rather than letting a sizing-policy change re-scale every figure.
+  mainVolumeFactor: 1,
 }
 const run = (sizeMultiplier: number) =>
   VolumeCalculator.calculatePositionVolume({ ...base, sizeMultiplier }) as any

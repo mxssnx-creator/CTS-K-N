@@ -247,7 +247,9 @@ describe("settings continuity", () => {
 
     expect(maxActiveCommits).toBe(1)
     expect(stored).toEqual(expect.objectContaining({
-      live_volume_factor: "1",
+      // 0.7 is a valid live factor (range 0.1–10 since b4797115) and is kept
+      // as saved; the old sub-unit → 1 normalisation no longer applies.
+      live_volume_factor: "0.7",
       is_live_trade: "1",
     }))
     expect(stored.connection_settings.coordination_settings.variants).toEqual({

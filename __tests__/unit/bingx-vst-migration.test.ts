@@ -26,85 +26,79 @@ describe("BingX environment migration safety", () => {
     jest.resetModules()
   })
 
-  test("credentials never flip an existing Prod-VST connection to mainnet", async () => {
+  // Contract since 33b22a76: X01 is pinned to mainnet and X02 to VST,
+  // regardless of BINGX_ENVIRONMENT. The safety property this file guards —
+  // a demo connection never silently becomes a real-funds connection — now
+  // lives on X02, so both tests exercise the pinned VST connection.
+  test("credentials and a mainnet environment never flip the pinned VST connection (X02) to mainnet", async () => {
     const dir = await mkdtemp(join(tmpdir(), "bingx-vst-migration-"))
     process.env = {
       ...originalEnv,
       NODE_ENV: "test",
       V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
-      BINGX_API_KEY: "vst-api-key-long-enough",
-      BINGX_API_SECRET: "vst-api-secret-long-enough",
+      BINGX_ENVIRONMENT: "prod-live",
+      BINGX_X02_API_KEY: "x02-vst-api-key-long-enough",
+      BINGX_X02_API_SECRET: "x02-vst-api-secret-long-enough",
     }
-    delete process.env.BINGX_ENVIRONMENT
+    delete process.env.BINGX_API_KEY
+    delete process.env.BINGX_API_SECRET
     resetRedisGlobals()
     jest.resetModules()
-
     try {
       const redisDb = await import("@/lib/redis-db")
       await redisDb.ensureCoreRedis()
       const client = redisDb.getRedisClient()
       await client.flushDb()
-      await client.sadd("connections", "bingx-x01")
-      await client.hset("connection:bingx-x01", {
-        id: "bingx-x01",
-        name: "BingX Demo",
-        exchange: "bingx",
-        api_type: "perpetual_futures",
-        api_key: "old-demo-api-key",
-        api_secret: "old-demo-api-secret",
-        is_testnet: "1",
-        is_enabled_dashboard: "0",
+      await client.sadd("connections", "bingx-x02")
+      await client.hset("connection:bingx-x02", {
+        id: "bingx-x02", name: "BingX VST", exchange: "bingx", api_type: "perpetual_futures",
+        api_key: "old-demo-api-key", api_secret: "old-demo-api-secret",
+        is_testnet: "1", is_enabled_dashboard: "0",
       })
       await client.set("_schema_version", "98")
       await client.set("_migrations_run", "true")
-
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 108 })
-
-      expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("1")
-      expect(await client.hget("connection:bingx-x01", "api_key")).toBe("vst-api-key-long-enough")
-      expect(await client.hget("connection:bingx-x01", "api_secret")).toBe("vst-api-secret-long-enough")
-
-      process.env.BINGX_ENVIRONMENT = "prod-live"
+      // Credentials were injected, the environment stayed demo.
+      expect(await client.hget("connection:bingx-x02", "api_key")).toBe("x02-vst-api-key-long-enough")
+      expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
+      expect(await client.hget("connection:bingx-x02", "environment")).toBe("prod-vst")
+      // A second run under an explicit mainnet environment does not move it.
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 108 })
-      expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("0")
-
-      process.env.BINGX_ENVIRONMENT = "prod-vst"
-      migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 108 })
-      expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("1")
+      expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
     } finally {
       await rm(dir, { recursive: true, force: true })
+      process.env = originalEnv
     }
   })
 
-  test("an explicit Prod-VST environment seeds new BingX connections as demo", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "bingx-vst-seed-"))
+  test("the pinned VST connection (X02) is seeded as demo even under a mainnet environment", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bingx-vst-migration-"))
     process.env = {
       ...originalEnv,
       NODE_ENV: "test",
       V0_REDIS_SNAPSHOT_PATH: join(dir, "snapshot.json"),
-      BINGX_ENVIRONMENT: "prod-vst",
+      BINGX_ENVIRONMENT: "prod-live",
     }
     resetRedisGlobals()
     jest.resetModules()
-
     try {
       const redisDb = await import("@/lib/redis-db")
       await redisDb.ensureCoreRedis()
       const client = redisDb.getRedisClient()
       await client.flushDb()
-      await client.set("_schema_version", "98")
-      await client.set("_migrations_run", "true")
-
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
       await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 108 })
-      expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("1")
+      expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
+      expect(await client.hget("connection:bingx-x02", "environment")).toBe("prod-vst")
+      // And X01 is mainnet, as pinned.
+      expect(await client.hget("connection:bingx-x01", "is_testnet")).toBe("0")
     } finally {
       await rm(dir, { recursive: true, force: true })
+      process.env = originalEnv
     }
   })
 

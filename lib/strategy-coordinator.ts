@@ -9361,7 +9361,12 @@ export class StrategyCoordinator {
           ),
           [`s:${symbol}:running`]:    String(liveRunningNow),
           [`s:${symbol}:progressing`]: String(realRowCount),
-          [`s:${symbol}:passed`]:     String(rowLive.rows.length),
+          // Same population as `created`: Block-variant rows are excluded from
+          // both. They used to be excluded from `created` only, so `passed`
+          // exceeded `created` on 24 of 59 symbols (e.g. 765 > 492) and every
+          // pass-rate built from the pair was wrong. Block has its own fields
+          // (row_live_block_created / row_live_block_valid).
+          [`s:${symbol}:passed`]:     String(rowLive.rows.filter((row) => row.variant !== "block").length),
           [`s:${symbol}:evaluated`]:  String(rowLive.evaluated),
           [`s:${symbol}:row_total`]:    String(rowLive.evaluated),
           [`s:${symbol}:row_mirrored`]: String(rowLive.rows.length),

@@ -17,6 +17,10 @@ afterEach(() => {
   ;(BingXConnector as any).positionsSnapshotCache.clear()
   ;(BingXConnector as any).positionsSnapshotInFlight.clear()
   ;(BingXConnector as any).bingxRateLimitUntil = 0
+  // Cooldowns are scoped per environment since 5dcbfab9; without clearing the
+  // map a cooldown armed by one test leaks into the next and reads return
+  // from cooldown without touching the venue.
+  ;(BingXConnector as any).rateLimitUntilByScope?.clear?.()
   ;(BingXConnector as any).bingxCallTail = Promise.resolve()
   ;(BingXConnector as any).bingxCooldownWait = null
   jest.restoreAllMocks()
