@@ -141,6 +141,7 @@ unit	__tests__/unit/direct-trade-pulse-route.test.ts
 unit	__tests__/unit/direct-trade-route-concurrency.test.ts
 unit	__tests__/unit/direct-trade-schema-v100.test.ts
 unit	__tests__/unit/direct-trade-settings-sync.test.ts
+unit	__tests__/unit/direct-trade-shadow-warming.test.ts
 unit	__tests__/unit/direct-trade-stats-ui-contract.test.ts
 unit	__tests__/unit/direct-trade-status-accounting.test.ts
 unit	__tests__/unit/direct-trade-volume-factor.test.ts

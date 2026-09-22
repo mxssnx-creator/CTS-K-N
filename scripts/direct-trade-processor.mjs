@@ -813,6 +813,8 @@ async function refreshActiveSignals() {
   }
 }
 
+/** Candidate config keys whose next entry must be a shadow position. */
+const shadowEntryKeys = new Set()
 function evaluateConfigPerformance(key) {
   const history = configPerformance.get(key) || []
   const previous = configStatus.get(key)
@@ -1542,7 +1544,7 @@ function getOpenPositionsForSymbol(symbol, direction) {
 function currentRuntimePositions() {
   const runtimeMode = state.liveMode ? "live" : "simulated"
   return positions.filter((position) => (
-    (position?.mode === "live" ? "live" : "simulated") === runtimeMode
+    !position?.shadow && (position?.mode === "live" ? "live" : "simulated") === runtimeMode
   ))
 }
 
@@ -1657,7 +1659,9 @@ async function openPosition(config) {
     currentSlPrice: 0,
     trailingArmed: false,
     lastObservedPrice: 0,
-    mode: state.liveMode ? "live" : "simulated",
+    // Shadow entries never reach the venue, whatever the runtime mode.
+    mode: shadowEntryKeys.has(configKey(config)) ? "simulated" : (state.liveMode ? "live" : "simulated"),
+    shadow: shadowEntryKeys.has(configKey(config)),
     connectionId: state.connectionId || null,
     configKey: configKey(config),
   }
@@ -2245,6 +2249,7 @@ function relativeExitRuntime(pos, currentPrice) {
 function rebuildRealizedNotionalStats() {
   const runtimeMode = state.liveMode ? "live" : "simulated"
   const modePositions = positions.filter((position) => {
+    if (position.shadow) return false // warming configs are not results
     const positionMode = position.mode === "live" ? "live" : "simulated"
     return positionMode === runtimeMode
   })
@@ -3257,6 +3262,15 @@ function shouldEnterNow(config) {
   if (configEvaluation.sampleCount > 0 || configEvaluation.permanentlyDeactivated || !configEvaluation.enabled) {
     configStatus.set(candidateKey, { ...configEvaluation, updatedAt: new Date().toISOString() })
   }
+  // A config still warming up has no proof yet. It used to trade as a normal
+  // position — 222 of 250 closed Bybit trades (PF 0.574, -64 %) came from
+  // configs with fewer than keepEnabledPosCount results, i.e. the book paid
+  // for every config's first dozen trades. A warming config now trades in
+  // SHADOW: identical price, cost and exit processing, so its history builds,
+  // but it never reaches the venue, never counts in stats and never takes
+  // capacity from proven configs. It is executed only once proven.
+  if (configEvaluation.enabled && configEvaluation.reason === "warming") shadowEntryKeys.add(candidateKey)
+  else shadowEntryKeys.delete(candidateKey)
   if (!configEvaluation.enabled) {
     const pfDisplay = configEvaluation.pfInfinite ? "∞" : Number(configEvaluation.pf || 0).toFixed(2)
     log("debug", `Config ${candidateKey} disabled: ${configEvaluation.reason} (PF ${pfDisplay}, DDT ${configEvaluation.avgDDT.toFixed(1)}m, PnL ${configEvaluation.totalPnl.toFixed(3)}%)`)

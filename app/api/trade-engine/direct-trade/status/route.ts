@@ -213,7 +213,11 @@ export async function GET(request: Request) {
     const hasIndexedCounts = Number.isFinite(Number(calculation?.evaluatedSets))
     const executionConfigs: any[] = []
     const storedPositions = parseStoredJson<unknown>(positionsRaw, [])
-    const positions: any[] = Array.isArray(storedPositions) ? storedPositions : []
+    const storedRows: any[] = Array.isArray(storedPositions) ? storedPositions : []
+    // Shadow positions belong to configs still proving themselves: they build
+    // config history but are not results, so every figure here excludes them.
+    const shadowCount = storedRows.filter((p: any) => p?.shadow === true).length
+    const positions: any[] = storedRows.filter((p: any) => p?.shadow !== true)
     const openPositionStage = parseStoredJson<any>(openPositionStageRaw, null)
     const processor = parseStoredJson<any>(processorRaw, null)
     const processorRuntime = processorRuntimeStatus(processor, processorHeartbeatRaw)
@@ -295,6 +299,8 @@ export async function GET(request: Request) {
       settledClosedCount: closedPositions.length - allRolling.accountingPending,
       accountingPending: allRolling.accountingPending,
       openPositionCount: openPositions.length,
+      // Warming configs trading in shadow — visible, never counted as results.
+      shadowPositionCount: shadowCount,
       openingPositionCount: openingPositions.length,
     }
 
