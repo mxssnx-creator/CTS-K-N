@@ -48,4 +48,12 @@ describe("deferred close accounting", () => {
     expect(route).not.toContain("client.hmget(")
     for (const m of ["hget", "hgetall", "hset", "keys", "get", "set"]) expect(wrapper).toMatch(new RegExp(`async ${m}\\(`))
   })
+
+  test("rows without any own closing identity cost no attempt", () => {
+    const route = readFileSync(resolve(process.cwd(), "app/api/cron/close-accounting/route.ts"), "utf8")
+    const pre = route.indexOf("(system_close|stop_loss|take_profit|security_stop)")
+    const mark = route.indexOf("close-accounting:attempted:")
+    expect(pre).toBeGreaterThan(0)
+    expect(pre).toBeLessThan(mark)
+  })
 })
