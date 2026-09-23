@@ -302,3 +302,61 @@ describe("held symbols outside the ranking", () => {
     } finally { process.env = env; await rm(dir, { recursive: true, force: true }) }
   })
 })
+
+describe("venue reconciliation", () => {
+  const { mkdtemp, rm } = require("node:fs/promises")
+  const { tmpdir } = require("node:os")
+  const { join } = require("node:path")
+  async function setup(book: any) {
+    const dir = await mkdtemp(join(tmpdir(), "bots-rec-"))
+    const env = process.env
+    process.env = { ...env, NODE_ENV: "test", V0_REDIS_SNAPSHOT_PATH: join(dir, "snap.json") }
+    jest.resetModules()
+    const redis = await import("@/lib/redis-db"); await redis.ensureCoreRedis(); await (redis.getRedisClient() as any).flushDb()
+    const runner = await import("@/lib/bots/runner"); const store = await import("@/lib/bots/store")
+    await store.writeBotSettings("x02", "sandwich", { running: true })
+    ;(globalThis as any).__botSignal = null
+    await (redis.getRedisClient() as any).hset("bots:positions:x02:sandwich", { "BTCUSDT:1": JSON.stringify({
+      id: "BTCUSDT:1", symbol: "BTCUSDT", venueSymbol: "BTC-USDT", direction: "long", state: "open",
+      createdAt: Date.now() - 60_000, filledAt: Date.now() - 60_000, quantity: 1, entryPrice: 100, entryOrderId: "e", slPct: 2, tpPct: 2,
+      stopOrderId: "sl-1", tpOrderId: "tp-1", peakFavPct: 0 }) })
+    const cancels: string[] = []
+    const venue: any = {
+      getBalance: async () => ({ availableBalance: 1000 }),
+      getOrder: async () => null, // older orders are no longer returned
+      cancelOrder: async (_s: string, id: string) => { cancels.push(id); return { success: true } },
+      placeStopOrder: async () => ({ success: true, orderId: "s" }),
+      placeOrder: async () => ({ success: true, orderId: "o" }),
+      getPositions: typeof book === "function" ? book : async () => book,
+    }
+    return { runner, venue, cancels, cleanup: async () => { process.env = env; await rm(dir, { recursive: true, force: true }) } }
+  }
+  const demo = { is_testnet: "1", environment: "prod-vst", is_live_trade: "1" }
+  test("a position the venue no longer holds is booked as closed and its orders are cancelled", async () => {
+    const { runner, venue, cancels, cleanup } = await setup([])
+    try {
+      const r = await runner.runBotTick("x02", "sandwich", venue, demo)
+      expect(r.closed).toBe(1)
+      expect(cancels.sort()).toEqual(["sl-1", "tp-1"])
+      const [t] = await runner.readLiveTrades("x02", "sandwich"); expect(t.exitReason).toBe("venue_closed")
+      expect(await runner.readLivePositions("x02", "sandwich")).toHaveLength(0)
+    } finally { await cleanup() }
+  })
+  test("a position the venue still holds is left open", async () => {
+    const { runner, venue, cleanup } = await setup([{ symbol: "BTC-USDT", positionSide: "LONG", positionAmt: "1" }])
+    try {
+      const r = await runner.runBotTick("x02", "sandwich", venue, demo)
+      expect(r.closed).toBe(0)
+      expect(await runner.readLivePositions("x02", "sandwich")).toHaveLength(1)
+    } finally { await cleanup() }
+  })
+  test("an unreadable venue book never closes anything", async () => {
+    const { runner, venue, cleanup } = await setup(async () => { throw new Error("timeout") })
+    try {
+      const r = await runner.runBotTick("x02", "sandwich", venue, demo)
+      expect(r.closed).toBe(0)
+      expect(await runner.readLivePositions("x02", "sandwich")).toHaveLength(1)
+    } finally { await cleanup() }
+  })
+})
+
