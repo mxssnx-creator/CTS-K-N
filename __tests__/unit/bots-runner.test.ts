@@ -6,6 +6,7 @@ jest.mock("@/lib/bots/market-data", () => {
   const bars = (n: number) => Array.from({ length: n }, (_, i) => ({ time: 1_700_000_000_000 + i * 60_000, open: 100, high: 100.2, low: 99.8, close: 100, volume: 1000 }))
   return {
     candleUniverse: jest.fn(async () => ({ BTCUSDT: bars(400), ETHUSDT: bars(400) })),
+    minuteCandles: jest.fn(async () => bars(60)),
     contractRules: jest.fn(async () => new Map([
       ["BTC-USDT", { quantityStep: 0.0001, priceTick: 0.1, minQuantity: 0.0001, minNotional: 2 }],
       ["ETH-USDT", { quantityStep: 0.001, priceTick: 0.01, minQuantity: 0.001, minNotional: 2 }],
@@ -259,5 +260,45 @@ describe("stop placement retries transient venue failures", () => {
     let n = 0
     const r = await placeStopWithRetry(async () => { n++; return { success: false, error: "code=109420 position not exist" } }, noSleep)
     expect(r.success).toBe(false); expect(n).toBe(STOP_RETRY_DELAYS_MS.length + 1)
+  })
+})
+
+describe("held symbols outside the ranking", () => {
+  const { mkdtemp, rm } = require("node:fs/promises")
+  const { tmpdir } = require("node:os")
+  const { join } = require("node:path")
+  test("a position whose symbol left the ranking still time-exits after the hold limit", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "bots-hold-"))
+    const env = process.env
+    process.env = { ...env, NODE_ENV: "test", V0_REDIS_SNAPSHOT_PATH: join(dir, "snap.json") }
+    jest.resetModules()
+    try {
+      const redis = await import("@/lib/redis-db"); await redis.ensureCoreRedis(); await (redis.getRedisClient() as any).flushDb()
+      const runner = await import("@/lib/bots/runner"); const store = await import("@/lib/bots/store")
+      await store.writeBotSettings("x02", "liquidity_sweep", { running: true })
+      ;(globalThis as any).__botSignal = null
+      const client: any = redis.getRedisClient()
+      const old = Date.now() - 6 * 3600_000
+      // XRPUSDT is NOT in the mocked ranking universe (BTC, ETH only).
+      await client.hset("bots:positions:x02:liquidity_sweep", { "XRPUSDT:1": JSON.stringify({
+        id: "XRPUSDT:1", symbol: "XRPUSDT", venueSymbol: "XRP-USDT", direction: "short", state: "open",
+        createdAt: old, filledAt: old, quantity: 10, entryPrice: 100, entryOrderId: "e1", slPct: 2, tpPct: 2,
+        stopOrderId: "s-x", tpOrderId: "t-x", peakFavPct: 0 }) })
+      const placed: any[] = []
+      const venue: any = {
+        getBalance: async () => ({ availableBalance: 1000 }),
+        getOrder: async () => ({ status: "pending", filledQty: 0 }),
+        cancelOrder: async () => ({ success: true }),
+        placeStopOrder: async () => ({ success: true, orderId: "s" }),
+        placeOrder: async (sym: string, side: string, qty: number, price: any, type: string, opts: any) => { placed.push({ sym, side, qty, type, ...opts }); return { success: true, orderId: "x", avgPrice: 99 } },
+      }
+      const r = await runner.runBotTick("x02", "liquidity_sweep", venue, { is_testnet: "1", environment: "prod-vst", is_live_trade: "1" })
+      expect(r.closed).toBe(1)
+      expect(placed.some((o) => o.sym === "XRP-USDT" && o.type === "market" && o.reduceOnly)).toBe(true)
+      const [t] = await runner.readLiveTrades("x02", "liquidity_sweep")
+      expect(t.exitReason).toBe("time")
+      const tick = await runner.readBotLastTick("x02", "liquidity_sweep")
+      expect(tick.closed).toBe(1)
+    } finally { process.env = env; await rm(dir, { recursive: true, force: true }) }
   })
 })

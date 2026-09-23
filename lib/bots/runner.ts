@@ -20,7 +20,7 @@
  */
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { BOT_TUNING, prepare, roundTripCostFor, signal, type Candle, type Dir } from "@/lib/bots/backtest"
-import { candleUniverse, contractRules, type ContractRules } from "@/lib/bots/market-data"
+import { candleUniverse, contractRules, minuteCandles, type ContractRules } from "@/lib/bots/market-data"
 import { readBotGroup, readBotSettings } from "@/lib/bots/store"
 import { BOT_RISK_LEVELS, type BotSettings, type BotType } from "@/lib/bots/settings"
 
@@ -109,6 +109,11 @@ export async function readLiveTrades(connectionId: string, type: BotType, limit 
   const raw: string[] = await client.lrange(tradesKey(connectionId, type), 0, limit - 1).catch(() => [])
   return raw.map((v) => { try { return JSON.parse(v) } catch { return null } }).filter(Boolean)
 }
+export async function readBotLastTick(connectionId: string, type: BotType): Promise<any | null> {
+  await initRedis()
+  const raw = await (getRedisClient() as any).get(`bots:lastTick:${connectionId}:${type}`).catch(() => null)
+  try { return raw ? JSON.parse(String(raw)) : null } catch { return null }
+}
 export async function readLivePositions(connectionId: string, type: BotType): Promise<BotLivePosition[]> {
   await initRedis()
   return readPositions(getRedisClient(), connectionId, type)
@@ -185,6 +190,13 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
 
     const tuning = BOT_TUNING[type]
     const universe = await candleUniverse(settings.symbolCount, 3)
+    // A held symbol can drop out of the hourly ranking. Its price then came
+    // back as 0 and the whole management block — trailing AND the time exit —
+    // was skipped, so positions ran for 5-6 hours instead of the validated
+    // 90 minutes. Every held symbol now gets its own candles.
+    for (const p of positions) {
+      if (!universe[p.symbol]) universe[p.symbol] = await minuteCandles(p.venueSymbol, 1).catch(() => [])
+    }
     const lastClose = (sym: string) => { const c = universe[sym]; return c && c.length ? c[c.length - 1].close : 0 }
 
     // ── manage what we own ──
@@ -259,15 +271,15 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
           else report.errors.push(`${p.symbol}: take profit re-arm failed (${tp?.error || "unknown"})`)
         }
         const px = lastClose(p.symbol)
-        if (px > 0) {
-          const fav = (p.direction === "long" ? px - p.entryPrice : p.entryPrice - px) / p.entryPrice * 100
-          p.peakFavPct = Math.max(p.peakFavPct, fav)
-          const trailing = settings.strategies.trailing && p.peakFavPct >= settings.trailingDistancePct && fav <= p.peakFavPct - settings.trailingDistancePct / 2
-          const expired = Date.now() - (p.filledAt || p.createdAt) >= tuning.maxHoldBars * 60_000
+        const expired = Date.now() - (p.filledAt || p.createdAt) >= tuning.maxHoldBars * 60_000
+        if (px > 0 || expired) {
+          const fav = px > 0 ? (p.direction === "long" ? px - p.entryPrice : p.entryPrice - px) / p.entryPrice * 100 : 0
+          if (px > 0) p.peakFavPct = Math.max(p.peakFavPct, fav)
+          const trailing = px > 0 && settings.strategies.trailing && p.peakFavPct >= settings.trailingDistancePct && fav <= p.peakFavPct - settings.trailingDistancePct / 2
           if (trailing || expired) {
             const x = await closeAtMarket(connector, p, connectionId, type)
             if (x?.success) {
-              await recordTrade(client, connectionId, type, p, Number(x.avgPrice || x.filledPrice) || px, trailing ? "trail" : "time")
+              await recordTrade(client, connectionId, type, p, Number(x.avgPrice || x.filledPrice) || px || p.entryPrice, trailing ? "trail" : "time")
               await dropPosition(client, connectionId, type, p); report.closed++; continue
             }
             report.errors.push(`${p.symbol}: market close failed (${x?.error || "unknown"}); stop remains active`)
@@ -334,6 +346,9 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     return report
   } finally {
     report.durationMs = Date.now() - startedAt
+    // Tick errors (a rejected take profit, a failed market close) used to exist
+    // only in the scheduler's response and were lost. Keep the last report.
+    await client.set(`bots:lastTick:${connectionId}:${type}`, JSON.stringify({ at: Date.now(), ...report }), { EX: 86_400 }).catch(() => undefined)
     await client.del(lockKey(connectionId, type)).catch(() => undefined)
   }
 }
