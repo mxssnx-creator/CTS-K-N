@@ -105,7 +105,12 @@ async function verifyLiveTradeReadiness() {
     // block code only, bounded; every other block code still fails at once.
     const readState = () => request(`/api/connections/${encodeURIComponent(connectionId)}/engine-states`, { timeoutMs: 30_000 })
     let state = await readState()
-    const deadline = Date.now() + 120_000
+    // 120 s was too short for a mainnet connection: while X01 loaded history
+    // for 30 symbols at boot, its post-entry audits kept timing out and the
+    // halt was re-armed through all 12 re-checks (it cleared minutes later).
+    // Five minutes covers boot; a halt that outlives it is a real problem and
+    // still fails the deploy.
+    const deadline = Date.now() + 300_000
     while (state?.modes?.mainTrade?.blockCode === "entry_protection_halt" && Date.now() < deadline) {
       console.log(`[Prod Init] ${connectionId}: transient entry-protection halt active; re-checking in 10 s`)
       await new Promise((resolve) => setTimeout(resolve, 10_000))
