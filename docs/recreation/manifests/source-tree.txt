@@ -371,6 +371,7 @@ __tests__/unit/settings-hot-reload.test.ts
 __tests__/unit/settings-propagation.test.ts
 __tests__/unit/settled-rows-auto-close.test.ts
 __tests__/unit/short-range-grid.test.ts
+__tests__/unit/shutdown-keeps-positions.test.ts
 __tests__/unit/signal-analytics.test.ts
 __tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-indication.test.ts
