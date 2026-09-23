@@ -430,6 +430,7 @@ __tests__/unit/trade-engine-start-lock.test.ts
 __tests__/unit/trade-engine-status-healing-race.test.ts
 __tests__/unit/trade-engine-status-settings.test.ts
 __tests__/unit/trade-history-attribution.test.ts
+__tests__/unit/trade-history-own-scope.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
 __tests__/unit/trading-round-trip-cost.test.ts

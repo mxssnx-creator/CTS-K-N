@@ -463,6 +463,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     }
     const mode = searchParams.get("mode") === "simulated" ? "simulated" : "exchange"
     const view = searchParams.get("view")
+    const scope = new URL(request.url).searchParams.get("scope") === "all" ? "all" : "own"
 
     if (view === "statistics") {
       await initRedis()
@@ -670,12 +671,19 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     // result so a 500-row request can never expand to 500 local rows plus the
     // exchange cache. The archive itself remains unbounded; only this response
     // page is capped.
-    const rows = mergeTradeHistory(
+    // The venue history of a shared account holds other actors' trades (the
+    // bots, other systems). They used to be merged in and cut to `limit` AFTER
+    // merging: on X02 the newest 500 rows were 473 foreign venue trades and
+    // only 27 of CTS-K-N's own — of 4,208 in its archive — while the summary
+    // correctly counted 27. The tables showed the foreign rows as ours.
+    // scope=own (default) keeps CTS-K-N's own trades BEFORE the page is cut;
+    // scope=all keeps foreign rows too, each marked attribution=unattributed.
+    const mergedAll = mergeTradeHistory(
       exchangeRows,
       [...localRows, ...localReconciliationCandidates],
-    )
-      .filter((row) => row.accountingQuality !== "exchange_required")
-      .slice(0, limit)
+    ).filter((row) => row.accountingQuality !== "exchange_required")
+    const foreignExcluded = scope === "all" ? 0 : mergedAll.filter((row) => !isAttributedTradeHistoryRow(row)).length
+    const rows = (scope === "all" ? mergedAll : mergedAll.filter(isAttributedTradeHistoryRow)).slice(0, limit)
     const summary = summarizeTradeHistory(rows.filter(isAttributedTradeHistoryRow))
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the
@@ -713,6 +721,8 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         maximum: MAX_TRADE_HISTORY_PAGE_SIZE,
         visibleWindow: 50,
         analyticsRows: analyticsRows.length,
+        scope,
+        foreignExcluded,
       },
       source: {
         mode,

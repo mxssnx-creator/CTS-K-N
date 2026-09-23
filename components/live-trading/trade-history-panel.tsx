@@ -43,6 +43,10 @@ type HistorySort = "newest" | "pnl" | "volume" | "hold"
 interface TradeHistoryPanelProps {
   rows: TradeHistoryRow[]
   response: TradeHistoryResponse | null
+  /** Older archive pages are loaded on demand; the first page refreshes live. */
+  hasMore?: boolean
+  loadingMore?: boolean
+  onLoadMore?: () => void
 }
 
 function SelectFilter({
@@ -78,7 +82,7 @@ function timestamp(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-export function TradeHistoryPanel({ rows, response }: TradeHistoryPanelProps) {
+export function TradeHistoryPanel({ rows, response, hasMore, loadingMore, onLoadMore }: TradeHistoryPanelProps) {
   const [query, setQuery] = useState("")
   const [side, setSide] = useState<HistorySide>("all")
   const [result, setResult] = useState<HistoryResult>("all")
@@ -258,10 +262,15 @@ export function TradeHistoryPanel({ rows, response }: TradeHistoryPanelProps) {
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[10px] text-muted-foreground">
           <div>
             Rows {filtered.length === 0 ? 0 : boundedPage * pageSize + 1}–{Math.min((boundedPage + 1) * pageSize, filtered.length)} of {filtered.length}
-            {response?.paging ? ` · API ${response.paging.returned}/${response.paging.maximum}` : ""}
-            {response?.source ? ` · ${response.source.exchange} exchange + ${response.source.local} local` : ""}
+            {response?.paging?.totalIndexed ? ` · ${rows.length} of ${response.paging.totalIndexed} loaded` : ""}
+            {response?.paging?.foreignExcluded ? ` · ${response.paging.foreignExcluded} other venue trades on this account not shown` : ""}
           </div>
           <div className="flex items-center gap-1">
+            {hasMore && onLoadMore && (
+              <Button variant="outline" size="sm" className="mr-2 h-7 text-[10px]" disabled={loadingMore} onClick={onLoadMore}>
+                {loadingMore ? "Loading…" : "Load older trades"}
+              </Button>
+            )}
             <span className="mr-1">Page {boundedPage + 1} / {pageCount}</span>
             <Button variant="outline" size="icon" className="size-7" disabled={boundedPage <= 0} onClick={() => setPage((value) => Math.max(0, value - 1))}><ChevronLeft className="size-3" /></Button>
             <Button variant="outline" size="icon" className="size-7" disabled={boundedPage >= pageCount - 1} onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))}><ChevronRight className="size-3" /></Button>
