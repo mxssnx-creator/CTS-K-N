@@ -25,5 +25,23 @@ describe("history table header stays pinned while scrolling", () => {
   test("the table's own wrapper no longer creates a second scroll container", () => {
     expect(read("components/ui/table.tsx")).toContain("cn('relative w-full overflow-x-auto', containerClassName)")
     expect(read("components/live-trading/trade-history-panel.tsx")).toContain('containerClassName="overflow-visible"')
+    // The open-positions table had the same nested scroll container.
+    expect(read("components/live-trading/live-position-table.tsx")).toContain('containerClassName="overflow-visible"')
+  })
+})
+
+describe("a filled venue trade without a resolved exit is listed as pending", () => {
+  const { classifyLocalTradeHistorySnapshot } = require("@/lib/trade-history")
+  const base = { id: "p1", status: "closed", symbol: "JUGGERNAUTUSDT", direction: "short", executedQuantity: 1007,
+    entryPrice: 0.00699, createdAt: 1_790_000_000_000, closedAt: 1_790_000_600_000, environment: "exchange" }
+  test("exchange trade, no exit, no close order id -> pending row with entry, quantity and times", () => {
+    const k = classifyLocalTradeHistorySnapshot(base)
+    expect(k.disposition).toBe("unresolved_trade")
+    expect(k.row).toMatchObject({ symbol: "JUGGERNAUTUSDT", direction: "short", quantity: 1007, exitPrice: 0, realizedPnl: 0, accountingQuality: "exchange_required" })
+    expect(k.row.holdMinutes).toBe(10)
+  })
+  test("a simulated trade without an exit still yields no row", () => {
+    const k = classifyLocalTradeHistorySnapshot({ ...base, environment: "simulated", mode: "simulated" })
+    expect(k.row).toBeNull()
   })
 })
