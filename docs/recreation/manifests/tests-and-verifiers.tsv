@@ -157,6 +157,7 @@ unit	__tests__/unit/engine-progression-log-coalescing.test.ts
 unit	__tests__/unit/engine-progression-long-cycle.test.ts
 unit	__tests__/unit/engine-refresh-queue-claim.test.ts
 unit	__tests__/unit/engine-refresh-queue-ttl.test.ts
+unit	__tests__/unit/engine-settle-by-client-id.test.ts
 unit	__tests__/unit/engine-state-mirror.test.ts
 unit	__tests__/unit/engine-status-canonical-connections.test.ts
 unit	__tests__/unit/engine-structured-logging.test.ts
