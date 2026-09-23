@@ -166,11 +166,7 @@ export interface TradeHistoryResponse {
     volumeUsd: number
   }
   analytics: LiveTradingAnalytics
-  paging?: {
-    returned: number
-    maximum: number
-    visibleWindow: number
-  }
+  paging?: { returned: number; maximum: number; visibleWindow: number; offset?: number; nextOffset?: number; pageSize?: number; totalIndexed?: number; hasMore?: boolean; scope?: "own" | "all"; foreignExcluded?: number }
   source?: {
     exchange: number
     local: number

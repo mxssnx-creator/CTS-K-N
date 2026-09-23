@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Activity,
   AlertTriangle,
@@ -70,6 +70,12 @@ export default function LiveTradingPage() {
   const [positions, setPositions] = useState<LivePositionView[]>([])
   const [historyRows, setHistoryRows] = useState<TradeHistoryRow[]>([])
   const [historyResponse, setHistoryResponse] = useState<TradeHistoryResponse | null>(null)
+  // Older archive pages, kept apart from the live-refreshed first page so a
+  // refresh never throws them away.
+  const [olderHistoryRows, setOlderHistoryRows] = useState<TradeHistoryRow[]>([])
+  const [olderNextOffset, setOlderNextOffset] = useState<number | null>(null)
+  const [olderHasMore, setOlderHasMore] = useState<boolean | null>(null)
+  const [loadingOlder, setLoadingOlder] = useState(false)
   const [positionResponse, setPositionResponse] = useState<LivePositionResponse | null>(null)
   const [account, setAccount] = useState<LiveAccountSummary | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -328,6 +334,32 @@ export default function LiveTradingPage() {
   const liveReady = integrity?.liveTradeEnabled === true
   const liveRequestedButBlocked = integrity?.liveTradeRequested === true && !liveReady
 
+  // Reset older pages when the connection changes.
+  useEffect(() => {
+    setOlderHistoryRows([]); setOlderNextOffset(null); setOlderHasMore(null)
+  }, [selectedConnectionId])
+  const combinedHistoryRows = useMemo(() => {
+    const byId = new Map<string, TradeHistoryRow>()
+    for (const row of [...historyRows, ...olderHistoryRows]) if (!byId.has(String(row.id))) byId.set(String(row.id), row)
+    return [...byId.values()].sort((a, b) => Number(b.closedAt || 0) - Number(a.closedAt || 0))
+  }, [historyRows, olderHistoryRows])
+  const loadOlderHistory = useCallback(async () => {
+    if (!selectedConnectionId || loadingOlder) return
+    const offset = olderNextOffset ?? Number(historyResponse?.paging?.nextOffset || 0)
+    if (!offset) return
+    setLoadingOlder(true)
+    try {
+      const response = await fetch(`/api/trading/trade-history?connection_id=${encodeURIComponent(selectedConnectionId)}&limit=500&offset=${offset}`, { cache: "no-store" })
+      if (!response.ok) return
+      const page = (await response.json()) as TradeHistoryResponse
+      setOlderHistoryRows((rows) => [...rows, ...(Array.isArray(page.rows) ? page.rows : [])])
+      setOlderNextOffset(Number(page.paging?.nextOffset || 0) || null)
+      setOlderHasMore(Boolean(page.paging?.hasMore))
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [selectedConnectionId, loadingOlder, olderNextOffset, historyResponse])
+
   return (
     <div className="flex min-h-full flex-col">
       <PageHeader
@@ -390,7 +422,13 @@ export default function LiveTradingPage() {
                   onUpdateProtection={updateProtection}
                   onRestoreProtection={restoreProtection}
                 />
-                <TradeHistoryPanel rows={historyRows} response={historyResponse} />
+                <TradeHistoryPanel
+                  rows={combinedHistoryRows}
+                  response={historyResponse}
+                  hasMore={olderHasMore ?? Boolean(historyResponse?.paging?.hasMore)}
+                  loadingMore={loadingOlder}
+                  onLoadMore={loadOlderHistory}
+                />
               </>
             )}
           </>
