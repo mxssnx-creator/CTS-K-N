@@ -28,10 +28,15 @@ export async function GET(request: Request) {
     // Cheap pre-filter: most rows never filled or are already settled.
     // The Redis wrapper has hget but no hmget: an hmget call would throw, the
     // catch would yield nothing, and every row would be skipped silently.
-    const [status, executed, settledAt] = await Promise.all(
-      ["status", "executedQuantity", "closeAccountingSettledAt"].map((f) => client.hget(key, f).catch(() => null)),
+    const [status, executed, settledAt, closeOrderId, exchangeData] = await Promise.all(
+      ["status", "executedQuantity", "closeAccountingSettledAt", "closeOrderId", "exchangeData"].map((f) => client.hget(key, f).catch(() => null)),
     )
     if (status !== "closed" || !(Number(executed || 0) > 0) || settledAt) continue
+    // Only rows that carry SOME own closing identity can ever be settled. The
+    // first production runs spent all 250 attempts on old rows with neither a
+    // close order id nor a tracked close-side client id — settled 0 — while
+    // settleable rows waited. Such rows now cost no attempt and no lock.
+    if (!String(closeOrderId || "").trim() && !/"kind":"(system_close|stop_loss|take_profit|security_stop)"/.test(String(exchangeData || ""))) continue
     const row: any = await client.hgetall(key).catch(() => null)
     if (!row) continue
     for (const f of ["exchangeData"]) { try { if (typeof row[f] === "string") row[f] = JSON.parse(row[f]) } catch { /* keep */ } }
