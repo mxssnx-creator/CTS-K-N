@@ -40,7 +40,7 @@ export interface BotLivePosition {
 }
 export interface BotLiveTrade {
   symbol: string; direction: Dir; openedAt: number; closedAt: number; entry: number; exit: number
-  quantity: number; pnl: number; pnlPct: number; exitReason: "tp" | "sl" | "trail" | "time" | "protection_failed"
+  quantity: number; pnl: number; pnlPct: number; exitReason: "tp" | "sl" | "trail" | "time" | "protection_failed" | "venue_closed"
 }
 
 const posKey = (c: string, t: BotType) => `bots:positions:${c}:${t}`
@@ -48,6 +48,7 @@ const tradesKey = (c: string, t: BotType) => `bots:trades:${c}:${t}`
 const cooldownKey = (c: string, t: BotType) => `bots:cooldown:${c}:${t}`
 const lockKey = (c: string, t: BotType) => `bots:lock:${c}:${t}`
 const riskKey = (c: string, t: BotType) => `bots:risk:${c}:${t}`
+const capKey = (c: string) => `bots:notionalCap:${c}`
 
 /**
  * Live drawdown throttle, the same rule the backtest applies: measured on the
@@ -198,6 +199,22 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
       if (!universe[p.symbol]) universe[p.symbol] = await minuteCandles(p.venueSymbol, 1).catch(() => [])
     }
     const lastClose = (sym: string) => { const c = universe[sym]; return c && c.length ? c[c.length - 1].close : 0 }
+    // The venue book, read fresh once per tick. A bot position is closed when
+    // the venue no longer holds ANY quantity on its symbol and side.
+    connector.invalidatePositionsSnapshot?.()
+    const venueBook: any[] | null = !positions.some((p) => p.state === "open") ? []
+      : typeof connector?.getPositions !== "function" ? null // unknown: never reconcile on a guess
+        : await Promise.resolve().then(() => connector.getPositions()).catch(() => null)
+    const venueHolds = (p: BotLivePosition): boolean | null => {
+      if (!Array.isArray(venueBook)) return null // unknown: never guess
+      const want = p.venueSymbol.replace(/[-_]/g, "").toUpperCase()
+      return venueBook.some((row: any) => {
+        const sym = String(row?.symbol || "").replace(/[-_]/g, "").toUpperCase()
+        const side = String(row?.positionSide || row?.side || "").toLowerCase()
+        const qty = Math.abs(Number(row?.positionAmt ?? row?.contracts ?? row?.quantity ?? 0))
+        return sym === want && qty > 0 && (side === "" || side === "both" || side === p.direction)
+      })
+    }
 
     // ── manage what we own ──
     for (const p of positions) {
@@ -252,6 +269,19 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
           p.stopOrderId ? connector.getOrder(p.venueSymbol, p.stopOrderId).catch(() => null) : null,
           p.tpOrderId ? connector.getOrder(p.venueSymbol, p.tpOrderId).catch(() => null) : null,
         ])
+        if (!isFilled(slO) && !isFilled(tpO) && venueHolds(p) === false) {
+          // The venue holds nothing on this symbol and side any more, yet
+          // neither of our orders reports a fill — getOrder stops returning
+          // older orders. Production showed positions "open" for 5-6 hours
+          // while the venue answered every close with 101205 "No position to
+          // close". Book the close, and cancel whatever of ours still rests so
+          // an orphaned reduce-only stop can never hit a later position on the
+          // same symbol and side.
+          for (const id of [p.stopOrderId, p.tpOrderId]) if (id) await connector.cancelOrder(p.venueSymbol, id).catch(() => undefined)
+          const px = orderFillPrice(tpO) || orderFillPrice(slO) || lastClose(p.symbol) || p.entryPrice
+          await recordTrade(client, connectionId, type, p, px, "venue_closed")
+          await dropPosition(client, connectionId, type, p); report.closed++; continue
+        }
         if (isFilled(slO) || isFilled(tpO)) {
           const hit = isFilled(tpO) ? "tp" : "sl"
           const other = hit === "tp" ? p.stopOrderId : p.tpOrderId
@@ -282,6 +312,11 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
               await recordTrade(client, connectionId, type, p, Number(x.avgPrice || x.filledPrice) || px || p.entryPrice, trailing ? "trail" : "time")
               await dropPosition(client, connectionId, type, p); report.closed++; continue
             }
+            if (/101205|no position to close/i.test(String(x?.error || ""))) {
+              for (const id of [p.stopOrderId, p.tpOrderId]) if (id) await connector.cancelOrder(p.venueSymbol, id).catch(() => undefined)
+              await recordTrade(client, connectionId, type, p, px || p.entryPrice, "venue_closed")
+              await dropPosition(client, connectionId, type, p); report.closed++; continue
+            }
             report.errors.push(`${p.symbol}: market close failed (${x?.error || "unknown"}); stop remains active`)
           }
           await savePosition(client, connectionId, type, p)
@@ -300,6 +335,7 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
     if (gate.paused) return { ...report, skipped: `risk pause (${group.riskLevel}, drawdown ${gate.drawdownPct.toFixed(2)}%)` }
     const rulesAll = await contractRules()
     const cool: Record<string, string> = (await client.hgetall(cooldownKey(connectionId, type)).catch(() => ({}))) || {}
+    const caps: Record<string, string> = (await client.hgetall(capKey(connectionId)).catch(() => ({}))) || {}
     const ownSymbols = new Set(positions.map((p) => p.symbol))
     let openNotional = positions.reduce((a, p) => a + p.quantity * p.entryPrice, 0)
 
@@ -324,6 +360,9 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
       const riskNotional = (balance * RISK_PER_STOP_PCT / 100) / ((slPct + roundTripCostFor(true, "sl")) / 100) * sizeFactor
       let notional = Math.min(riskNotional, balance * MAX_POSITION_SHARE * sizeFactor)
       if (notional < rules.minNotional) notional = rules.minNotional * 1.02
+      // The venue's ceiling for this leverage tier, learned from a 101209.
+      const learnedCap = Number(caps[sym] || 0)
+      if (learnedCap > 0) notional = Math.min(notional, learnedCap)
       if (openNotional + notional > balance * MAX_OPEN_NOTIONAL_SHARE) break
       const qty = floorTo(notional / entryPx, rules.quantityStep)
       if (!(qty > 0) || qty < rules.minQuantity) continue
@@ -337,7 +376,11 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
       const r = await connector.placeOrder(venue(sym), dir === "long" ? "buy" : "sell", qty, price, "limit", {
         positionSide: dir === "long" ? "LONG" : "SHORT", clientOrderId: botClientOrderId(connectionId, type, "e"),
       }).catch((e: any) => ({ success: false, error: String(e?.message || e) }))
-      if (!r?.success || !r.orderId) { report.errors.push(`${sym}: entry rejected (${r?.error || "unknown"})`); continue }
+      if (!r?.success || !r.orderId) {
+        const cap = /101209[\s\S]*?([\d.]+)\s*USDT/i.exec(String(r?.error || ""))
+        if (cap) await client.hset(capKey(connectionId), { [sym]: String(Number(cap[1]) * 0.9) }).catch(() => undefined)
+        report.errors.push(`${sym}: entry rejected (${r?.error || "unknown"})`); continue
+      }
       const p: BotLivePosition = { id: `${sym}:${Date.now()}`, symbol: sym, venueSymbol: venue(sym), direction: dir, state: "pending",
         createdAt: Date.now(), quantity: qty, entryPrice: price, entryOrderId: r.orderId, slPct, tpPct, peakFavPct: 0 }
       await savePosition(client, connectionId, type, p)
