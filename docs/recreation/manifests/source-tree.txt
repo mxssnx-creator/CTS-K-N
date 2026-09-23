@@ -101,6 +101,7 @@ __tests__/unit/bounded-concurrency.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
 __tests__/unit/clear-progressions-recovery.test.ts
+__tests__/unit/close-accounting-backfill.test.ts
 __tests__/unit/close-adopted-positions.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
@@ -504,6 +505,7 @@ app/api/connections/status/[id]/route.ts
 app/api/connections/status/route.ts
 app/api/connections/validation/[id]/route.ts
 app/api/cron/bots/route.ts
+app/api/cron/close-accounting/route.ts
 app/api/cron/direct-trade-continuity/route.ts
 app/api/cron/generate-indications/route.ts
 app/api/cron/historic-test/route.ts
@@ -1229,6 +1231,7 @@ lib/canonical-pipeline-admission.ts
 lib/ccxt-helper.ts
 lib/circuit-breaker.ts
 lib/client-session-persistence.ts
+lib/close-accounting-backfill.ts
 lib/common-indicator-config.ts
 lib/comprehensive-error-handler.ts
 lib/config.ts
