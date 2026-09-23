@@ -125,6 +125,19 @@ export class ProductionErrorHandler {
   private static handleShutdownSignal(signal: string) {
     if (this.isShuttingDown) return
     this.isShuttingDown = true
+    // Closing every live position on SIGTERM is OPT-IN. Every deploy and every
+    // `systemctl restart` sends SIGTERM, so as a default this would flatten the
+    // whole book at market on each release — realising losses and fees for
+    // positions that need no help: each is protected on the venue by its own
+    // stop loss and take profit, persisted in Redis, and taken over again by
+    // the engine after the restart (verified with a SIGKILL test). The handler
+    // is not initialised in production today; this keeps it harmless if it
+    // ever is. Set CTS_CLOSE_POSITIONS_ON_SHUTDOWN=1 only for a runtime whose
+    // state does not survive the process.
+    if (process.env.CTS_CLOSE_POSITIONS_ON_SHUTDOWN !== "1") {
+      console.log(`[SHUTDOWN] Received ${signal}: positions stay open under their venue protection`)
+      return
+    }
     console.log(`[SHUTDOWN] Received ${signal}: attempting best-effort live position close (no process.exit)`)
     this.emergencyCloseAllPositions()
       .then(() => console.log('[SHUTDOWN] Emergency position close attempt complete'))
