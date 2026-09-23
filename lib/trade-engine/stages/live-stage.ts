@@ -224,6 +224,7 @@ import {
   findPreparedProtectionAdoptions,
   PREPARED_PROTECTION_ID_FIELD,
   PREPARED_PROTECTION_QTY_FIELD,
+  protectionOrderClientId,
 } from "@/lib/protection-slot-order-audit"
 import {
   connectionTrackingId,
@@ -11926,6 +11927,8 @@ function assertEligibleProtectionSlotRows(members: readonly LivePosition[]): voi
 }
 
 interface EntryProtectionAdmissionDecision {
+  /** Client/venue ids of owned controls the audit could not map to a row (diagnostics). */
+  orphanDetails?: string[]
   safe: boolean
   violations: string[]
   audit: LiveEntryProtectionAdmissionAudit
@@ -12060,6 +12063,7 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     liveOrderIds,
   })
   const violations = [...audit.violations]
+  const orphanDetails: string[] = []
   if (!protectionPolicy.available) violations.push("protection_settings_unavailable")
   const activeOwnedRows = positions.filter((position) =>
     String(position.id || "") !== String(input.candidateId || "")
@@ -12120,7 +12124,14 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     if (!slotAudit.complete && !settledHandoff) {
       violations.push("owned_slot_controls_incomplete")
       violations.push(...slotAudit.violations.map((violation) => `owned_slot_${violation}`))
-      if (slotAudit.orphanOrders.length > 0) violations.push("owned_slot_orphan_controls_present")
+      if (slotAudit.orphanOrders.length > 0) {
+        violations.push("owned_slot_orphan_controls_present")
+        // Which order was "orphaned" was never recorded — only the code — so
+        // repeated post-entry rollbacks could not be traced to their source.
+        for (const orphan of slotAudit.orphanOrders.slice(0, 4)) {
+          orphanDetails.push(`${protectionOrderClientId(orphan) || "?"}#${protectionOrderVenueId(orphan) || "?"}:${String((orphan as any)?.type || "").toLowerCase()}`)
+        }
+      }
     }
     if (slotAudit.externalOrUnknownSlotControlOrdersPreserved > 0) {
       violations.push("owned_slot_external_controls_present")
@@ -12154,6 +12165,7 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
   return {
     safe: violations.length === 0,
     violations: [...new Set(violations)],
+    orphanDetails,
     audit,
     observedControlOrders,
     availableControlOrders,
@@ -16366,7 +16378,8 @@ export async function executeLivePosition(
       }
       if (!finalAdmission.safe) {
         await rollbackEntryWithoutCompleteProtection(
-          "Post-entry venue audit could not prove row TP/SL plus full-slot security protection",
+          "Post-entry venue audit could not prove row TP/SL plus full-slot security protection"
+            + ((finalAdmission.orphanDetails || []).length > 0 ? `; orphans=${(finalAdmission.orphanDetails || []).join(",")}` : ""),
           [
             ...(initialSecurityReconcileFailed ? ["entry_security_reconcile_failed"] : []),
             ...(finalAdmission.violations || []),
