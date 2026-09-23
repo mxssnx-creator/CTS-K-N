@@ -33,9 +33,10 @@ import { workloadConcurrency } from "@/lib/runtime-parallelism"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket, type MarketType } from "@/lib/market-types"
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
+import { mergeSecondsWithMinuteBackfill, ONE_SECOND_BACKFILL_WINDOW_S } from "@/lib/market-data-1s-backfill"
 import { marketDataKey } from "@/lib/market-data-keys"
 import type { ExchangeTicker } from "@/lib/exchange-connectors/base-connector"
-import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
+import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 
 export interface MarketDataCandle {
   timestamp: number
@@ -447,7 +448,21 @@ async function fetchRealMarketData(
           if (!connector) return { candles: [], marketType, sourceTimeframe, sourceIntervalSeconds }
 
           console.log(`[v0] [MarketData] Fetching ${canonicalSymbol} via stored ${conn.exchange} connection ${conn.id}...`)
-          const candles = await connector.getOHLCV(canonicalSymbol, sourceTimeframe, sourceLimit)
+          let candles = await connector.getOHLCV(canonicalSymbol, sourceTimeframe, sourceLimit)
+          // The venue keeps no old ticks (historicalTrades ignores fromId), so
+          // real 1s candles reach back only minutes. Fill the older window from
+          // the venue's REAL 1m bars resolved to seconds; never synthetic.
+          if (sourceTimeframe === "1s" && marketType !== "forex" && Array.isArray(candles)) {
+            const minuteBars = await connector.getOHLCV(canonicalSymbol, "1m", Math.ceil(ONE_SECOND_BACKFILL_WINDOW_S / 60) + 5).catch(() => [])
+            if (Array.isArray(minuteBars) && minuteBars.length > 0) {
+              const merged = mergeSecondsWithMinuteBackfill(candles as any[], minuteBars as any[], Date.now())
+              if (merged.backfilledSeconds > 0) {
+                logRuntimeInfo(`market-data:${conn.id}:1m-backfill`, 60_000,
+                  `[v0] [MarketData] ${canonicalSymbol}: ${(candles as any[]).length} real 1s candles + ${merged.backfilledSeconds} seconds from real 1m bars (${conn.id})`)
+                candles = merged.candles as any
+              }
+            }
+          }
           const ticker = marketType === "forex" ? await connector.getTicker(canonicalSymbol).catch(() => null) : null
           return { candles, marketType, ticker: ticker || undefined, sourceTimeframe, sourceIntervalSeconds }
         }, `Market data ${conn.exchange}:${conn.id}:${symbol}`)

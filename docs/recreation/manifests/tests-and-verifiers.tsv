@@ -260,6 +260,7 @@ unit	__tests__/unit/main-stage-one-per-base.test.ts
 unit	__tests__/unit/main-trade-profit-factor.test.ts
 unit	__tests__/unit/margin-call-route.test.ts
 unit	__tests__/unit/margin-call.test.ts
+unit	__tests__/unit/market-data-1s-backfill.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts

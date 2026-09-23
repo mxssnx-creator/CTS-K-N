@@ -14261,7 +14261,13 @@ export async function executeLivePosition(
       const { getConnection: _getConnLev } = await import("@/lib/redis-db")
       const connRecord = await _getConnLev(connectionId).catch(() => null)
       const venueMax = getMaxLeverageForExchange(connRecord?.exchange)
-      livePosition.leverage = venueMax
+      // Per-connection ceiling. The policy stays "venue max" unless the
+      // connection sets max_leverage, then min(venueMax, max_leverage) — so a
+      // real-funds connection can run at a secure leverage while others keep
+      // the venue maximum.
+      const connectionCap = Math.floor(Number((connRecord as any)?.max_leverage || 0))
+      livePosition.leverage = connectionCap > 0 ? Math.max(1, Math.min(venueMax, connectionCap)) : venueMax
+      ;(livePosition as any).leverageCap = connectionCap > 0 ? connectionCap : undefined
       pushStep(
         livePosition,
         "leverage_override",
@@ -14549,6 +14555,12 @@ export async function executeLivePosition(
     livePosition.remainingQuantity = computedVolume
     livePosition.volumeUsd = positionNotionalUsd(livePosition, computedVolume, currentPrice)
     livePosition.leverage = volumeResult?.leverage || livePosition.leverage
+    // The volume calculator reports its own maximum; the connection's ceiling
+    // must still hold, or the cap above would be undone before the order.
+    {
+      const cap = Number((livePosition as any).leverageCap || 0)
+      if (cap > 0) livePosition.leverage = Math.max(1, Math.min(Number(livePosition.leverage) || cap, cap))
+    }
     livePosition.requestedVolume = Number(volumeResult?.calculatedVolume) || 0
     livePosition.intendedNotionalUsd = Number(volumeResult?.intendedNotionalUsd) || 0
     livePosition.exchangeMinNotionalUsd = Number(volumeResult?.exchangeMinNotionalUsd) || 0
