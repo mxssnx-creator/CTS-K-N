@@ -322,6 +322,7 @@ __tests__/unit/progression-operator-symbols.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
+__tests__/unit/protection-adopt-by-client-id.test.ts
 __tests__/unit/protection-ids-lost-update.test.ts
 __tests__/unit/protection-slot-order-audit.test.ts
 __tests__/unit/pseudo-position-close-idempotency.test.ts

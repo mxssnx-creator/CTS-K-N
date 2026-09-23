@@ -642,3 +642,55 @@ export function auditProtectionSlotOrders(input: {
     violations,
   }
 }
+
+export type PreparedProtectionLeg = "stopLoss" | "takeProfit" | "securityStop"
+export const PREPARED_PROTECTION_ID_FIELD: Record<PreparedProtectionLeg, "stopLossOrderId" | "takeProfitOrderId" | "securityStopOrderId"> = {
+  stopLoss: "stopLossOrderId", takeProfit: "takeProfitOrderId", securityStop: "securityStopOrderId",
+}
+export const PREPARED_PROTECTION_QTY_FIELD: Record<PreparedProtectionLeg, "stopLossArmedQuantity" | "takeProfitArmedQuantity" | "securityStopArmedQuantity"> = {
+  stopLoss: "stopLossArmedQuantity", takeProfit: "takeProfitArmedQuantity", securityStop: "securityStopArmedQuantity",
+}
+export interface PreparedProtectionAdoption {
+  rowId: string; leg: PreparedProtectionLeg; orderId: string; clientOrderId: string; quantity: number
+}
+
+/**
+ * A protection order whose placement timed out can still land on the venue.
+ * The row then has no order id for that leg, and the slot audit sees the same
+ * order twice — as a missing control ("incomplete") and as an unmapped owned
+ * order ("orphan") — and rolls the entry back. Production: post-entry rollbacks
+ * with owned_slot_controls_incomplete + owned_slot_orphan_controls_present,
+ * right after "placeStopOrder(SecurityStop …) Timeout after 8000ms", with zero
+ * system-owned orders left on the venue afterwards.
+ *
+ * Every protection leg gets a durable, row-unique clientOrderId BEFORE it is
+ * submitted (row.pendingProtectionOrders[leg].clientOrderId). An open venue
+ * order carrying exactly that clientOrderId is therefore this row's own
+ * control: adopt it. Only an exact, single match is adopted.
+ */
+export function findPreparedProtectionAdoptions(
+  rows: Record<string, any>[],
+  openOrders: Record<string, any>[],
+): PreparedProtectionAdoption[] {
+  const byClientId = new Map<string, Record<string, any>[]>()
+  for (const order of openOrders) {
+    const cid = protectionOrderClientId(order).toLowerCase()
+    if (!cid) continue
+    byClientId.set(cid, [...(byClientId.get(cid) || []), order])
+  }
+  const adoptions: PreparedProtectionAdoption[] = []
+  for (const row of rows) {
+    const pending = row?.pendingProtectionOrders || {}
+    for (const leg of Object.keys(PREPARED_PROTECTION_ID_FIELD) as PreparedProtectionLeg[]) {
+      const cid = text(pending?.[leg]?.clientOrderId).toLowerCase()
+      if (!cid || text(row?.[PREPARED_PROTECTION_ID_FIELD[leg]])) continue
+      const matches = byClientId.get(cid) || []
+      if (matches.length !== 1) continue
+      const orderId = protectionOrderVenueId(matches[0])
+      const quantity = Math.abs(finite(matches[0]?.origQty ?? matches[0]?.quantity ?? matches[0]?.qty ?? matches[0]?.amount))
+      if (!orderId || !(quantity > 0)) continue
+      adoptions.push({ rowId: String(row.id), leg, orderId, clientOrderId: protectionOrderClientId(matches[0]), quantity })
+    }
+  }
+  return adoptions
+}

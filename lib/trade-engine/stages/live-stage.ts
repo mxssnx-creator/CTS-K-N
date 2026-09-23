@@ -221,6 +221,9 @@ import {
   protectionOrderVenueId,
   type ProtectionSlotDirection,
   type ProtectionSlotOrderAudit,
+  findPreparedProtectionAdoptions,
+  PREPARED_PROTECTION_ID_FIELD,
+  PREPARED_PROTECTION_QTY_FIELD,
 } from "@/lib/protection-slot-order-audit"
 import {
   connectionTrackingId,
@@ -11992,6 +11995,17 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     readAuthoritativeProtectionOrders(input.connector),
     getCachedProtectionPolicy(input.connectionId),
   ])
+  // Adopt protection orders that landed on the venue although their placement
+  // timed out: matched by the row's own pre-submitted clientOrderId only.
+  for (const adoption of findPreparedProtectionAdoptions(positions as any[], openOrders as any[])) {
+    const row = positions.find((position) => String(position.id) === adoption.rowId)
+    if (!row) continue
+    ;(row as any)[PREPARED_PROTECTION_ID_FIELD[adoption.leg]] = adoption.orderId
+    ;(row as any)[PREPARED_PROTECTION_QTY_FIELD[adoption.leg]] = adoption.quantity
+    pushStep(row, "protection_adopted_by_client_id", true,
+      `${adoption.leg} ${adoption.clientOrderId} -> ${adoption.orderId} qty=${adoption.quantity} (placement had timed out; the order is on the venue)`)
+    await savePosition(row)
+  }
   const liveOrderIds = new Set<string>()
   for (const order of openOrders) {
     for (const identifier of protectionOrderIdentifiers(order)) {
