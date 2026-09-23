@@ -4101,7 +4101,7 @@ function firstNonEmptyIdentifier(...values: unknown[]): string | undefined {
 function appendClientOrderTracking(
   position: LivePosition,
   clientOrderId: string,
-  kind: "entry" | "accumulation" | "stop_loss" | "take_profit" | "security_stop",
+  kind: "entry" | "accumulation" | "stop_loss" | "take_profit" | "security_stop" | "system_close",
   extra: Record<string, unknown> = {},
 ): void {
   const exchangeData = { ...(position.exchangeData || {}) } as Record<string, any>
@@ -4127,6 +4127,41 @@ function getTrackedClientOrderId(
     if (value) return String(value)
   }
   return undefined
+}
+
+/**
+ * Close orders known only by their client id. A market close or protection
+ * order that timed out behind the rate-limit gate can still fill; the row then
+ * has its durable client id but no order id, and the close is booked as
+ * "externally closed" with unresolved PnL. On X02, 946 of 1,043 closed filled
+ * rows were unresolved — 595 of them rollbacks whose own market close carried
+ * no stored order id. Resolve each tracked close-side client id without a
+ * known order id to its venue order id, bounded per row.
+ */
+export const CLOSE_CLIENT_ID_KINDS = new Set(["stop_loss", "take_profit", "security_stop", "system_close"])
+export async function recoverCloseOrderIdsByClientId(
+  connector: any,
+  position: LivePosition,
+  knownOrderIds: Set<string>,
+): Promise<string[]> {
+  const tracked = Array.isArray((position.exchangeData as any)?.clientOrderIds) ? (position.exchangeData as any).clientOrderIds : []
+  const clientIds = new Set<string>()
+  for (const entry of tracked) {
+    const id = String(entry?.clientOrderId || "")
+    if (id && CLOSE_CLIENT_ID_KINDS.has(String(entry?.kind || ""))) clientIds.add(id)
+  }
+  const pendingClose = String((position as any).pendingSystemAction?.clientOrderId || "")
+  if (pendingClose) clientIds.add(pendingClose)
+  for (const leg of Object.values(((position as any).pendingProtectionOrders || {}) as Record<string, any>)) {
+    if (leg?.clientOrderId) clientIds.add(String(leg.clientOrderId))
+  }
+  const recovered: string[] = []
+  for (const clientOrderId of [...clientIds].slice(-4)) {
+    const order = await recoverEntryOrderByClientId(connector, position.symbol, clientOrderId, { totalTimeoutMs: 6_000 }).catch(() => null)
+    const orderId = String(order?.orderId || "")
+    if (orderId && !knownOrderIds.has(orderId)) recovered.push(orderId)
+  }
+  return recovered
 }
 
 async function recoverEntryOrderByClientId(
@@ -17558,6 +17593,9 @@ export async function closeLivePosition(
           action.updatedAt = Date.now()
           action.requestedQuantity = Number(position.executedQuantity || position.quantity || 0)
           if (!action.clientOrderId) action.clientOrderId = makeDurableClientOrderId("sys-close", position)
+          // Tracked durably: pendingSystemAction is cleared on some paths, and a
+          // close that timed out but filled is otherwise unsettleable.
+          appendClientOrderTracking(position, action.clientOrderId, "system_close")
           position.pendingSystemAction = action
           await savePosition(position)
           await persistCriticalLiveState(`system-close-prepared:${position.id}`)
@@ -19521,6 +19559,7 @@ export async function reconcileLivePositions(
             String(pos.pendingSystemAction?.orderId || ""),
             String(pos.pendingReduction?.orderId || ""),
           ].filter(Boolean)))
+          closeOrderIds.push(...await recoverCloseOrderIdsByClientId(exchangeConnector, pos, new Set(closeOrderIds)))
           const settlements = (await Promise.all(
             closeOrderIds.map((orderId) => readOrderSettlement(exchangeConnector, pos.symbol, orderId)),
           )).filter((value): value is ExchangeOrderSettlement => Boolean(value))
