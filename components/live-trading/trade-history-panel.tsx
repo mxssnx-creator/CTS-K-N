@@ -226,7 +226,7 @@ export function TradeHistoryPanel({ rows, response, hasMore, loadingMore, onLoad
 
       <CardContent className="p-0">
         <div className="max-h-[760px] overflow-auto border-y">
-          <Table className="min-w-[1220px] text-xs">
+          <Table className="min-w-[1220px] text-xs" containerClassName="overflow-visible">
             <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur">
               <TableRow>
                 <TableHead className="h-8 w-7 pl-3" />
@@ -283,6 +283,7 @@ export function TradeHistoryPanel({ rows, response, hasMore, loadingMore, onLoad
 
 function FragmentRow({ row, expanded, onToggle }: { row: TradeHistoryRow; expanded: boolean; onToggle: () => void }) {
   const pnl = finite(row.realizedPnl)
+  const pending = Boolean((row as any).accountingPending)
   return (
     <>
       <TableRow className="cursor-pointer" onClick={onToggle}>
@@ -302,8 +303,11 @@ function FragmentRow({ row, expanded, onToggle }: { row: TradeHistoryRow; expand
           <div className="text-[9px] text-muted-foreground">{formatMoney(row.volumeUsd, row.marketType === "forex" ? "USD" : "USDT")}</div>
         </TableCell>
         <TableCell className="py-1.5">
-          <div className={`font-semibold tabular-nums ${pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatMoney(pnl, row.marketType === "forex" ? "USD" : "USDT")}</div>
+          {pending ? (
+            <div className="text-[10px] font-medium text-amber-600 dark:text-amber-400" title="Close accounting not yet resolved on the venue; excluded from totals">PnL pending</div>
+          ) : (<><div className={`font-semibold tabular-nums ${pnl >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatMoney(pnl, row.marketType === "forex" ? "USD" : "USDT")}</div>
           <div className={`text-[9px] ${pnl >= 0 ? "text-emerald-600/80 dark:text-emerald-400/80" : "text-rose-600/80 dark:text-rose-400/80"}`}>{formatPercent(row.pnlPct)}</div>
+        </>)}
         </TableCell>
         <TableCell className="py-1.5">
           <div className="text-[10px]">{formatMoney(row.fees, row.marketType === "forex" ? "USD" : "USDT")}</div>

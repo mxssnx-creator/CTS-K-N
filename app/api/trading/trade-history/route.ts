@@ -681,10 +681,18 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     const mergedAll = mergeTradeHistory(
       exchangeRows,
       [...localRows, ...localReconciliationCandidates],
-    ).filter((row) => row.accountingQuality !== "exchange_required")
+    )
+      // An own trade whose close accounting is unresolved used to be HIDDEN:
+      // 870 of 1,038 real CTS-K-N trades on X02 never appeared in the history.
+      // It is now listed, marked accountingPending, and kept out of the summary
+      // and analytics so no unresolved PnL is ever counted. A FOREIGN row with
+      // unresolved accounting stays out entirely.
+      .filter((row) => row.accountingQuality !== "exchange_required" || isAttributedTradeHistoryRow(row))
+      .map((row) => (row.accountingQuality === "exchange_required" ? { ...row, accountingPending: true } : row))
     const foreignExcluded = scope === "all" ? 0 : mergedAll.filter((row) => !isAttributedTradeHistoryRow(row)).length
     const rows = (scope === "all" ? mergedAll : mergedAll.filter(isAttributedTradeHistoryRow)).slice(0, limit)
-    const summary = summarizeTradeHistory(rows.filter(isAttributedTradeHistoryRow))
+    const resolvedOwnRows = rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)
+    const summary = { ...summarizeTradeHistory(resolvedOwnRows), accountingPending: rows.filter((row) => (row as any).accountingPending).length }
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the
     // complete PF 4/12/48h, PF last 12/25/75 and DDT 3d windows.
@@ -697,7 +705,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       if (!analyticsRow || analyticsRow.environment !== mode) continue
       analyticsById.set(`id:${analyticsRow.id}`, analyticsRow)
     }
-    for (const row of rows.filter((row) => row.environment === mode && isAttributedTradeHistoryRow(row))) {
+    for (const row of resolvedOwnRows.filter((row) => row.environment === mode)) {
       analyticsById.set(`id:${row.id}`, row)
     }
     const analyticsRows = [...analyticsById.values()]

@@ -152,6 +152,8 @@ export function TradeHistoryTable({
     let fees = 0
     let volume = 0
     for (const trade of completeTrades) {
+      // Unresolved close accounting is listed but never counted.
+      if ((trade as any).accountingPending) continue
       const pnl = finite(trade.realizedPnl)
       if (pnl > 0) wins++
       else if (pnl < 0) losses++
@@ -356,10 +358,12 @@ export function TradeHistoryTable({
                       </div>
                       <div className="text-right font-mono text-amber-600">{money(Math.abs(finite(trade.fees)), 4)}</div>
                       <div className={`text-right font-mono font-semibold ${isWin ? "text-emerald-600" : isLoss ? "text-rose-600" : "text-muted-foreground"}`}>
-                        {pnl > 0 ? "+" : ""}{money(pnl, 2)}
+                        {(trade as any).accountingPending
+                          ? <span className="text-amber-600 dark:text-amber-400" title="Close accounting not yet resolved; excluded from totals">pending</span>
+                          : <>{pnl > 0 ? "+" : ""}{money(pnl, 2)}</>}
                       </div>
                       <div className={`text-right font-mono ${isWin ? "text-emerald-600" : isLoss ? "text-rose-600" : "text-muted-foreground"}`}>
-                        {finite(trade.pnlPct) > 0 ? "+" : ""}{finite(trade.pnlPct).toFixed(2)}%
+                        {(trade as any).accountingPending ? "" : <>{finite(trade.pnlPct) > 0 ? "+" : ""}{finite(trade.pnlPct).toFixed(2)}%</>}
                       </div>
                       <div className="text-right">
                         <Badge variant={trade.environment === "exchange" ? "default" : "outline"} className="h-4 px-1 text-[8px] uppercase">
