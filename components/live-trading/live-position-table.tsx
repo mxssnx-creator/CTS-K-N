@@ -297,7 +297,7 @@ export function LivePositionTable({
 
         <CardContent className="p-0">
           <div className="max-h-[460px] overflow-auto border-t">
-            <Table className="min-w-[1120px] text-xs">
+            <Table className="min-w-[1120px] text-xs" containerClassName="overflow-visible">
               <TableHeader className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <TableRow>
                   <TableHead className="h-8 pl-3 text-[10px]">Position</TableHead>

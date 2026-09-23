@@ -490,6 +490,24 @@ export function classifyLocalTradeHistorySnapshot(
     recoveredExitPrice,
   )
   if (exitPrice <= 0 && (environment !== "exchange" || !closeOrderId)) {
+    // A real, filled venue trade whose exit was never resolved (837 of the 872
+    // unresolved X02 trades — mostly rollbacks closed by an order that timed
+    // out). It used to return NO row, so the history could never show it. It
+    // is listed with what is known — entry, quantity, times — and its exit and
+    // PnL marked as pending (exchange_required), never counted. A simulated
+    // row without an exit has nothing on the venue to resolve and stays out.
+    if (environment === "exchange" && quantity > 0 && entryPrice > 0 && symbol) {
+      const openedAt = normalizeTimestamp(position.createdAt ?? position.openedAt ?? position.timestamp)
+      const closedAt = normalizeTimestamp(position.closedAt ?? position.closeTimestamp ?? position.updatedAt)
+      const row: TradeHistoryRow = {
+        id: String(position.id), positionId, symbol, direction, entryPrice, exitPrice: 0, quantity,
+        volumeUsd: quantity * entryPrice, grossPnl: 0, fees: 0, realizedPnl: 0, pnlPct: 0,
+        openedAt, closedAt, holdMinutes: openedAt > 0 && closedAt >= openedAt ? (closedAt - openedAt) / 60_000 : 0,
+        source: "local", environment, closeOrderId: closeOrderId || undefined,
+        accountingQuality: "exchange_required",
+      } as TradeHistoryRow
+      return { disposition: "unresolved_trade", reason: "missing_exit_and_pnl", row }
+    }
     return { disposition: "unresolved_trade", reason: "missing_exit_and_pnl", row: null }
   }
 
