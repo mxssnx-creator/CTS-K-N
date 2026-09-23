@@ -80,6 +80,7 @@ unit	__tests__/unit/block-row-eval-window.test.ts
 unit	__tests__/unit/block-settings-migration.test.ts
 unit	__tests__/unit/block-shared-lane-stacking.test.ts
 unit	__tests__/unit/blocked-reason-visibility.test.ts
+unit	__tests__/unit/boot-keeps-operator-symbol-count.test.ts
 unit	__tests__/unit/bots-backtest.test.ts
 unit	__tests__/unit/bots-cron-nonblocking.test.ts
 unit	__tests__/unit/bots-runner.test.ts

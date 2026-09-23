@@ -50,17 +50,30 @@ export function expandMinuteBarsToSeconds(
   return out
 }
 
-/** Real trade-built seconds, preceded by real minute bars resolved to seconds for the older window. */
+/**
+ * Dense seconds over the whole window: real minute bars resolved to seconds
+ * everywhere, with every real trade-built second taking its place. Filling
+ * only BEFORE the oldest real second left illiquid symbols with gaps: PENGU's
+ * newest 1,000 trades spanned ~40 minutes but only 509 distinct seconds, so
+ * the window stayed short of the 5,400-second minimum.
+ */
 export function mergeSecondsWithMinuteBackfill(
   realSeconds: SecondCandle[],
   minuteBars: SecondCandle[],
   nowMs: number,
   windowS = ONE_SECOND_BACKFILL_WINDOW_S,
 ): { candles: SecondCandle[]; backfilledSeconds: number } {
-  const real = [...realSeconds].filter((c) => Number.isFinite(c.timestamp)).sort((a, b) => a.timestamp - b.timestamp)
-  const oldestReal = real.length ? real[0].timestamp : nowMs
+  const real = [...realSeconds].filter((c) => Number.isFinite(c.timestamp))
   const fromMs = Math.floor((nowMs - windowS * 1_000) / 1_000) * 1_000
-  if (oldestReal <= fromMs) return { candles: real, backfilledSeconds: 0 }
-  const filled = expandMinuteBarsToSeconds(minuteBars, fromMs, oldestReal)
-  return { candles: [...filled, ...real], backfilledSeconds: filled.length }
+  const bySecond = new Map<number, SecondCandle>()
+  for (const c of expandMinuteBarsToSeconds(minuteBars, fromMs, nowMs)) bySecond.set(c.timestamp, c)
+  const filledBefore = bySecond.size
+  let replaced = 0
+  for (const c of real) {
+    const second = Math.floor(c.timestamp / 1_000) * 1_000
+    if (bySecond.has(second)) replaced++
+    bySecond.set(second, { ...c, timestamp: second })
+  }
+  const candles = [...bySecond.values()].sort((a, b) => a.timestamp - b.timestamp)
+  return { candles, backfilledSeconds: Math.max(0, filledBefore - replaced) }
 }

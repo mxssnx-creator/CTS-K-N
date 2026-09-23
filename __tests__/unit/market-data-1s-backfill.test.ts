@@ -11,23 +11,27 @@ describe("one-second history from real minute bars", () => {
     for (const c of s) { expect(c.high).toBeLessThanOrEqual(12); expect(c.low).toBeGreaterThanOrEqual(9); expect(c.volume).toBeCloseTo(1, 10) }
     for (let i = 1; i < s.length; i++) expect(s[i].open).toBeCloseTo(s[i - 1].close, 10) // continuous
   })
-  test("real trade-built seconds win; minute bars fill only the older window", () => {
-    const now = 10_000_000
-    const real = Array.from({ length: 300 }, (_, i) => bar(now - 300_000 + i * 1000, 5, 5, 5, 5, 1))
+  test("real trade-built seconds win; minute bars fill the rest of the window densely", () => {
+    const now = 10_000_000_000
+    // Illiquid: 509 real seconds scattered over the last 40 minutes (gaps between them).
+    const real = Array.from({ length: 509 }, (_, i) => bar(Math.floor((now - 2_400_000 + i * 4_700) / 1000) * 1000, 5, 5, 5, 5, 1))
     const minutes = Array.from({ length: 125 }, (_, i) => bar(Math.floor((now - (124 - i) * 60_000) / 60_000) * 60_000, 4, 4.5, 3.5, 4))
-    const { candles, backfilledSeconds } = mergeSecondsWithMinuteBackfill(real, minutes, now)
-    expect(backfilledSeconds).toBeGreaterThan(5_400)
-    const oldestReal = real[0].timestamp
-    expect(candles.filter((c) => c.timestamp >= oldestReal).every((c) => c.close === 5)).toBe(true)
-    expect(candles.filter((c) => c.timestamp < oldestReal).every((c) => c.close <= 4.5 && c.close >= 3.5)).toBe(true)
+    const { candles } = mergeSecondsWithMinuteBackfill(real, minutes, now)
     const ts = candles.map((c) => c.timestamp)
-    expect(new Set(ts).size).toBe(ts.length) // no duplicate seconds
-    expect(candles[0].timestamp).toBeGreaterThanOrEqual(now - ONE_SECOND_BACKFILL_WINDOW_S * 1000)
+    expect(new Set(ts).size).toBe(ts.length)
+    // dense: at least the 5,400-second minimum, no gaps above one second
+    expect(candles.length).toBeGreaterThanOrEqual(5_400)
+    for (let i = 1; i < ts.length; i++) expect(ts[i] - ts[i - 1]).toBe(1000)
+    // every real second is present unchanged
+    const byT = new Map(candles.map((c) => [c.timestamp, c]))
+    for (const r of real) expect(byT.get(r.timestamp)?.close).toBe(5)
   })
-  test("when real seconds already cover the window nothing is added", () => {
-    const now = 10_000_000
-    const real = [bar(now - ONE_SECOND_BACKFILL_WINDOW_S * 1000 - 1000, 1, 1, 1, 1)]
-    expect(mergeSecondsWithMinuteBackfill(real, [bar(0, 1, 1, 1, 1)], now).backfilledSeconds).toBe(0)
+  test("with complete real seconds nothing is backfilled", () => {
+    const now = 10_000_000_000
+    const fromMs = Math.floor((now - ONE_SECOND_BACKFILL_WINDOW_S * 1000) / 1000) * 1000
+    const real = Array.from({ length: ONE_SECOND_BACKFILL_WINDOW_S }, (_, i) => bar(fromMs + i * 1000, 1, 1, 1, 1))
+    const minutes = Array.from({ length: 125 }, (_, i) => bar(Math.floor((now - (124 - i) * 60_000) / 60_000) * 60_000, 2, 2, 2, 2))
+    expect(mergeSecondsWithMinuteBackfill(real, minutes, now).backfilledSeconds).toBe(0)
   })
 })
 
