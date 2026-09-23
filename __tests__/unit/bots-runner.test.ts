@@ -332,6 +332,25 @@ describe("venue reconciliation", () => {
     return { runner, venue, cancels, cleanup: async () => { process.env = env; await rm(dir, { recursive: true, force: true }) } }
   }
   const demo = { is_testnet: "1", environment: "prod-vst", is_live_trade: "1" }
+  test("a vanished position is booked at its OWN take profit's real fill when the venue settles it", async () => {
+    const { runner, venue, cleanup } = await setup([])
+    venue.getOrderSettlement = async (_s: string, id: string) => (id === "tp-1" ? { filledQuantity: 1, averageFillPrice: 102.5 } : null)
+    try {
+      await runner.runBotTick("x02", "sandwich", venue, demo)
+      const [t] = await runner.readLiveTrades("x02", "sandwich")
+      expect(t.exitReason).toBe("tp"); expect(t.exit).toBe(102.5); expect(t.estimated).toBeUndefined()
+      expect(t.tpOrderId).toBe("tp-1")
+    } finally { await cleanup() }
+  })
+  test("without a settlement the exit is an estimate and is marked as one", async () => {
+    const { runner, venue, cleanup } = await setup([])
+    venue.getOrderSettlement = async () => null
+    try {
+      await runner.runBotTick("x02", "sandwich", venue, demo)
+      const [t] = await runner.readLiveTrades("x02", "sandwich")
+      expect(t.exitReason).toBe("venue_closed"); expect(t.estimated).toBe(true)
+    } finally { await cleanup() }
+  })
   test("a position the venue no longer holds is booked as closed and its orders are cancelled", async () => {
     const { runner, venue, cancels, cleanup } = await setup([])
     try {

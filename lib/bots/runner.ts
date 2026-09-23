@@ -41,6 +41,9 @@ export interface BotLivePosition {
 export interface BotLiveTrade {
   symbol: string; direction: Dir; openedAt: number; closedAt: number; entry: number; exit: number
   quantity: number; pnl: number; pnlPct: number; exitReason: "tp" | "sl" | "trail" | "time" | "protection_failed" | "venue_closed"
+  /** Exit priced at the market when the close was found, not from a fill: an estimate. */
+  estimated?: boolean
+  stopOrderId?: string; tpOrderId?: string
 }
 
 const posKey = (c: string, t: BotType) => `bots:positions:${c}:${t}`
@@ -92,13 +95,14 @@ async function readPositions(client: any, c: string, t: BotType): Promise<BotLiv
 const savePosition = (client: any, c: string, t: BotType, p: BotLivePosition) => client.hset(posKey(c, t), { [p.id]: JSON.stringify(p) })
 const dropPosition = (client: any, c: string, t: BotType, p: BotLivePosition) => client.hdel(posKey(c, t), p.id)
 
-async function recordTrade(client: any, c: string, t: BotType, p: BotLivePosition, exit: number, reason: BotLiveTrade["exitReason"]) {
+async function recordTrade(client: any, c: string, t: BotType, p: BotLivePosition, exit: number, reason: BotLiveTrade["exitReason"], estimated = false) {
   const sign = p.direction === "long" ? 1 : -1
   const gross = (exit - p.entryPrice) / p.entryPrice * 100 * sign
   const costReason = reason === "tp" ? "tp" : "sl"
   const pnlPct = gross - roundTripCostFor(true, costReason)
   const trade: BotLiveTrade = { symbol: p.symbol, direction: p.direction, openedAt: p.filledAt || p.createdAt, closedAt: Date.now(),
-    entry: p.entryPrice, exit, quantity: p.quantity, pnlPct, pnl: p.quantity * p.entryPrice * pnlPct / 100, exitReason: reason }
+    entry: p.entryPrice, exit, quantity: p.quantity, pnlPct, pnl: p.quantity * p.entryPrice * pnlPct / 100, exitReason: reason,
+    ...(estimated ? { estimated: true } : {}), stopOrderId: p.stopOrderId, tpOrderId: p.tpOrderId }
   await client.lpush(tradesKey(c, t), JSON.stringify(trade))
   await client.ltrim(tradesKey(c, t), 0, 4999)
   await client.hset(cooldownKey(c, t), { [p.symbol]: String(Date.now() + 5 * 60_000) })
@@ -159,6 +163,21 @@ export async function placeStopWithRetry(
     result = await place()
   }
   return result
+}
+
+/**
+ * The exact exit of a position the venue no longer holds: ask the venue for
+ * the settlement of the bot's OWN take-profit and stop orders by order id.
+ * Attribution is unambiguous even on a shared account.
+ */
+export async function settleFromOwnOrders(connector: any, p: BotLivePosition): Promise<{ price: number; reason: "tp" | "sl" } | null> {
+  if (typeof connector?.getOrderSettlement !== "function") return null
+  for (const [id, reason] of [[p.tpOrderId, "tp"], [p.stopOrderId, "sl"]] as const) {
+    if (!id) continue
+    const st = await connector.getOrderSettlement(p.venueSymbol, id, { startTime: p.filledAt || p.createdAt }).catch(() => null)
+    if (st && Number(st.filledQuantity) > 0 && Number(st.averageFillPrice) > 0) return { price: Number(st.averageFillPrice), reason }
+  }
+  return null
 }
 
 export interface BotTickReport { connectionId: string; type: BotType; skipped?: string; managed: number; entries: number; closed: number; errors: string[]; durationMs?: number }
@@ -277,9 +296,10 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
           // close". Book the close, and cancel whatever of ours still rests so
           // an orphaned reduce-only stop can never hit a later position on the
           // same symbol and side.
+          const exact = await settleFromOwnOrders(connector, p)
           for (const id of [p.stopOrderId, p.tpOrderId]) if (id) await connector.cancelOrder(p.venueSymbol, id).catch(() => undefined)
-          const px = orderFillPrice(tpO) || orderFillPrice(slO) || lastClose(p.symbol) || p.entryPrice
-          await recordTrade(client, connectionId, type, p, px, "venue_closed")
+          if (exact) await recordTrade(client, connectionId, type, p, exact.price, exact.reason)
+          else await recordTrade(client, connectionId, type, p, lastClose(p.symbol) || p.entryPrice, "venue_closed", true)
           await dropPosition(client, connectionId, type, p); report.closed++; continue
         }
         if (isFilled(slO) || isFilled(tpO)) {
@@ -313,8 +333,10 @@ export async function runBotTick(connectionId: string, type: BotType, connector:
               await dropPosition(client, connectionId, type, p); report.closed++; continue
             }
             if (/101205|no position to close/i.test(String(x?.error || ""))) {
+              const exact = await settleFromOwnOrders(connector, p)
               for (const id of [p.stopOrderId, p.tpOrderId]) if (id) await connector.cancelOrder(p.venueSymbol, id).catch(() => undefined)
-              await recordTrade(client, connectionId, type, p, px || p.entryPrice, "venue_closed")
+              if (exact) await recordTrade(client, connectionId, type, p, exact.price, exact.reason)
+              else await recordTrade(client, connectionId, type, p, px || p.entryPrice, "venue_closed", true)
               await dropPosition(client, connectionId, type, p); report.closed++; continue
             }
             report.errors.push(`${p.symbol}: market close failed (${x?.error || "unknown"}); stop remains active`)

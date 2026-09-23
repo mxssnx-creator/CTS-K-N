@@ -33,6 +33,8 @@ export function liveSummary(tradesNewestFirst: BotLiveTrade[], hours = 24, now =
       pfLastPositions: { 12: pfOf(trades.slice(-12)), 25: pfOf(trades.slice(-25)), 75: pfOf(trades.slice(-75)) },
       pfLastHours: { 2: pfOf(since(2)), 6: pfOf(since(6)), 20: pfOf(since(20)) },
       protectionFailures: inWindow.filter((t) => t.exitReason === "protection_failed").length,
+      // Exits priced at the market when the close was found, not from a fill.
+      estimatedExits: inWindow.filter((t) => t.estimated).length,
     },
   }
 }

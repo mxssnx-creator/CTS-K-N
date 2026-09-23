@@ -319,7 +319,7 @@ export default function BotsPage() {
                       <Metric label="Max drawdown time" value={`${s.maxDrawdownMinutes} min`} />
                       <Metric label="Hours positive" value={`${s.positiveHours} / ${s.activeHours}`} />
                       {view === "live"
-                        ? <Metric label="Protection failures" value={String(src.summary.protectionFailures ?? 0)} />
+                        ? <Metric label="Protection failures · estimated exits" value={`${src.summary.protectionFailures ?? 0} · ${src.summary.estimatedExits ?? 0}`} />
                         : <Metric label="Tested" value={new Date(bot.lastBacktest!.at).toLocaleString()} small />}
                     </div>
 
