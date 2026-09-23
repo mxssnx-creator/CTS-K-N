@@ -97,7 +97,20 @@ async function verifyLiveTradeReadiness() {
   }
 
   const states = await Promise.all(liveConnectionIds.map(async (connectionId) => {
-    const state = await request(`/api/connections/${encodeURIComponent(connectionId)}/engine-states`, { timeoutMs: 30_000 })
+    // The engine sets a short, self-clearing entry halt (90 s TTL) when a
+    // post-entry venue audit is unreadable. Reading readiness exactly once made
+    // deploys fail whenever verification landed inside that window — the
+    // runtime kept running on the new build, the install was reported failed,
+    // and a preserved-state directory was left behind each time. Wait out THAT
+    // block code only, bounded; every other block code still fails at once.
+    const readState = () => request(`/api/connections/${encodeURIComponent(connectionId)}/engine-states`, { timeoutMs: 30_000 })
+    let state = await readState()
+    const deadline = Date.now() + 120_000
+    while (state?.modes?.mainTrade?.blockCode === "entry_protection_halt" && Date.now() < deadline) {
+      console.log(`[Prod Init] ${connectionId}: transient entry-protection halt active; re-checking in 10 s`)
+      await new Promise((resolve) => setTimeout(resolve, 10_000))
+      state = await readState()
+    }
     const main = state?.modes?.mainTrade
     if (
       state?.success !== true ||

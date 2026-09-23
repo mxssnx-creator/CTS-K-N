@@ -132,6 +132,7 @@ __tests__/unit/dca-step-recovery-level.test.ts
 __tests__/unit/default-indication-direction.test.ts
 __tests__/unit/deferral-reason-visibility.test.ts
 __tests__/unit/deploy-keeps-runtime-up.test.ts
+__tests__/unit/deploy-readiness-transient-halt.test.ts
 __tests__/unit/design-theme-consistency.test.ts
 __tests__/unit/direct-trade-calculate-route.test.ts
 __tests__/unit/direct-trade-canonical-order.test.ts
