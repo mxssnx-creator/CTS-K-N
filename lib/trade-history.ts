@@ -76,6 +76,8 @@ export interface TradeHistoryRow {
    * close supplies authoritative PnL and price data.
    */
   accountingQuality?: "local" | "exchange_required"
+  /** An own trade whose close accounting is unresolved: listed, never counted. */
+  accountingPending?: boolean
 }
 
 /**

@@ -417,6 +417,7 @@ unit	__tests__/unit/trade-engine-status-healing-race.test.ts
 unit	__tests__/unit/trade-engine-status-settings.test.ts
 unit	__tests__/unit/trade-history-attribution.test.ts
 unit	__tests__/unit/trade-history-own-scope.test.ts
+unit	__tests__/unit/trade-history-pending-and-sticky.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
 unit	__tests__/unit/trade-protection-contract.test.ts
 unit	__tests__/unit/trading-round-trip-cost.test.ts

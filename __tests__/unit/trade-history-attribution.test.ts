@@ -62,7 +62,10 @@ describe("trade history attribution on a shared exchange account", () => {
     const route = readFileSync(resolve(process.cwd(), "app/api/trading/trade-history/route.ts"), "utf8")
     expect(route).toContain("analytics: buildLiveTradingAnalytics(attributedRows, analyticsNowStatistics)")
     expect(route).toContain("unattributedExchange: {")
-    expect(route).toContain("summarizeTradeHistory(rows.filter(isAttributedTradeHistoryRow))")
+    // Summary counts attributed rows only — and, since unresolved own trades
+    // are now listed, only those whose close accounting is resolved.
+    expect(route).toContain("const resolvedOwnRows = rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)")
+    expect(route).toContain("summarizeTradeHistory(resolvedOwnRows)")
     const page = readFileSync(resolve(process.cwd(), "app/statistics/page.tsx"), "utf8")
     expect(page).toContain("if (tuple[2] === UNATTRIBUTED_EXCHANGE_STRATEGY) continue")
     expect(page).toContain("&& isAttributedTradeHistoryRow(row)) {")
