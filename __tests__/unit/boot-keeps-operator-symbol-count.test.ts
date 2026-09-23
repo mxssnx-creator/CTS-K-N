@@ -20,4 +20,11 @@ describe("boot never overwrites the operator's symbol count", () => {
     expect(store.k).toEqual({ symbol_count: "30", symbol_order: "volatility_1h" })
     expect(store.e).toEqual({ symbol_count: "4" })
   })
+
+  test("the bingx-x01 boot guard uses the saved count and falls back to the env/default only when none is saved", () => {
+    expect(src).toContain("savedCounts.length > 0 ? Math.max(...savedCounts) : envOrDefaultCount")
+    expect(src).toContain("symbol_count:             String(dynamicSymCount),")
+    const guard = src.indexOf("const savedCounts = (await Promise.all(devHashes.map((key) => client.hget(key, \"symbol_count\")")
+    expect(guard).toBeGreaterThan(src.indexOf("const devHashes = ["))
+  })
 })

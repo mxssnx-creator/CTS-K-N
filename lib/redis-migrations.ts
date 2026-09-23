@@ -8742,10 +8742,6 @@ if (!hasExisting) {
   {
     const DEV_CONN  = "bingx-x01"
     const mandatorySymbols = canonicalForcedSymbols()
-    const devSymCount = Math.max(
-      mandatorySymbols.length,
-      parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? String(CANONICAL_DEFAULT_SYMBOL_COUNT), 10) || CANONICAL_DEFAULT_SYMBOL_COUNT,
-    )
     // All key namespaces that getSymbols() reads.
     const devHashes = [
       `connection:${DEV_CONN}`,
@@ -8753,6 +8749,22 @@ if (!hasExisting) {
       `settings:connection_settings:${DEV_CONN}`,
       `settings:connection:${DEV_CONN}`,
     ]
+    // An operator-saved symbol count always wins. This guard dates from when
+    // bingx-x01 was the development connection and enforced
+    // V0_DEV_SYMBOL_COUNT (default 4) on every boot, "so it always wins" —
+    // X01 is now a mainnet connection, and a saved 30 came back as 4 after
+    // every reinstall. The env/default applies only when nothing is saved.
+    const savedCounts = (await Promise.all(devHashes.map((key) => client.hget(key, "symbol_count").catch(() => null))))
+      .map((value) => parseInt(String(value ?? ""), 10))
+      .filter((value) => Number.isFinite(value) && value > 0)
+    const envOrDefaultCount = parseInt(process.env.V0_DEV_SYMBOL_COUNT ?? String(CANONICAL_DEFAULT_SYMBOL_COUNT), 10) || CANONICAL_DEFAULT_SYMBOL_COUNT
+    // Pinned baskets keep their established sizing (env/default); the saved
+    // count applies to the dynamic volatility path the operator uses.
+    const devSymCount = Math.max(mandatorySymbols.length, envOrDefaultCount)
+    const dynamicSymCount = Math.max(
+      mandatorySymbols.length,
+      savedCounts.length > 0 ? Math.max(...savedCounts) : envOrDefaultCount,
+    )
 
     const parseBootSymbols = (value: unknown): string[] => {
       if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean)
@@ -8808,12 +8820,12 @@ if (!hasExisting) {
       // dynamically via volatility_1h, then slices to devSymCount.
       devSymPayload = {
         force_symbols:            "",                       // cleared — getSymbols() falls through
-        symbol_count:             String(devSymCount),
+        symbol_count:             String(dynamicSymCount),
         symbol_order:             "volatility_1h",
         symbols:                  "",                       // cleared — engine will repopulate
         active_symbols:           "",
         mandatory_symbols:        JSON.stringify(mandatorySymbols),
-        config_set_symbols_total: String(devSymCount),
+        config_set_symbols_total: String(dynamicSymCount),
       }
     }
     for (const h of devHashes) {
