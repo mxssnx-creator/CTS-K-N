@@ -3367,6 +3367,55 @@ export async function GET(
       }
       return total
     }
+    // Why dispatches were blocked. The coordinator stores the reason per
+    // symbol (s:<SYM>:dispatch_failure_reason, e.g. entry_protection_halt) and
+    // per-candidate reasons (dispatch_blocked_reasons), but the stats only
+    // exposed the COUNT: X01 showed 5,610 attempted / 5,610 blocked with no
+    // reason anywhere in the overview.
+    const readFreshBlockedReasons = (): Array<{ reason: string; count: number; symbols: number }> => {
+      const freshMs = stageRowSnapshotFreshMs
+      const nowMs = Date.now()
+      const byReason = new Map<string, { count: number; symbols: Set<string> }>()
+      const add = (reason: string, count: number, symbol: string) => {
+        const key = String(reason || "").trim().slice(0, 160)
+        if (!key || !(count > 0)) return
+        const entry = byReason.get(key) || { count: 0, symbols: new Set<string>() }
+        entry.count += count; entry.symbols.add(symbol); byReason.set(key, entry)
+      }
+      for (const [field, raw] of Object.entries(strategyDetailLiveHash)) {
+        if (!field.startsWith("s:")) continue
+        const isFailure = field.endsWith(":dispatch_failure_reason")
+        const isReasons = field.endsWith(":dispatch_blocked_reasons")
+        if (!isFailure && !isReasons) continue
+        const suffix = isFailure ? "dispatch_failure_reason" : "dispatch_blocked_reasons"
+        const symbol = field.slice(2, -(suffix.length + 1))
+        if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
+        const ts = Number(strategyDetailLiveHash[`s:${symbol}:ts`] || "0") || 0
+        if (!ts || nowMs - ts > freshMs) continue
+        if (isFailure) {
+          add(String(raw || ""), Math.max(1, Number(strategyDetailLiveHash[`s:${symbol}:dispatch_blocked_count`] || 0) || 0), symbol)
+        } else {
+          try {
+            const rows = JSON.parse(String(raw || "[]"))
+            for (const row of Array.isArray(rows) ? rows : []) {
+              const reason = Array.isArray(row) ? row[0] : row?.reason ?? row?.key
+              const count = Array.isArray(row) ? Number(row[1]?.count ?? row[1]) : Number(row?.count)
+              add(String(reason || ""), Number.isFinite(count) ? count : 1, symbol)
+            }
+          } catch { /* malformed row: ignore */ }
+        }
+      }
+      // The per-candidate reasons are written without a symbol prefix (the
+      // latest symbol's dispatch overwrites them), so read that field as well.
+      try {
+        const latest = JSON.parse(String(strategyDetailLiveHash["dispatch_blocked_reasons"] || "[]"))
+        for (const row of Array.isArray(latest) ? latest : []) add(String(row?.reason || ""), Number(row?.count) || 1, "(latest)")
+      } catch { /* malformed: ignore */ }
+      return [...byReason.entries()]
+        .map(([reason, entry]) => ({ reason, count: entry.count, symbols: entry.symbols.size }))
+        .sort((left, right) => right.count - left.count)
+        .slice(0, 12)
+    }
     const readFreshSymbolDispatchMaximum = (suffix: string): number => {
       const freshMs = stageRowSnapshotFreshMs
       const nowMs = Date.now()
@@ -3450,6 +3499,7 @@ export async function GET(
         filled: readFreshSymbolDispatchCount("dispatch_filled_count"),
         pending: readFreshSymbolDispatchCount("dispatch_pending_count"),
         blocked: readFreshSymbolDispatchCount("dispatch_blocked_count"),
+        blockedReasons: readFreshBlockedReasons(),
         deferred: readFreshSymbolDispatchCount("dispatch_deferred_count"),
         rejected: readFreshSymbolDispatchCount("dispatch_rejected_count"),
         errored: readFreshSymbolDispatchCount("dispatch_errored_count"),

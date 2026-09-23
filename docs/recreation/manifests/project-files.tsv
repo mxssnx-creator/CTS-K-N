@@ -167,6 +167,7 @@ f95e77e168325c8fa746316f1a552c65f7262f7886ad17d6faec61856f1d411c	5765	__tests__/
 25597c8cb81a00d43852723faee189093049a7bfc3ee61e39ce968b82c8287ab	1634	__tests__/unit/direct-trade-volume-factor.test.ts
 bd25e59cfb98647a1fe61c2acdba8627c22be463ed73a7845ffb2f57f3dbff94	3154	__tests__/unit/direction-fail-closed.test.ts
 85405d2e70c4718a876b703c0edfb761eb2a89b68969826889159ca23b7d5eb5	1302	__tests__/unit/directional-evaluation.test.ts
+845dd348eb86069625f6a3287390a823d7b1addfb175303c576e43495fa93a02	680	__tests__/unit/dispatch-blocked-reasons-visible.test.ts
 43d949301d2703c21b9f83c170f10a4520d80c0fa0fd8cb38d9ba66fe017eb3f	4653	__tests__/unit/distributed-engine-runtime.test.ts
 a46e10c1cc8824b50871d27658020049a6c8b395d2d7954d0b7d7ddcbd1aa8bb	1774	__tests__/unit/empty-book-own-fingerprint.test.ts
 ebc4009fe81e745003a1f86db16b7cf3e89022a71f32a13a3b758fa7e7ee4b78	4524	__tests__/unit/engine-event-bus-regression.test.ts
@@ -500,7 +501,7 @@ cf41fd3940973fe906d8adad53c99b467516819aebe4648c7baa362b7a0953fe	3590	app/api/co
 0cfcf5ffa945c83e3bad6f7d3d297ad95f9ca3879ff7ba99bac6b0c048f5eb47	804	app/api/connections/counts/route.ts
 be79c52cbc5084582378c3e65f003e966a0127d0103285279c3a2ccf386c8652	13120	app/api/connections/progression/[id]/logs/route.ts
 c8f3d3ed3f41d930bb6f309ca7a67080b33c4f95412c19a108d482baad3e8345	35580	app/api/connections/progression/[id]/route.ts
-03684e92835e95bf46e23437e445e78867d08f2f62d7cb1fe6c5cd25560bee18	295200	app/api/connections/progression/[id]/stats/route.ts
+78e876cd682c230b20e65df299aec0f76dd0f59681b8c4ef43f41131e798b12e	298231	app/api/connections/progression/[id]/stats/route.ts
 a320ec705a9649483f10c8e7b4b636e6483c822cf3a1006bab6a3e0c3960dba1	654	app/api/connections/progression/[id]/tracking/indications/route.ts
 0249eb62e7bd0484c2f5fa78ed5b2ce3b418d494e7f33cc020ca976d1467ece1	648	app/api/connections/progression/[id]/tracking/strategies/route.ts
 75d431c74e934c99d1e1e1028bba6583628c17984903a0a074fc87e475344683	1744	app/api/connections/route.ts

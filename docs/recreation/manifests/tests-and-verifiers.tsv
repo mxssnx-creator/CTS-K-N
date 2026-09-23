@@ -152,6 +152,7 @@ unit	__tests__/unit/direct-trade-status-accounting.test.ts
 unit	__tests__/unit/direct-trade-volume-factor.test.ts
 unit	__tests__/unit/direction-fail-closed.test.ts
 unit	__tests__/unit/directional-evaluation.test.ts
+unit	__tests__/unit/dispatch-blocked-reasons-visible.test.ts
 unit	__tests__/unit/distributed-engine-runtime.test.ts
 unit	__tests__/unit/empty-book-own-fingerprint.test.ts
 unit	__tests__/unit/engine-event-bus-regression.test.ts
