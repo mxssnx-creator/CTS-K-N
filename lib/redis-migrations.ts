@@ -8596,15 +8596,23 @@ if (!hasExisting) {
         // operator force_symbols basket is present so we don't shadow the pin
         // with symbol_order=volatility_1h (the dev-boot guard would then clear it).
         if (!hasExplicitPin) {
-          await client.hset(`settings:trade_engine_state:${cfg.id}`, {
+          // Fill MISSING fields only. This ran on every boot for an existing
+          // connection and overwrote the operator's symbol count with the
+          // default: X01 set to 30 symbols came back at 4 after each deploy.
+          const fillMissing = async (key: string, defaults: Record<string, string>) => {
+            const current = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
+            const missing = Object.fromEntries(Object.entries(defaults).filter(([field]) => !String(current[field] ?? "").trim()))
+            if (Object.keys(missing).length > 0) await client.hset(key, missing).catch(() => {})
+          }
+          await fillMissing(`settings:trade_engine_state:${cfg.id}`, {
             symbol_count:             DEFAULT_SYMBOL_COUNT,
             symbol_order:             "volatility_1h",
             config_set_symbols_total: DEFAULT_SYMBOL_COUNT,
-          }).catch(() => {})
-          await client.hset(`settings:connection:${cfg.id}`, {
+          })
+          await fillMissing(`settings:connection:${cfg.id}`, {
             symbol_count: DEFAULT_SYMBOL_COUNT,
             symbol_order: "volatility_1h",
-          }).catch(() => {})
+          })
         }
       }
     }

@@ -453,7 +453,9 @@ async function fetchRealMarketData(
           // real 1s candles reach back only minutes. Fill the older window from
           // the venue's REAL 1m bars resolved to seconds; never synthetic.
           if (sourceTimeframe === "1s" && marketType !== "forex" && Array.isArray(candles)) {
-            const minuteBars = await connector.getOHLCV(canonicalSymbol, "1m", Math.ceil(ONE_SECOND_BACKFILL_WINDOW_S / 60) + 5).catch(() => [])
+            // Ask for well over the window: some symbols came back with fewer
+            // bars than requested and missed the 5,400-second minimum.
+            const minuteBars = await connector.getOHLCV(canonicalSymbol, "1m", Math.ceil(ONE_SECOND_BACKFILL_WINDOW_S / 60) + 60).catch(() => [])
             if (Array.isArray(minuteBars) && minuteBars.length > 0) {
               const merged = mergeSecondsWithMinuteBackfill(candles as any[], minuteBars as any[], Date.now())
               if (merged.backfilledSeconds > 0) {
