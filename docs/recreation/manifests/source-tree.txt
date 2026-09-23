@@ -274,6 +274,7 @@ __tests__/unit/main-stage-one-per-base.test.ts
 __tests__/unit/main-trade-profit-factor.test.ts
 __tests__/unit/margin-call-route.test.ts
 __tests__/unit/margin-call.test.ts
+__tests__/unit/market-data-1s-backfill.test.ts
 __tests__/unit/market-data-fetch-deadline.test.ts
 __tests__/unit/market-data-history-contract.test.ts
 __tests__/unit/market-data-second-coverage.test.ts
@@ -1442,6 +1443,7 @@ lib/main-indication-settings.ts
 lib/main-trade-profit-factor.ts
 lib/margin-call-policy.ts
 lib/margin-call.ts
+lib/market-data-1s-backfill.ts
 lib/market-data-fetcher.ts
 lib/market-data-keys.ts
 lib/market-data-loader.ts
