@@ -3378,6 +3378,27 @@ async function readSignalAdmissionCapacity(
   ])
   const limit = normalizeSignalMaxPositions(configuredLimit)
   const normalizedTotal = Math.max(0, Number(total) || 0)
+  // The durable index is repaired only when it is MISSING, but members leak
+  // when a lifecycle ends on a path that does not remove them (rollbacks,
+  // external closes). X02 reached 353/350 with 9 open rows and deferred every
+  // entry for hours as "Signal position capacity reached". When the index
+  // reports the limit, verify it against the real rows — at most once a
+  // minute — before deferring anything.
+  {
+    const limit = normalizeSignalMaxPositions(configuredLimit)
+    if (normalizedTotal >= limit) {
+      const gate = await client.set(`${signalPositionAdmissionIndexKey(connectionId)}:verify-lock`, String(Date.now()), { NX: true, EX: 60 }).catch(() => null)
+      if (gate) {
+        const rebuilt = await rebuildSignalAdmissionIndexes(client, connectionId)
+        return {
+          ...rebuilt,
+          limit,
+          allowed: rebuilt.total < limit,
+          reason: rebuilt.total < limit ? "available" : "total_limit",
+        }
+      }
+    }
+  }
   return {
     allowed: normalizedTotal < limit,
     reason: normalizedTotal < limit ? "available" : "total_limit",

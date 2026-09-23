@@ -367,6 +367,7 @@ unit	__tests__/unit/settled-rows-auto-close.test.ts
 unit	__tests__/unit/short-range-grid.test.ts
 unit	__tests__/unit/shutdown-keeps-positions.test.ts
 unit	__tests__/unit/signal-analytics.test.ts
+unit	__tests__/unit/signal-capacity-self-heal.test.ts
 unit	__tests__/unit/signal-config-matrix.test.ts
 unit	__tests__/unit/signal-indication.test.ts
 unit	__tests__/unit/signal-position-policy.test.ts
