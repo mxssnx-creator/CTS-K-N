@@ -272,6 +272,7 @@ unit	__tests__/unit/multi-range-coordination.test.ts
 unit	__tests__/unit/navigation-and-pages.test.ts
 unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
+unit	__tests__/unit/no-foreign-quantity-adoption.test.ts
 unit	__tests__/unit/orchestrated-verifier-safety.test.ts
 unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
