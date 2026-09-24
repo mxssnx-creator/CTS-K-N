@@ -392,6 +392,7 @@ unit	__tests__/unit/statistics-overview-current-counts.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/statistics-ui-correctness.test.ts
 unit	__tests__/unit/status-canonical-position-counts.test.ts
+unit	__tests__/unit/stopped-out-row-not-a-violation.test.ts
 unit	__tests__/unit/strategy-axis-coordination.test.ts
 unit	__tests__/unit/strategy-block-real-overlays.test.ts
 unit	__tests__/unit/strategy-execution-policy.test.ts
