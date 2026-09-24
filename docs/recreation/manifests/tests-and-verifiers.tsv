@@ -375,6 +375,7 @@ unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
 unit	__tests__/unit/site-logs-key.test.ts
+unit	__tests__/unit/slot-entry-serialize.test.ts
 unit	__tests__/unit/slot-scoped-halts.test.ts
 unit	__tests__/unit/special-strategy.test.ts
 unit	__tests__/unit/special-vst-validator-contract.test.ts
