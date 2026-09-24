@@ -19416,7 +19416,12 @@ export async function reconcileLivePositions(
           if (pos.status === "placed" || pos.status === "pending_fill" || pos.status === "placed_unconfirmed") {
             const exSize  = Math.abs(parseFloat(String(exPos.size ?? exPos.positionAmt ?? exPos.quantity ?? "0"))) || 0
             const exEntry = parseFloat(String(exPos.entryPrice ?? exPos.avgPrice ?? "0")) || 0
-            if (exSize > 0 && exEntry > 0 && !parallelExecutionLanes) {
+            // Only a row with its OWN entry order can have been filled by us.
+            // On a shared account the venue slot also holds other actors'
+            // quantity: X02 had 7 WLDUSDT rows with no order id each adopting
+            // the venue's 39,547 WLD, which set a 24 h connection-wide halt.
+            const ownsEntryOrder = Boolean(String(pos.orderId || "").trim())
+            if (exSize > 0 && exEntry > 0 && !parallelExecutionLanes && ownsEntryOrder) {
               if (pos.executedQuantity <= 0) {
                 pos.executedQuantity = exSize
                 pos.remainingQuantity = Math.max(0, Number(pos.quantity || exSize) - exSize)
@@ -21096,7 +21101,9 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         ) {
           const exSize = Math.abs(parseFloat(String(exchangePos.size ?? (exchangePos as any).positionAmt ?? exchangePos.quantity ?? "0"))) || 0
           const exEntry = parseFloat(String(exchangePos.entryPrice ?? (exchangePos as any).avgPrice ?? exchangePos.markPrice ?? "0")) || 0
-          if (exSize > 0 && !parallelExecutionLanes) {
+          // Same rule: never adopt venue quantity into a row without its own
+          // entry order (see the reconcile path above).
+          if (exSize > 0 && !parallelExecutionLanes && Boolean(String(position.orderId || "").trim())) {
             position.executedQuantity = exSize
             position.remainingQuantity = Math.max(0, (position.quantity || exSize) - exSize)
             position.averageExecutionPrice = exEntry || position.entryPrice
