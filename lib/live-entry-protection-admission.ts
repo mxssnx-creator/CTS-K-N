@@ -4,6 +4,10 @@ import { isExactSystemPositionOwner } from "@/lib/system-order-ownership"
 export type ProtectionAdmissionDirection = "long" | "short"
 
 export type LiveEntryProtectionAdmissionAudit = {
+  /** Slots whose own rows or controls raised a violation. */
+  offendingSlots?: string[]
+  /** True when any violation could not be tied to a slot: the whole connection must halt. */
+  connectionLevelViolation?: boolean
   safe: boolean
   violations: string[]
   ownedActiveRows: number
@@ -128,6 +132,8 @@ export function auditLiveEntryProtectionAdmission(input: {
   liveOrderIds: ReadonlySet<string>
 }): LiveEntryProtectionAdmissionAudit {
   const violations: string[] = []
+  const offendingSlots = new Set<string>()
+  let attributedViolations = 0
   const candidateId = text(input.candidateId)
   // A row that never reached the venue is not exposure. It has no venue order
   // id and no fill, so there is nothing on the exchange to protect — and
@@ -207,6 +213,7 @@ export function auditLiveEntryProtectionAdmission(input: {
   }
 
   for (const row of executed) {
+    const violationsBeforeRow = violations.length
     if (input.overallControlOrdersOnly !== undefined &&
       (row.controlOrderScope === "symbol_direction") !== input.overallControlOrdersOnly) {
       violations.push("owned_control_scope_transition_pending")
@@ -236,6 +243,12 @@ export function auditLiveEntryProtectionAdmission(input: {
     )) {
       violations.push("owned_row_take_profit_quantity_mismatch")
     }
+    const rowDelta = violations.length - violationsBeforeRow
+    const offendingDirection = directionOf(row)
+    if (rowDelta > 0 && offendingDirection) {
+      offendingSlots.add(aggregateProtectionSlot(row.symbol, offendingDirection))
+      attributedViolations += rowDelta
+    }
   }
 
   const bySlot = new Map<string, Record<string, any>[]>()
@@ -250,7 +263,8 @@ export function auditLiveEntryProtectionAdmission(input: {
     rows.push(row)
     bySlot.set(key, rows)
   }
-  for (const rows of bySlot.values()) {
+  for (const [slotGroupKey, rows] of bySlot.entries()) {
+    const violationsBeforeSlot = violations.length
     // An overall slot resizes its shared controls by first cancelling them
     // (settle-first, so two workers never mutate the net venue quantity at
     // once), then adding quantity, then re-arming for the new total. The
@@ -307,10 +321,16 @@ export function auditLiveEntryProtectionAdmission(input: {
         violations.push("owned_slot_security_quantity_mismatch")
       }
     }
+    const slotDelta = violations.length - violationsBeforeSlot
+    if (slotDelta > 0) {
+      offendingSlots.add(slotGroupKey)
+      attributedViolations += slotDelta
+    }
   }
 
   const candidateSymbol = symbol(input.symbol)
   const candidateSlot = aggregateProtectionSlot(candidateSymbol, input.direction)
+  const violationsBeforeCandidate = violations.length
   const physicalRows = executed.filter((row) => {
     const rowDirection = directionOf(row)
     return rowDirection !== null &&
@@ -351,7 +371,18 @@ export function auditLiveEntryProtectionAdmission(input: {
   }
   // venueSlotQuantity > systemSlotQuantity: the excess is another system's.
 
+  const candidateDelta = violations.length - violationsBeforeCandidate
+  if (candidateDelta > 0) {
+    offendingSlots.add(candidateSlot)
+    attributedViolations += candidateDelta
+  }
   return {
+    // Slots whose own rows/controls raised a violation. Violations not tied to
+    // a slot (pending markers, snapshot/settings problems, rows without a
+    // direction, the scope-transition 'continue') count as connection-level —
+    // when in doubt the whole connection halts, as before.
+    offendingSlots: [...offendingSlots],
+    connectionLevelViolation: violations.length > attributedViolations,
     safe: violations.length === 0,
     violations: [...new Set(violations)],
     ownedActiveRows: owned.length,
