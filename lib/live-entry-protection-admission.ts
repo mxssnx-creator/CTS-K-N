@@ -150,7 +150,34 @@ export function auditLiveEntryProtectionAdmission(input: {
     if (!ACTIVE_STATUSES.has(text(row.status).toLowerCase())) return false
     return !neverReachedVenue(row)
   })
-  const executed = owned.filter((row) => quantityOf(row) > 0)
+  const executedAll = owned.filter((row) => quantityOf(row) > 0)
+  // A row whose own stop or take profit FILLED has no open control orders any
+  // more — that is the normal end of a trade, not missing protection. Its
+  // local quantity is only stale until the close is booked. Production on X01:
+  // TAKEUSDT was stopped out by its own SL and the audit reported
+  // owned_row_stop_loss_missing / _take_profit_missing, rolled the entry back
+  // and armed a 24 h connection-wide halt that blocked every symbol.
+  // Such a row is excluded from the row-level protection check only when the
+  // VENUE holds nothing on its slot; a row the venue still holds is checked
+  // exactly as before.
+  const venueQuantityBySlot = new Map<string, number>()
+  for (const row of input.venuePositions) {
+    const rowDirection = directionOf(row)
+    if (!rowDirection) continue
+    const key = aggregateProtectionSlot(row.symbol, rowDirection)
+    venueQuantityBySlot.set(key, (venueQuantityBySlot.get(key) || 0) + quantityOf(row))
+  }
+  const closedOnVenue = (row: Record<string, any>): boolean => {
+    const rowDirection = directionOf(row)
+    if (!rowDirection) return false
+    const ownControlFilled = Boolean(
+      (text(row.stopLossOrderId) && !input.liveOrderIds.has(text(row.stopLossOrderId)))
+      || (text(row.takeProfitOrderId) && !input.liveOrderIds.has(text(row.takeProfitOrderId))),
+    )
+    if (!ownControlFilled) return false
+    return (venueQuantityBySlot.get(aggregateProtectionSlot(row.symbol, rowDirection)) || 0) <= 0
+  }
+  const executed = executedAll.filter((row) => !closedOnVenue(row))
 
   if (owned.some((row) => PENDING_ENTRY_STATUSES.has(text(row.status).toLowerCase()))) {
     violations.push("owned_entry_confirmation_pending")
