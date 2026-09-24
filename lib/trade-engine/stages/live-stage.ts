@@ -11993,6 +11993,10 @@ function assertEligibleProtectionSlotRows(members: readonly LivePosition[]): voi
 interface EntryProtectionAdmissionDecision {
   /** Client/venue ids of owned controls the audit could not map to a row (diagnostics). */
   orphanDetails?: string[]
+  /** Slots that raised violations; only these need to halt. */
+  offendingSlots?: string[]
+  /** A violation not tied to any slot: the whole connection must halt. */
+  connectionLevelViolation?: boolean
   safe: boolean
   violations: string[]
   audit: LiveEntryProtectionAdmissionAudit
@@ -12027,6 +12031,19 @@ export function entryRollbackCooldownKeyOf(connectionId: string, symbol: string,
 
 function entryProtectionHaltKeyOf(connectionId: string): string {
   return `live:entry-protection-halt:${connectionId}`
+}
+/**
+ * A genuine protection halt for ONE physical slot (symbol + direction). One
+ * unprotected WLDUSDT row used to halt all 30 symbols of the connection for
+ * 24 h; a slot-scoped violation now halts only its slot.
+ */
+function entryProtectionSlotHaltKeyOf(connectionId: string, slotKey: string): string {
+  return `live:entry-protection-halt:${connectionId}:slot:${slotKey}`
+}
+async function isEntrySlotProtectionHalted(client: any, connectionId: string, symbol: string, direction: string): Promise<boolean> {
+  const dir = String(direction || "").toLowerCase() === "short" ? "short" : "long"
+  const key = entryProtectionSlotHaltKeyOf(connectionId, aggregateProtectionSlot(symbol, dir as ProtectionSlotDirection))
+  return Boolean(await client.get(key).catch(() => null))
 }
 
 /**
@@ -12127,6 +12144,11 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     liveOrderIds,
   })
   const violations = [...audit.violations]
+  // Slot attribution (see auditLiveEntryProtectionAdmission): violations tied to
+  // a slot halt only that slot; anything unattributed halts the connection.
+  const offendingSlots = new Set<string>(audit.offendingSlots || [])
+  let attributedOuterViolations = 0
+  const outerViolationsStart = violations.length
   const orphanDetails: string[] = []
   if (!protectionPolicy.available) violations.push("protection_settings_unavailable")
   const activeOwnedRows = positions.filter((position) =>
@@ -12153,6 +12175,8 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
       violations.push("owned_slot_direction_missing")
       continue
     }
+    const violationsBeforeSlot = violations.length
+    const memberSlotKey = aggregateProtectionSlot(members[0].symbol, direction)
     const venueRows = exactProtectionVenueRows(
       venuePositions,
       members[0].symbol,
@@ -12200,6 +12224,11 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     if (slotAudit.externalOrUnknownSlotControlOrdersPreserved > 0) {
       violations.push("owned_slot_external_controls_present")
     }
+    const slotDelta = violations.length - violationsBeforeSlot
+    if (slotDelta > 0) {
+      offendingSlots.add(memberSlotKey)
+      attributedOuterViolations += slotDelta
+    }
   }
 
   if (
@@ -12211,6 +12240,8 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     ))
   ) {
     violations.push("candidate_slot_open_controls_present")
+    offendingSlots.add(aggregateProtectionSlot(input.symbol, input.direction))
+    attributedOuterViolations += 1
   }
 
   const observedControlOrders = isBingXCapacityConnector(input.connector)
@@ -12226,10 +12257,14 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     violations.push("control_order_capacity_reserve_insufficient")
   }
 
+  const connectionLevelViolation = Boolean(audit.connectionLevelViolation)
+    || (violations.length - outerViolationsStart) > attributedOuterViolations
   return {
     safe: violations.length === 0,
     violations: [...new Set(violations)],
     orphanDetails,
+    offendingSlots: [...offendingSlots],
+    connectionLevelViolation,
     audit,
     observedControlOrders,
     availableControlOrders,
@@ -12319,6 +12354,8 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
   const haltKey = entryProtectionHaltKeyOf(input.connectionId)
   if (decision.safe) {
     await client.del(haltKey).catch(() => 0)
+    const dir = String(input.direction || "").toLowerCase() === "short" ? "short" : "long"
+    await client.del(entryProtectionSlotHaltKeyOf(input.connectionId, aggregateProtectionSlot(input.symbol, dir as ProtectionSlotDirection))).catch(() => 0)
   } else {
     // A transient venue READ failure is not evidence that the book is unsafe —
     // it is the absence of evidence. It used to arm the same 24-hour halt as a
@@ -12347,6 +12384,19 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
         // an unparseable or legacy halt is kept, never shortened.
         if (!existing || existing.transient !== true) return decision
       }
+    }
+    const scopedSlots = decision.offendingSlots || []
+    if (!transientOnly && !decision.connectionLevelViolation && scopedSlots.length > 0) {
+      // Every violation is tied to a slot: halt only those slots, and leave the
+      // rest of the connection trading.
+      for (const slotKey of scopedSlots) {
+        await client.setex(
+          entryProtectionSlotHaltKeyOf(input.connectionId, slotKey),
+          GENUINE_ENTRY_HALT_TTL_SECONDS,
+          JSON.stringify({ at: Date.now(), reason: input.reason, transient: false, slot: slotKey, violations: decision.violations.slice(0, 24) }),
+        ).catch(() => {})
+      }
+      return decision
     }
     await client.setex(
       haltKey,
@@ -13641,7 +13691,10 @@ export async function executeLivePosition(
     // after Block/DCA recovery has had a chance to reconcile an in-flight
     // control order; the halt protects fresh exposure and must never prevent a
     // control mutation from recovering an already-owned slot.
-    if (isLiveTradeEnabled && await client.get(entryProtectionHaltKey).catch(() => null)) {
+    if (isLiveTradeEnabled && (
+      await client.get(entryProtectionHaltKey).catch(() => null)
+      || await isEntrySlotProtectionHalted(client, connectionId, realPosition.symbol, realPosition.direction)
+    )) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
       livePosition.executionBlockCode = "entry_protection_halted"
@@ -14850,6 +14903,7 @@ export async function executeLivePosition(
     }
 
     const existingEntryProtectionHalt = await client.get(entryProtectionHaltKey).catch(() => null)
+      || await isEntrySlotProtectionHalted(client, connectionId, realPosition.symbol, realPosition.direction)
     if (existingEntryProtectionHalt) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
