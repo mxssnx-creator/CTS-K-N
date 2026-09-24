@@ -14301,7 +14301,14 @@ export async function executeLivePosition(
       const previous = livePosition.leverage
       const { getConnection: _getConnLev } = await import("@/lib/redis-db")
       const connRecord = await _getConnLev(connectionId).catch(() => null)
-      const venueMax = getMaxLeverageForExchange(connRecord?.exchange)
+      // The venue's per-symbol maximum when it answers; the exchange-wide
+      // policy value only as a fallback.
+      const staticVenueMax = getMaxLeverageForExchange(connRecord?.exchange)
+      const symbolVenueMax = typeof (exchangeConnector as any)?.getSymbolMaxLeverage === "function"
+        ? await (exchangeConnector as any).getSymbolMaxLeverage(realPosition.symbol, realPosition.direction === "short" ? "short" : "long").catch(() => 0)
+        : 0
+      const venueMax = symbolVenueMax > 0 ? symbolVenueMax : staticVenueMax
+      ;(livePosition as any).venueMaxLeverage = venueMax
       // Per-connection ceiling. The policy stays "venue max" unless the
       // connection sets max_leverage, then min(venueMax, max_leverage) — so a
       // real-funds connection can run at a secure leverage while others keep
@@ -14599,8 +14606,13 @@ export async function executeLivePosition(
     // The volume calculator reports its own maximum; the connection's ceiling
     // must still hold, or the cap above would be undone before the order.
     {
+      // Policy is the venue maximum (per symbol when the venue answers), capped
+      // by the connection ceiling when one is set. The volume calculator
+      // reports its own exchange-wide maximum and must not undo either.
       const cap = Number((livePosition as any).leverageCap || 0)
-      if (cap > 0) livePosition.leverage = Math.max(1, Math.min(Number(livePosition.leverage) || cap, cap))
+      const venueMaxLeverage = Number((livePosition as any).venueMaxLeverage || 0)
+      if (venueMaxLeverage > 0) livePosition.leverage = cap > 0 ? Math.max(1, Math.min(venueMaxLeverage, cap)) : venueMaxLeverage
+      else if (cap > 0) livePosition.leverage = Math.max(1, Math.min(Number(livePosition.leverage) || cap, cap))
     }
     livePosition.requestedVolume = Number(volumeResult?.calculatedVolume) || 0
     livePosition.intendedNotionalUsd = Number(volumeResult?.intendedNotionalUsd) || 0

@@ -168,6 +168,7 @@ __tests__/unit/direction-fail-closed.test.ts
 __tests__/unit/directional-evaluation.test.ts
 __tests__/unit/dispatch-blocked-reasons-visible.test.ts
 __tests__/unit/distributed-engine-runtime.test.ts
+__tests__/unit/dynamic-venue-max-leverage.test.ts
 __tests__/unit/empty-book-own-fingerprint.test.ts
 __tests__/unit/engine-event-bus-regression.test.ts
 __tests__/unit/engine-progress-manager.test.ts

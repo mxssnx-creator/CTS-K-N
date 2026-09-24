@@ -42,6 +42,6 @@ describe("per-connection leverage ceiling", () => {
     expect(src).toContain("livePosition.leverage = connectionCap > 0 ? Math.max(1, Math.min(venueMax, connectionCap)) : venueMax")
     // ... and it survives the volume calculator, which reports its own maximum.
     const after = src.indexOf("livePosition.leverage = volumeResult?.leverage || livePosition.leverage")
-    expect(src.indexOf("if (cap > 0) livePosition.leverage = Math.max(1, Math.min(Number(livePosition.leverage) || cap, cap))", after)).toBeGreaterThan(after)
+    expect(src.indexOf("else if (cap > 0) livePosition.leverage = Math.max(1, Math.min(Number(livePosition.leverage) || cap, cap))", after)).toBeGreaterThan(after)
   })
 })
