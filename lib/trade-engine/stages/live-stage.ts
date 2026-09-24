@@ -1,3 +1,4 @@
+import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
 /**
@@ -8943,6 +8944,16 @@ function isTrailingStopTightening(
   return direction === "long" ? candidate >= existing : candidate <= existing
 }
 
+/**
+ * Smallest take profit that can still earn money: the platform round-trip cost
+ * plus a minimum net gain. Below this a filled take profit is a loss, which
+ * caps the achievable profit factor no matter how good the signal is.
+ */
+export const MINIMUM_NET_TAKE_PROFIT_PCT = 0.1
+export function minimumViableTakeProfitPct(): number {
+  return Number((roundTripCostPercent() + MINIMUM_NET_TAKE_PROFIT_PCT).toFixed(6))
+}
+
 function computeDesiredProtectionPrices(pos: LivePosition): {
   desiredSl: number
   desiredTp: number
@@ -8996,7 +9007,11 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     if (!Number.isFinite(desiredSl)) desiredSl = 0
   }
 
-  const rawTpPct = pos.takeProfit || 0
+  // A take profit below the round-trip cost is a guaranteed loss even when it
+  // WINS. Production on X01: TAKEUSDT TP 0.205 % and SPXUSDT TP 0.20 % against
+  // a 0.26 % round trip — every such win booked about -0.06 %. The target must
+  // clear the cost plus a minimum net gain; the stop is left untouched.
+  const rawTpPct = Math.max(Number(pos.takeProfit) || 0, minimumViableTakeProfitPct())
   // Guard: ensure takeProfit is numeric and non-negative before percentage calc
   const tpPct = Number.isFinite(rawTpPct) && rawTpPct > 0 ? (rawTpPct / 100) : 0
   const dcaTp = Number(pos.dcaTakeProfitPrice || 0)
