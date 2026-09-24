@@ -389,6 +389,7 @@ __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/site-logs-key.test.ts
+__tests__/unit/slot-entry-serialize.test.ts
 __tests__/unit/slot-scoped-halts.test.ts
 __tests__/unit/special-strategy.test.ts
 __tests__/unit/special-vst-validator-contract.test.ts

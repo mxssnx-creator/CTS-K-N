@@ -3640,6 +3640,14 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     await discardTransientLivePosition(client, position)
     return
   }
+  // A row that is no longer an active signal position releases its capacity
+  // reservation here, on EVERY exit path. Exits that set error / rejected /
+  // rolled-back / closed and just saved the row left their member in the
+  // durable capacity index: X02 leaked to 353/350 with 9 open rows and
+  // deferred every entry for hours.
+  if (position?.id && !isActiveSignalPosition(position as unknown as Record<string, unknown>)) {
+    await updateSignalAdmissionIndexes(client, position).catch(() => undefined)
+  }
   const keepDurable = async (key: string): Promise<void> => {
     const durableClient = client as any
     if (typeof durableClient.persist === "function") await durableClient.persist(key).catch(() => 0)
@@ -15118,6 +15126,28 @@ export async function executeLivePosition(
     }
     if (await abortSuperseded()) return livePosition
 
+    // One entry at a time per physical slot (symbol + direction), from the
+    // order to the post-entry audit. Two strategy lanes entered SOLUSDT long
+    // within milliseconds; each post-entry audit saw the OTHER entry's fresh
+    // SL/TP — not yet persisted on its row — as orphaned owned controls and
+    // rolled back (production: orphans = the sibling's sl/tp client ids,
+    // 'ownedRows=2' at admission). A second entry now waits for the next cycle.
+    const slotEntryLockKey = `live:slot-entry:${connectionId}:${normalizeProtectionSlotSymbol(realPosition.symbol)}:${realPosition.direction}`
+    const slotEntryLockToken = `${livePosition.id}:${Date.now()}`
+    const slotEntryClient = getRedisClient() as any
+    const slotEntryLocked = await slotEntryClient.set(slotEntryLockKey, slotEntryLockToken, { NX: true, PX: 60_000 }).catch(() => null)
+    if (!slotEntryLocked) {
+      livePosition.status = "rejected"
+      livePosition.statusReason = `Slot entry in progress for ${realPosition.symbol} ${realPosition.direction}; deferred so two entries never race their protection audits`
+      pushStep(livePosition, "slot_entry_serialized", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      return livePosition
+    }
+    const releaseSlotEntryLock = async (): Promise<void> => {
+      const holder = await slotEntryClient.get(slotEntryLockKey).catch(() => null)
+      if (holder === slotEntryLockToken) await slotEntryClient.del(slotEntryLockKey).catch(() => 0)
+    }
+
     // Persist the idempotency key before the request can leave this process.
     // A crash or response timeout can therefore recover the exact venue order
     // by clientOrderId instead of submitting a duplicate entry.
@@ -16406,6 +16436,7 @@ export async function executeLivePosition(
             ...(finalAdmission.violations || []),
           ],
         )
+        await releaseSlotEntryLock()
         return livePosition
       }
       await client.del(entryProtectionHaltKey).catch(() => 0)
@@ -16416,6 +16447,7 @@ export async function executeLivePosition(
         `rowControls=2; securityControls=1; ownedRows=${finalAdmission.audit.ownedExecutedRows}`,
       )
     }
+    await releaseSlotEntryLock()
 
     // ── ENTRY SUMMARY — one log line showing the complete entry state ────────
     // Operator can grep "[ENTRY]" to see every live position that went through
