@@ -2800,6 +2800,37 @@ export class BingXConnector extends BaseExchangeConnector {
     }
   }
 
+  private symbolMaxLeverageCache = new Map<string, { at: number; long: number; short: number }>()
+  /**
+   * The venue's maximum leverage for one symbol and side (GET
+   * /swap/v2/trade/leverage -> maxLongLeverage / maxShortLeverage), cached for
+   * an hour. BingX varies it per symbol — measured on X01: BTC 500x, SOL and
+   * LINK 300x, PENGU 125x — so one exchange-wide constant (150) set some
+   * symbols too low and others above what the venue accepts. Returns 0 when
+   * the venue does not answer; callers fall back to the static policy.
+   */
+  async getSymbolMaxLeverage(symbol: string, side: "long" | "short"): Promise<number> {
+    const key = String(symbol || "").toUpperCase()
+    const cached = this.symbolMaxLeverageCache.get(key)
+    if (cached && Date.now() - cached.at < 3_600_000) return side === "long" ? cached.long : cached.short
+    try {
+      const venueSymbol = key.includes("-") ? key : key.replace(/USDT$/, "-USDT")
+      const { signature, queryString } = this.signParams({ symbol: venueSymbol, timestamp: this.getTimestamp() })
+      const response = await fetch(`${this.getBaseUrl()}/openApi/swap/v2/trade/leverage?${queryString}&signature=${signature}`, {
+        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        signal: AbortSignal.timeout(8_000),
+      })
+      const json: any = await response.json().catch(() => null)
+      const long = Math.floor(Number(json?.data?.maxLongLeverage) || 0)
+      const short = Math.floor(Number(json?.data?.maxShortLeverage) || 0)
+      if (!(long > 0) && !(short > 0)) return 0
+      this.symbolMaxLeverageCache.set(key, { at: Date.now(), long, short })
+      return side === "long" ? long : short
+    } catch {
+      return 0
+    }
+  }
+
   async setLeverage(symbol: string, leverage: number): Promise<{ success: boolean; error?: string }> {
     // Leverage-set previously bypassed the shared FIFO/cooldown gate
     // entirely (see placeOrder). Join the same lane so it never fires into
