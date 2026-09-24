@@ -348,6 +348,7 @@ __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/realtime-cycle-phase-timing.test.ts
 __tests__/unit/realtime-rotation-progress.test.ts
 __tests__/unit/realtime-trailing-update.test.ts
+__tests__/unit/reconcile-respects-slot-entry.test.ts
 __tests__/unit/redis-connection-identity.test.ts
 __tests__/unit/redis-db-network-client.test.ts
 __tests__/unit/redis-db-write-budget.test.ts

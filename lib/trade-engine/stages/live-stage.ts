@@ -10973,6 +10973,7 @@ async function reconcileAggregateProtectionBook(
   exchangePositions: any[],
   liveOrderIds: Set<string> | null,
   mutationGuard?: () => void | Promise<void>,
+  options: { entryLockToken?: string } = {},
 ): Promise<AggregateProtectionBookResult> {
   const result: AggregateProtectionBookResult = {
     plans: [],
@@ -11111,6 +11112,25 @@ async function reconcileAggregateProtectionBook(
     const allSlotMembers = members
 
     if (result.pendingControlSlots?.has(plan.key)) continue
+    // While an entry runs on this slot (the per-slot entry lock from #482 is
+    // held), only that entry may arm protection. The background reconcilers
+    // armed a SECOND SL/TP/security set on the freshly filled row ~100 ms
+    // before the entry armed its own; the row kept one set and the post-entry
+    // audit rolled back on the other as "orphaned" (production: 1000BONKUSDT
+    // and SPXUSDT on X01 with ownedRows=0 — no sibling row at all).
+    {
+      const slotSymbol = members[0]?.symbol
+      const slotDirection = resolveLivePositionDirection(members[0] as LivePosition)
+      if (slotSymbol && slotDirection) {
+        const holder = await (getRedisClient() as any)
+          .get(`live:slot-entry:${connectionId}:${normalizeProtectionSlotSymbol(slotSymbol)}:${slotDirection}`)
+          .catch(() => null)
+        if (holder && holder !== options.entryLockToken) {
+          ;(result.pendingControlSlots ??= new Set()).add(plan.key)
+          continue
+        }
+      }
+    }
     if (!policy.available || liveOrderIds === null) {
       ;(result.pendingControlSlots ??= new Set()).add(plan.key)
       continue
@@ -16341,6 +16361,8 @@ export async function executeLivePosition(
           [...rowsById.values()],
           venueRows,
           orderIds,
+          undefined,
+          { entryLockToken: slotEntryLockToken },
         )
         const refreshed = await readLivePositionSnapshot(client, connectionId, livePosition.id)
         if (refreshed) Object.assign(livePosition, refreshed)
