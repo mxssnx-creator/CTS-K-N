@@ -359,6 +359,7 @@ __tests__/unit/redis-persistence-cleanup.test.ts
 __tests__/unit/redis-runtime-root.test.ts
 __tests__/unit/redis-secondary-indexes.test.ts
 __tests__/unit/redis-stats.test.ts
+__tests__/unit/release-entry-lock-on-early-exit.test.ts
 __tests__/unit/requested-regressions.test.ts
 __tests__/unit/reset-db-preserves-foreign-keys.test.ts
 __tests__/unit/retention-policy.test.ts
