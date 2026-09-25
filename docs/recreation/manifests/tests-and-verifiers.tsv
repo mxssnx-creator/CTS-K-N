@@ -86,6 +86,7 @@ unit	__tests__/unit/bots-cron-nonblocking.test.ts
 unit	__tests__/unit/bots-runner.test.ts
 unit	__tests__/unit/bounded-concurrency.test.ts
 unit	__tests__/unit/bybit-connector-contract.test.ts
+unit	__tests__/unit/cache-margin-leverage-setup.test.ts
 unit	__tests__/unit/canonical-pipeline-admission.test.ts
 unit	__tests__/unit/clear-progressions-recovery.test.ts
 unit	__tests__/unit/close-accounting-backfill.test.ts

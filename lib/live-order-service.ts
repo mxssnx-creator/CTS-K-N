@@ -2015,12 +2015,33 @@ export async function setupLiveOrderLeverage(connector: any, symbol: string, lev
  * while closing an existing position can be rejected by venues and must never
  * prevent a protective exit.
  */
+/**
+ * Margin type and leverage last CONFIRMED by the venue, per connector and
+ * symbol. Every admitted entry attempt used to send setMarginType AND
+ * setLeverage — two writes through the rate-limited venue lane — even when
+ * nothing had changed since the previous attempt. With thousands of attempts
+ * per cycle, the live-stage dispatch took 11-18 s per symbol on X01 and 320 s
+ * for one symbol on X02. A confirmed pair is reused for ten minutes; any
+ * change of values, a failure, or expiry sends it to the venue again.
+ */
+export const MARGIN_LEVERAGE_REUSE_MS = 10 * 60_000
+const confirmedMarginLeverage = new WeakMap<object, Map<string, { marginType: string; leverage: number; at: number }>>()
+export function __resetMarginLeverageCacheForTests(connector: object): void { confirmedMarginLeverage.delete(connector) }
+
 export async function setupLiveOrderMarginAndLeverage(
   connector: any,
   symbol: string,
   options: { marginType?: unknown; leverage?: unknown } = {},
 ): Promise<{ marginType: LiveOrderMarginType; marginConfigured: boolean; leverageConfigured: boolean }> {
   const marginType = normalizeLiveOrderMarginType(options.marginType)
+  const requestedLeverage = Math.max(1, Number(options.leverage) || 1)
+  const symbolKey = String(symbol || "").toUpperCase()
+  const cache = connector && typeof connector === "object" ? confirmedMarginLeverage.get(connector) : undefined
+  const confirmed = cache?.get(symbolKey)
+  if (confirmed && confirmed.marginType === marginType && confirmed.leverage === requestedLeverage
+    && Date.now() - confirmed.at < MARGIN_LEVERAGE_REUSE_MS) {
+    return { marginType, marginConfigured: true, leverageConfigured: true }
+  }
   let marginConfigured = false
   if (!connectorHasCapability(connector, "broker_managed_margin_leverage") && typeof connector?.setMarginType === "function") {
     const result = await connector.setMarginType(symbol, marginType)
@@ -2030,8 +2051,13 @@ export async function setupLiveOrderMarginAndLeverage(
     marginConfigured = true
   }
 
-  const leverage = Math.max(1, Number(options.leverage) || 1)
+  const leverage = requestedLeverage
   const leverageConfigured = await setupLiveOrderLeverage(connector, symbol, leverage)
+  if (leverageConfigured && connector && typeof connector === "object") {
+    const map = confirmedMarginLeverage.get(connector) || new Map()
+    map.set(symbolKey, { marginType, leverage, at: Date.now() })
+    confirmedMarginLeverage.set(connector, map)
+  }
   return { marginType, marginConfigured, leverageConfigured }
 }
 
