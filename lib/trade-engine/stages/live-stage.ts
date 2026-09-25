@@ -3649,6 +3649,20 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   if (position?.id && !isActiveSignalPosition(position as unknown as Record<string, unknown>)) {
     await updateSignalAdmissionIndexes(client, position).catch(() => undefined)
   }
+  // An entry that ends before any venue order exists (rejected, blocked, error,
+  // cancelled) releases its lane lock here. 34 early exits set such a status
+  // but only some released the 300 s lane lock: X01 held 118 and X02 1,121
+  // locks at once, and 5,031 entries were deferred as "Dedup lock held —
+  // another entry in flight" by entries that had long ended. The release is
+  // token-verified, so it can never free another worker's lock.
+  {
+    const endedStatus = String(position?.status || "").toLowerCase()
+    const token = String((position as any)?.liveLockToken || "")
+    const neverPlaced = !String(position?.orderId || "").trim() && !(Number(position?.executedQuantity || 0) > 0)
+    if (token && neverPlaced && ["rejected", "error", "blocked", "cancelled", "canceled"].includes(endedStatus)) {
+      await releaseLock(String(position.connectionId || ""), String(position.symbol || ""), liveLockDirection(position as any), token).catch(() => false)
+    }
+  }
   const keepDurable = async (key: string): Promise<void> => {
     const durableClient = client as any
     if (typeof durableClient.persist === "function") await durableClient.persist(key).catch(() => 0)
