@@ -2809,6 +2809,34 @@ export class BingXConnector extends BaseExchangeConnector {
    * symbols too low and others above what the venue accepts. Returns 0 when
    * the venue does not answer; callers fall back to the static policy.
    */
+  /**
+   * Closed venue positions for one symbol (GET /swap/v1/trade/positionHistory):
+   * open/close time, average entry and close price, realised and net profit.
+   * On the demo venue the order and fill history endpoints fail (109500) or
+   * return nothing, while this one answers — it is the only venue source for
+   * the exit price of a position that was closed by something other than our
+   * own orders (e.g. by hand). Returns [] on any failure.
+   */
+  async getPositionHistory(symbol: string, startTs: number, endTs: number): Promise<any[]> {
+    try {
+      const key = String(symbol || "").toUpperCase()
+      const venueSymbol = key.includes("-") ? key : key.replace(/USDT$/, "-USDT")
+      const { signature, queryString } = this.signParams({
+        symbol: venueSymbol, startTs: Math.floor(startTs), endTs: Math.floor(endTs), pageSize: 100, timestamp: this.getTimestamp(),
+      })
+      const response = await fetch(`${this.getBaseUrl()}/openApi/swap/v1/trade/positionHistory?${queryString}&signature=${signature}`, {
+        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+        signal: AbortSignal.timeout(10_000),
+      })
+      const json: any = await response.json().catch(() => null)
+      if (Number(json?.code) !== 0) return []
+      const rows = Array.isArray(json?.data) ? json.data : (json?.data?.positionHistory || json?.data?.rows || [])
+      return Array.isArray(rows) ? rows : []
+    } catch {
+      return []
+    }
+  }
+
   async getSymbolMaxLeverage(symbol: string, side: "long" | "short"): Promise<number> {
     const key = String(symbol || "").toUpperCase()
     const cached = this.symbolMaxLeverageCache.get(key)

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { applyCloseSettlement, closeOrderCandidates, needsDeferredCloseAccounting } from "@/lib/close-accounting-backfill"
+import { isManualCloseAtPrice, matchVenuePositionClose, normalizeVenuePositionHistory, venueCloseSettlement } from "@/lib/venue-position-close"
+import { MANUAL_CLOSE_SUPPRESS_SECONDS, manualCloseKeyOf } from "@/lib/trade-engine/stages/live-stage"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 55
@@ -28,15 +30,18 @@ export async function GET(request: Request) {
     // Cheap pre-filter: most rows never filled or are already settled.
     // The Redis wrapper has hget but no hmget: an hmget call would throw, the
     // catch would yield nothing, and every row would be skipped silently.
-    const [status, executed, settledAt, closeOrderId, exchangeData] = await Promise.all(
-      ["status", "executedQuantity", "closeAccountingSettledAt", "closeOrderId", "exchangeData"].map((f) => client.hget(key, f).catch(() => null)),
+    const [status, executed, settledAt, closeOrderId, exchangeData, closeReason] = await Promise.all(
+      ["status", "executedQuantity", "closeAccountingSettledAt", "closeOrderId", "exchangeData", "closeReason"].map((f) => client.hget(key, f).catch(() => null)),
     )
+    const externallyClosed = String(closeReason || "") === "exchange_externally_closed"
     if (status !== "closed" || !(Number(executed || 0) > 0) || settledAt) continue
     // Only rows that carry SOME own closing identity can ever be settled. The
     // first production runs spent all 250 attempts on old rows with neither a
     // close order id nor a tracked close-side client id — settled 0 — while
     // settleable rows waited. Such rows now cost no attempt and no lock.
-    if (!String(closeOrderId || "").trim() && !/"kind":"(system_close|stop_loss|take_profit|security_stop)"/.test(String(exchangeData || ""))) continue
+    // An externally closed row has no own closing order by definition; it is
+    // settled from the venue's position history below.
+    if (!externallyClosed && !String(closeOrderId || "").trim() && !/"kind":"(system_close|stop_loss|take_profit|security_stop)"/.test(String(exchangeData || ""))) continue
     const row: any = await client.hgetall(key).catch(() => null)
     if (!row) continue
     for (const f of ["exchangeData"]) { try { if (typeof row[f] === "string") row[f] = JSON.parse(row[f]) } catch { /* keep */ } }
@@ -62,6 +67,37 @@ export async function GET(request: Request) {
           closeAccountingSettledAt: String(row.closeAccountingSettledAt),
         })
         settled++; done = true; break
+      }
+    }
+    if (!done && externallyClosed && typeof connector.getPositionHistory === "function") {
+      // No own closing order: the venue's position history is the only source
+      // of this row's exit. Used only for an unambiguous match.
+      const closes = normalizeVenuePositionHistory(
+        await connector.getPositionHistory(row.symbol, Number(row.createdAt || Date.now()) - 3_600_000, Date.now()).catch(() => []),
+      )
+      const match = matchVenuePositionClose(row, closes)
+      if (match && applyCloseSettlement(row, venueCloseSettlement(row, match), `venue-position:${match.positionId}`)) {
+        const manual = isManualCloseAtPrice(row, match.avgClosePrice)
+        await client.hset(key, {
+          closePrice: String(row.closePrice), exitPrice: String(row.exitPrice), closeOrderId: row.closeOrderId,
+          realizedPnlGross: String(row.realizedPnlGross), tradingFees: String(row.tradingFees), realizedPnL: String(row.realizedPnL),
+          realizedPnlComplete: "true", pnlAccountingComplete: "true", realizedPnlSource: "venue_position_history",
+          closeAccountingSettledAt: String(row.closeAccountingSettledAt),
+          ...(manual === true ? { closedManually: "true" } : {}),
+        })
+        // Resolve the provisional no-reopen marker set at the close: a manual
+        // close keeps the signal closed for a week, a close at one of our own
+        // triggers releases it.
+        const realPositionId = String(row.realPositionId || "")
+        if (realPositionId) {
+          const markerKey = manualCloseKeyOf(connectionId, realPositionId)
+          if (manual === true) {
+            await client.set(markerKey, JSON.stringify({ at: Date.now(), positionId: row.id, source: "venue_position_history", exit: match.avgClosePrice }), { EX: MANUAL_CLOSE_SUPPRESS_SECONDS }).catch(() => undefined)
+          } else if (manual === false) {
+            await client.del(markerKey).catch(() => 0)
+          }
+        }
+        settled++; done = true
       }
     }
     if (!done) skipped++
