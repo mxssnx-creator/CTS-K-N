@@ -21539,6 +21539,17 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         }
 
         const key = `live:position:${position.id}`
+        // Never recreate the mirror of a row that no longer exists. The sync
+        // worked from a stale in-memory copy: when the canonical row had been
+        // discarded meanwhile (an entry that never reached the venue), this
+        // write resurrected its mirror as a permanent 'pending' entry with no
+        // expiry — X02 accumulated 18,256 of them, and the overviews listed
+        // them as pending positions for days.
+        const canonicalExists = await client.exists?.(`live_positions:${position.connectionId || connectionId}:${position.id}`).catch(() => 1)
+        if (!canonicalExists) {
+          await client.del(key).catch(() => 0)
+          return
+        }
         const terminalRetentionSeconds = liveRetentionSecondsForStatus(position.status)
         await client.set(
           key,
