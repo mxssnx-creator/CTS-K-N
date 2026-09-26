@@ -3637,10 +3637,6 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   // saving so Redis checks the stored status/version atomically.
   const { getRedisClient } = await import("@/lib/redis-db")
   const client = getRedisClient()
-  if (!shouldPersistCanonicalLivePosition(position as unknown as Record<string, any>)) {
-    await discardTransientLivePosition(client, position)
-    return
-  }
   // A row that is no longer an active signal position releases its capacity
   // reservation here, on EVERY exit path. Exits that set error / rejected /
   // rolled-back / closed and just saved the row left their member in the
@@ -3649,6 +3645,9 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
   if (position?.id && !isActiveSignalPosition(position as unknown as Record<string, unknown>)) {
     await updateSignalAdmissionIndexes(client, position).catch(() => undefined)
   }
+  // Runs BEFORE the transient discard below: rows that never reached the venue
+  // are exactly the ones discarded without persisting, and returning first
+  // left their lane locks held (X02 accumulated 2,975 of them).
   // An entry that ends before any venue order exists (rejected, blocked, error,
   // cancelled) releases its lane lock here. 34 early exits set such a status
   // but only some released the 300 s lane lock: X01 held 118 and X02 1,121
@@ -3662,6 +3661,10 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
     if (token && neverPlaced && ["rejected", "error", "blocked", "cancelled", "canceled"].includes(endedStatus)) {
       await releaseLock(String(position.connectionId || ""), String(position.symbol || ""), liveLockDirection(position as any), token).catch(() => false)
     }
+  }
+  if (!shouldPersistCanonicalLivePosition(position as unknown as Record<string, any>)) {
+    await discardTransientLivePosition(client, position)
+    return
   }
   const keepDurable = async (key: string): Promise<void> => {
     const durableClient = client as any
