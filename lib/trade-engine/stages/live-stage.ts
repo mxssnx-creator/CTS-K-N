@@ -10533,6 +10533,8 @@ function securityStopPriceRearmDeferred(
  * NEW signal — also on the same symbol and direction — still trades.
  */
 export const MANUAL_CLOSE_SUPPRESS_SECONDS = 7 * 24 * 60 * 60
+/** How long an externally closed signal is held back until its close is classified. */
+export const PROVISIONAL_EXTERNAL_CLOSE_HOLD_SECONDS = 10 * 60
 export function manualCloseKeyOf(connectionId: string, realPositionId: string): string {
   return `live:manual-close:${connectionId}:${realPositionId}`
 }
@@ -21263,6 +21265,18 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             pushStep(position, "manual_close_detected", true,
               "closed on the exchange by someone else (own stop/take profit/security still open); own controls cancelled; this signal is not reopened")
             await savePosition(position).catch(() => {})
+          } else if (position.realPositionId) {
+            // Usually undecidable here: the aggregate reconcile has already
+            // cancelled the controls and cleared their ids by now. Hold the
+            // signal back provisionally; the deferred accounting settles the
+            // close from the venue's position history within minutes and then
+            // keeps the block (manual close) or lifts it (own trigger). If it
+            // cannot decide, the hold simply expires — today's behaviour.
+            await client.set(
+              manualCloseKeyOf(connectionId, String(position.realPositionId)),
+              JSON.stringify({ at: Date.now(), positionId: position.id, provisional: true }),
+              { NX: true, EX: PROVISIONAL_EXTERNAL_CLOSE_HOLD_SECONDS },
+            ).catch(() => null)
           }
           try {
             await closeLivePosition(

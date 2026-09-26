@@ -463,6 +463,7 @@ __tests__/unit/truthful-dispatch-reasons.test.ts
 __tests__/unit/unplaced-rows-not-exposure.test.ts
 __tests__/unit/unsubmitted-live-retention.test.ts
 __tests__/unit/validate-only-measured-sets.test.ts
+__tests__/unit/venue-position-close.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
 __tests__/unit/x02-slot-protection-operator.test.ts
@@ -1660,6 +1661,7 @@ lib/use-websocket.ts
 lib/user-connections-config.ts
 lib/utils.ts
 lib/validation-guards.ts
+lib/venue-position-close.ts
 lib/volume-calculator.ts
 lib/websocket-data-loader.ts
 lib/websocket-server.ts
