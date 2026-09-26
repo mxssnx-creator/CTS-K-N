@@ -7480,12 +7480,38 @@ function reconcileExchangeQuantityLedger(
   return true
 }
 
+/** Executed quantity held by the OTHER active own rows on this row's physical slot. */
+async function ownSiblingSlotQuantity(position: LivePosition): Promise<number> {
+  const connectionId = String(position.connectionId || "")
+  const direction = resolveLivePositionDirection(position)
+  if (!connectionId || !direction) return 0
+  const slot = aggregateProtectionSlot(position.symbol, direction)
+  const rows = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+  let total = 0
+  for (const row of rows) {
+    if (String(row.id) === String(position.id)) continue
+    if (!isExactSystemPositionOwner(row as any, connectionId)) continue
+    if (!["open", "filled", "partially_filled", "closing_partial"].includes(String(row.status || "").toLowerCase())) continue
+    const rowDirection = resolveLivePositionDirection(row)
+    if (!rowDirection || aggregateProtectionSlot(row.symbol, rowDirection) !== slot) continue
+    total += Math.max(0, Number(row.executedQuantity || 0))
+  }
+  return total
+}
+
 async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
-  exchangeQuantity: number,
+  slotExchangeQuantity: number,
   exchangeEntryPrice: number,
 ): Promise<boolean> {
-  if (!Number.isFinite(exchangeQuantity) || exchangeQuantity < 0) return false
+  if (!Number.isFinite(slotExchangeQuantity) || slotExchangeQuantity < 0) return false
+  // The venue reports ONE quantity per physical slot. Every caller passed that
+  // whole slot quantity for a single row, so a row absorbed its own siblings'
+  // fills: BCHUSDT short on X02 — row 0.73 was reconciled to 0.76 ("venue
+  // quantity gap 0.03") while two sibling rows already held those 0.02 + 0.01,
+  // so the book claimed 0.79 against 0.76 on the venue. The row's share is the
+  // slot quantity minus what the OTHER own rows on the slot hold.
+  const exchangeQuantity = Math.max(0, slotExchangeQuantity - await ownSiblingSlotQuantity(position))
   const repairedPriceDomain = repairLiveEntryPriceDomain(position, exchangeEntryPrice)
   const direction = resolveLivePositionDirection(position)
   if (!direction) {

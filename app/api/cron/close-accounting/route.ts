@@ -23,10 +23,19 @@ export async function GET(request: Request) {
   if (!connector?.getOrderSettlement) return NextResponse.json({ ok: false, error: "no settling connector" }, { status: 503 })
   const started = Date.now()
   let scanned = 0, attempted = 0, settled = 0, skipped = 0
-  const keys: string[] = await client.keys(`live_positions:${connectionId}:*`).catch(() => [])
+  const allKeys: string[] = ((await client.keys(`live_positions:${connectionId}:*`).catch(() => [])) as string[]).slice().sort()
+  // Resume where the previous run stopped. Every run used to start at the
+  // first key; within its 40 s budget it reached ~1,000 of X02's several
+  // thousand rows, so every row further back was never settled (e.g. the
+  // manually closed WLDUSDT test row, although fully settleable).
+  const cursorKey = `close-accounting:cursor:${connectionId}`
+  const startAt = Math.max(0, Math.floor(Number(await client.get(cursorKey).catch(() => 0)) || 0)) % Math.max(1, allKeys.length)
+  const keys = [...allKeys.slice(startAt), ...allKeys.slice(0, startAt)]
+  let visited = 0
   for (const key of keys) {
     if (attempted >= PER_RUN || Date.now() - started > 40_000) break
     scanned++
+    visited++
     // Cheap pre-filter: most rows never filled or are already settled.
     // The Redis wrapper has hget but no hmget: an hmget call would throw, the
     // catch would yield nothing, and every row would be skipped silently.
@@ -102,6 +111,8 @@ export async function GET(request: Request) {
     }
     if (!done) skipped++
   }
-  return NextResponse.json({ ok: true, connectionId, scanned, attempted, settled, skipped, durationMs: Date.now() - started })
+  const nextCursor = allKeys.length > 0 ? (startAt + visited) % allKeys.length : 0
+  await client.set(cursorKey, String(nextCursor)).catch(() => undefined)
+  return NextResponse.json({ ok: true, connectionId, scanned, attempted, settled, skipped, cursor: { from: startAt, next: nextCursor, total: allKeys.length }, durationMs: Date.now() - started })
 }
 export const POST = GET
