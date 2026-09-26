@@ -68,7 +68,13 @@ function round2(n: number): number {
 }
 
 function buildStats(positions: any[]): TradeStats {
-  const closed = positions.filter((p) => String(p?.status || "").trim().toLowerCase() === "closed")
+  // Only closed rows that actually traded. A row that never filled and was
+  // closed by cleanup carried PnL 0 and counted as a break-even trade: 192 of
+  // 194 "settled" trades on X02 were such rows. Open rows already required a
+  // real execution; closed rows now do too.
+  const closed = positions.filter((p) =>
+    String(p?.status || "").trim().toLowerCase() === "closed" && isExecutedRealExchangePosition(p),
+  )
   // Rejected/cancelled/error rows are terminal outcomes, not current market
   // exposure. Counting every non-closed record as open inflated live PnL.
   const open = positions.filter((p) =>
@@ -146,7 +152,7 @@ export async function GET(request: Request) {
 
     const realPositions = positions.filter(isRealExchangePosition)
     const closedPositions = realPositions
-      .filter((position) => String(position?.status || "").trim().toLowerCase() === "closed")
+      .filter((position) => String(position?.status || "").trim().toLowerCase() === "closed" && isExecutedRealExchangePosition(position))
       .sort((left, right) => lifecycleTimestamp(right) - lifecycleTimestamp(left))
     const openPositions = realPositions.filter((position) =>
       isLiveOpenStatus(position?.status) && isExecutedRealExchangePosition(position),

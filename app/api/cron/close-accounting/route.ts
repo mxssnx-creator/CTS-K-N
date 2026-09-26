@@ -111,8 +111,29 @@ export async function GET(request: Request) {
     }
     if (!done) skipped++
   }
+  // Orphaned compatibility mirrors: live:position:<id> left behind for an
+  // entry that never reached the venue and whose canonical row is gone. They
+  // never expire and the overviews listed them as pending for days (18,256 on
+  // X02). Only mirrors that provably never traded are removed: no canonical
+  // row, status still pre-fill, no fill, no order id, older than ten minutes.
+  let orphanMirrorsRemoved = 0
+  const mirrorKeys: string[] = ((await client.keys(`live:position:live:${connectionId}:*`).catch(() => [])) as string[])
+  for (const mirrorKey of mirrorKeys) {
+    if (orphanMirrorsRemoved >= 300 || Date.now() - started > 55_000) break
+    const positionId = mirrorKey.slice("live:position:".length)
+    if (await client.exists(`live_positions:${connectionId}:${positionId}`).catch(() => 1)) continue
+    let mirror: any = {}
+    try { mirror = JSON.parse(String((await client.get(mirrorKey).catch(() => null)) || "{}")) } catch { continue }
+    if (!["pending", "placed", "pending_fill", "placed_unconfirmed"].includes(String(mirror?.status || "").toLowerCase())) continue
+    if (Number(mirror?.executedQuantity || 0) > 0 || String(mirror?.orderId || "").trim()) continue
+    const createdAt = Number(mirror?.createdAt || 0)
+    if (createdAt > 0 && Date.now() - createdAt < 10 * 60_000) continue
+    await client.del(mirrorKey).catch(() => 0)
+    if (typeof client.lrem === "function") await client.lrem(`live:positions:${connectionId}`, 0, positionId).catch(() => 0)
+    orphanMirrorsRemoved++
+  }
   const nextCursor = allKeys.length > 0 ? (startAt + visited) % allKeys.length : 0
   await client.set(cursorKey, String(nextCursor)).catch(() => undefined)
-  return NextResponse.json({ ok: true, connectionId, scanned, attempted, settled, skipped, cursor: { from: startAt, next: nextCursor, total: allKeys.length }, durationMs: Date.now() - started })
+  return NextResponse.json({ ok: true, connectionId, scanned, attempted, settled, skipped, cursor: { from: startAt, next: nextCursor, total: allKeys.length }, orphanMirrorsRemoved, durationMs: Date.now() - started })
 }
 export const POST = GET

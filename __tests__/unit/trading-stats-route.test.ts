@@ -108,6 +108,7 @@ describe("trading statistics route", () => {
       {
         id: "transition",
         status: " CLOSED ",
+        executedQuantity: 1,
         executionMode: "live",
         symbol: "BTCUSDT",
         realizedPnL: 2,
@@ -116,6 +117,7 @@ describe("trading statistics route", () => {
       {
         id: "loss",
         status: "closed",
+        executedQuantity: 1,
         executionMode: "live",
         symbol: "BTCUSDT",
         realizedPnL: -1,
@@ -124,6 +126,7 @@ describe("trading statistics route", () => {
       {
         id: "break-even",
         status: "closed",
+        executedQuantity: 1,
         executionMode: "live",
         symbol: "BTCUSDT",
         realizedPnL: 0,
@@ -132,6 +135,7 @@ describe("trading statistics route", () => {
       {
         id: "pending",
         status: "closed",
+        executedQuantity: 1,
         executionMode: "live",
         symbol: "BTCUSDT",
         pnlAccountingComplete: false,
@@ -141,6 +145,7 @@ describe("trading statistics route", () => {
       {
         id: "missing",
         status: "closed",
+        executedQuantity: 1,
         executionMode: "live",
         symbol: "BTCUSDT",
         closedAt: "2026-08-26T08:00:00.000Z",
@@ -178,6 +183,7 @@ describe("trading statistics route", () => {
     mockGetClosedLivePositions.mockResolvedValue([{
       id: "only-win",
       status: "closed",
+      executedQuantity: 1,
       executionMode: "live",
       realizedPnL: 7,
       closedAt: Date.now(),
