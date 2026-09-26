@@ -12201,11 +12201,21 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
     )
     if (venueRows.length !== 1) {
       violations.push("owned_slot_venue_cardinality_mismatch")
+      // Attribute before 'continue' — otherwise the fail-safe counts this slot
+      // violation as connection-level and halts every symbol (X02 was halted
+      // for 24 h this way after #487).
+      offendingSlots.add(memberSlotKey)
+      attributedOuterViolations += 1
       continue
     }
     const plan = buildExactProtectionSlotPlan(members, venueRows[0])
     if (!plan || !plan.ownershipMatches || !(plan.securityStopPrice > 0)) {
       violations.push("owned_slot_aggregate_plan_invalid")
+      // Attribute before 'continue' — otherwise the fail-safe counts this slot
+      // violation as connection-level and halts every symbol (X02 was halted
+      // for 24 h this way after #487).
+      offendingSlots.add(memberSlotKey)
+      attributedOuterViolations += 1
       continue
     }
     const slotAudit = auditProtectionSlotOrders({

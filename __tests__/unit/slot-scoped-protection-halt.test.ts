@@ -41,4 +41,14 @@ describe("genuine halts are scoped to their slots and enforced per entry", () =>
   test("both entry-path checks consult the connection halt AND this entry's slot halt", () => {
     expect((src.match(/isEntrySlotProtectionHalted\(client, connectionId, realPosition\.symbol, realPosition\.direction\)/g) || []).length).toBe(2)
   })
+
+  test("slot violations that end in 'continue' are still attributed to their slot", () => {
+    for (const code of ["owned_slot_venue_cardinality_mismatch", "owned_slot_aggregate_plan_invalid"]) {
+      const at = src.indexOf(`violations.push("${code}")`)
+      const next = src.indexOf("\n      continue\n", at)
+      const attributed = src.indexOf("offendingSlots.add(memberSlotKey)", at)
+      expect(attributed).toBeGreaterThan(at)
+      expect(attributed).toBeLessThan(next)
+    }
+  })
 })
