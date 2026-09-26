@@ -10526,6 +10526,34 @@ function securityStopPriceRearmDeferred(
   return now - armedAt < SECURITY_STOP_PRICE_REARM_MS
 }
 
+/**
+ * A position the operator closed by hand (on the exchange, not by our own
+ * stop / take profit / security / system close) is not reopened from the SAME
+ * signal. Keyed by the Real-stage position the live row came from, so every
+ * NEW signal — also on the same symbol and direction — still trades.
+ */
+export const MANUAL_CLOSE_SUPPRESS_SECONDS = 7 * 24 * 60 * 60
+export function manualCloseKeyOf(connectionId: string, realPositionId: string): string {
+  return `live:manual-close:${connectionId}:${realPositionId}`
+}
+/**
+ * Manual when the venue no longer holds the position although EVERY own
+ * control order of the row is still open: had our stop, take profit or
+ * security stop closed it, that order would have filled and left the open
+ * set. Unknown cases (no control ids, open orders unreadable) are NOT treated
+ * as manual — they keep today's behaviour.
+ */
+export function isManualCloseByOwnControlsStillOpen(
+  position: Pick<LivePosition, "stopLossOrderId" | "takeProfitOrderId">,
+  liveOrderIds: { has(id: string): boolean } | null,
+): boolean {
+  if (!liveOrderIds) return false
+  const ownControlIds = [position.stopLossOrderId, position.takeProfitOrderId, (position as any).securityStopOrderId]
+    .map((id) => String(id || "").trim())
+    .filter(Boolean)
+  return ownControlIds.length > 0 && ownControlIds.every((id) => liveOrderIds.has(id))
+}
+
 async function cancelSlotOwnedControls(
   connector: any,
   position: LivePosition,
@@ -13774,6 +13802,19 @@ export async function executeLivePosition(
     //
     // This is the only writer of `live:lock:{conn}:{sym}:{dir}` on the
     // critical path, so the race window is closed at its source.
+    // Not reopened: the operator closed the position this signal produced.
+    if (isLiveTradeEnabled && realPosition?.id) {
+      const manualClosed = await (getRedisClient() as any)
+        .get(manualCloseKeyOf(connectionId, String(realPosition.id)))
+        .catch(() => null)
+      if (manualClosed) {
+        livePosition.status = "rejected"
+        livePosition.statusReason = `Closed manually on the exchange; signal ${realPosition.id} is not reopened (new signals still trade)`
+        pushStep(livePosition, "manual_close_not_reopened", false, livePosition.statusReason)
+        await savePosition(livePosition)
+        return livePosition
+      }
+    }
     if (isLiveTradeEnabled) {
       // ── Variant-specific lock key ─��──────────────────────────────────��───
       // Block add-on orders MUST be able to proceed even when the default/
@@ -21205,6 +21246,24 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           // exchange (SL/TP triggered), so the 2×35s exchange-close retry
           // inside closeLivePosition is guaranteed to either fail or be a
           // no-op. Skipping it keeps sync-done latency under 30s vs 70s+.
+          // Closed by hand on the exchange? Then our own controls are still
+          // resting there: cancel them (a stranded stop or take profit could
+          // otherwise act on a later position), remember the signal so it is
+          // not reopened, and record it. The close below books as usual.
+          if (isManualCloseByOwnControlsStillOpen(position, liveOrderIdsSync)) {
+            await cancelSlotOwnedControls(exchangeConnector, position, true, "ManualCloseCleanup").catch(() => false)
+            if (position.realPositionId) {
+              await client.setex(
+                manualCloseKeyOf(connectionId, String(position.realPositionId)),
+                MANUAL_CLOSE_SUPPRESS_SECONDS,
+                JSON.stringify({ at: Date.now(), positionId: position.id, symbol: position.symbol, direction: position.direction }),
+              ).catch(() => {})
+            }
+            ;(position as any).closedManually = true
+            pushStep(position, "manual_close_detected", true,
+              "closed on the exchange by someone else (own stop/take profit/security still open); own controls cancelled; this signal is not reopened")
+            await savePosition(position).catch(() => {})
+          }
           try {
             await closeLivePosition(
               connectionId,
