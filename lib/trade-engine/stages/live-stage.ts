@@ -10559,6 +10559,8 @@ function securityStopPriceRearmDeferred(
  * NEW signal — also on the same symbol and direction — still trades.
  */
 export const MANUAL_CLOSE_SUPPRESS_SECONDS = 7 * 24 * 60 * 60
+/** A system close whose phase has not moved for this long is driven again by the sync. */
+export const SYSTEM_CLOSE_RESUME_AFTER_MS = 60_000
 /** How long an externally closed signal is held back until its close is classified. */
 export const PROVISIONAL_EXTERNAL_CLOSE_HOLD_SECONDS = 10 * 60
 export function manualCloseKeyOf(connectionId: string, realPositionId: string): string {
@@ -20603,6 +20605,31 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     // window without ever deleting a row that could represent a submitted
     // order, and it keeps foreign venue state completely outside the write
     // set. The same guard is deliberately retained in every future tick.
+    // Resume stalled system closes. The control barrier runs only inside
+    // closeLivePosition; when its first pass answered "wait", the action was
+    // persisted and nothing ever called the close again. On X01 (mainnet) a
+    // SOLUSDT rollback sat in control_wait for over an hour — the position
+    // stayed open at 300x without its stop loss, and the unattributable
+    // "owned_quantity_mutation_pending" re-armed a 24 h connection halt.
+    // closeLivePosition reuses the pending action (same token), so a resume
+    // continues it instead of starting a second close.
+    {
+      const stalledCloses = allOpen
+        .filter((row: any) => row?.pendingSystemAction
+          && Date.now() - Number(row.pendingSystemAction.updatedAt || row.pendingSystemAction.startedAt || 0) > SYSTEM_CLOSE_RESUME_AFTER_MS)
+        .slice(0, 3)
+      for (const row of stalledCloses as any[]) {
+        const gate = await client.set(`live:system-close-resume:${connectionId}:${row.id}`, String(Date.now()), { NX: true, EX: 60 }).catch(() => null)
+        if (!gate) continue
+        await closeLivePosition(
+          connectionId,
+          row.id,
+          Number(row.exchangeData?.markPrice || row.averageExecutionPrice || row.entryPrice || 0),
+          exchangeConnector,
+          String(row.pendingSystemAction?.reason || "system_close_resume"),
+        ).catch(() => undefined)
+      }
+    }
     if (exchangePositionsSnapshotOk && liveOrderIdsSync !== null) {
       const stalePending = allOpen.filter((position) =>
         isSystemTrackedLivePosition(position, connectionId)
