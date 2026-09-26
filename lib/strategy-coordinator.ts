@@ -10088,6 +10088,19 @@ export class StrategyCoordinator {
                 [`s:${symbol}:dispatch_filled_count`]: String(filled),
                 [`s:${symbol}:dispatch_pending_count`]: String(pending),
                 [`s:${symbol}:dispatch_blocked_count`]: String(blocked),
+                // The failure reason was written only by the connection-halt
+                // path and never cleared, so after a halt ended every symbol
+                // still reported "entry_protection_halt" while the real block
+                // (e.g. an empty account's zero exposure ceiling) was hidden.
+                // A normal dispatch clears it and stores its OWN reasons per
+                // symbol — the unprefixed field is overwritten by each symbol.
+                [`s:${symbol}:dispatch_failure_reason`]: "",
+                [`s:${symbol}:dispatch_blocked_reasons`]: JSON.stringify(
+                  [...blockedReasons.entries()]
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .slice(0, 4)
+                    .map(([key, value]) => ({ reason: String(key).slice(0, 400), count: value.count })),
+                ),
                 [`s:${symbol}:dispatch_deferred_count`]: String(deferred),
                 [`s:${symbol}:dispatch_rejected_count`]: String(rejected),
                 [`s:${symbol}:dispatch_errored_count`]: String(errored),
