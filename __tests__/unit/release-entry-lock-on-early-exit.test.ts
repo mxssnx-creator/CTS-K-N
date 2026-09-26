@@ -12,4 +12,17 @@ describe("an entry that ends before any venue order releases its lane lock", () 
     const rel = src.slice(src.indexOf("async function releaseLock("), src.indexOf("async function releaseLock(") + 700)
     expect(rel).toContain("evalLockLua(client, RELEASE_LOCK_LUA, key, [token])")
   })
+
+  test("the release runs before a transient row is discarded, so unpersisted exits release too", () => {
+    const save = src.slice(src.indexOf("async function savePosition("), src.indexOf("async function savePosition(") + 5000)
+    const release = save.indexOf("await releaseLock(")
+    const discard = save.indexOf("await discardTransientLivePosition(client, position)")
+    expect(release).toBeGreaterThan(0)
+    expect(release).toBeLessThan(discard)
+  })
+
+  test("the capacity release also runs before a transient row is discarded", () => {
+    const save = src.slice(src.indexOf("async function savePosition("), src.indexOf("async function savePosition(") + 6000)
+    expect(save.indexOf("await updateSignalAdmissionIndexes(client, position)")).toBeLessThan(save.indexOf("await discardTransientLivePosition(client, position)"))
+  })
 })

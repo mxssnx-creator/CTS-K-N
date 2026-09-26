@@ -16,7 +16,7 @@ describe("one entry at a time per physical slot", () => {
 })
 describe("capacity reservations are released on every exit path", () => {
   test("saving a row that is no longer active removes it from the capacity index", () => {
-    const fn = src.slice(src.indexOf("async function savePosition("), src.indexOf("async function savePosition(") + 1500)
+    const fn = src.slice(src.indexOf("async function savePosition("), src.indexOf("async function savePosition(") + 6000)
     expect(fn).toContain("if (position?.id && !isActiveSignalPosition(position as unknown as Record<string, unknown>)) {")
     expect(fn).toContain("await updateSignalAdmissionIndexes(client, position)")
   })
