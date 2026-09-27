@@ -5,6 +5,7 @@ import {
 import { marginCallIsBreached, marginCallPercent } from "@/lib/margin-call-policy"
 import { SimulatedConnector } from "@/lib/exchange-connectors/simulated-connector"
 import { getRedisBackend } from "@/lib/redis-db"
+import { clientOrderSystemTypePrefix } from "@/lib/system-order-ownership"
 
 const mockValues = new Map<string, string>()
 const mockHashes = new Map<string, Record<string, string>>()
@@ -39,6 +40,29 @@ jest.mock("@/lib/redis-db", () => ({
 }))
 jest.mock("@/lib/events/emitter", () => ({ emitCanonicalEvent: jest.fn() }))
 
+// System lifecycle rows per connection; closeLivePosition is the only close path.
+const mockRows = new Map<string, any[]>()
+const mockLive = { closeFails: false, closes: [] as string[] }
+jest.mock("@/lib/trade-engine/stages/live-stage", () => ({
+  getLivePositions: jest.fn(async (id: string) => (mockRows.get(id) ?? []).map((row) => ({ ...row }))),
+  closeLivePosition: jest.fn(async (id: string, rowId: string) => {
+    mockLive.closes.push(`${id}:${rowId}`)
+    const row = (mockRows.get(id) ?? []).find((r) => r.id === rowId)
+    if (!row) return null
+    if (mockLive.closeFails) return { ...row }
+    row.status = "closed"
+    return { ...row }
+  }),
+}))
+
+function ownRow(connectionId: string, id: string, symbol = "BTCUSDT", direction = "long") {
+  return { id, connectionId, symbol, direction, status: "open", executedQuantity: 1,
+    system_tracking_id: `sys-${connectionId}-${id}`, connection_tracking_id: `conn-${connectionId}` }
+}
+function ownId(connectionId: string, tail: string) {
+  return `${clientOrderSystemTypePrefix(connectionId, "main")}${tail}`
+}
+
 function account(initialEquity = 1_000) {
   const state = { equity: initialEquity, rows: [] as any[], orders: [] as any[], healthy: true, closeFails: false }
   const operations: string[] = []
@@ -66,6 +90,7 @@ function account(initialEquity = 1_000) {
 beforeEach(() => {
   mockValues.clear(); mockHashes.clear(); mockLists.clear(); jest.clearAllMocks()
   mockPersist.mockResolvedValue(true)
+  mockRows.clear(); mockLive.closeFails = false; mockLive.closes = []
   jest.mocked(getRedisBackend).mockReturnValue("inline-local")
 })
 
@@ -94,35 +119,63 @@ test("isolates connection thresholds, sessions, triggers and close actions", asy
   await saveMarginCallSettings("b", 70)
   await Promise.all([assertMarginCallEntryAllowed("a", a.connector), assertMarginCallEntryAllowed("b", b.connector)])
   a.state.equity = 350; b.state.equity = 1_200
-  b.state.rows = [{ symbol: "ETHUSDT", positionSide: "SHORT", positionAmt: 1 }]
+  mockRows.set("a", [ownRow("a", "ra")])
+  mockRows.set("b", [ownRow("b", "rb", "ETHUSDT", "short")])
   await Promise.all([
     monitorConnectionMarginCall("a", a.connector, { force: true }),
     monitorConnectionMarginCall("b", b.connector, { force: true }),
   ])
   expect((await getMarginCallSnapshot("a")).session?.status).toBe("active")
   expect((await getMarginCallSnapshot("b")).session?.status).toBe("closed")
+  expect(mockLive.closes).toEqual(["b:rb"])
   expect(a.connector.closePosition).not.toHaveBeenCalled()
-  expect(b.connector.closePosition).toHaveBeenCalledWith("ETHUSDT", "short")
+  expect(b.connector.closePosition).not.toHaveBeenCalled()
 })
 
-test("closes every direction and symbol, cancels entries first and retains protection until flat", async () => {
+test("closes every own row, cancels own entries first and retains own protection until own exposure is flat", async () => {
   const { connector, state, operations } = account()
   await assertMarginCallEntryAllowed("a", connector)
   state.equity = 299
-  state.rows = [
-    { symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 },
-    { symbol: "BTCUSDT", positionSide: "SHORT", positionAmt: 2 },
-    { symbol: "ETHUSDT", positionSide: "LONG", positionAmt: 3 },
-  ]
+  mockRows.set("a", [ownRow("a", "r1", "BTCUSDT", "long"), ownRow("a", "r2", "BTCUSDT", "short"), ownRow("a", "r3", "ETHUSDT", "long")])
   state.orders = [
-    { symbol: "BTCUSDT", orderId: "entry", type: "LIMIT" },
-    { symbol: "BTCUSDT", orderId: "stop", type: "STOP_MARKET", reduceOnly: true },
+    { symbol: "BTCUSDT", orderId: "entry", type: "LIMIT", clientOrderId: ownId("a", "e1") },
+    { symbol: "BTCUSDT", orderId: "stop", type: "STOP_MARKET", reduceOnly: true, clientOrderId: ownId("a", "s1") },
   ]
   await monitorConnectionMarginCall("a", connector, { force: true })
   expect(operations[0]).toBe("cancel:entry")
   expect(operations.at(-1)).toBe("cancel:stop")
-  expect(connector.closePosition).toHaveBeenCalledTimes(3)
+  expect(mockLive.closes).toEqual(["a:r1", "a:r2", "a:r3"])
+  expect(connector.closePosition).not.toHaveBeenCalled()
   expect((await getMarginCallSnapshot("a"))).toMatchObject({ entriesBlocked: true, session: { status: "closed", remainingPositions: 0, remainingOrders: 0 } })
+})
+
+test("leaves foreign positions, same-slot foreign quantity, foreign/other-connection/malformed/no-id orders untouched", async () => {
+  const { connector, state, operations } = account()
+  await assertMarginCallEntryAllowed("a", connector)
+  state.equity = 100
+  // Venue holds our 1 BTC long netted with 4 foreign, plus a foreign ETH short.
+  state.rows = [
+    { symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 5 },
+    { symbol: "ETHUSDT", positionSide: "SHORT", positionAmt: 2 },
+  ]
+  mockRows.set("a", [
+    ownRow("a", "own"),
+    { ...ownRow("b", "other-conn"), connectionId: "b" },
+    { id: "adopted", connectionId: "a", symbol: "ETHUSDT", direction: "short", status: "open" },
+  ])
+  state.orders = [
+    { symbol: "BTCUSDT", orderId: "foreign", type: "LIMIT", clientOrderId: "web_123" },
+    { symbol: "BTCUSDT", orderId: "other-conn", type: "LIMIT", clientOrderId: ownId("b", "e") },
+    { symbol: "BTCUSDT", orderId: "malformed", type: "LIMIT", clientOrderId: "kn" },
+    { symbol: "BTCUSDT", orderId: "no-id", type: "STOP_MARKET" },
+  ]
+  await monitorConnectionMarginCall("a", connector, { force: true })
+  expect(mockLive.closes).toEqual(["a:own"])
+  expect(connector.closePosition).not.toHaveBeenCalled()
+  expect(operations).toEqual([])
+  expect(state.orders).toHaveLength(4)
+  expect(state.rows).toHaveLength(2)
+  expect((await getMarginCallSnapshot("a")).session).toMatchObject({ status: "closed", remainingPositions: 0, remainingOrders: 0 })
 })
 
 test("keeps the durable latch after equity recovery or threshold edits and forbids automatic reentry", async () => {
@@ -142,25 +195,26 @@ test("keeps the durable latch after equity recovery or threshold edits and forbi
 test("retries incomplete closure without clearing the latch or removing live protection", async () => {
   const { connector, state } = account()
   await assertMarginCallEntryAllowed("a", connector)
-  state.equity = 200; state.closeFails = true
-  state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 }]
-  state.orders = [{ symbol: "BTCUSDT", orderId: "stop", type: "STOP_MARKET" }]
+  state.equity = 200; mockLive.closeFails = true
+  mockRows.set("a", [ownRow("a", "r1")])
+  state.orders = [{ symbol: "BTCUSDT", orderId: "stop", type: "STOP_MARKET", clientOrderId: ownId("a", "s") }]
   await monitorConnectionMarginCall("a", connector, { force: true })
   expect((await getMarginCallSnapshot("a")).session?.status).toBe("closing")
   expect(connector.cancelOrder).not.toHaveBeenCalled()
-  state.closeFails = false
+  mockLive.closeFails = false
   await monitorConnectionMarginCall("a", connector, { force: true })
   expect((await getMarginCallSnapshot("a")).session?.status).toBe("closed")
+  expect(connector.cancelOrder).toHaveBeenCalledWith("BTCUSDT", "stop")
 })
 
 test("coalesces concurrent observers and performs one closure", async () => {
   const { connector, state } = account()
   await assertMarginCallEntryAllowed("a", connector)
-  state.equity = 200; state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 }]
+  state.equity = 200; mockRows.set("a", [ownRow("a", "r1")])
   connector.getBalance.mockClear()
   await Promise.all(Array.from({ length: 10 }, () => monitorConnectionMarginCall("a", connector, { force: true })))
   expect(connector.getBalance).toHaveBeenCalledTimes(1)
-  expect(connector.closePosition).toHaveBeenCalledTimes(1)
+  expect(mockLive.closes).toEqual(["a:r1"])
 })
 
 test("waits briefly for a distributed observer lease instead of failing the entry check", async () => {
@@ -175,10 +229,10 @@ test("waits briefly for a distributed observer lease instead of failing the entr
 test("continues latched closure when account equity becomes unavailable", async () => {
   const { connector, state } = account()
   await assertMarginCallEntryAllowed("a", connector)
-  state.equity = 200; state.closeFails = true
-  state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 }]
+  state.equity = 200; mockLive.closeFails = true
+  mockRows.set("a", [ownRow("a", "r1")])
   await monitorConnectionMarginCall("a", connector, { force: true })
-  state.closeFails = false
+  mockLive.closeFails = false
   connector.getBalance.mockRejectedValue(new Error("Balance endpoint unavailable"))
   await monitorConnectionMarginCall("a", connector, { force: true })
   expect((await getMarginCallSnapshot("a")).session?.status).toBe("closed")
@@ -194,26 +248,29 @@ test("rejects corrupt/failed snapshots and never treats unavailable rows as a fl
   const { connector, state } = account()
   state.healthy = false
   await expect(startNewMarginCallSession("a", connector)).rejects.toThrow("snapshot unavailable")
-  state.healthy = true
-  state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG" }]
-  await expect(startNewMarginCallSession("a", connector)).rejects.toThrow("quantity")
   expect(connector.closePosition).not.toHaveBeenCalled()
 })
 
-test("requires a flat account for a new session and keeps pending orders blocking reset", async () => {
+test("requires own exposure flat for a new session; foreign exposure never blocks reset", async () => {
   const { connector, state } = account()
-  state.orders = [{ symbol: "BTCUSDT", orderId: "entry", type: "LIMIT" }]
-  await expect(startNewMarginCallSession("a", connector)).rejects.toThrow("Close all positions and orders")
+  state.orders = [{ symbol: "BTCUSDT", orderId: "entry", type: "LIMIT", clientOrderId: ownId("a", "e") }]
+  await expect(startNewMarginCallSession("a", connector)).rejects.toThrow("Close all system positions and orders")
   expect((await getMarginCallSnapshot("a")).session).toBeNull()
+  state.orders = [{ symbol: "BTCUSDT", orderId: "foreign", type: "LIMIT", clientOrderId: "web_1" }]
+  state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 3 }]
+  mockRows.set("a", [ownRow("a", "r1")])
+  await expect(startNewMarginCallSession("a", connector)).rejects.toThrow("Close all system positions")
+  mockRows.set("a", [])
+  await expect(startNewMarginCallSession("a", connector)).resolves.toMatchObject({ status: "active" })
 })
 
 test("does not issue close orders if the risk latch cannot be persisted", async () => {
   const { connector, state } = account()
   await assertMarginCallEntryAllowed("a", connector)
-  state.equity = 200; state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 }]
+  state.equity = 200; mockRows.set("a", [ownRow("a", "r1")])
   mockPersist.mockResolvedValue(false)
   await expect(monitorConnectionMarginCall("a", connector, { force: true })).rejects.toThrow("persist")
-  expect(connector.closePosition).not.toHaveBeenCalled()
+  expect(mockLive.closes).toEqual([])
 })
 
 test("uses acknowledged network Redis writes without requiring an inline snapshot", async () => {
@@ -229,15 +286,16 @@ test("uses acknowledged network Redis writes without requiring an inline snapsho
   expect(mockHashes.has("settings:margin_call_session:a")).toBe(true)
 })
 
-test("closes native tickets with the exact numeric quantity", async () => {
+test("never closes a broker ticket that is not a system row", async () => {
   const { connector, state } = account()
-  const closePositionByTicket = jest.fn(async () => { state.rows = []; return { success: true } })
+  const closePositionByTicket = jest.fn(async () => ({ success: true }))
   const native = { ...connector, closePositionByTicket }
   await assertMarginCallEntryAllowed("a", native)
   state.equity = 200; state.rows = [{ symbol: "EURUSD", positionSide: "LONG", contracts: 0.02, positionTicket: 42 }]
   await monitorConnectionMarginCall("a", native, { force: true })
-  expect(closePositionByTicket).toHaveBeenCalledWith("EURUSD", 42, 0.02, expect.objectContaining({ clientOrderId: expect.any(String) }))
+  expect(closePositionByTicket).not.toHaveBeenCalled()
   expect(connector.closePosition).not.toHaveBeenCalled()
+  expect((await getMarginCallSnapshot("a")).session?.status).toBe("closed")
 })
 
 test("disabled margin call never locks entries or closes positions", async () => {
@@ -246,8 +304,10 @@ test("disabled margin call never locks entries or closes positions", async () =>
   await expect(assertMarginCallEntryAllowed("a", connector)).resolves.toBeUndefined()
   state.equity = 0
   state.rows = [{ symbol: "BTCUSDT", positionSide: "LONG", positionAmt: 1 }]
+  mockRows.set("a", [ownRow("a", "r1")])
   await expect(monitorConnectionMarginCall("a", connector, { force: true, startSession: true })).resolves.toBeNull()
   expect(connector.closePosition).not.toHaveBeenCalled()
+  expect(mockLive.closes).toEqual([])
   expect((await getMarginCallSnapshot("a")).entriesBlocked).toBe(false)
   expect((await getMarginCallSnapshot("a")).enabled).toBe(false)
 })

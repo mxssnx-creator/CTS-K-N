@@ -470,7 +470,7 @@ export class TradeExecutionOrchestrator {
 
   /**
    * Execute close-all signal - closes all open positions for a symbol or globally
-   * Uses the new closeAllPositions API for efficiency
+   * Closes only system-owned lifecycle rows (never the venue close-all endpoint)
    */
   async executeCloseAllSignal(connectionId: string, symbol?: string): Promise<TradeExecutionResult> {
     const startTime = Date.now()
@@ -483,32 +483,27 @@ export class TradeExecutionOrchestrator {
         throw new Error(`Connector not found for ${connectionId}`)
       }
 
-      // Use new API method for efficient bulk close
-      const result = await connector.executeSwapTrade("closeAllPositions", { symbol })
-
-      if (!result.success) {
-        throw new Error(result.error || "Failed to close all positions")
+      // The venue closeAllPositions endpoint flattens EVERY position on the
+      // account, including foreign ones and foreign quantity netted on the
+      // same symbol/side. Only system-owned lifecycle rows are closed, each
+      // by its own reduce-only quantity (closeLivePosition checks ownership).
+      const { getLivePositions, closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+      const owned = (await getLivePositions(connectionId)).filter(
+        (p) =>
+          (p.status === "open" || p.status === "filled" || p.status === "partially_filled") &&
+          (!symbol || p.symbol === symbol),
+      )
+      let closedCount = 0
+      for (const pos of owned) {
+        const price = Number(pos.exchangeData?.markPrice) || pos.averageExecutionPrice || pos.entryPrice
+        const closed = await closeLivePosition(connectionId, pos.id!, price, connector, "close_all_signal").catch(() => null)
+        if (closed?.status === "closed") closedCount++
       }
-
-      const closedPositions = result.successful || []
-      this.log(`✓ Closed ${closedPositions.length} positions${symbol ? ` for ${symbol}` : " globally"}`)
-
-      // Update database
-      const positions = await dbCoordinator.getPositions(connectionId)
-      for (const [sym, pos] of Object.entries(positions)) {
-        if (!symbol || sym === symbol) {
-          await dbCoordinator.storePosition(connectionId, sym, {
-            ...pos,
-            status: "closed",
-            updated_at: new Date().toISOString(),
-          })
-        }
-      }
-
+      this.log(`✓ Closed ${closedCount}/${owned.length} system positions${symbol ? ` for ${symbol}` : " globally"}`)
       const duration = Date.now() - startTime
       return {
         success: true,
-        details: `Closed ${closedPositions.length} positions in ${duration}ms`,
+        details: `Closed ${closedCount}/${owned.length} system positions in ${duration}ms`,
       }
     } catch (err) {
       const duration = Date.now() - startTime

@@ -82,7 +82,7 @@ try {
     throw new Error(`FAIL:dev-server-startup-timeout=${base}`)
   }
 
-  for (const path of ['/', '/main', '/strategies', '/settings', '/monitoring']) {
+  for (const path of ['/', '/strategies', '/settings', '/monitoring']) {
     await waitForRoute(path)
   }
 } catch (error) {

@@ -5,7 +5,7 @@ const cron = readFileSync(resolve(process.cwd(), "app/api/cron/close-accounting/
 
 describe("a row is reconciled to its own share of the slot, never to its siblings' fills", () => {
   test("the authoritative slot quantity is reduced by the other own rows on the slot", () => {
-    expect(live).toContain("const exchangeQuantity = Math.max(0, slotExchangeQuantity - await ownSiblingSlotQuantity(position))")
+    expect(live).toContain("const slotShare = Math.max(0, slotExchangeQuantity - await ownSiblingSlotQuantity(position))")
   })
   test("siblings are only this connection's own active rows on the same physical slot", () => {
     const fn = live.slice(live.indexOf("async function ownSiblingSlotQuantity("), live.indexOf("async function ownSiblingSlotQuantity(") + 1400)

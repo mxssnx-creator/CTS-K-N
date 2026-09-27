@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { getRedisBackend, getRedisClient, initRedis, persistNow } from "@/lib/redis-db"
 import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "@/lib/redis-lock-utils"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
+import { isConnectionOwnedClientOrderId, isExactSystemPositionOwner } from "@/lib/system-order-ownership"
 import { SimulatedConnector } from "@/lib/exchange-connectors/simulated-connector"
 import {
   finiteAccountNumber,
@@ -177,44 +178,58 @@ async function cancelOrder(connector: any, order: any): Promise<void> {
   if (result?.success !== true) throw riskError("A pending account order could not be cancelled")
 }
 
+function clientIdOf(order: any): unknown {
+  return order?.clientOrderId ?? order?.clientOrderID ?? order?.client_oid ?? order?.clOrdId ?? order?.orderLinkId
+}
+
+/** Only this system's orders on this connection; foreign/manual/other-connection orders are never touched. */
+async function ownedOrders(id: string, connector: any): Promise<any[]> {
+  return (await orders(connector)).filter((order) => isConnectionOwnedClientOrderId(clientIdOf(order), id))
+}
+
+const OPEN_ROW_STATUSES = new Set(["open", "filled", "partially_filled", "closing", "closing_partial"])
+
+/** This system's open lifecycle rows on this connection (exact ownership watermark). */
+async function ownedOpenRows(id: string): Promise<any[]> {
+  const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
+  return (await getLivePositions(id)).filter((row: any) =>
+    isExactSystemPositionOwner(row, id) && OPEN_ROW_STATUSES.has(String(row?.status || "").toLowerCase()))
+}
+
+/**
+ * Close only what this system owns. Foreign positions, foreign quantity netted
+ * on the same symbol/side, broker tickets without our ids and foreign orders
+ * are left untouched: each own row is closed by closeLivePosition, which checks
+ * ownership and sends a reduce-only order for the row's own quantity. "Done"
+ * means the system's own exposure and own orders are flat, not the account.
+ */
 async function closeAccount(id: string, connector: any, state: MarginCallSession, assertOwnership: () => Promise<void>): Promise<void> {
   const failures: string[] = []
-  // Retain protective orders until the exchange confirms every position flat.
-  // Cancel pending entries first so they cannot reopen exposure after closure.
-  for (const order of await orders(connector)) {
+  // Retain own protective orders until own exposure is flat. Cancel own
+  // pending entries first so they cannot reopen exposure after closure.
+  for (const order of await ownedOrders(id, connector)) {
     if (isProtection(order)) continue
     await assertOwnership()
     try { await cancelOrder(connector, order) } catch { failures.push("pending_entry_cancel_failed") }
   }
-  for (const row of await positions(connector)) {
+  const { closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+  for (const row of await ownedOpenRows(id)) {
     await assertOwnership()
     try {
-      const side = String(row.positionSide ?? row.direction ?? row.side ?? "").toLowerCase()
-      const direction = side === "long" || side === "buy" ? "long"
-        : side === "short" || side === "sell" ? "short"
-          : side === "both" && Number(row.positionAmt) !== 0
-            ? Number(row.positionAmt) > 0 ? "long" : "short" : null
-      if (!direction || !row.symbol) throw riskError("Position direction is ambiguous")
-      const ticket = Number(row.positionTicket ?? row.ticket)
-      const result = Number.isInteger(ticket) && ticket > 0 && typeof connector.closePositionByTicket === "function"
-        ? await connector.closePositionByTicket(String(row.symbol), ticket, quantity(row), {
-          clientOrderId: `mc-${state.sessionId.slice(0, 8)}-${ticket}`,
-        })
-        : typeof connector.closePosition === "function"
-          ? await connector.closePosition(String(row.symbol), direction)
-          : { success: false }
-      if (result?.success !== true) failures.push("position_close_unconfirmed")
+      const price = Number(row.exchangeData?.markPrice) || Number(row.averageExecutionPrice) || Number(row.entryPrice) || 0
+      const result = await closeLivePosition(id, String(row.id), price, connector, "margin_call")
+      if (result?.status !== "closed") failures.push("position_close_unconfirmed")
     } catch { failures.push("position_close_failed") }
   }
-  const remainingPositions = await positions(connector)
-  if (remainingPositions.length === 0) {
-    for (const order of await orders(connector)) {
+  const remainingRows = await ownedOpenRows(id)
+  if (remainingRows.length === 0) {
+    for (const order of await ownedOrders(id, connector)) {
       await assertOwnership()
       try { await cancelOrder(connector, order) } catch { failures.push("flat_order_cancel_failed") }
     }
   }
-  state.remainingPositions = (await positions(connector)).length
-  state.remainingOrders = (await orders(connector)).length
+  state.remainingPositions = (await ownedOpenRows(id)).length
+  state.remainingOrders = (await ownedOrders(id, connector)).length
   state.lastError = failures.length ? [...new Set(failures)].join(", ") : undefined
   if (state.remainingPositions === 0 && state.remainingOrders === 0) {
     state.status = "closed"
@@ -345,8 +360,9 @@ export async function startNewMarginCallSession(id: string, connector: any): Pro
   validId(id)
   await initRedis()
   return locked(id, async () => {
-    if ((await positions(connector)).length || (await orders(connector)).length) {
-      throw riskError("Close all positions and orders before starting a new margin-call session")
+    // Only the system's own exposure must be flat; foreign exposure never blocks.
+    if ((await ownedOpenRows(id)).length || (await ownedOrders(id, connector)).length) {
+      throw riskError("Close all system positions and orders before starting a new margin-call session")
     }
     const current = await equity(connector)
     if (!(current > 0)) throw riskError("Positive equity is required to start a new session")

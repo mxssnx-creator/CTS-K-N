@@ -21,7 +21,9 @@ describe("authoritative venue snapshot is shared within a pass and invalidated b
 
   test("every venue mutation in the stage invalidates the snapshot before it runs", () => {
     const mutations = src.match(/(?:exchangeConnector|connector)\.(?:placeOrder|cancelOrder|closePosition|cancelAllOrders)\(/g) || []
-    expect(mutations.length).toBeGreaterThanOrEqual(7)
+    // The whole-position closePosition fallback was removed (it could flatten a
+    // foreign quantity on the same slot), leaving six mutation call sites.
+    expect(mutations.length).toBeGreaterThanOrEqual(6)
     const invalidations = src.match(/invalidateAuthoritativeSnapshot\((?:exchangeConnector|connector)\)/g) || []
     // One ternary carries a placeOrder and a closePosition under a single invalidation.
     expect(invalidations.length).toBeGreaterThanOrEqual(mutations.length - 1)
