@@ -160,7 +160,7 @@ export default function MonitoringPage() {
             level: log.level as LogLevel,
             category: log.category || "Site",
             message: log.message,
-            details: log.details || log.stack,
+            details: log.details || log.error_stack || log.error_message || log.stack,
           })),
         )
       }
@@ -184,7 +184,12 @@ export default function MonitoringPage() {
             level: log.level as LogLevel,
             category: log.category || "toast",
             message: log.message,
-            details: log.metadata ? JSON.parse(log.metadata).toastType : undefined,
+            details: (() => {
+              // Site-log metadata is stored as posted: an object or a JSON string.
+              if (!log.metadata) return undefined
+              if (typeof log.metadata === "object") return log.metadata.toastType
+              try { return JSON.parse(log.metadata)?.toastType } catch { return undefined }
+            })(),
           })),
         )
       }

@@ -2,7 +2,7 @@
 export const dynamic = "force-dynamic"
 
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -51,6 +51,10 @@ export default function AnalysisPage() {
   const [connections, setConnections] = useState<any[]>([])
   const [selectedConnection, setSelectedConnection] = useState<string>("all")
   const [loading, setLoading] = useState(true)
+  // Monotonic request ids so a slow response for a previously selected
+  // connection cannot overwrite data for the current selection.
+  const positionsRequestRef = useRef(0)
+  const statsRequestRef = useRef(0)
 
   useEffect(() => {
     fetchConnections()
@@ -63,7 +67,11 @@ export default function AnalysisPage() {
       fetchActivePositions()
       fetchPositionStats()
     }, 5000) // Update every 5 seconds
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+      positionsRequestRef.current++
+      statsRequestRef.current++
+    }
   }, [selectedConnection, connections])
 
   useEffect(() => {
@@ -84,12 +92,13 @@ export default function AnalysisPage() {
   }
 
   const fetchActivePositions = async () => {
+    const requestId = ++positionsRequestRef.current
     try {
       const connectionIds = selectedConnection === "all"
         ? connections.map((connection) => String(connection.id || "")).filter(Boolean)
         : [selectedConnection]
       if (connectionIds.length === 0) {
-        setActivePositions([])
+        if (requestId === positionsRequestRef.current) setActivePositions([])
         return
       }
       const payloads = await Promise.all(connectionIds.map(async (connectionId) => {
@@ -98,6 +107,7 @@ export default function AnalysisPage() {
         const data = await res.json()
         return Array.isArray(data.data) ? data.data : Array.isArray(data.positions) ? data.positions : []
       }))
+      if (requestId !== positionsRequestRef.current) return
       setActivePositions(payloads.flat().flatMap((position: any) => {
         const direction = normalizeTradeDirection(
           position.direction,
@@ -128,6 +138,7 @@ export default function AnalysisPage() {
   }
 
   const fetchPositionStats = async () => {
+    const requestId = ++statsRequestRef.current
     try {
       const url = selectedConnection === "all"
         ? "/api/positions/stats"
@@ -135,7 +146,7 @@ export default function AnalysisPage() {
       const res = await fetch(url)
       if (res.ok) {
         const data = await res.json()
-        setPositionStats(data.stats)
+        if (requestId === statsRequestRef.current && data.stats) setPositionStats(data.stats)
       }
     } catch (error) {
       console.error("[v0] Failed to fetch stats:", error)

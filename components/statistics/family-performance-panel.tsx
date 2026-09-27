@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -58,7 +58,10 @@ export function FamilyPerformancePanel({ connectionId }: { connectionId?: string
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const requestRef = useRef(0)
+
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current
     setLoading(true)
     setError(null)
     try {
@@ -66,12 +69,14 @@ export function FamilyPerformancePanel({ connectionId }: { connectionId?: string
       const response = await fetch(`/api/statistics/families${query}`, { cache: "no-store" })
       if (!response.ok) throw new Error(`Request failed (${response.status})`)
       const payload = await response.json()
+      if (requestId !== requestRef.current) return
       if (!payload?.success) throw new Error(payload?.error || "Statistics unavailable")
       setReport(payload as FamilyReport)
     } catch (err) {
+      if (requestId !== requestRef.current) return
       setError(err instanceof Error ? err.message : String(err))
     } finally {
-      setLoading(false)
+      if (requestId === requestRef.current) setLoading(false)
     }
   }, [connectionId])
 

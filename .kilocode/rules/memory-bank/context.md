@@ -4133,3 +4133,8 @@ Operational read-model caution: engine-states intentionally serves an expired sn
 Verified backups: local pre-edit `/workspace/backups/CTS-K-N/20260913T010538Z-before-recalc-invalidation-fix`; precommit `20260913T011526Z-before-recalc-commit`; merged predeploy `20260913T011903Z-merged-recalc-before-deploy`; server preinstall `/var/backups/cts-kn/20260913T012107Z-before-recalc-reinstall`; permanent full rollback `/var/backups/cts/cts-kn/20260913T012109Z`; prerecovery `/var/backups/cts-kn/20260913T012809Z-before-recalc-service-recovery`; final server `/var/backups/cts-kn/20260913T013648Z-final-recalc-release` (27.47 GiB free). Bundles and SHA-256 manifests verify; sensitive runtime data stays excluded from source archives.
 
 This final handoff changes documentation/manifests only. Running remote production code remains exactly the verified `99be53d9`; do not reinstall again solely for these handoff files. Durable continuation state: `/workspace/backups/CTS-K-N/recalc-invalidation-state.json`.
+
+## 2026-09-27 UI/stats audit (branch claude/upbeat-turing-deeb4f)
+- Base: main 663ea42. Checkpoint: /var/backups/cts-kn/20260927T010556Z-ui-audit-start.
+- 26 client-side fixes: leaked timers (use-websocket), double polling (use-trade-engine-status), stale-response races on connection switch (analysis, structure, indications, dashboard panels, statistics panels, position monitor), good data wiped by failed polls (pnl-dashboard, engine-progress, system-verification, indications), NaN/Infinity guards, system-health-check crash, monitoring log metadata/details parsing.
+- Gates: tsc clean, eslint clean on changed files, jest unit 412 suites / 2655 tests pass. Not yet merged or deployed; no remote/server action taken.
