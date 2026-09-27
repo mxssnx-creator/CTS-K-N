@@ -342,6 +342,7 @@ __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
 __tests__/unit/protection-adopt-by-client-id.test.ts
+__tests__/unit/protection-floors.test.ts
 __tests__/unit/protection-ids-lost-update.test.ts
 __tests__/unit/protection-slot-order-audit.test.ts
 __tests__/unit/pseudo-position-close-idempotency.test.ts
@@ -404,6 +405,7 @@ __tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-consensus-validated-candidates.test.ts
 __tests__/unit/signal-historic-eval.test.ts
 __tests__/unit/signal-indication.test.ts
+__tests__/unit/signal-orthogonal-sources.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-source-validation.test.ts
@@ -1536,6 +1538,7 @@ lib/progression-limits-manager.ts
 lib/progression-live-snapshot.ts
 lib/progression-scope.ts
 lib/progression-state-manager.ts
+lib/protection-floors.ts
 lib/protection-slot-order-audit.ts
 lib/pseudo-position-costs.ts
 lib/pseudo-positions-coordinator.ts
@@ -1583,6 +1586,7 @@ lib/signal-analytics.ts
 lib/signal-config-matrix.ts
 lib/signal-historic-eval.ts
 lib/signal-indication.ts
+lib/signal-orthogonal-sources.ts
 lib/signal-position-policy.ts
 lib/signal-source-optimizer.ts
 lib/signal-source-registry.ts
@@ -1762,6 +1766,7 @@ scripts/fetch-dca-public-history.py
 scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
 scripts/historic-signal-data.ts
+scripts/historic-signal-eval-v2.ts
 scripts/historic-signal-eval.ts
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
