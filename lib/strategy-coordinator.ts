@@ -211,8 +211,12 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
   // changing any strategy calculation, ordering preference, or persistence.
   type RankedSet = { score: number; sequence: number; set: StrategySet }
   const top: RankedSet[] = []
-  const scoreFor = (set: StrategySet) =>
-    Number(set.avgProfitFactor || 0) * 10_000 + Number(set.avgConfidence || 0) * 100 - Number(set.avgDrawdownTime || 0)
+  const scoreFor = (set: StrategySet) => {
+    const score =
+      Number(set.avgProfitFactor || 0) * 10_000 + Number(set.avgConfidence || 0) * 100 - Number(set.avgDrawdownTime || 0)
+    // NaN would defeat every heap comparison and could evict a real best row.
+    return Number.isFinite(score) ? score : Number.NEGATIVE_INFINITY
+  }
   const lowerRank = (left: RankedSet, right: RankedSet) =>
     left.score < right.score || (left.score === right.score && left.sequence > right.sequence)
   const siftUp = (index: number) => {
@@ -1603,6 +1607,26 @@ export function buildPositionContextFingerprint(ctx: PositionContext): string {
 }
 
 /**
+ * Best-first ordering for StrategySets: higher profit factor first, a
+ * non-finite (NaN/undefined) profit factor always sorts last, and equal
+ * profit factors tie-break deterministically by setKey so Map/insertion
+ * order never decides which row survives a downstream limit.
+ */
+export function compareStrategySetsBestFirst(
+  left: Pick<StrategySet, "avgProfitFactor" | "setKey">,
+  right: Pick<StrategySet, "avgProfitFactor" | "setKey">,
+): number {
+  const l = Number(left?.avgProfitFactor)
+  const r = Number(right?.avgProfitFactor)
+  const lv = Number.isFinite(l) ? l : Number.NEGATIVE_INFINITY
+  const rv = Number.isFinite(r) ? r : Number.NEGATIVE_INFINITY
+  if (lv !== rv) return rv > lv ? 1 : -1
+  const lk = String(left?.setKey || "")
+  const rk = String(right?.setKey || "")
+  return lk < rk ? -1 : lk > rk ? 1 : 0
+}
+
+/**
  * Preserve exact active Set lineages and append every newly-qualified Live
  * candidate. Sibling Sets sharing only a parent are not treated as active.
  */
@@ -1627,8 +1651,8 @@ export function selectLiveSetsWithActivePriority(
       candidates.push(set)
     }
   }
-  active.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-  candidates.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+  active.sort(compareStrategySetsBestFirst)
+  candidates.sort(compareStrategySetsBestFirst)
   return {
     active,
     selected: active.concat(candidates),
@@ -1806,7 +1830,7 @@ export function materializeContinuousStageRows(
     } as StrategySet)
   }
 
-  rows.sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+  rows.sort(compareStrategySetsBestFirst)
   return { rows, evaluated, rejected }
 }
 
@@ -1883,7 +1907,7 @@ export function selectRealSetsWithActiveAndVariantPriority(
   const ordered = Array.from(new Map(
     inputSets
       .slice()
-      .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+      .sort(compareStrategySetsBestFirst)
       .map((set) => [set.setKey, set]),
   ).values())
   const active = ordered.filter((set) => activeSetKeys.has(set.setKey))
@@ -7673,7 +7697,7 @@ export class StrategyCoordinator {
       symbol,
       shouldContinue,
     ))
-      .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+      .sort(compareStrategySetsBestFirst)
 
     // ── HEDGE NETTING (operator spec: Real stage only) ─────────────────────
     //
@@ -7852,9 +7876,7 @@ export class StrategyCoordinator {
       // When hasLong === hasShort === true: symmetric cancel is correct — no bootstrap.
       // When hasLong === hasShort === false: no sets at all — nothing to bootstrap.
     }
-    let realPostHedge = [...effectiveNetted, ...axisPassthrough].sort(
-      (a, b) => b.avgProfitFactor - a.avgProfitFactor,
-    )
+    let realPostHedge = [...effectiveNetted, ...axisPassthrough].sort(compareStrategySetsBestFirst)
 
     // Materialize the complete regular Block ladder at Real from normal
     // Base-derived Sets only. Pos-Count axis Sets remain their own execution
@@ -7879,7 +7901,7 @@ export class StrategyCoordinator {
       if (independentBlockCounts.length > 0) {
         realPostHedge = realPostHedge
           .concat(independentBlockCounts)
-          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -7906,7 +7928,7 @@ export class StrategyCoordinator {
         realStageRelatedCreated += scopedBlockOverlays.length
         realPostHedge = realPostHedge
           .concat(scopedBlockOverlays)
-          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -7933,7 +7955,7 @@ export class StrategyCoordinator {
         realStageRelatedCreated += activePositionBlockOverlays.length
         realPostHedge = realPostHedge
           .concat(activePositionBlockOverlays)
-          .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -8044,7 +8066,7 @@ export class StrategyCoordinator {
       if (rowRealSets.length > 0) {
         realPostHedge = realPostHedge
           .concat(rowRealSets)
-          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -8062,7 +8084,7 @@ export class StrategyCoordinator {
     const realCandidateCount = realPostHedge.length
     const qualifiedRealSets = Array.from(new Map(
       realPostHedge.map((set) => [set.setKey, set]),
-    ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    ).values()).sort(compareStrategySetsBestFirst)
     const configuredRealMaterializationCeiling = Number.parseInt(
       process.env.STRATEGY_REAL_SETS_CEILING || "0",
       10,
@@ -8991,7 +9013,7 @@ export class StrategyCoordinator {
       }
     }
 
-    return rows.sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    return rows.sort(compareStrategySetsBestFirst)
   }
 
 
@@ -9190,7 +9212,7 @@ export class StrategyCoordinator {
     const rowQualifying = rowLive.rows.concat(rowLiveBlock)
     const allQualifying = Array.from(new Map(
       rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
-    ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    ).values()).sort(compareStrategySetsBestFirst)
     if (coordIndex) {
       for (const row of allQualifying) {
         const sourceKey = row.rowSourceSetKey || row.setKey

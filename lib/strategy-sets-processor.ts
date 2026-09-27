@@ -531,7 +531,17 @@ export class StrategySetsProcessor {
         }
       }
       // Always return in best-performance-first order
-      entries.sort((a: any, b: any) => (b.profitFactor ?? 0) - (a.profitFactor ?? 0))
+      const pfOf = (entry: any): number => {
+        const pf = Number(entry?.profitFactor)
+        return Number.isFinite(pf) ? pf : Number.NEGATIVE_INFINITY
+      }
+      entries.sort((a: any, b: any) => {
+        const diff = pfOf(b) - pfOf(a)
+        if (diff !== 0 && !Number.isNaN(diff)) return diff
+        const ak = String(a?.id ?? a?.setKey ?? "")
+        const bk = String(b?.id ?? b?.setKey ?? "")
+        return ak < bk ? -1 : ak > bk ? 1 : 0
+      })
       return entries.slice(0, limit)
     } catch (error) {
       console.error(`[v0] [StrategySets] Failed to get entries for ${type}:`, error)
