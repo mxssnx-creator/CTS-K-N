@@ -4575,10 +4575,14 @@ async function findAuthoritativeAdjustmentParent(
   executionSlot = "default",
   allowBlockParent = false,
   fallbackExecutionSlot?: string,
+  allowDcaParent = false,
 ): Promise<LivePosition | null> {
   const matchesParent = (p: LivePosition, slot: string): boolean => {
+    // A live row with setVariant "dca" can only exist as an independent DCA
+    // seed (opened while Normal execution is off); later DCA steps attach to
+    // it. With Normal on, DCA never opens its own row, so this is inert.
     const parentVariant =
-      p.setVariant !== "dca" &&
+      (p.setVariant !== "dca" || allowDcaParent) &&
       (p.setVariant !== "block" || allowBlockParent)
     const active =
       p.status === "open" ||
@@ -13731,9 +13735,23 @@ export async function executeLivePosition(
         isBlockVariant && executionSlot !== "default"
           ? "default"
           : undefined,
+        !isBlockVariant,
       )
       if (!existing) {
-        if (isBlockVariant) {
+        if (!isBlockVariant && realPosition.dcaIndependentSeed === true) {
+          // Normal execution is switched off, so no Normal parent will ever
+          // fill. DCA is still derived from the Normal base and must keep
+          // executing: open the base-volume parent (step 0) through the
+          // ordinary entry pipeline. Subsequent DCA steps accumulate into it.
+          realPosition = { ...realPosition, sizeMultiplier: 1 }
+          livePosition.sizeMultiplier = 1
+          pushStep(
+            livePosition,
+            "dca_independent_parent_seed",
+            true,
+            `opening DCA base parent for ${realPosition.setKey || "unknown"} (Normal execution off)`,
+          )
+        } else if (isBlockVariant) {
           // A fresh independent Block lane has no confirmed parent. Continue
           // into the ordinary entry pipeline with the already calculated
           // absolute Block multiplier; the persisted Block position becomes

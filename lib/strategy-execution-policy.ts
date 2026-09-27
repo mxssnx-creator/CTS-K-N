@@ -28,7 +28,14 @@ export interface StrategyExecutionPolicy {
   axisEnabled: boolean
   blockEnabled: boolean
   dcaEnabled: boolean
-  /** Trailing follows the Normal switch it decorates. */
+  /**
+   * Global main-strategy Trailing switch. When off, plain Trailing Base rows
+   * are not dispatched and every other main family (Axis/Block/DCA) runs
+   * with fixed TP/SL only: trailing profiles are stripped at dispatch and
+   * the realtime trailing machine stops ratcheting/activating on their
+   * open positions. Plain Trailing rows additionally require Normal, since
+   * they are the trailed form of the Normal base. Signal is independent.
+   */
   trailingEnabled: boolean
 }
 
@@ -73,7 +80,11 @@ export function normalizeStrategyExecutionPolicy(
     ),
     trailingEnabled: bool(
       source.trailingEnabled ?? source.trailing_enabled ?? source.strategyTrailingEnabled
-        ?? source.variantTrailingEnabled,
+        ?? source.variantTrailingEnabled ?? source.variant_trailing
+        // The connection settings dialog persists the Trailing switch as
+        // `variantTrailingEnabled` + `strategyBaseTrailingEnabled`; accept
+        // the latter so reports/stats see the same switch as the engine.
+        ?? source.strategyBaseTrailingEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
     ),
   }
@@ -115,3 +126,32 @@ export function isStrategyExecutionFamilyEnabled(
   return policy.dcaEnabled
 }
 
+
+/**
+ * Whether automatic trailing may be used for a main-strategy row/position.
+ * The Signal lane owns its own trailing policy and is never suppressed here.
+ */
+export function isMainTrailingAllowed(
+  row: { indicationType?: unknown; signalRisk?: any; trailingMode?: unknown } | null | undefined,
+  policy: Pick<StrategyExecutionPolicy, "trailingEnabled">,
+): boolean {
+  if (policy.trailingEnabled) return true
+  if (String(row?.trailingMode || "").toLowerCase() === "signal_dynamic") return true
+  return isSignalSet(row)
+}
+
+/**
+ * Apply the global Trailing switch to one dispatch candidate. With Trailing
+ * off, an Axis/Block/DCA row derived from a trailing Base keeps its family
+ * (and therefore still executes) but loses its trailing profile, so it runs
+ * with fixed TP/SL only. Rows are returned unchanged when trailing is
+ * allowed; the input object is never mutated.
+ */
+export function applyTrailingExecutionPolicy<T extends Record<string, any>>(
+  set: T,
+  policy: Pick<StrategyExecutionPolicy, "trailingEnabled">,
+): T {
+  if (!set || !set.trailingProfile || isMainTrailingAllowed(set, policy)) return set
+  const { trailingProfile: _dropped, ...rest } = set
+  return rest as T
+}

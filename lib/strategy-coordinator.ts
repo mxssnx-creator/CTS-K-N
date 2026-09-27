@@ -151,8 +151,10 @@ import {
   accountRealStageInputs,
 } from "@/lib/strategy-stage-accounting"
 import {
+  applyTrailingExecutionPolicy,
   classifyStrategyExecutionFamily,
   hasAnyStrategyExecutionVariantEnabled,
+  isMainTrailingAllowed,
   isStrategyExecutionFamilyEnabled,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
@@ -1203,7 +1205,7 @@ export function selectLiveDispatchCandidates(
     // all-off guard in createLiveSets prevents them from bypassing the global
     // execution switch when Normal/Trailing/Block/DCA are all disabled.
     if (isAxis) {
-      selected.push(candidate)
+      selected.push(applyTrailingExecutionPolicy(candidate, policy))
       seenKeys.add(candidate.setKey)
       continue
     }
@@ -1238,7 +1240,8 @@ export function selectLiveDispatchCandidates(
     }
 
     if (!isStrategyExecutionFamilyEnabled(family, policy)) continue
-    selected.push(candidate)
+    // Trailing off: Block/DCA rows keep executing, but with fixed TP/SL.
+    selected.push(applyTrailingExecutionPolicy(candidate, policy))
     seenKeys.add(candidate.setKey)
   }
   return selected
@@ -3382,7 +3385,10 @@ export class StrategyCoordinator {
       // flag; trailing Sets are created at BASE, not emitted as Main Adjusts.
       // The bool() helper only falls back to the default when the key is genuinely
       // absent — an explicit "false" is honoured.
-      this._coordinationSettings.variants.trailing = bool(s.variantTrailingEnabled, true)
+      this._coordinationSettings.variants.trailing = bool(
+        s.variantTrailingEnabled ?? s.strategyBaseTrailingEnabled,
+        true,
+      )
       this._coordinationSettings.variants.block    = bool(s.variantBlockEnabled,    true)
       this._coordinationSettings.variants.dca      = bool(s.variantDcaEnabled,      false)
       this._coordinationSettings.indicationVariants =
@@ -4001,7 +4007,9 @@ export class StrategyCoordinator {
           Math.max(MIN_BASE_STEP, Math.round(rawMin)),
         )
       }
-      const enabledMaster = settings.strategyBaseTrailingEnabled !== false
+      // Redis hashes store booleans as strings: "false" must disable too.
+      const rawMaster = settings.strategyBaseTrailingEnabled ?? settings.variantTrailingEnabled
+      const enabledMaster = !(rawMaster === false || rawMaster === "false" || rawMaster === "0" || rawMaster === 0)
       if (!enabledMaster) {
         ;(this as any)._trailingVariantsCache = []
         return []
@@ -9808,9 +9816,14 @@ export class StrategyCoordinator {
                 // anchored at the trailing stop distance rather than a generic
                 // PF-derived value. For all other variants `protection.stopLossPct`
                 // is already variant-scaled (block: sizeMultiplier-up, dca: 0.5×).
+                // With the global Trailing switch off, a Block/DCA/Axis row
+                // derived from a trailing Base must not re-acquire the Base
+                // profile here (fixed TP/SL only). Signal keeps its own lane.
                 const resolvedTrailingProfile: TrailingProfile | undefined =
-                  set.trailingProfile ??
-                  (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
+                  isMainTrailingAllowed(set, executionPolicy)
+                    ? set.trailingProfile ??
+                      (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
+                    : undefined
 
                 let sl = protection.stopLossPct
                 // CRITICAL FIX: Add slippage buffer to block variant SL prices
@@ -9901,6 +9914,10 @@ export class StrategyCoordinator {
                     parentSetKey: set.parentSetKey,
                     indicationType: set.indicationType,
                     setVariant:   set.variant,
+                    // Normal off: DCA may seed its own base parent (step 0).
+                    ...(set.variant === "dca" && !executionPolicy.normalEnabled
+                      ? { dcaIndependentSeed: true }
+                      : {}),
                     axisWindows:  set.axisWindows,
                     signalRisk: resolvedSignalRisk,
                     specialPositionPlan: bestEntry.specialPositionPlan,
@@ -10368,7 +10385,8 @@ export class StrategyCoordinator {
                   signalProtection?.takeProfitPct ??
                   adaptiveTrendTp ??
                   positionCostProtection.takeProfitPct
-                const profile = set.trailingProfile
+                const mainTrailingAllowed = isMainTrailingAllowed(set, executionPolicy)
+                const profile = mainTrailingAllowed ? set.trailingProfile : undefined
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
                 const sl = signalDynamicTrailing
                   ? Math.max(0.8, (profile.minStopRatio ?? profile.stopRatio) * 100)
@@ -10383,7 +10401,7 @@ export class StrategyCoordinator {
                 // Strategy → Trailing. Sets WITHOUT a profile keep the
                 // legacy single-step behaviour with statistical on/off
                 // (`bestEntry.confidence >= 0.85`).
-                const trailing = profile ? true : bestEntry.confidence >= 0.85
+                const trailing = mainTrailingAllowed && (profile ? true : bestEntry.confidence >= 0.85)
 
                 // Build a fully-qualified uniqueness key including TP, SL,
                 // direction and trailing so sets with the same indicationType
