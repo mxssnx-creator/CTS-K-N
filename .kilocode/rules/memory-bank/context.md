@@ -4136,5 +4136,6 @@ This final handoff changes documentation/manifests only. Running remote producti
 
 ## 2026-09-27 UI/stats audit (branch claude/upbeat-turing-deeb4f)
 - Base: main 663ea42. Checkpoint: /var/backups/cts-kn/20260927T010556Z-ui-audit-start.
+- Round 2: +18 large dashboard card fixes, +13 dialog/settings API-shape fixes; recreation manifests regenerated. Open (needs decision): /api/settings/strategy and /api/settings/indications/auto are called but do not exist.
 - 26 client-side fixes: leaked timers (use-websocket), double polling (use-trade-engine-status), stale-response races on connection switch (analysis, structure, indications, dashboard panels, statistics panels, position monitor), good data wiped by failed polls (pnl-dashboard, engine-progress, system-verification, indications), NaN/Infinity guards, system-health-check crash, monitoring log metadata/details parsing.
 - Gates: tsc clean, eslint clean on changed files, jest unit 412 suites / 2655 tests pass. Not yet merged or deployed; no remote/server action taken.
