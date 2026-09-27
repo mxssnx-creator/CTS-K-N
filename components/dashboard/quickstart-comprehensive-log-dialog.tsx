@@ -206,6 +206,14 @@ export function QuickstartComprehensiveLogDialog() {
   const [logFilter, setLogFilter] = useState<"all" | "info" | "success" | "warning" | "error">("all")
   const logsEndRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const connRef = useRef(activeConnectionId)
+
+  // Never show the previous connection's stats/logs after a switch.
+  useEffect(() => {
+    connRef.current = activeConnectionId
+    setStats(null)
+    setLogs([])
+  }, [activeConnectionId])
 
   const fetchData = useCallback(async (silent = false) => {
     if (!activeConnectionId) return
@@ -216,6 +224,7 @@ export function QuickstartComprehensiveLogDialog() {
         fetch(`/api/connections/progression/${activeConnectionId}/logs?t=${Date.now()}`, { cache: "no-store" }),
       ])
 
+      if (connRef.current !== activeConnectionId) return
       if (statsRes.ok) setStats(await statsRes.json())
 
       if (logsRes.ok) {

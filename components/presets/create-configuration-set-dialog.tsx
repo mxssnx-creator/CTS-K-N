@@ -145,7 +145,8 @@ export function CreateConfigurationSetDialog({
     try {
       const response = await fetch("/api/settings")
       if (response.ok) {
-        const settings = await response.json()
+        // GET /api/settings returns { settings }.
+        const settings = (await response.json())?.settings ?? {}
         setBaseSettings({
           trailingEnabled: settings.trailingEnabled !== false,
           blockEnabled: settings.blockEnabled !== false,

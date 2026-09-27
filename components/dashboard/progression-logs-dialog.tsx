@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -110,6 +110,16 @@ export function ProgressionLogsDialog({
   // Category filter for the log list — "all" by default, otherwise by level
   const [logFilter, setLogFilter] = useState<"all" | "info" | "warning" | "error" | "debug">("all")
 
+  const connRef = useRef(connectionId)
+
+  // Never show the previous connection's stats/logs after a switch.
+  useEffect(() => {
+    connRef.current = connectionId
+    setStats(null)
+    setTradingState(null)
+    setLogs([])
+  }, [connectionId])
+
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -120,6 +130,7 @@ export function ProgressionLogsDialog({
         fetch(`/api/connections/progression/${connectionId}/logs?t=${Date.now()}`, { cache: "no-store" }),
       ])
 
+      if (connRef.current !== connectionId) return
       if (statsRes.ok) setStats(await statsRes.json())
 
       if (logsRes.ok) {

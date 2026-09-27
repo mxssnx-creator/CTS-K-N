@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -74,7 +74,12 @@ export function SeedSystemDialog() {
   const [expandedLogs, setExpandedLogs] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
 
+  const inFlightRef = useRef(false)
+
   const fetchStats = async () => {
+    // 3s poll: skip a tick while the previous (4 sequential requests) is still running.
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     setLoading(true)
     try {
       // Fetch comprehensive monitoring data
@@ -156,6 +161,7 @@ export function SeedSystemDialog() {
     } catch (e) {
       console.warn("System stats fetch failed")
     } finally {
+      inFlightRef.current = false
       setLoading(false)
     }
   }
