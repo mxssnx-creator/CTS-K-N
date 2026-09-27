@@ -219,6 +219,9 @@ export function DirectTradeStatistics() {
   const activeRequestRef = useRef<AbortController | null>(null)
 
   const load = useCallback(async () => {
+    // The status route rejects an unscoped request (400); wait for the
+    // connection selection instead of flashing an "unavailable" error.
+    if (!selectedConnectionId) return
     activeRequestRef.current?.abort()
     const controller = new AbortController()
     activeRequestRef.current = controller

@@ -342,6 +342,9 @@ export function DirectTradeSection() {
   // ─── Data Fetching ────────────────────────────────────────────────────────
 
   const fetchStatus = useCallback(async () => {
+    // The status route requires a connection scope; wait for the selection
+    // instead of issuing a guaranteed 400.
+    if (!selectedConnectionId) return
     if (statusRequestInFlightRef.current) return
     statusRequestInFlightRef.current = true
     const requestGeneration = ++statusRequestGenerationRef.current

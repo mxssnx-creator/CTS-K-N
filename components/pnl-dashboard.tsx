@@ -97,6 +97,8 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
   }
 
   const formatCurrency = (value: number) => {
+    // An empty ledger rendered "+$0.00000000" (and a red "+$0…" worst trade).
+    if (!Number.isFinite(value) || value === 0) return "$0.00"
     const sign = value >= 0 ? "+" : "-"
     const abs = Math.abs(value)
     if (abs >= 1) return `${sign}$${abs.toFixed(2)}`
@@ -179,7 +181,7 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
 
         <div className="rounded-lg border border-border bg-card p-4">
           <p className="text-sm font-medium text-muted-foreground">Best / Worst Trade</p>
-          <div className="flex justify-between">
+          <div className="flex flex-wrap justify-between gap-x-3">
             <p className="text-lg font-semibold text-green-600">{formatCurrency(stats.largest_win)}</p>
             <p className="text-lg font-semibold text-red-600">{formatCurrency(stats.largest_loss)}</p>
           </div>

@@ -14,6 +14,7 @@ import { CalculationDemo } from "@/components/analysis/calculation-demo"
 import { TrendingUp, TrendingDown, Activity, DollarSign, Clock, Target } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { resolvePositionQuantity } from "@/lib/live-position-pnl"
 
 interface ActivePosition {
   id: string
@@ -122,7 +123,9 @@ export default function AnalysisPage() {
           direction,
           entry_price: Number(position.entry_price ?? position.entryPrice ?? position.averageExecutionPrice ?? 0),
           current_price: Number(position.current_price ?? position.currentPrice ?? position.markPrice ?? position.entryPrice ?? 0),
-          quantity: Number(position.quantity ?? position.executedQuantity ?? 0),
+          // Live mirrors keep `quantity: 0` while the filled size lives in
+          // `executedQuantity`; use the canonical open-quantity resolver.
+          quantity: resolvePositionQuantity(position) ?? 0,
           leverage: Number(position.leverage ?? 1),
           unrealized_pnl: Number(position.unrealized_pnl ?? position.unrealizedPnL ?? 0),
           unrealized_pnl_percent: Number(position.unrealized_pnl_percent ?? position.unrealizedRoi ?? position.roi ?? 0),
@@ -265,7 +268,7 @@ export default function AnalysisPage() {
       )}
 
       <Tabs defaultValue="active" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-3 h-9">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3">
           <TabsTrigger value="active" className="text-xs">
             Active Positions
           </TabsTrigger>

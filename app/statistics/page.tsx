@@ -1080,7 +1080,6 @@ export default function StatisticsPage() {
   return (
     <div className="min-w-0 space-y-4 p-3 sm:p-4">
       <StatisticsSectionNav />
-      <DeactivatedLiveConfigs key={selectedConnectionId} connectionId={selectedConnectionId} />
       {!hasRealConnections && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
           <div className="flex items-start gap-2">
@@ -1159,6 +1158,7 @@ export default function StatisticsPage() {
           </Button>
         </div>
       </div>
+      <DeactivatedLiveConfigs key={selectedConnectionId} connectionId={selectedConnectionId} />
 
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         {[

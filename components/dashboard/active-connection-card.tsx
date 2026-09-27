@@ -3072,7 +3072,7 @@ export function ActiveConnectionCard({
                         ].map(({ label, count, total = 0, validOpen = 0, valid = 0, overall = 0, active = 0, continuousRealCreated = 0, axisNetted = 0, evaluated, passed, passRatio, avgPF, avgDDT, avgPosEval, countPosEval, color, isLive }) => (
                           <div key={label} className="space-y-0.5">
                               {/* Main row: coordinated Sets/positions count, pass/fill ratio, PF */}
-                              <div className="flex items-center gap-2 text-[10px]">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px]">
                                 <span className={`font-semibold w-7 shrink-0 ${color}`}>{label}</span>
                                  <span
                                    className="font-semibold tabular-nums"

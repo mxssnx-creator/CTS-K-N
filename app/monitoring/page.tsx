@@ -371,7 +371,7 @@ export default function MonitoringPage() {
           title="System Monitoring"
           description="Real-time system states, logs, and error tracking"
         />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <EmergencyStopButton />
           <Button
             variant="outline"
@@ -396,7 +396,7 @@ export default function MonitoringPage() {
       </div>
 
       <Tabs defaultValue="pnl" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-9">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 2xl:grid-cols-9">
           <TabsTrigger value="pnl">PnL & Performance</TabsTrigger>
           <TabsTrigger value="verification">System Verification</TabsTrigger>
           <TabsTrigger value="states">System States</TabsTrigger>

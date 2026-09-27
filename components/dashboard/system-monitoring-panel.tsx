@@ -71,7 +71,7 @@ export function SystemMonitoringPanel() {
   return (
     <Card className="border-primary/10 bg-card/50">
       <CardContent className="p-3">
-        <div className="flex items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-0.5">
             <Activity className="w-3 h-3 text-green-500" />
             <span className="text-muted-foreground">Engine</span>
