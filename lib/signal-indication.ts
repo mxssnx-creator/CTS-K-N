@@ -1821,6 +1821,17 @@ function lowStopConsensus(
   }
 }
 
+/** Consensus baseline: established sources plus candidates validation made active. */
+export function consensusBaselineEvaluations(
+  evaluations: SignalSourceEvaluation[],
+  lifecycleById: ReadonlyMap<string, string>,
+  dispatchView: ReturnType<typeof snapshotDispatchView>,
+): SignalSourceEvaluation[] {
+  return evaluations.filter((evaluation) =>
+    lifecycleById.get(evaluation.sourceId) !== "candidate" ||
+    dispatchView?.statuses.get(evaluation.sourceId) === "active")
+}
+
 /**
  * Consensus with risk-only vetoes: the gated consensus is emitted only when the
  * baseline population, the gated population and (when enabled) the
@@ -2255,7 +2266,9 @@ async function processSignalIndicationsUncached(
     // Baseline = exactly the pre-validation population (established sources
     // only). The gated consensus must agree with it, so the gate can never
     // turn a previously rejected consensus into an accepted one.
-    baseline: allowedEvaluations.filter((evaluation) => lifecycleById.get(evaluation.sourceId) !== "candidate"),
+    // Candidate sources join once validation has made them active, so a
+    // proven new source counts fully; unvalidated candidates never do.
+    baseline: consensusBaselineEvaluations(allowedEvaluations, lifecycleById, dispatchView),
     gated: dispatchEvaluations,
     settings,
     requiredSourceSignals,
