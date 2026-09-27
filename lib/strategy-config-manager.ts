@@ -42,10 +42,10 @@ export interface PseudoPosition {
    */
   direction?: "long" | "short"
   /**
-   * Indication type that drove this prehistoric position (e.g.
-   * "MA_Cross", "RSI_Band"). Mirrors `StrategyConfig.type`. Only used
-   * by the prehistoric write path to bucket into the correct
-   * (symbol × type × direction) Pos history hash.
+   * Strategy family label of this prehistoric position (e.g. "MA_Cross").
+   * Mirrors `StrategyConfig.type`. It is NOT a Base indication type: the
+   * prehistoric write path records the row into the Base buckets listed in
+   * `HISTORIC_POS_HISTORY_INDICATION_TYPES` (direction/move/…).
    */
   indication_type?: string
   /** UI percent used for the one-time close-cost deduction. */

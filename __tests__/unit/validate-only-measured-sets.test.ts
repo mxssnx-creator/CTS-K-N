@@ -3,23 +3,26 @@ import { resolve } from "node:path"
 
 const src = readFileSync(resolve(process.cwd(), "lib/strategy-coordinator.ts"), "utf8")
 const gate = src.slice(src.indexOf("const requireMeasuredHistoryForBaseValidity"))
+// The measured-count rule lives in one reusable helper next to the window reader.
+const posHistorySrc = readFileSync(resolve(process.cwd(), "lib/pos-history.ts"), "utf8")
+const helper = posHistorySrc.slice(posHistorySrc.indexOf("export function baseMeasuredHistoryRejection"))
 
 describe("a Set validates on measured results, not on an expectation", () => {
   test("the history gate runs BEFORE the PF/DDT comparison", () => {
-    const historyCheck = gate.indexOf("measuredCount < baseHistoryMinCount")
+    const historyCheck = gate.indexOf("baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount)")
     const pfCheck = gate.indexOf("baseSet.avgProfitFactor < metricsBase.minProfitFactor")
     expect(historyCheck).toBeGreaterThan(0)
     expect(historyCheck).toBeLessThan(pfCheck)
   })
 
   test("it counts MEASURED results, not entries or estimates", () => {
-    expect(gate).toContain("Number(baseSet.prevPos?.positionCostRatioCount ?? 0)")
+    expect(helper).toContain("Number(prevPos?.positionCostRatioCount ?? 0)")
     // entryCount is live candidates, prevPos.count includes unmeasured rows.
     expect(gate).not.toContain("baseSet.entryCount < baseHistoryMinCount")
   })
 
   test("a Set below the threshold is rejected with a distinct, readable reason", () => {
-    expect(gate).toContain("base_awaiting_measured_history:")
+    expect(helper).toContain("base_awaiting_measured_history:")
     // Distinguishable from a genuine PF rejection.
     expect(gate).toContain("base_low_profitfactor:")
   })

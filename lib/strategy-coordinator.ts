@@ -65,6 +65,7 @@ import {
   getStrategySetLedgerBatch,
   getStrategyLedgerTotals,
   getStrategySetWindowBatch as readStrategySetWindowBatch,
+  baseMeasuredHistoryRejection,
   type StrategySetLedgerSnapshot,
   type PosWindowStats,
 } from "@/lib/pos-history"
@@ -5128,11 +5129,12 @@ export class StrategyCoordinator {
       // reported — it simply does not become an input for Main until it has
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
-      const measuredCount = Number(baseSet.prevPos?.positionCostRatioCount ?? 0)
-      if (requireMeasuredHistoryForBaseValidity && measuredCount < baseHistoryMinCount) {
+      const measuredHistoryRejection = requireMeasuredHistoryForBaseValidity
+        ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount)
+        : null
+      if (measuredHistoryRejection) {
         baseSet.status = "invalid"
-        baseSet.rejectionReason =
-          `base_awaiting_measured_history: ${measuredCount} < ${baseHistoryMinCount}`
+        baseSet.rejectionReason = measuredHistoryRejection
         continue
       }
       if (

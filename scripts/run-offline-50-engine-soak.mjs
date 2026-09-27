@@ -70,12 +70,11 @@ const server = spawn(process.execPath, ["scripts/start-production.mjs"], {
     NEXT_TELEMETRY_DISABLED: "1",
     REDIS_URL: redisUrl, ALLOW_PROD_INLINE_REDIS: "0", ALLOW_INLINE_REDIS_LIVE_TRADING: "0",
     DISABLE_TRADE_ENGINE_AUTOSTART: "1", DISABLE_TRADE_ENGINE_IN_PROCESS: "0", DISABLE_IN_PROCESS_CONTINUITY: "0",
-    // A fresh database has no measured Base history and the only bootstrap
-    // writer (prehistoric) records strategy-config buckets that Base never
-    // reads, so Main/Real/Live stay empty with the default gate. Use the
-    // documented escape hatch so the downstream stages are exercised; set
-    // OFFLINE_BASE_REQUIRE_MEASURED_HISTORY=1 to observe the default gate.
-    CTS_BASE_REQUIRE_MEASURED_HISTORY: process.env.OFFLINE_BASE_REQUIRE_MEASURED_HISTORY || "0",
+    // Base validates on measured history (default gate on). Prehistoric
+    // closes seed the Base type×direction buckets, so a fresh database
+    // reaches Main/Real/Live with the default. OFFLINE_BASE_REQUIRE_MEASURED_HISTORY=0
+    // selects the estimate-only escape hatch for comparison runs.
+    CTS_BASE_REQUIRE_MEASURED_HISTORY: process.env.OFFLINE_BASE_REQUIRE_MEASURED_HISTORY || "1",
     // Paper fixture volatility (~1.5%/h) so positions can reach TP/SL in a bounded run.
     CTS_SYNTHETIC_VOLATILITY_MULTIPLIER: process.env.OFFLINE_SYNTHETIC_VOLATILITY || "40",
     ALLOW_PROD_SIMULATED: "1", FORCE_SIMULATED: "1", FORCE_LIVE: "0", ALLOW_LIVE_ORDER_PLACEMENT: "0",

@@ -13,6 +13,7 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
+import { HISTORIC_POS_HISTORY_INDICATION_TYPES } from "@/lib/strategy-indication-policy"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import {
@@ -2193,6 +2194,10 @@ export class ConfigSetProcessor {
                           return {
                             symbol: p.symbol || symbol,
                             indicationType: p.indication_type || config.type || "unknown",
+                            // Base reads pos_history by indication type
+                            // (direction/move/…), never by the strategy
+                            // family label, so write the buckets it reads.
+                            indicationTypes: HISTORIC_POS_HISTORY_INDICATION_TYPES,
                             direction: p.direction,
                             pnl: resultPct,
                             pnlPct: resultPct,

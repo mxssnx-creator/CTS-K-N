@@ -162,6 +162,21 @@ const EMPTY_WINDOW: PosWindowStats = {
   recentPositionCostPcts: [],
 }
 
+/**
+ * Base validity gate on MEASURED history: a Base Set becomes a Main input
+ * only once its bucket carries at least `minCount` canonical (pnl% × cost)
+ * closed rows. Returns the rejection reason, or null when the Set qualifies.
+ */
+export function baseMeasuredHistoryRejection(
+  prevPos: Partial<Pick<PosWindowStats, "positionCostRatioCount">> | null | undefined,
+  minCount: number,
+): string | null {
+  const measuredCount = Number(prevPos?.positionCostRatioCount ?? 0)
+  return measuredCount < minCount
+    ? `base_awaiting_measured_history: ${measuredCount} < ${minCount}`
+    : null
+}
+
 // ── Key builders ───────────────────────────────────────────────────────
 //
 // NOTE: the persisted prefix is still `pi_history:` on purpose — see the
@@ -224,9 +239,20 @@ export interface RecordPosClosedInput {
  * the same per-position rounding and rolling records, but aggregates the
  * commutative counters once per bucket and appends each ring in one operation.
  */
+export interface RecordPosClosedBatchEntry extends Omit<RecordPosClosedInput, "connectionId" | "pipeline"> {
+  /**
+   * Every (symbol × type × direction) bucket this one closed row is evidence
+   * for. Historic strategy simulation is indication-type agnostic, so it
+   * lists the Base indication types it measures; the row is written once per
+   * listed bucket and still counted exactly once in the overall rollup.
+   * Absent → the single `indicationType` bucket (live close semantics).
+   */
+  indicationTypes?: readonly string[]
+}
+
 export interface RecordPosClosedBatchInput {
   connectionId: string
-  entries: Array<Omit<RecordPosClosedInput, "connectionId" | "pipeline">>
+  entries: RecordPosClosedBatchEntry[]
   pipeline?: ReturnType<ReturnType<typeof getRedisClient>["multi"]>
 }
 
@@ -334,17 +360,23 @@ export function recordPosClosedBatch(input: RecordPosClosedBatchInput): void {
     const cleanDir = normalizeTradeDirection(entry.direction)
     if (!cleanDir) continue
     const cleanSymbol = entry.symbol || "unknown"
-    const cleanType = entry.indicationType || "unknown"
-    const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
-    let bucket = perBucket.get(bucketKey)
-    if (!bucket) {
-      bucket = createPosHistoryBatchAggregate(
-        hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
-        listKey(connectionId, cleanSymbol, cleanType, cleanDir),
-      )
-      perBucket.set(bucketKey, bucket)
+    const cleanTypes = new Set(
+      entry.indicationTypes?.length
+        ? entry.indicationTypes.map((type) => type || "unknown")
+        : [entry.indicationType || "unknown"],
+    )
+    for (const cleanType of cleanTypes) {
+      const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
+      let bucket = perBucket.get(bucketKey)
+      if (!bucket) {
+        bucket = createPosHistoryBatchAggregate(
+          hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
+          listKey(connectionId, cleanSymbol, cleanType, cleanDir),
+        )
+        perBucket.set(bucketKey, bucket)
+      }
+      addClosedPositionToAggregate(bucket, entry)
     }
-    addClosedPositionToAggregate(bucket, entry)
     addClosedPositionToAggregate(overall, entry)
   }
 
@@ -753,7 +785,12 @@ export async function getPosWindowBatch(
     const results = (await (pipeline as any).exec()) as any[]
     pairs.forEach((p, i) => {
       const raw = results?.[i]
-      const records = (Array.isArray(raw) ? raw[1] : raw) as string[] | null | undefined
+      // node-redis returns the LRANGE array itself; ioredis-style adapters
+      // return [err, array]. A bare `Array.isArray(raw) ? raw[1]` picked one
+      // ring record out of the node-redis array and lost the whole window.
+      const records = (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
+        ? raw[1]
+        : raw) as string[] | null | undefined
       out.set(`${p.indicationType}|${p.direction}`, derivePosWindowStats(records || [], winN))
     })
   } catch {
