@@ -2,7 +2,7 @@ import {
   assertMarginCallEntryAllowed, getMarginCallSnapshot, monitorConnectionMarginCall,
   saveMarginCallSettings, startNewMarginCallSession,
 } from "@/lib/margin-call"
-import { marginCallIsBreached, marginCallPercent } from "@/lib/margin-call-policy"
+import { marginCallGloballyEnabled, marginCallIsBreached, marginCallPercent } from "@/lib/margin-call-policy"
 import { SimulatedConnector } from "@/lib/exchange-connectors/simulated-connector"
 import { getRedisBackend } from "@/lib/redis-db"
 import { clientOrderSystemTypePrefix } from "@/lib/system-order-ownership"
@@ -32,7 +32,10 @@ const mockRedis = {
   lrange: jest.fn(async (key: string, start: number, end: number) => (mockLists.get(key) ?? []).slice(start, end + 1)),
 }
 
+// System-wide margin control master (settings:system margin_call_enabled).
+const mockSystem: { settings: Record<string, any> | null } = { settings: { margin_call_enabled: "1" } }
 jest.mock("@/lib/redis-db", () => ({
+  getSettings: jest.fn(async () => mockSystem.settings),
   getRedisBackend: jest.fn(() => "inline-local"),
   getRedisClient: () => mockRedis,
   initRedis: async () => undefined,
@@ -92,6 +95,25 @@ beforeEach(() => {
   mockPersist.mockResolvedValue(true)
   mockRows.clear(); mockLive.closeFails = false; mockLive.closes = []
   jest.mocked(getRedisBackend).mockReturnValue("inline-local")
+  mockSystem.settings = { margin_call_enabled: "1" }
+})
+
+test("system-wide margin control defaults off and then never observes, locks or closes", async () => {
+  expect(marginCallGloballyEnabled(undefined)).toBe(false)
+  expect(marginCallGloballyEnabled("")).toBe(false)
+  expect(marginCallGloballyEnabled("0")).toBe(false)
+  expect(marginCallGloballyEnabled("1")).toBe(true)
+  for (const settings of [null, {}, { margin_call_enabled: "0" }]) {
+    mockSystem.settings = settings
+    const { connector, state } = account()
+    mockRows.set("x02", [ownRow("x02", "own-1")])
+    await assertMarginCallEntryAllowed("x02", connector)
+    state.equity = 1
+    expect(await monitorConnectionMarginCall("x02", connector, { force: true, startSession: true })).toBeNull()
+    const snapshot = await getMarginCallSnapshot("x02")
+    expect(snapshot).toMatchObject({ enabled: true, systemEnabled: false, active: false, entriesBlocked: false, session: null })
+    expect(mockLive.closes).toEqual([])
+  }
 })
 
 test("defaults to 30 percent remaining equity and treats the boundary strictly", () => {

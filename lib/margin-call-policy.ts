@@ -47,3 +47,13 @@ export function marginCallIsBreached(startEquity: number, currentEquity: number,
   }
   return currentEquity < startEquity * marginCallPercent(percent) / 100
 }
+
+/**
+ * System-wide master switch (system settings `margin_call_enabled`).
+ * Unlike the per-connection flag it defaults to OFF: margin control only runs
+ * when an operator explicitly enables it in Settings.
+ */
+export function marginCallGloballyEnabled(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return false
+  return marginCallEnabled(value)
+}

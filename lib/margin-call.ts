@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { getRedisBackend, getRedisClient, initRedis, persistNow } from "@/lib/redis-db"
+import { getRedisBackend, getRedisClient, getSettings, initRedis, persistNow } from "@/lib/redis-db"
 import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "@/lib/redis-lock-utils"
 import { emitCanonicalEvent } from "@/lib/events/emitter"
 import { isConnectionOwnedClientOrderId, isExactSystemPositionOwner } from "@/lib/system-order-ownership"
@@ -7,6 +7,7 @@ import { SimulatedConnector } from "@/lib/exchange-connectors/simulated-connecto
 import {
   finiteAccountNumber,
   marginCallEnabled,
+  marginCallGloballyEnabled,
   marginCallIsBreached,
   marginCallPercent,
   MARGIN_CALL_OBSERVATION_MS,
@@ -240,6 +241,21 @@ async function closeAccount(id: string, connector: any, state: MarginCallSession
   if (state.status === "closed") await event(id, "positions_closed", state)
 }
 
+async function marginCallSystemEnabled(): Promise<boolean> {
+  try {
+    const system = await getSettings("system")
+    return marginCallGloballyEnabled(system?.margin_call_enabled)
+  } catch {
+    // An unreadable system setting keeps the default (off).
+    return false
+  }
+}
+
+/** Effective switch: the system-wide master (default off) AND the connection flag. */
+async function marginCallActive(connectionFlag: unknown): Promise<boolean> {
+  return marginCallEnabled(connectionFlag) && await marginCallSystemEnabled()
+}
+
 export async function getMarginCallSnapshot(id: string) {
   validId(id)
   await initRedis()
@@ -247,14 +263,18 @@ export async function getMarginCallSnapshot(id: string) {
     getRedisClient().hgetall(settingsKey(id)), readSession(id), getRedisClient().lrange(eventsKey(id), 0, 9),
     getRedisClient().get(faultKey(id)),
   ])
+  const systemEnabled = await marginCallSystemEnabled()
+  const active = systemEnabled && marginCallEnabled(settings?.enabled)
   return {
     connectionId: id,
     enabled: marginCallEnabled(settings?.enabled),
+    systemEnabled,
+    active,
     equityPercent: marginCallPercent(settings?.equity_percent),
     session,
     events: recent.map((raw) => JSON.parse(raw)),
     lastError,
-    entriesBlocked: marginCallEnabled(settings?.enabled) && Boolean(lastError || session?.lastError || session && session.status !== "active"),
+    entriesBlocked: active && Boolean(lastError || session?.lastError || session && session.status !== "active"),
   }
 }
 
@@ -284,7 +304,7 @@ export async function monitorConnectionMarginCall(
   const pending = (async () => {
     await initRedis()
     const settings = await getRedisClient().hgetall(settingsKey(id))
-    if (!marginCallEnabled(settings?.enabled)) return await readSession(id)
+    if (!(await marginCallActive(settings?.enabled))) return await readSession(id)
     const [cached, fault] = await Promise.all([readSession(id), getRedisClient().get(faultKey(id))])
     if (!options.force && fault) throw riskError(fault, "margin_call_snapshot_unavailable")
     if (!options.force && cached && Date.now() - cached.lastObservedAt < MARGIN_CALL_OBSERVATION_MS) return cached
@@ -349,7 +369,7 @@ export async function assertMarginCallEntryAllowed(id: string, connector: any): 
   validId(id)
   await initRedis()
   const settings = await getRedisClient().hgetall(settingsKey(id))
-  if (!marginCallEnabled(settings?.enabled)) return
+  if (!(await marginCallActive(settings?.enabled))) return
   const state = await monitorConnectionMarginCall(id, connector, { startSession: true })
   if (!state || state.status !== "active" || state.lastError) {
     throw riskError("Margin call: this connection is locked for new entries and accumulation")
