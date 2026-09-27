@@ -29,3 +29,22 @@ describe("own orders carry a short hash of this system and connection", () => {
     expect(isConnectionOwnedClientOrderId(`${clientOrderSystemPrefix("bingx-x01")}tpSOLx`, "bingx-x01")).toBe(true)
   })
 })
+
+describe("ids name system, connection AND type", () => {
+  const { clientOrderSystemTypePrefix, clientOrderTypeOf } = require("@/lib/system-order-ownership")
+  test("each engine type gets its own code after the system/connection hash", () => {
+    const base = clientOrderSystemPrefix("bingx-x02")
+    expect(clientOrderSystemTypePrefix("bingx-x02", "main")).toBe(`${base}m`)
+    expect(clientOrderSystemTypePrefix("bingx-x02", "preset")).toBe(`${base}p`)
+    expect(clientOrderSystemTypePrefix("bingx-x02", "signal")).toBe(`${base}s`)
+    expect(clientOrderSystemTypePrefix("bingx-x02", "direct")).toBe(`${base}d`)
+    expect(clientOrderSystemTypePrefix("bingx-x02", undefined)).toBe(`${base}m`)
+  })
+  test("the type is read back from an id, legacy ids stay ours without a type, foreign ids are nobody's", () => {
+    expect(clientOrderTypeOf(`${clientOrderSystemTypePrefix("bingx-x02", "direct")}slBTC123`, "bingx-x02")).toBe("direct")
+    expect(clientOrderTypeOf(`${clientOrderSystemTypePrefix("bingx-x02", "preset")}tpSOL123`, "bingx-x02")).toBe("preset")
+    expect(clientOrderTypeOf("ctsbingxx02slWLDUSDmuixy0in", "bingx-x02")).toBe("legacy")
+    expect(clientOrderTypeOf("ctsax1_lmuj192", "bingx-x02")).toBeNull()
+    expect(clientOrderTypeOf(`${clientOrderSystemTypePrefix("bingx-x01", "main")}slX`, "bingx-x02")).toBeNull()
+  })
+})

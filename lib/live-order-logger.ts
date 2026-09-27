@@ -1,4 +1,4 @@
-import { clientOrderSystemPrefix } from "@/lib/system-order-ownership"
+import { clientOrderSystemTypePrefix } from "@/lib/system-order-ownership"
 /**
  * Comprehensive Live-Order Logger
  *
@@ -44,6 +44,8 @@ const REDIS_LIST_TTL_SECONDS = 7 * 24 * 60 * 60
 // ── Public types ──────────────────────────────────────────────────────
 
 export interface LiveOrderTrace {
+  /** Engine type of the order (main, preset, signal, direct); part of the exchange tracking id. */
+  executionIntent?: string
   /** Stable id shared by PRE / POST / FINAL for the same attempt. */
   traceId: string
   /**
@@ -151,7 +153,7 @@ function compactIdPart(value: string, max = 8): string {
 function makeExchangeTrackingId(args: Omit<LiveOrderTrace, "traceId" | "exchangeTrackingId" | "startedAt">): string {
   const sym = compactIdPart(args.symbol, 8)
   const dir = args.direction === "long" ? "L" : "S"
-  return `${clientOrderSystemPrefix(args.connectionId)}${sym}${dir}${Date.now().toString(36)}${safeRandSuffix()}`.slice(0, 32)
+  return `${clientOrderSystemTypePrefix(args.connectionId, (args as any).executionIntent)}${sym}${dir}${Date.now().toString(36)}${safeRandSuffix()}`.slice(0, 32)
 }
 
 export function newLiveOrderTrace(args: Omit<LiveOrderTrace, "traceId" | "exchangeTrackingId" | "startedAt">): LiveOrderTrace {
