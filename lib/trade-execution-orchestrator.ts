@@ -1,3 +1,4 @@
+import { isSystemCloseableRowStatus } from "@/lib/closeable-row-statuses"
 import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 import { dbCoordinator } from "@/lib/database-coordinator"
 import { ExchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
@@ -490,7 +491,7 @@ export class TradeExecutionOrchestrator {
       const { getLivePositions, closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
       const owned = (await getLivePositions(connectionId)).filter(
         (p) =>
-          (p.status === "open" || p.status === "filled" || p.status === "partially_filled") &&
+          isSystemCloseableRowStatus(p.status) &&
           (!symbol || p.symbol === symbol),
       )
       let closedCount = 0

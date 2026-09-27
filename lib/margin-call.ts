@@ -1,3 +1,4 @@
+import { isSystemCloseableRowStatus } from "@/lib/closeable-row-statuses"
 import { randomUUID } from "node:crypto"
 import { getRedisBackend, getRedisClient, getSettings, initRedis, persistNow } from "@/lib/redis-db"
 import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from "@/lib/redis-lock-utils"
@@ -188,13 +189,12 @@ async function ownedOrders(id: string, connector: any): Promise<any[]> {
   return (await orders(connector)).filter((order) => isConnectionOwnedClientOrderId(clientIdOf(order), id))
 }
 
-const OPEN_ROW_STATUSES = new Set(["open", "filled", "partially_filled", "closing", "closing_partial"])
 
 /** This system's open lifecycle rows on this connection (exact ownership watermark). */
 async function ownedOpenRows(id: string): Promise<any[]> {
   const { getLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
   return (await getLivePositions(id)).filter((row: any) =>
-    isExactSystemPositionOwner(row, id) && OPEN_ROW_STATUSES.has(String(row?.status || "").toLowerCase()))
+    isExactSystemPositionOwner(row, id) && isSystemCloseableRowStatus(row?.status))
 }
 
 /**

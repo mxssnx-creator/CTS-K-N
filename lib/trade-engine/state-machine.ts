@@ -8,6 +8,7 @@
  * 4. Track results and progression
  */
 
+import { isSystemCloseableRowStatus } from "@/lib/closeable-row-statuses"
 import { ExchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { positionTracker, LivePosition, OrderRecord } from "@/lib/positions/position-tracker"
 import { indicatorCalculator, PriceData } from "@/lib/indicators/calculator"
@@ -461,7 +462,7 @@ export class TradeEngineStateMachine {
       const connectionId = this.config.connectionId
       const { getLivePositions, closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
       const positions = (await getLivePositions(connectionId)).filter(
-        (p) => p.status === "open" || p.status === "filled" || p.status === "partially_filled",
+        (p) => isSystemCloseableRowStatus(p.status),
       )
       let closedCount = 0
 

@@ -53,6 +53,26 @@ function bool(value: unknown, fallback: boolean): boolean {
   return fallback
 }
 
+/**
+ * Single resolver for the main Trailing switch, shared by the execution
+ * policy, the coordinator's `variants.trailing` and its BASE trailing master.
+ * Precedence: explicit policy keys, then `variantTrailingEnabled` (the
+ * dialog's primary key), then `strategyBaseTrailingEnabled`, then legacy
+ * `variant_trailing`. Redis string booleans ("false"/"0"/"off") disable.
+ */
+export function resolveTrailingSwitchRaw(source: Partial<Record<string, unknown>> | null | undefined): unknown {
+  const s = source || {}
+  return s.trailingEnabled ?? s.trailing_enabled ?? s.strategyTrailingEnabled
+    ?? s.variantTrailingEnabled ?? s.strategyBaseTrailingEnabled ?? s.variant_trailing
+}
+
+export function resolveTrailingSwitch(
+  source: Partial<Record<string, unknown>> | null | undefined,
+  fallback = true,
+): boolean {
+  return bool(resolveTrailingSwitchRaw(source), fallback)
+}
+
 export function normalizeStrategyExecutionPolicy(
   raw: Partial<Record<string, unknown>> | null | undefined,
 ): StrategyExecutionPolicy {
@@ -78,13 +98,8 @@ export function normalizeStrategyExecutionPolicy(
         ?? source.variantDcaEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.dcaEnabled,
     ),
-    trailingEnabled: bool(
-      source.trailingEnabled ?? source.trailing_enabled ?? source.strategyTrailingEnabled
-        ?? source.variantTrailingEnabled ?? source.variant_trailing
-        // The connection settings dialog persists the Trailing switch as
-        // `variantTrailingEnabled` + `strategyBaseTrailingEnabled`; accept
-        // the latter so reports/stats see the same switch as the engine.
-        ?? source.strategyBaseTrailingEnabled,
+    trailingEnabled: resolveTrailingSwitch(
+      source,
       DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
     ),
   }

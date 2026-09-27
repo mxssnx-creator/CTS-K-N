@@ -157,6 +157,7 @@ import {
   hasAnyStrategyExecutionVariantEnabled,
   isMainTrailingAllowed,
   isStrategyExecutionFamilyEnabled,
+  resolveTrailingSwitch,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
@@ -3465,10 +3466,7 @@ export class StrategyCoordinator {
       // flag; trailing Sets are created at BASE, not emitted as Main Adjusts.
       // The bool() helper only falls back to the default when the key is genuinely
       // absent — an explicit "false" is honoured.
-      this._coordinationSettings.variants.trailing = bool(
-        s.variantTrailingEnabled ?? s.strategyBaseTrailingEnabled,
-        true,
-      )
+      this._coordinationSettings.variants.trailing = resolveTrailingSwitch(s, true)
       this._coordinationSettings.variants.block    = bool(s.variantBlockEnabled,    true)
       this._coordinationSettings.variants.dca      = bool(s.variantDcaEnabled,      false)
       this._coordinationSettings.indicationVariants =
@@ -4088,8 +4086,7 @@ export class StrategyCoordinator {
         )
       }
       // Redis hashes store booleans as strings: "false" must disable too.
-      const rawMaster = settings.strategyBaseTrailingEnabled ?? settings.variantTrailingEnabled
-      const enabledMaster = !(rawMaster === false || rawMaster === "false" || rawMaster === "0" || rawMaster === 0)
+      const enabledMaster = resolveTrailingSwitch(settings, true)
       if (!enabledMaster) {
         ;(this as any)._trailingVariantsCache = []
         return []

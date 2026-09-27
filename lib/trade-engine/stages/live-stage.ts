@@ -7506,6 +7506,22 @@ async function ownSiblingSlotQuantity(position: LivePosition): Promise<number> {
   return total
 }
 
+/**
+ * Unfilled remainder of a pending accumulation: the requested delta minus the
+ * part already reflected in executed quantity (above the pre-submission
+ * baseline, or recorded as applied). Used as the exact own-order explanation
+ * for a venue quantity increase so foreign quantity is never absorbed.
+ */
+function pendingAccumulationUnfilledQuantity(position: LivePosition, executedBefore: number): number {
+  const pending = position.pendingAccumulation
+  if (!pending) return 0
+  const requested = Math.max(0, Number(pending.requestedQuantity || 0))
+  const baseline = Number(pending.positionQuantityBefore)
+  const filledAboveBaseline = Number.isFinite(baseline) ? Math.max(0, executedBefore - baseline) : 0
+  const applied = Math.max(0, Number(pending.appliedFilledQuantity || 0))
+  return Math.max(0, requested - Math.max(filledAboveBaseline, applied))
+}
+
 async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
   slotExchangeQuantity: number,
@@ -7533,7 +7549,7 @@ async function reconcileAuthoritativeExchangeQuantity(
   // reduce-only close or protection sized from it would touch foreign quantity.
   const attributableIncrease =
     Math.max(0, Number(position.remainingQuantity || 0)) +
-    Math.max(0, Number(position.pendingAccumulation?.requestedQuantity || 0))
+    pendingAccumulationUnfilledQuantity(position, before)
   const attributableCeiling = before + attributableIncrease
   const exchangeQuantity = Math.min(
     slotShare,
@@ -22512,6 +22528,7 @@ export const __liveStageTest = {
   settleFilledRowControlsAcrossMembers,
   reconcilePendingAccumulationAndRearm,
   reconcileAuthoritativeExchangeQuantity,
+  pendingAccumulationUnfilledQuantity,
   reconcileInitialEntryBaseQuantity,
   admitAccumulationQuantity,
   physicalAccumulationCount,

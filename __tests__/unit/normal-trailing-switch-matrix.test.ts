@@ -111,7 +111,7 @@ describe("Normal x Trailing execution switch matrix", () => {
     expect(coordinator).toContain("const trailing = mainTrailingAllowed && (profile ? true : bestEntry.confidence >= 0.85)")
     expect(coordinator).toContain("isMainTrailingAllowed(set, executionPolicy)")
     expect(coordinator).toContain("{ dcaIndependentSeed: true }")
-    expect(coordinator).toMatch(/rawMaster === "false"/)
+    expect(coordinator).toMatch(/const enabledMaster = resolveTrailingSwitch\(settings, true\)/)
     const live = readFileSync(join(root, "lib/trade-engine/stages/live-stage.ts"), "utf8")
     expect(live).toContain("realPosition.dcaIndependentSeed === true")
     expect(live).toContain("(p.setVariant !== \"dca\" || allowDcaParent)")
