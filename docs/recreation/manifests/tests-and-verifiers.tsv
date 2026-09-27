@@ -58,6 +58,7 @@ unit	__tests__/unit/axis-default-engages.test.ts
 unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
 unit	__tests__/unit/base-position-batch-coordination.test.ts
+unit	__tests__/unit/base-prehistoric-measured-history.test.ts
 unit	__tests__/unit/base-stage-concurrency.test.ts
 unit	__tests__/unit/best-first-ordering.test.ts
 unit	__tests__/unit/bingx-account-snapshot-recovery.test.ts
