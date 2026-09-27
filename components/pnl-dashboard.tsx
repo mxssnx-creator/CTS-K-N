@@ -57,10 +57,14 @@ interface ApiResponse {
   duration: number
 }
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json())
+const fetcher = async (url: string) => {
+  const res = await fetch(url, { cache: "no-store" })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
 
 export function PnLDashboard({ connectionId }: { connectionId?: string | null }) {
-  const { data, error, isLoading } = useSWR<ApiResponse>(
+  const { data, isLoading } = useSWR<ApiResponse>(
     connectionId ? `/api/trade-engine/pnl-stats?connection_id=${encodeURIComponent(connectionId)}` : null,
     fetcher,
     { refreshInterval: 3000 }
@@ -84,7 +88,7 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
     )
   }
 
-  if (error || !stats) {
+  if (!stats) {
     return (
       <div className="w-full rounded-lg border border-border bg-card p-6 text-center">
         <p className="text-destructive">Failed to load PnL data</p>

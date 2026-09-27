@@ -22,25 +22,27 @@ export function ConnectionLogsPanel({ connectionId, autoRefresh = true }: Connec
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    let disposed = false
     const fetchLogs = async () => {
       try {
         const response = await fetch(`/api/connections/${connectionId}/logs`)
         if (response.ok) {
           const data = await response.json()
-          setLogs(data.logs || [])
+          if (!disposed) setLogs(data.logs || [])
         }
       } catch {
         // non-critical
       } finally {
-        setLoading(false)
+        if (!disposed) setLoading(false)
       }
     }
 
     fetchLogs()
 
-    if (autoRefresh) {
-      const interval = setInterval(fetchLogs, 3000)
-      return () => clearInterval(interval)
+    const interval = autoRefresh ? setInterval(fetchLogs, 3000) : undefined
+    return () => {
+      disposed = true
+      if (interval) clearInterval(interval)
     }
   }, [connectionId, autoRefresh])
 

@@ -21,11 +21,13 @@ export function ProcessingProgressPanel({ connectionId }: ProcessingProgressPane
       return
     }
 
+    let disposed = false
     const fetchMetrics = async () => {
       try {
         const response = await fetch(`/api/metrics/processing?connectionId=${encodeURIComponent(connectionId)}`)
         if (!response.ok) throw new Error('Failed to fetch metrics')
         const data = await response.json()
+        if (disposed) return
         if (data.success) {
           setMetrics(data.data.current)
           setError(null)
@@ -33,15 +35,18 @@ export function ProcessingProgressPanel({ connectionId }: ProcessingProgressPane
           setError(data.error)
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error')
+        if (!disposed) setError(err instanceof Error ? err.message : 'Unknown error')
       } finally {
-        setLoading(false)
+        if (!disposed) setLoading(false)
       }
     }
 
     fetchMetrics()
     const interval = setInterval(fetchMetrics, 5000)
-    return () => clearInterval(interval)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
   }, [connectionId])
 
   // ── Combined pipeline progress ────────────────────────────────────────────
