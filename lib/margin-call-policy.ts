@@ -54,6 +54,8 @@ export function marginCallIsBreached(startEquity: number, currentEquity: number,
  * when an operator explicitly enables it in Settings.
  */
 export function marginCallGloballyEnabled(value: unknown): boolean {
-  if (value === undefined || value === null || value === "") return false
-  return marginCallEnabled(value)
+  if (value === true || value === 1) return true
+  // Default-off master: only an explicit "on" token enables it. Unknown or
+  // malformed values keep it off (the per-connection flag defaults to on).
+  return ["1", "true", "on", "yes", "enabled"].includes(String(value ?? "").trim().toLowerCase())
 }

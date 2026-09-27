@@ -388,12 +388,15 @@ export function extendSyntheticCandles(
   const interval = Math.max(1_000, Math.floor(Number(intervalMs) || 1_000))
   const lastTs = Number(last?.timestamp)
   if (!last || !Number.isFinite(lastTs) || !(Number(last.close) > 0)) return candles
-  const missing = Math.min(Math.max(REALTIME_CANDLE_TAIL, keep), Math.floor((now - lastTs) / interval))
+  const elapsed = Math.floor((now - lastTs) / interval)
+  const missing = Math.min(Math.max(REALTIME_CANDLE_TAIL, keep), elapsed)
   if (missing <= 0) return candles
   const continuation = generateSyntheticCandles(symbol, Number(last.close), missing, interval)
   // generateSyntheticCandles anchors its window to Date.now(); re-anchor it
-  // directly after the last stored candle so timestamps stay strictly ordered.
-  const anchoredEnd = lastTs + missing * interval
+  // so it ends at the newest whole interval before `now` (strictly after the
+  // last stored candle). With a gap longer than the capped window the series
+  // must still end at `now`, not `missing` intervals after the stale tail.
+  const anchoredEnd = lastTs + elapsed * interval
   const offset = anchoredEnd - Number(continuation[continuation.length - 1].timestamp)
   for (const candle of continuation) candle.timestamp = Number(candle.timestamp) + offset
   return [...candles, ...continuation].slice(-Math.max(1, keep))

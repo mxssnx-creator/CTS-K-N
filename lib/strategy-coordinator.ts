@@ -1672,8 +1672,10 @@ export function compareStrategySetsBestFirst(
 ): number {
   const l = Number(left?.avgProfitFactor)
   const r = Number(right?.avgProfitFactor)
-  const lv = Number.isFinite(l) ? l : Number.NEGATIVE_INFINITY
-  const rv = Number.isFinite(r) ? r : Number.NEGATIVE_INFINITY
+  // NaN/undefined sort last; a +Infinity PF (no losing closes) is a real
+  // best value and must stay first, not be demoted with the non-finite rows.
+  const lv = Number.isNaN(l) ? Number.NEGATIVE_INFINITY : l
+  const rv = Number.isNaN(r) ? Number.NEGATIVE_INFINITY : r
   if (lv !== rv) return rv > lv ? 1 : -1
   const lk = String(left?.setKey || "")
   const rk = String(right?.setKey || "")

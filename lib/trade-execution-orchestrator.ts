@@ -501,6 +501,14 @@ export class TradeExecutionOrchestrator {
       }
       this.log(`✓ Closed ${closedCount}/${owned.length} system positions${symbol ? ` for ${symbol}` : " globally"}`)
       const duration = Date.now() - startTime
+      // Every owned row must be confirmed closed; a partial result is a failure.
+      if (closedCount !== owned.length) {
+        return {
+          success: false,
+          error: `Closed only ${closedCount}/${owned.length} system positions`,
+          details: `Closed ${closedCount}/${owned.length} system positions in ${duration}ms`,
+        }
+      }
       return {
         success: true,
         details: `Closed ${closedCount}/${owned.length} system positions in ${duration}ms`,
