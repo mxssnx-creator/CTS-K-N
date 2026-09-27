@@ -810,6 +810,7 @@ app/login/page.tsx
 app/logistics/layout.tsx
 app/logistics/page.tsx
 app/main/layout.tsx
+app/main/page.tsx
 app/main/realtime/layout.tsx
 app/main/realtime/page.tsx
 app/monitoring-advanced/layout.tsx

@@ -15,6 +15,7 @@ route	dynamic_segments	imported_components	source
 /live-trading		live-trading/live-overview-compact,live-trading/live-position-table,live-trading/live-trading-types,live-trading/trade-history-panel,page-header,ui/badge,ui/button,ui/card	app/live-trading/page.tsx
 /login		ui/button,ui/card,ui/input,ui/label	app/login/page.tsx
 /logistics		auth-guard,page-header,ui/badge,ui/button,ui/collapsible,ui/progress	app/logistics/page.tsx
+/main			app/main/page.tsx
 /main/realtime		realtime/market-data-monitor,realtime/position-monitor	app/main/realtime/page.tsx
 /monitoring		emergency-stop-button,monitoring/backup-manager,monitoring/monitoring-alerts,monitoring/trade-engine-status,page-header,pnl-dashboard,system/system-verification-panel,ui/badge,ui/button,ui/card,ui/input,ui/scroll-area,ui/select,ui/tabs	app/monitoring/page.tsx
 /monitoring-advanced		page-scaffold,ui/badge,ui/card,ui/tabs	app/monitoring-advanced/page.tsx
