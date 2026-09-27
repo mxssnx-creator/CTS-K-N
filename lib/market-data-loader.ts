@@ -339,7 +339,8 @@ export function generateSyntheticCandles(
     
     // Scale the random walk with bar duration so M1 Forex fixtures do not
     // look like 60 repeated one-second moves.
-    const change = (Math.random() - 0.5) * lastClose * 0.000167 * Math.sqrt(candleInterval / 60_000)
+    const change =
+      (Math.random() - 0.5) * lastClose * 0.000167 * Math.sqrt(candleInterval / 60_000) * syntheticVolatilityMultiplier()
     const open = lastClose
     const close = Math.max(lastClose * 0.8, lastClose + change)
     const high = Math.max(open, close) * (1 + Math.random() * 0.0001)
@@ -358,6 +359,60 @@ export function generateSyntheticCandles(
     lastClose = close
   }
 
+  return candles
+}
+
+/**
+ * Paper-only knob for offline soaks: scales the synthetic random walk so a
+ * bounded run can reach TP/SL. Default 1 keeps the historic fixture unchanged.
+ */
+function syntheticVolatilityMultiplier(): number {
+  const value = Number(process.env.CTS_SYNTHETIC_VOLATILITY_MULTIPLIER || 1)
+  return Number.isFinite(value) && value > 0 ? Math.min(value, 1_000) : 1
+}
+
+/**
+ * Continue a synthetic series up to `now`. Without this a paper/simulated
+ * process re-published the same load-time candles on every refresh, so the
+ * realtime price never moved and no pseudo/paper position could ever reach
+ * TP/SL (Base never gained measured history; Main/Real/Live stayed empty).
+ */
+export function extendSyntheticCandles(
+  symbol: string,
+  candles: MarketDataCandle[],
+  intervalMs = 1_000,
+  keep = Math.max(REALTIME_CANDLE_TAIL, candles.length),
+  now = Date.now(),
+): MarketDataCandle[] {
+  const last = candles[candles.length - 1]
+  const interval = Math.max(1_000, Math.floor(Number(intervalMs) || 1_000))
+  const lastTs = Number(last?.timestamp)
+  if (!last || !Number.isFinite(lastTs) || !(Number(last.close) > 0)) return candles
+  const missing = Math.min(Math.max(REALTIME_CANDLE_TAIL, keep), Math.floor((now - lastTs) / interval))
+  if (missing <= 0) return candles
+  const continuation = generateSyntheticCandles(symbol, Number(last.close), missing, interval)
+  // generateSyntheticCandles anchors its window to Date.now(); re-anchor it
+  // directly after the last stored candle so timestamps stay strictly ordered.
+  const anchoredEnd = lastTs + missing * interval
+  const offset = anchoredEnd - Number(continuation[continuation.length - 1].timestamp)
+  for (const candle of continuation) candle.timestamp = Number(candle.timestamp) + offset
+  return [...candles, ...continuation].slice(-Math.max(1, keep))
+}
+
+/** Previously written synthetic history (chunks), oldest first; [] when real. */
+async function readSyntheticHistory(
+  client: any,
+  symbol: string,
+  connectionId: string,
+): Promise<MarketDataCandle[]> {
+  const envelopeRaw = await client.get(marketDataKey(symbol, "1s", connectionId))
+  if (!envelopeRaw || JSON.parse(envelopeRaw)?.source !== "synthetic") return []
+  const chunks = ((await client.lrange(marketDataKey(symbol, "history:chunks", connectionId), 0, -1)) || []) as string[]
+  const candles: MarketDataCandle[] = []
+  for (const chunk of chunks) {
+    const rows = JSON.parse(chunk)
+    if (Array.isArray(rows)) candles.push(...rows)
+  }
   return candles
 }
 
@@ -733,17 +788,41 @@ export async function loadMarketDataForEngine(
           // 250 seconds collapse to only about five one-minute bars and make
           // Row-Real/Row-Live appear valid while their configured 90-minute
           // coordinate range is actually unevaluable.
-          const basePrice = basePrices[symbol] || 100
-          candles = generateSyntheticCandles(
-            symbol,
-            basePrice,
-            Math.max(
-              250,
-              requiredHistoryCandles,
-              options.requireHistory ? requiredHistoryCandles : 0,
-            ),
-            historyIntervalSeconds * 1_000,
+          const syntheticWindow = Math.max(
+            250,
+            requiredHistoryCandles,
+            options.requireHistory ? requiredHistoryCandles : 0,
           )
+          // A stale synthetic cache is continued, not regenerated from the
+          // fixed base price: regeneration reset every paper price to its
+          // seed on each refresh, so paper positions could never move to
+          // TP/SL across refreshes.
+          const previousSynthetic = await readSyntheticHistory(
+            client,
+            symbol,
+            scopedConnectionId,
+          ).catch(() => [] as MarketDataCandle[])
+          candles = previousSynthetic.length > 0
+            ? extendSyntheticCandles(
+                symbol,
+                previousSynthetic,
+                historyIntervalSeconds * 1_000,
+                syntheticWindow,
+              )
+            : generateSyntheticCandles(
+                symbol,
+                basePrices[symbol] || 100,
+                syntheticWindow,
+                historyIntervalSeconds * 1_000,
+              )
+          if (candles.length < syntheticWindow) {
+            candles = generateSyntheticCandles(
+              symbol,
+              Number(candles.at(-1)?.close) || basePrices[symbol] || 100,
+              syntheticWindow,
+              historyIntervalSeconds * 1_000,
+            )
+          }
           source = "synthetic"
           syntheticCount++
           console.log(`[v0] [MarketData] ⚠ Using synthetic ${historyIntervalSeconds === 60 ? "M1" : "1s"} data for ${symbol} (exchange fetch failed)`)
@@ -932,6 +1011,9 @@ export async function updateMarketDataForSymbol(symbol: string, connectionId?: s
         ticker = existingData.ticker
         sourceTimeframe = existingData.sourceTimeframe || (marketType === "forex" ? "M1" : "1s")
         sourceIntervalSeconds = existingData.sourceIntervalSeconds || marketDataIntervalSeconds(marketType)
+        if (source === "synthetic" && Array.isArray(candles) && syntheticMarketDataAllowed()) {
+          candles = extendSyntheticCandles(symbol, candles, sourceIntervalSeconds * 1_000)
+        }
       } else {
         const allowSynthetic = syntheticMarketDataAllowed() || await isConnectionDemo(scopedConnectionId)
         if (!allowSynthetic) {
