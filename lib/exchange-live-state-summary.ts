@@ -1,3 +1,4 @@
+import { isConnectionOwnedClientOrderId } from "@/lib/system-order-ownership"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { getConnection } from "@/lib/redis-db"
 import { hasConnectionCredentials } from "@/lib/connection-state-utils"
@@ -227,7 +228,8 @@ export function isSystemTrackedExchangeOrder(
   const identifiers = venueOrderIdentifiers(order)
   return identifiers.some((identifier) =>
     scope.orderIdentifiers.has(identifier) ||
-    identifier.toLowerCase().startsWith(scope.clientOrderPrefix),
+    identifier.toLowerCase().startsWith(scope.clientOrderPrefix) ||
+    isConnectionOwnedClientOrderId(identifier, scope.connectionId),
   )
 }
 

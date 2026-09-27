@@ -1,3 +1,4 @@
+import { clientOrderSystemPrefix } from "@/lib/system-order-ownership"
 /**
  * Comprehensive Live-Order Logger
  *
@@ -148,10 +149,9 @@ function compactIdPart(value: string, max = 8): string {
 }
 
 function makeExchangeTrackingId(args: Omit<LiveOrderTrace, "traceId" | "exchangeTrackingId" | "startedAt">): string {
-  const conn = compactIdPart(args.connectionId, 8)
   const sym = compactIdPart(args.symbol, 8)
   const dir = args.direction === "long" ? "L" : "S"
-  return `cts${conn}${sym}${dir}${Date.now().toString(36)}${safeRandSuffix()}`.slice(0, 32)
+  return `${clientOrderSystemPrefix(args.connectionId)}${sym}${dir}${Date.now().toString(36)}${safeRandSuffix()}`.slice(0, 32)
 }
 
 export function newLiveOrderTrace(args: Omit<LiveOrderTrace, "traceId" | "exchangeTrackingId" | "startedAt">): LiveOrderTrace {
