@@ -383,7 +383,7 @@ describe("Signal indication persistence and independent performance gates", () =
     }
     expect(mockHashes.get("indications_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
     expect(mockHashes.get("indication_sets_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
-    expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(36)
+    expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(45)
     const candidateRank = JSON.parse(
       mockHashes.get("signal:candidate_rank:conn-a")?.BTCUSDT || "{}",
     )
@@ -629,10 +629,16 @@ describe("Signal indication persistence and independent performance gates", () =
       })
 
       const cryptoSourceCount = SIGNAL_SOURCE_DEFINITIONS.filter((source) => source.assetClass !== "forex").length
-      expect(indications).toHaveLength(cryptoSourceCount + 1)
+      // Unvalidated candidate sources are fetched/evaluated but never dispatch.
+      const dispatchableCount = SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
+        source.assetClass !== "forex" && source.lifecycle !== "candidate",
+      ).length
+      expect(dispatchableCount).toBe(35)
+      expect(indications).toHaveLength(dispatchableCount + 1)
       expect(indications.filter((item) => item.metadata?.mode === "direct_source")).toHaveLength(
-        cryptoSourceCount,
+        dispatchableCount,
       )
+      expect(indications.some((item) => item.metadata?.signal?.sourceId === "okx-spot")).toBe(false)
       const consensus = indications.find((item) => item.metadata?.mode === "multi_source_consensus")
       expect(consensus).toEqual(expect.objectContaining({
         type: "signal",
@@ -644,7 +650,7 @@ describe("Signal indication persistence and independent performance gates", () =
         evaluatedSourceCount: cryptoSourceCount,
         allowedSourceCount: cryptoSourceCount,
       }))
-      expect(consensus.metadata.signal.sourceIds).toHaveLength(cryptoSourceCount)
+      expect(consensus.metadata.signal.sourceIds).toHaveLength(dispatchableCount)
       expect(consensus.metadata.signal.sourceIds).toEqual(
         expect.arrayContaining(["bingx-swap", "binance-usdm", "bybit-linear", "okx-swap"]),
       )
@@ -796,13 +802,14 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(settings.performanceDisableBelowPnl).toBe(0)
   })
 
-  test("defaults all 36 registry sources, physical capacity 350 and best-first admission", () => {
+  test("defaults all 45 registry sources, physical capacity 350 and best-first admission", () => {
     const defaults = normalizeSignalIndicationSettings({})
     const clamped = normalizeSignalIndicationSettings({
       maxPositionsTotal: 9_999,
       positionSelectionMode: "fifo",
     })
-    expect(defaults.maxSourcesPerCycle).toBe(36)
+    expect(defaults.maxSourcesPerCycle).toBe(45)
+    expect(defaults.sourceValidation.maxActiveSources).toBe(50)
     expect(defaults.maxPositionsTotal).toBe(350)
     expect(defaults.positionSelectionMode).toBe("best_first")
     expect(clamped.maxPositionsTotal).toBe(350)

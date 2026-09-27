@@ -1669,7 +1669,7 @@ describe("Real-stage Block overlays", () => {
     const sourceIds = SIGNAL_SOURCE_DEFINITIONS
       .filter((definition) => definition.assetClass !== "forex")
       .map((definition) => definition.id)
-    expect(sourceIds).toHaveLength(35)
+    expect(sourceIds).toHaveLength(44)
     const signalRisk = {
       stopLossPct: 0.35,
       takeProfitPct: 0.9,

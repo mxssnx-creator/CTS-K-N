@@ -17,6 +17,8 @@ import {
   normalizeSignalIndicationSettings,
   signalSettingsResponse,
 } from "@/lib/signal-indication"
+import { SIGNAL_ACTIVE_SOURCES_MAX, SIGNAL_ACTIVE_SOURCES_MIN } from "@/lib/signal-source-validation"
+import { invalidateSignalSourceSnapshotCache } from "@/lib/signal-source-validation-store"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { normalizeIdentityVolumeFactor } from "@/lib/constants"
 import { SystemLogger } from "@/lib/system-logger"
@@ -75,6 +77,25 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: "Settings are required" }, { status: 400 })
   }
 
+  const rawValidation = (body.settings as Record<string, any>).sourceValidation
+  if (rawValidation !== undefined && rawValidation !== null) {
+    const capacity = (rawValidation as Record<string, unknown>).maxActiveSources
+    if (
+      capacity !== undefined &&
+      !(Number.isInteger(Number(capacity)) &&
+        Number(capacity) >= SIGNAL_ACTIVE_SOURCES_MIN &&
+        Number(capacity) <= SIGNAL_ACTIVE_SOURCES_MAX)
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `sourceValidation.maxActiveSources must be an integer between ${SIGNAL_ACTIVE_SOURCES_MIN} and ${SIGNAL_ACTIVE_SOURCES_MAX}`,
+        },
+        { status: 400 },
+      )
+    }
+  }
+
   const save = async () => {
     const settings = normalizeSignalIndicationSettings(body.settings)
     const signalVolumeFactor = normalizeIdentityVolumeFactor(body.signalVolumeFactor)
@@ -90,6 +111,7 @@ export async function POST(request: Request) {
     ])
     invalidateSignalSettingsCache()
     invalidateSignalCycleCache()
+    invalidateSignalSourceSnapshotCache()
     const connections = await getAllConnections().catch(() => [])
     await Promise.allSettled(
       connections.map(async (connection: any) => {
