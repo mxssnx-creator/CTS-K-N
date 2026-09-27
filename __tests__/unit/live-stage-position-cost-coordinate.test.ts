@@ -2,6 +2,13 @@ import {
   deriveProtectionFromProfitFactor,
   sanitizeLiveProfitFactor,
 } from "@/lib/strategy-coordinator"
+import { setActiveProtectionFloors } from "@/lib/protection-floors"
+
+// These contracts pre-date the 0.5 % operator stop-loss floor; they are
+// exercised here with an explicitly lowered floor. Default-floor behavior
+// is covered by __tests__/unit/protection-floors.test.ts.
+beforeAll(() => { setActiveProtectionFloors({ minStopLossPct: 0.05, minTrailingStopDistancePct: 0.05 }) })
+afterAll(() => { setActiveProtectionFloors({}) })
 
 describe("Live-stage PositionCost ratio contract", () => {
   const venueCosts = {

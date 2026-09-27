@@ -17,6 +17,7 @@
  * NOW: 100% Redis-backed, no SQL.
  */
 
+import { applyTrailingDistanceFloorRatio } from "@/lib/protection-floors"
 import { getRedisClient } from "@/lib/redis-db"
 import { PseudoPositionManager } from "./pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -918,7 +919,10 @@ export class RealtimeProcessor {
       if (entryPrice <= 0 || currentPrice <= 0) return
 
       const startRatio = parseFloat(position.trailing_start_ratio || "0")
-      const stopRatio = parseFloat(position.trailing_stop_ratio || "0")
+      const rawStopRatio = parseFloat(position.trailing_stop_ratio || "0")
+      // Operator floor: a configured trailing distance is raised to the
+      // minimum trailing-stop distance (default 0.5 %), never lowered.
+      const stopRatio = rawStopRatio > 0 ? applyTrailingDistanceFloorRatio(rawStopRatio) : rawStopRatio
       let stepRatio = parseFloat(position.trailing_step_ratio || "0")
       const client = getRedisClient()
       const hashKey = `pseudo_position:${this.connectionId}:${position.id}`

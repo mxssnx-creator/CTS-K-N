@@ -3,6 +3,13 @@ import {
   buildActiveOutbreakProtectionProfiles,
 } from "@/lib/active-outbreak-indication"
 import { deriveProtectionFromActiveOutbreak } from "@/lib/strategy-coordinator"
+import { setActiveProtectionFloors } from "@/lib/protection-floors"
+
+// These contracts pre-date the 0.5 % operator stop-loss floor; they are
+// exercised here with an explicitly lowered floor. Default-floor behavior
+// is covered by __tests__/unit/protection-floors.test.ts.
+beforeAll(() => { setActiveProtectionFloors({ minStopLossPct: 0.05, minTrailingStopDistancePct: 0.05 }) })
+afterAll(() => { setActiveProtectionFloors({}) })
 
 describe("Active outbreak strategy protection integration", () => {
   const profiles = buildActiveOutbreakProtectionProfiles({

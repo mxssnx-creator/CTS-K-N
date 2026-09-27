@@ -11,6 +11,13 @@ import {
   normalizeSignalIndicationSettings,
 } from "@/lib/signal-indication"
 import { deriveProtectionFromSignalRisk } from "@/lib/strategy-coordinator"
+import { setActiveProtectionFloors } from "@/lib/protection-floors"
+
+// These contracts pre-date the 0.5 % operator stop-loss floor; they are
+// exercised here with an explicitly lowered floor. Default-floor behavior
+// is covered by __tests__/unit/protection-floors.test.ts.
+beforeAll(() => { setActiveProtectionFloors({ minStopLossPct: 0.05, minTrailingStopDistancePct: 0.05 }) })
+afterAll(() => { setActiveProtectionFloors({}) })
 
 function candles(direction: "long" | "short", volatilityPct = 0.12) {
   return Array.from({ length: 60 }, (_, index) => {

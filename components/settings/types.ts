@@ -69,6 +69,10 @@ export interface Settings {
   previousPositionsCount: number
   lastStateCount: number
 
+  // Protection floors (percent; default 0.5, range 0.05-10)
+  minStopLossPct?: number
+  minTrailingStopDistancePct?: number
+
   // Trailing Configuration
   trailingEnabled: boolean
   trailingStartValues: string
