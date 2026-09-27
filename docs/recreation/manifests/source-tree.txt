@@ -434,6 +434,7 @@ __tests__/unit/strategy-position-entry-ledger.test.ts
 __tests__/unit/strategy-profit-factor-contract.test.ts
 __tests__/unit/strategy-real-materialization-limit.test.ts
 __tests__/unit/strategy-real-stats.test.ts
+__tests__/unit/strategy-set-identity-and-block-pause-retention.test.ts
 __tests__/unit/strategy-sets-processor.test.ts
 __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts

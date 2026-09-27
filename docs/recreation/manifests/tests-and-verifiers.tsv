@@ -420,6 +420,7 @@ unit	__tests__/unit/strategy-position-entry-ledger.test.ts
 unit	__tests__/unit/strategy-profit-factor-contract.test.ts
 unit	__tests__/unit/strategy-real-materialization-limit.test.ts
 unit	__tests__/unit/strategy-real-stats.test.ts
+unit	__tests__/unit/strategy-set-identity-and-block-pause-retention.test.ts
 unit	__tests__/unit/strategy-sets-processor.test.ts
 unit	__tests__/unit/strategy-snapshot-consistency.test.ts
 unit	__tests__/unit/strategy-stage-accounting.test.ts
