@@ -469,10 +469,61 @@ function stableIndicationConfig(value: unknown): string {
 }
 
 /**
+ * Metadata fields that describe *how* a direct (non-exact) indication was
+ * configured, as opposed to what it measured this cycle. Only these fields
+ * may contribute to the fallback Set identity. Live measurements such as
+ * bodyRatio, rangePercent, score, agreement, directionEvaluation,
+ * multiRangeCoordination, activeOutbreak metrics or `primary` change every
+ * cycle; hashing them created a new Base Set (and its Redis index/ring/pause
+ * entries) for nearly every indication, so per-Set history never accumulated
+ * and Redis grew without a plateau (finding F2).
+ */
+export const STRATEGY_INDICATION_CONFIGURATION_FIELDS = [
+  "mode",
+  "alignment",
+  "rangeUnit",
+  "sameMarketMoveRequired",
+  "postDirectionChangeOnly",
+  "exitVariant",
+  "timeframe",
+  "timeframeMode",
+  "timeframeMinutes",
+  "timeframesMinutes",
+  "combined",
+  "configuredDrawdownFactor",
+  "configuredLastSituationRatio",
+  "configuredActiveSituationRatio",
+  "higherRangeDrawdownScale",
+  "minimumAgreement",
+  "rangeSteps",
+] as const
+
+function allowListedIndicationConfiguration(metadata: unknown): Record<string, unknown> {
+  const source = metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : {}
+  const selected: Record<string, unknown> = {}
+  for (const field of STRATEGY_INDICATION_CONFIGURATION_FIELDS) {
+    const value = source[field]
+    if (value === undefined || value === null) continue
+    // Configuration fields are scalars or scalar lists; nested objects are
+    // always computed diagnostics and never part of the identity.
+    if (typeof value === "object" && !(Array.isArray(value) && value.every((item) => typeof item !== "object"))) continue
+    selected[field] = value
+  }
+  return selected
+}
+
+/**
  * Complete configuration identity used by Base, open-slot dedupe, cooldowns,
  * lineage, and current statistics. Persisted indication Set keys are already
- * exact and therefore take precedence; direct/fallback indications derive the
- * same deterministic identity from their complete configuration payload.
+ * exact and therefore take precedence; direct/fallback indications derive a
+ * deterministic identity from their explicit `config` payload or, failing
+ * that, from the allow-listed configuration fields of their metadata only.
+ *
+ * `configSet` (stamped by storeIndications) is deliberately NOT an identity:
+ * getConfigurationSet() returns the constant "config:default" for every
+ * numeric-valued indication, so honouring it would collapse unrelated modes
+ * of a type/direction into one Set and make the snapshot path disagree with
+ * the direct path for the same indication.
  */
 export function strategyIndicationConfigurationIdentity(indication: any): string {
   const name = String(
@@ -488,8 +539,7 @@ export function strategyIndicationConfigurationIdentity(indication: any): string
     indication?.setKey ??
     indication?.set_key ??
     indication?.configurationId ??
-    indication?.configId ??
-    indication?.configSet
+    indication?.configId
   // Persisted indication Set keys already encode type, name, complete config,
   // symbol and direction. Preserve them byte-for-byte so an upgrade does not
   // rename historical Strategy/Base lineage or create duplicate lanes.
@@ -504,8 +554,11 @@ export function strategyIndicationConfigurationIdentity(indication: any): string
       `sl=${Number(signal.stopLossPct) || 0}`,
     ].join("|")
   }
+  const explicitConfig = indication?.config ?? indication?.metadata?.configuration
   return `name=${name}|config=${stableIndicationConfig(
-    indication?.config ?? indication?.metadata?.configuration ?? indication?.metadata ?? {},
+    explicitConfig && typeof explicitConfig === "object"
+      ? explicitConfig
+      : allowListedIndicationConfiguration(indication?.metadata),
   )}`
 }
 
