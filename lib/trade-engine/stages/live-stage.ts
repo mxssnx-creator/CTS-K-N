@@ -232,6 +232,7 @@ import {
   isConnectionOwnedClientOrderId,
   isExactSystemPositionOwner,
   clientOrderSystemPrefix,
+  clientOrderSystemTypePrefix,
 } from "@/lib/system-order-ownership"
 import {
   auditLiveEntryProtectionAdmission,
@@ -4130,13 +4131,13 @@ async function recordPositionAdjustmentProgression(
   )
 }
 
-function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "id" | "symbol" | "connectionId">): string {
-  // "kn" + system hash identifies THIS system on the connection (see
-  // clientOrderSystemPrefix); other systems on the same account never match.
+function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "id" | "symbol" | "connectionId"> & { executionIntent?: unknown }): string {
+  // "kn" + system/connection hash + type code identifies THIS system, this
+  // connection and this engine type; other systems and other types never match.
   const kind = String(prefix || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const symbol = String(position.symbol || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const suffix = nanoid(8).replace(/[^a-zA-Z0-9]/g, "")
-  return `${clientOrderSystemPrefix(position.connectionId)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
+  return `${clientOrderSystemTypePrefix(position.connectionId, position.executionIntent)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
 }
 
 function firstNonEmptyIdentifier(...values: unknown[]): string | undefined {
@@ -14909,6 +14910,7 @@ export async function executeLivePosition(
       symbol: realPosition.symbol,
       direction: realPosition.direction,
       exchangeSide,
+      executionIntent: String((livePosition as any).executionIntent || "main"),
     })
 
     console.log(

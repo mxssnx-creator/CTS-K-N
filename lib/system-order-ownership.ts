@@ -43,6 +43,29 @@ export function clientOrderSystemPrefix(connectionId: unknown): string {
   return `kn${systemOrderHash(connectionId)}`
 }
 /**
+ * The order's type inside this system, one character after the system hash:
+ * m = main, p = preset, s = signal, d = direct trade, b = bot. The connection
+ * is part of the hash, so an id names system, connection AND type — each part
+ * of the system can tell its own orders from another part's.
+ */
+export type SystemOrderType = "main" | "preset" | "signal" | "direct" | "bot"
+const TYPE_CODE: Record<SystemOrderType, string> = { main: "m", preset: "p", signal: "s", direct: "d", bot: "b" }
+const CODE_TYPE: Record<string, SystemOrderType> = { m: "main", p: "preset", s: "signal", d: "direct", b: "bot" }
+export function normalizeSystemOrderType(value: unknown): SystemOrderType {
+  const v = text(value).toLowerCase()
+  return (["main", "preset", "signal", "direct", "bot"] as const).includes(v as SystemOrderType) ? v as SystemOrderType : "main"
+}
+export function clientOrderSystemTypePrefix(connectionId: unknown, type: unknown): string {
+  return `${clientOrderSystemPrefix(connectionId)}${TYPE_CODE[normalizeSystemOrderType(type)]}`
+}
+/** The type of one of our orders; "legacy" for ids before the short hash, null when not ours. */
+export function clientOrderTypeOf(clientOrderId: unknown, connectionId: unknown): SystemOrderType | "legacy" | null {
+  const id = text(clientOrderId).toLowerCase()
+  const prefix = clientOrderSystemPrefix(connectionId).toLowerCase()
+  if (id.length > prefix.length && id.startsWith(prefix)) return CODE_TYPE[id.charAt(prefix.length)] ?? "legacy"
+  return isConnectionOwnedClientOrderId(id, connectionId) ? "legacy" : null
+}
+/**
  * Orders placed before the short hash carry the legacy prefix. They stay ours
  * so running positions keep their protection; set
  * CTS_ACCEPT_LEGACY_ORDER_PREFIX=0 once none of them remain.

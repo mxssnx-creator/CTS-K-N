@@ -1,4 +1,4 @@
-import { isConnectionOwnedClientOrderId } from "@/lib/system-order-ownership"
+import { clientOrderTypeOf, isConnectionOwnedClientOrderId } from "@/lib/system-order-ownership"
 import type { AggregateProtectionPlan } from "@/lib/aggregate-protection-coordination"
 
 export type ProtectionSlotDirection = "long" | "short"
@@ -598,13 +598,22 @@ export function auditProtectionSlotOrders(input: {
   }
 
   const exactSlotControls = orders.filter((order) => orderMatchesSlot(order, symbol, input.direction))
+  // A control of ANOTHER type of this system (e.g. a direct-trade stop on a
+  // slot audited for main rows) is that type's, not an orphan of these rows:
+  // it is neither mapped, flagged nor cancelled here. Legacy ids without a
+  // type keep the previous behaviour.
+  const memberTypes = new Set(input.members.map((member) => String((member as any).executionIntent || "main").toLowerCase()))
+  const ownedByMemberType = (order: Record<string, any>): boolean => {
+    const type = clientOrderTypeOf(protectionOrderClientId(order), input.connectionId)
+    return type === null || type === "legacy" || memberTypes.size === 0 || memberTypes.has(type)
+  }
   const connectionOwned = exactSlotControls.filter((order) =>
     isConnectionOwnedProtectionOrderForSlot(
       order,
       input.connectionId,
       symbol,
       input.direction,
-    ),
+    ) && ownedByMemberType(order),
   )
   const orphanOrders: ProtectionSlotOrphanOrder[] = []
   for (const order of connectionOwned) {
