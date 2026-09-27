@@ -70,17 +70,24 @@ export function SystemVerificationPanel() {
   const [autoRefresh, setAutoRefresh] = useState(true)
 
   useEffect(() => {
+    let cancelled = false
+    let inFlight = false
     const fetchStatus = async () => {
+      if (inFlight) return
+      inFlight = true
       try {
         const res = await fetch("/api/system/verify-engine")
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
+        if (cancelled) return
         setStatus(data)
         setError(null)
       } catch (err) {
+        if (cancelled) return
         setError(err instanceof Error ? err.message : "Failed to fetch verification")
       } finally {
-        setLoading(false)
+        inFlight = false
+        if (!cancelled) setLoading(false)
       }
     }
 
@@ -88,12 +95,19 @@ export function SystemVerificationPanel() {
 
     if (autoRefresh) {
       const timer = setInterval(fetchStatus, 5000)
-      return () => clearInterval(timer)
+      return () => {
+        cancelled = true
+        clearInterval(timer)
+      }
+    }
+    return () => {
+      cancelled = true
     }
   }, [autoRefresh])
 
   if (loading) return <div className="p-4 text-center">Loading verification...</div>
-  if (error) return <div className="p-4 text-red-600">Error: {error}</div>
+  // Keep showing the last good snapshot when a later poll fails.
+  if (error && !status) return <div className="p-4 text-red-600">Error: {error}</div>
 
   // Prefer the active connection; fall back to the first enabled connection
   const allComps = (status?.components ?? []) as ComponentStatus[]

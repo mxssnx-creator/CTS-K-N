@@ -117,6 +117,19 @@ const resolveDbStableGrowthLimit = () => Math.max(
 )
 let DB_STABLE_GROWTH_LIMIT = resolveDbStableGrowthLimit()
 
+const QUICKSTART_EXTRA = (() => {
+  const raw = String(process.env.SOAK_QUICKSTART_EXTRA || "").trim()
+  if (!raw) return {}
+  const parsed = JSON.parse(raw)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("SOAK_QUICKSTART_EXTRA must be a JSON object")
+  }
+  for (const forbidden of ["liveTrade", "is_live_trade", "symbols", "connectionId"]) {
+    if (forbidden in parsed) throw new Error(`SOAK_QUICKSTART_EXTRA may not override ${forbidden}`)
+  }
+  return parsed
+})()
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function describeRequestError(error) {
@@ -748,6 +761,8 @@ async function main() {
         prevPosMinCount: 1,
         mainEvalPosCount: 1,
         realEvalPosCount: 1,
+        // Optional offline-matrix overrides (e.g. {"normalEnabled":false}).
+        ...QUICKSTART_EXTRA,
       },
       timeoutMs: 120_000,
     })).json

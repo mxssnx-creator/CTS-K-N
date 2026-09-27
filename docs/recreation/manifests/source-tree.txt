@@ -72,7 +72,9 @@ __tests__/unit/axis-default-engages.test.ts
 __tests__/unit/backtest-result-accounting.test.ts
 __tests__/unit/balanced-config-selection.test.ts
 __tests__/unit/base-position-batch-coordination.test.ts
+__tests__/unit/base-prehistoric-measured-history.test.ts
 __tests__/unit/base-stage-concurrency.test.ts
+__tests__/unit/best-first-ordering.test.ts
 __tests__/unit/bingx-account-snapshot-recovery.test.ts
 __tests__/unit/bingx-instrument-rules.test.ts
 __tests__/unit/bingx-library-fast-path.test.ts
@@ -99,12 +101,14 @@ __tests__/unit/bots-backtest.test.ts
 __tests__/unit/bots-cron-nonblocking.test.ts
 __tests__/unit/bots-runner.test.ts
 __tests__/unit/bounded-concurrency.test.ts
+__tests__/unit/branch-audit-fixes.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/cache-margin-leverage-setup.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
 __tests__/unit/clear-progressions-recovery.test.ts
 __tests__/unit/close-accounting-backfill.test.ts
 __tests__/unit/close-adopted-positions.test.ts
+__tests__/unit/closeable-row-statuses.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
 __tests__/unit/connection-coordinator.test.ts
@@ -196,6 +200,7 @@ __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
 __tests__/unit/family-statistics-surface.test.ts
 __tests__/unit/forced-symbols.test.ts
+__tests__/unit/foreign-order-ownership-matrix.test.ts
 __tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
@@ -235,6 +240,7 @@ __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/live-config-performance.test.ts
 __tests__/unit/live-counts-exclude-block.test.ts
+__tests__/unit/live-dispatch-idle-reset.test.ts
 __tests__/unit/live-dispatch-outcome.test.ts
 __tests__/unit/live-entry-budget-block-cache.test.ts
 __tests__/unit/live-entry-protection-admission.test.ts
@@ -283,6 +289,7 @@ __tests__/unit/market-data-1s-backfill.test.ts
 __tests__/unit/market-data-fetch-deadline.test.ts
 __tests__/unit/market-data-history-contract.test.ts
 __tests__/unit/market-data-second-coverage.test.ts
+__tests__/unit/market-data-synthetic-continuation.test.ts
 __tests__/unit/minimum-scales-with-variant.test.ts
 __tests__/unit/monitoring-stats-route.test.ts
 __tests__/unit/multi-range-coordination.test.ts
@@ -290,6 +297,7 @@ __tests__/unit/navigation-and-pages.test.ts
 __tests__/unit/navigation-contract.test.ts
 __tests__/unit/no-fixed-sleeps-regression.test.ts
 __tests__/unit/no-foreign-quantity-adoption.test.ts
+__tests__/unit/normal-trailing-switch-matrix.test.ts
 __tests__/unit/orchestrated-verifier-safety.test.ts
 __tests__/unit/order-quantity.test.ts
 __tests__/unit/orders-market-notional.test.ts
@@ -363,6 +371,7 @@ __tests__/unit/redis-runtime-root.test.ts
 __tests__/unit/redis-secondary-indexes.test.ts
 __tests__/unit/redis-stats.test.ts
 __tests__/unit/release-entry-lock-on-early-exit.test.ts
+__tests__/unit/request-sequence.test.ts
 __tests__/unit/requested-regressions.test.ts
 __tests__/unit/reset-db-preserves-foreign-keys.test.ts
 __tests__/unit/resume-stalled-system-close.test.ts
@@ -392,9 +401,11 @@ __tests__/unit/shutdown-keeps-positions.test.ts
 __tests__/unit/signal-analytics.test.ts
 __tests__/unit/signal-capacity-self-heal.test.ts
 __tests__/unit/signal-config-matrix.test.ts
+__tests__/unit/signal-historic-eval.test.ts
 __tests__/unit/signal-indication.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
+__tests__/unit/signal-source-validation.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/site-logs-key.test.ts
 __tests__/unit/slot-audit-type-separation.test.ts
@@ -429,6 +440,7 @@ __tests__/unit/strategy-position-entry-ledger.test.ts
 __tests__/unit/strategy-profit-factor-contract.test.ts
 __tests__/unit/strategy-real-materialization-limit.test.ts
 __tests__/unit/strategy-real-stats.test.ts
+__tests__/unit/strategy-set-identity-and-block-pause-retention.test.ts
 __tests__/unit/strategy-sets-processor.test.ts
 __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts
@@ -533,6 +545,7 @@ app/api/cron/generate-indications/route.ts
 app/api/cron/historic-test/route.ts
 app/api/cron/schedule-indications/route.ts
 app/api/cron/server-continuity/route.ts
+app/api/cron/signal-source-optimization/route.ts
 app/api/cron/sync-live-positions/route.ts
 app/api/data/indications/route.ts
 app/api/data/positions/[id]/route.ts
@@ -704,6 +717,7 @@ app/api/settings/indications/active-advanced/route.ts
 app/api/settings/indications/common/route.ts
 app/api/settings/indications/main/route.ts
 app/api/settings/indications/signal/route.ts
+app/api/settings/indications/signal/sources/route.ts
 app/api/settings/risk-and-engines/route.ts
 app/api/settings/route.ts
 app/api/settings/set-limits/route.ts
@@ -1016,6 +1030,7 @@ components/settings/settings-editor-dialog.tsx
 components/settings/settings-file-manager.tsx
 components/settings/settings-protection-panel.tsx
 components/settings/signal-indication-settings.tsx
+components/settings/signal-source-validation-panel.tsx
 components/settings/statistics-overview.tsx
 components/settings/strategy-coordination-section.tsx
 components/settings/strategy/base-strategy-settings.tsx
@@ -1254,6 +1269,7 @@ lib/ccxt-helper.ts
 lib/circuit-breaker.ts
 lib/client-session-persistence.ts
 lib/close-accounting-backfill.ts
+lib/closeable-row-statuses.ts
 lib/common-indicator-config.ts
 lib/comprehensive-error-handler.ts
 lib/config.ts
@@ -1541,6 +1557,7 @@ lib/redis-runtime-bootstrap.ts
 lib/redis-runtime-root.ts
 lib/redis-scan.ts
 lib/redis-service.ts
+lib/request-sequence.ts
 lib/risk-manager.ts
 lib/route-presentation.ts
 lib/runtime-boot-id.ts
@@ -1563,9 +1580,13 @@ lib/settings-storage.ts
 lib/short-range-grid.ts
 lib/signal-analytics.ts
 lib/signal-config-matrix.ts
+lib/signal-historic-eval.ts
 lib/signal-indication.ts
 lib/signal-position-policy.ts
+lib/signal-source-optimizer.ts
 lib/signal-source-registry.ts
+lib/signal-source-validation-store.ts
+lib/signal-source-validation.ts
 lib/signal-trailing.ts
 lib/simple-icons.tsx
 lib/simple-toast.ts
@@ -1711,6 +1732,7 @@ scripts/audit-bingx-account-readonly.ts
 scripts/audit-bingx-vst-soak-settlements.ts
 scripts/audit-dca-sl-candidates.ts
 scripts/audit-live-position-ledgers.mjs
+scripts/audit-offline-engine-stats.mjs
 scripts/autotest-drift.mjs
 scripts/backup-local-redis.mjs
 scripts/baseline/fetch-candles-1m.mjs
@@ -1738,6 +1760,8 @@ scripts/ensure-server-autoboot.sh
 scripts/fetch-dca-public-history.py
 scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
+scripts/historic-signal-data.ts
+scripts/historic-signal-eval.ts
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
 scripts/inspect-redis-aof-key-history.mjs
@@ -1755,6 +1779,7 @@ scripts/maintain-github-origin.sh
 scripts/monitor-prod-8h.sh
 scripts/next-build-race-classifier.mjs
 scripts/next-fs-rm-compat.cjs
+scripts/normal-trailing-switch-sim.ts
 scripts/normalize-next-env.mjs
 scripts/npm-redis-service.mjs
 scripts/optimize-dca-14d.ts
@@ -1793,6 +1818,7 @@ scripts/run-engine-probe.mjs
 scripts/run-managed-db-migrate.mjs
 scripts/run-minute-scheduler.mjs
 scripts/run-native-redis-coordination.mjs
+scripts/run-offline-50-engine-soak.mjs
 scripts/run-prod-20symbols-8h.sh
 scripts/run-prod-preview-check.mjs
 scripts/run-production-inline-ui-audit.mjs
@@ -1802,6 +1828,7 @@ scripts/runtime-recovery.sh
 scripts/scan-release-secrets.mjs
 scripts/service-control.sh
 scripts/setup-github-cli.sh
+scripts/simulate-signal-source-ranking.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs
 scripts/start-development.mjs

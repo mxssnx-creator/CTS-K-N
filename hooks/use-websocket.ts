@@ -14,6 +14,7 @@ export function useWebSocket(url: string) {
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const simulateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     connect()
@@ -31,7 +32,8 @@ export function useWebSocket(url: string) {
       setIsConnected(true)
 
       // Simulate receiving messages
-      const interval = setInterval(() => {
+      if (simulateIntervalRef.current) clearInterval(simulateIntervalRef.current)
+      simulateIntervalRef.current = setInterval(() => {
         const simulatedMessage: WebSocketMessage = {
           type: "price_update",
           data: {
@@ -43,8 +45,6 @@ export function useWebSocket(url: string) {
         }
         setLastMessage(simulatedMessage)
       }, 3000)
-
-      return () => clearInterval(interval)
     } catch (error) {
       console.error("[v0] WebSocket connection error:", error)
       setIsConnected(false)
@@ -57,6 +57,10 @@ export function useWebSocket(url: string) {
   }
 
   const disconnect = () => {
+    if (simulateIntervalRef.current) {
+      clearInterval(simulateIntervalRef.current)
+      simulateIntervalRef.current = null
+    }
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null

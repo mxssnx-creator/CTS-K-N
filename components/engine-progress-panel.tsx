@@ -41,7 +41,7 @@ export function EngineProgressPanel({ connectionId }: EngineProgressPanelProps) 
       try {
         const res = await fetch(`/api/engine-progress?connectionId=${connectionId}`, { cache: "no-store" })
         const data = await res.json()
-        if (!disposed) setProgress(data.progress)
+        if (!disposed && res.ok && data?.progress) setProgress(data.progress)
       } catch (error) {
         if (!disposed) console.error("Failed to fetch progress:", error)
       } finally {

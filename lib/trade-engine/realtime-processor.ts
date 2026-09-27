@@ -46,6 +46,8 @@ import {
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { isExactSystemPositionOwner } from "@/lib/system-order-ownership"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import { isMainTrailingAllowed, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -747,12 +749,42 @@ export class RealtimeProcessor {
 
       // Update trailing stop if enabled — the prev-set context is on
       // the position object so `updateTrailingStop` can honour it.
-      if (position.trailing_enabled === "1" || position.trailing_enabled === true) {
+      if (
+        (position.trailing_enabled === "1" || position.trailing_enabled === true) &&
+        await this.isTrailingAllowedFor(position)
+      ) {
         await this.updateTrailingStop(position, currentPrice)
       }
     } catch (error) {
       console.error(`[v0] Failed to process position ${position.id}:`, error)
     }
+  }
+
+  /**
+   * Global main-strategy Trailing switch for already open positions. When the
+   * operator turns Trailing off, no main-strategy position (including
+   * Axis/Block/DCA positions derived from a trailing Base) may keep
+   * activating or ratcheting a trailing stop. An already armed stop is kept
+   * as-is (never loosened); it simply stops moving. Signal keeps its own lane.
+   */
+  private _trailingPolicy: { enabled: boolean; at: number } | null = null
+  private async isTrailingAllowedFor(position: any): Promise<boolean> {
+    const now = Date.now()
+    if (!this._trailingPolicy || now - this._trailingPolicy.at > 5_000) {
+      let enabled = this._trailingPolicy?.enabled ?? true
+      try {
+        const settings = await getCanonicalConnectionSettingsOverlay(this.connectionId)
+        enabled = normalizeStrategyExecutionPolicy(settings).trailingEnabled
+      } catch { /* keep last known value */ }
+      this._trailingPolicy = { enabled, at: now }
+    }
+    return isMainTrailingAllowed(
+      {
+        indicationType: position?.indication_type ?? position?.indicationType,
+        trailingMode: position?.trailing_mode,
+      },
+      { trailingEnabled: this._trailingPolicy.enabled },
+    )
   }
 
   /**

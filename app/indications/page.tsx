@@ -69,6 +69,7 @@ export default function IndicationsPage() {
   // low-latency deltas; polling repairs missed events and process restarts.
   useEffect(() => {
     let disposed = false
+    let inFlight = false
     const loadIndications = async () => {
       if (!resolvedConnectionId) {
         setIndications([])
@@ -76,6 +77,8 @@ export default function IndicationsPage() {
         setIsLoading(false)
         return
       }
+      if (inFlight) return
+      inFlight = true
       try {
         const response = await fetch(
           `/api/data/indications?connectionId=${encodeURIComponent(resolvedConnectionId)}`,
@@ -94,9 +97,11 @@ export default function IndicationsPage() {
           throw new Error(data.error || "Unknown error")
         }
       } catch (error) {
+        // Keep the last good indications on a transient failure instead of
+        // blanking the list every 3s poll.
         console.error("[Indications] Failed to load:", error)
-        if (!disposed) setIndications([])
       } finally {
+        inFlight = false
         if (!disposed) setIsLoading(false)
       }
     }

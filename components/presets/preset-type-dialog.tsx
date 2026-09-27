@@ -70,7 +70,8 @@ export function PresetTypeDialog({ open, onOpenChange, presetType, onSave }: Pre
       setLoadingBaseSettings(true)
       const response = await fetch("/api/settings")
       if (response.ok) {
-        const settings = await response.json()
+        // GET /api/settings returns { settings }.
+        const settings = (await response.json())?.settings ?? {}
         setBaseSettings({
           trailingEnabled: settings.trailingEnabled !== false, // Default true
           blockEnabled: settings.blockEnabled !== false, // Default true

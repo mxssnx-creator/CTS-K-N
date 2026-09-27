@@ -64,39 +64,43 @@ interface ExchangeConnectionSettingsDialogProps {
   connectionName: string
 }
 
+// Defaults used for keys a connection has never saved, so a reopen for a
+// different connection never inherits the previous connection's values.
+const DEFAULT_CONNECTION_SETTINGS: ConnectionSettings = {
+  baseVolumeFactor: MIN_VOLUME_FACTOR,
+  baseVolumeFactorLive: MIN_VOLUME_FACTOR,
+  baseVolumeFactorPreset: MIN_VOLUME_FACTOR,
+  baseVolumeFactorSignal: MIN_VOLUME_FACTOR,
+  liveTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  liveTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  liveTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  liveTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  liveTradeDrawdownTimeHours: 12,
+  presetTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
+  presetTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  presetTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  presetTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
+  presetTradeDrawdownTimeHours: 12,
+  presetTradeBlockEnabled: true,
+  presetTradeDcaEnabled: false,
+  trailingWithTrailing: true,
+  blockEnabled: true,
+  dcaEnabled: false,
+  normalEnabled: true,
+  useMainSymbols: false,
+  arrangementType: "market_cap_24h",
+  arrangementCount: 10,
+  volumeRangePercentage: 20,
+  targetPositions: 50, // Updated default target positions to 50
+}
+
 export function ExchangeConnectionSettingsDialog({
   open,
   onOpenChange,
   connectionId,
   connectionName,
 }: ExchangeConnectionSettingsDialogProps) {
-  const [settings, setSettings] = useState<ConnectionSettings>({
-    baseVolumeFactor: MIN_VOLUME_FACTOR,
-    baseVolumeFactorLive: MIN_VOLUME_FACTOR,
-    baseVolumeFactorPreset: MIN_VOLUME_FACTOR,
-    baseVolumeFactorSignal: MIN_VOLUME_FACTOR,
-    liveTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
-    liveTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
-    liveTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
-    liveTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
-    liveTradeDrawdownTimeHours: 12,
-    presetTradeProfitFactorMinBase: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
-    presetTradeProfitFactorMinMain: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
-    presetTradeProfitFactorMinReal: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
-    presetTradeProfitFactorMinLive: MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT,
-    presetTradeDrawdownTimeHours: 12,
-    presetTradeBlockEnabled: true,
-    presetTradeDcaEnabled: false,
-    trailingWithTrailing: true,
-    blockEnabled: true,
-    dcaEnabled: false,
-    normalEnabled: true,
-    useMainSymbols: false,
-    arrangementType: "market_cap_24h",
-    arrangementCount: 10,
-    volumeRangePercentage: 20,
-    targetPositions: 50, // Updated default target positions to 50
-  })
+  const [settings, setSettings] = useState<ConnectionSettings>(DEFAULT_CONNECTION_SETTINGS)
 
   const [presetTypes, setPresetTypes] = useState<PresetType[]>([])
   const [selectedPresetType, setSelectedPresetType] = useState<string>("")
@@ -122,6 +126,7 @@ export function ExchangeConnectionSettingsDialog({
   }
 
   const loadSettings = async () => {
+    setSelectedPresetType("")
     try {
       const [connSettingsRes, indicationRes, strategyRes, globalSettingsRes] = await Promise.all([
         fetch(`/api/settings/connections/${connectionId}/settings`),
@@ -130,15 +135,19 @@ export function ExchangeConnectionSettingsDialog({
         fetch("/api/settings"),
       ])
 
-      const loadedSettings = connSettingsRes.ok ? await connSettingsRes.json() : {}
-      const indicationSettings = indicationRes.ok ? await indicationRes.json() : null
+      // GET /settings returns { connection, settings, statistics }; the
+      // editable fields live under `settings` (fallback: legacy flat shape).
+      const loadedResponse = connSettingsRes.ok ? await connSettingsRes.json() : {}
+      const loadedSettings = loadedResponse?.settings ?? loadedResponse ?? {}
+      // Both routes wrap their payload as { settings }.
+      const indicationSettings = indicationRes.ok ? (await indicationRes.json())?.settings ?? null : null
       const strategySettings = strategyRes.ok ? await strategyRes.json() : null
-      const globalSettings = globalSettingsRes.ok ? await globalSettingsRes.json() : null
+      const globalSettings = globalSettingsRes.ok ? (await globalSettingsRes.json())?.settings ?? null : null
       const mainStages = loadedSettings?.strategies?.main || {}
       const presetStages = loadedSettings?.strategies?.preset || {}
 
       setSettings({
-        ...settings,
+        ...DEFAULT_CONNECTION_SETTINGS,
         ...loadedSettings,
         baseVolumeFactor: MIN_VOLUME_FACTOR,
         baseVolumeFactorLive: normalizeIdentityVolumeFactor(
@@ -299,11 +308,15 @@ export function ExchangeConnectionSettingsDialog({
       }
 
       if (selectedPresetType) {
-        await fetch(`/api/settings/connections/${connectionId}/preset-type`, {
+        const presetTypeResponse = await fetch(`/api/settings/connections/${connectionId}/preset-type`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ preset_type_id: selectedPresetType }),
         })
+        if (!presetTypeResponse.ok) {
+          const errorData = await presetTypeResponse.json().catch(() => ({}))
+          throw new Error(errorData.error || "Settings saved, but failed to save preset type")
+        }
       }
 
       toast.success("Connection settings saved successfully")

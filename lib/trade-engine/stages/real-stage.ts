@@ -37,6 +37,10 @@ export interface RealPosition {
   /** Exact DCA generation already admitted by an independently leased owner.
    * The Live stage still enforces its canonical profile and total-volume cap. */
   requestedDcaStep?: number
+  /** Transient dispatch flag: the Normal family is not executed, so a DCA Set
+   * without an authoritative parent may open its own base-volume parent
+   * (step 0) instead of waiting forever for a Normal fill. Never persisted. */
+  dcaIndependentSeed?: boolean
   /** Connection-local risk percentage supplied by an independently leased
    * canonical execution owner such as Direct-Trade. */
   positionCostPctOverride?: number

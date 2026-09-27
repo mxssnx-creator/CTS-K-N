@@ -46,6 +46,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/cron/historic-test	GET,POST	cron	force-dynamic	60	cron	app/api/cron/historic-test/route.ts
 /api/cron/schedule-indications	GET,POST	cron	force-dynamic	60	cron	app/api/cron/schedule-indications/route.ts
 /api/cron/server-continuity	GET,POST	cron	force-dynamic	60	cron	app/api/cron/server-continuity/route.ts
+/api/cron/signal-source-optimization	GET,POST	cron	force-dynamic	60	cron	app/api/cron/signal-source-optimization/route.ts
 /api/cron/sync-live-positions	GET	cron	force-dynamic	60	cron	app/api/cron/sync-live-positions/route.ts
 /api/data/indications	GET	data	force-dynamic		none-detected	app/api/data/indications/route.ts
 /api/data/positions	GET	data	force-dynamic		none-detected	app/api/data/positions/route.ts
@@ -218,6 +219,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/settings/indications/common	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/common/route.ts
 /api/settings/indications/main	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/main/route.ts
 /api/settings/indications/signal	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/signal/route.ts
+/api/settings/indications/signal/sources	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/signal/sources/route.ts
 /api/settings/risk-and-engines	GET,POST	settings	force-dynamic		none-detected	app/api/settings/risk-and-engines/route.ts
 /api/settings/set-limits	GET,POST	settings	force-dynamic		none-detected	app/api/settings/set-limits/route.ts
 /api/settings/system	GET,PATCH	settings	force-dynamic		none-detected	app/api/settings/system/route.ts

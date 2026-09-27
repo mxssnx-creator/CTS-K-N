@@ -63,3 +63,21 @@ describe("strategy execution family policy", () => {
     expect(isStrategyExecutionFamilyEnabled("signal", policy)).toBe(true)
   })
 })
+
+describe("shared trailing switch resolver", () => {
+  const { resolveTrailingSwitch } = jest.requireActual("@/lib/strategy-execution-policy")
+  test("prefers variantTrailingEnabled over strategyBaseTrailingEnabled and honours string false/0", () => {
+    const cases: Array<[Record<string, unknown>, boolean]> = [
+      [{ variantTrailingEnabled: "false", strategyBaseTrailingEnabled: "true" }, false],
+      [{ variantTrailingEnabled: "true", strategyBaseTrailingEnabled: "false" }, true],
+      [{ strategyBaseTrailingEnabled: "0" }, false],
+      [{ strategyBaseTrailingEnabled: "1", variant_trailing: "false" }, true],
+      [{ variant_trailing: "false" }, false],
+      [{}, true],
+    ]
+    for (const [settings, expected] of cases) {
+      expect(resolveTrailingSwitch(settings, true)).toBe(expected)
+      expect(normalizeStrategyExecutionPolicy(settings).trailingEnabled).toBe(expected)
+    }
+  })
+})

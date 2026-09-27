@@ -228,7 +228,10 @@ export function isSystemTrackedExchangeOrder(
   const identifiers = venueOrderIdentifiers(order)
   return identifiers.some((identifier) =>
     scope.orderIdentifiers.has(identifier) ||
-    identifier.toLowerCase().startsWith(scope.clientOrderPrefix) ||
+    // The bare legacy prefix is NOT checked here: isConnectionOwnedClientOrderId
+    // already accepts it while CTS_ACCEPT_LEGACY_ORDER_PREFIX allows, and a
+    // second unconditional check would keep counting foreign "cts…" ids after
+    // the legacy prefix has been retired.
     isConnectionOwnedClientOrderId(identifier, scope.connectionId),
   )
 }

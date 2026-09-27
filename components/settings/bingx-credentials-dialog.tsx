@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -21,6 +21,18 @@ export function BingXCredentialsDialog({ open, onOpenChange, onSuccess }: BingXC
   const [loading, setLoading] = useState(false)
   const [showSecrets, setShowSecrets] = useState(false)
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Cancel the pending auto-close on unmount, and clear a stale success/error
+  // message so a reopened dialog starts clean.
+  useEffect(() => () => { if (closeTimerRef.current) clearTimeout(closeTimerRef.current) }, [])
+  useEffect(() => {
+    if (!open) {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+      setMessage(null)
+    }
+  }, [open])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -43,7 +55,8 @@ export function BingXCredentialsDialog({ open, onOpenChange, onSuccess }: BingXC
 
       if (result.success) {
         setMessage({ type: "success", text: "BingX credentials configured successfully!" })
-        setTimeout(() => {
+        closeTimerRef.current = setTimeout(() => {
+          closeTimerRef.current = null
           setApiKey("")
           setApiSecret("")
           setApiPassphrase("")

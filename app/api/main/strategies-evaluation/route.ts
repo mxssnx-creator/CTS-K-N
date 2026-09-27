@@ -18,10 +18,17 @@ export async function GET() {
 
     // Fetch all strategies
     for await (const key of iterateRedisKeys(client, "strategies:*", { count: 250 })) {
-      const strategy = await client.get(key)
-      if (!strategy) continue
-
-      const data = JSON.parse(strategy)
+      // `strategies:*` also matches hash/set/list indexes (e.g. per-connection
+      // Set indexes). One non-string key made GET throw WRONGTYPE and zeroed
+      // the entire response; skip keys that are not JSON strategy documents.
+      let data: any
+      try {
+        const strategy = await client.get(key)
+        if (!strategy) continue
+        data = JSON.parse(strategy)
+      } catch {
+        continue
+      }
       const mainType = data.mainType as "base" | "main" | "real" | "live"
 
       if (strategyStats[mainType]) {

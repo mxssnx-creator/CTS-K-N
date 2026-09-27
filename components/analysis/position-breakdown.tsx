@@ -121,7 +121,7 @@ export function PositionBreakdown({ analysis }: PositionBreakdownProps) {
                   <strong>Configuration details:</strong> {category.description}
                 </div>
 
-                <Progress value={(category.total_positions / analysis.total_actual_positions) * 100} className="h-2" />
+                <Progress value={analysis.total_actual_positions > 0 ? (category.total_positions / analysis.total_actual_positions) * 100 : 0} className="h-2" />
               </div>
             ))}
           </div>

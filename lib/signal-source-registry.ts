@@ -11,6 +11,7 @@ import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 
 export type SignalSourceMarket = "perpetual" | "futures" | "spot" | "aggregator" | "forex"
 export type SignalSourceAssetClass = "crypto" | "forex"
+export type SignalSourceLifecycle = "established" | "candidate"
 
 export interface SignalCandle {
   timestamp: number
@@ -42,6 +43,12 @@ export interface SignalSourceDefinition {
   timeframeMinutes: number
   officialDocs: string
   enabledByDefault: true
+  /**
+   * "candidate" sources are registered and fetchable but never dispatch
+   * until the source-validation optimizer has proven them on their own
+   * after-cost outcomes (see lib/signal-source-validation.ts).
+   */
+  lifecycle?: SignalSourceLifecycle
   supportedBases?: readonly string[]
   buildRequest: (context: SignalSourceContext) => SignalSourceRequest
   parse: (payload: unknown) => SignalCandle[]
@@ -56,6 +63,7 @@ export interface SignalSourceDescriptor {
   timeframeMinutes: number
   officialDocs: string
   enabledByDefault: boolean
+  lifecycle: SignalSourceLifecycle
 }
 
 type CandleField = string | number
@@ -294,6 +302,13 @@ function minuteWindow(now: number, limit: number): { startMs: number; endMs: num
 function defineSource(source: Omit<SignalSourceDefinition, "enabledByDefault">): SignalSourceDefinition {
   return { ...source, enabledByDefault: true }
 }
+
+function defineCandidate(source: Omit<SignalSourceDefinition, "enabledByDefault" | "lifecycle">): SignalSourceDefinition {
+  return { ...source, enabledByDefault: true, lifecycle: "candidate" }
+}
+
+/** 36 established feeds + 9 validated-before-dispatch candidates. */
+export const SIGNAL_SOURCE_REGISTRY_SIZE = 45
 
 const objectShort = {
   timestamp: "t",
@@ -1074,11 +1089,192 @@ export const SIGNAL_SOURCE_DEFINITIONS: readonly SignalSourceDefinition[] = [
     },
     parse: instaForexChartsParser,
   }),
+  // ---------------------------------------------------------------------
+  // Candidate sources (added 2026-09-27). Each endpoint was verified with a
+  // read-only public GET from the build environment. They start as
+  // unvalidated candidates and never dispatch until they pass the
+  // drawdown-first after-cost validation in signal-source-validation.ts.
+  // ---------------------------------------------------------------------
+  defineCandidate({
+    id: "binance-spot-data",
+    name: "Binance Spot (public data API)",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://developers.binance.com/docs/binance-spot-api-docs/faqs/market_data_only",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://data-api.binance.vision/api/v3/klines", {
+        symbol: compactPair(symbol),
+        interval: "1m",
+        limit,
+      }),
+    }),
+    parse: standardArrayParser([[]]),
+  }),
+  defineCandidate({
+    id: "okx-spot",
+    name: "OKX Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://www.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://www.okx.com/api/v5/market/candles", {
+        instId: dashedPair(symbol),
+        bar: "1m",
+        limit,
+      }),
+    }),
+    parse: standardArrayParser([["data"]]),
+  }),
+  defineCandidate({
+    id: "kucoin-spot",
+    name: "KuCoin Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://www.kucoin.com/docs-new/rest/spot-trading/market-data/get-klines",
+    buildRequest: ({ symbol, limit, now }) => {
+      const window = minuteWindow(now, limit)
+      return {
+        url: query("https://api.kucoin.com/api/v1/market/candles", {
+          type: "1min",
+          symbol: dashedPair(symbol),
+          startAt: window.startSec,
+          endAt: window.endSec,
+        }),
+      }
+    },
+    // [time(s), open, close, high, low, volume, turnover]
+    parse: standardArrayParser(
+      [["data"]],
+      { timestamp: 0, open: 1, close: 2, high: 3, low: 4, volume: 5 },
+    ),
+  }),
+  defineCandidate({
+    id: "gateio-spot",
+    name: "Gate.io Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://www.gate.com/docs/developers/apiv4/en/#market-candlesticks",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://api.gateio.ws/api/v4/spot/candlesticks", {
+        currency_pair: underscoredPair(symbol),
+        interval: "1m",
+        limit,
+      }),
+    }),
+    // [time(s), quote volume, close, high, low, open, base volume, closed]
+    parse: standardArrayParser(
+      [[]],
+      { timestamp: 0, close: 2, high: 3, low: 4, open: 5, volume: 6 },
+    ),
+  }),
+  defineCandidate({
+    id: "bitget-spot",
+    name: "Bitget Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://www.bitget.com/api-doc/spot/market/Get-Candle-Data",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://api.bitget.com/api/v2/spot/market/candles", {
+        symbol: compactPair(symbol),
+        granularity: "1min",
+        limit,
+      }),
+    }),
+    parse: standardArrayParser([["data"]]),
+  }),
+  defineCandidate({
+    id: "mexc-spot",
+    name: "MEXC Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://mexcdevelop.github.io/apidocs/spot_v3_en/#kline-candlestick-data",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://api.mexc.com/api/v3/klines", {
+        symbol: compactPair(symbol),
+        interval: "1m",
+        limit,
+      }),
+    }),
+    parse: standardArrayParser([[]]),
+  }),
+  defineCandidate({
+    id: "htx-spot",
+    name: "HTX Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://huobiapi.github.io/docs/spot/v1/en/#get-klines-candles",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://api.huobi.pro/market/history/kline", {
+        symbol: compactPair(symbol).toLowerCase(),
+        period: "1min",
+        size: limit,
+      }),
+    }),
+    parse: standardObjectParser(
+      [["data"]],
+      { timestamp: "id", open: "open", high: "high", low: "low", close: "close", volume: "vol" },
+    ),
+  }),
+  defineCandidate({
+    id: "coinex-spot",
+    name: "CoinEx Spot",
+    market: "spot",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://docs.coinex.com/api/v2/spot/market/http/list-market-kline",
+    buildRequest: ({ symbol, limit }) => ({
+      url: query("https://api.coinex.com/v2/spot/kline", {
+        market: compactPair(symbol),
+        period: "1min",
+        limit,
+      }),
+    }),
+    parse: standardObjectParser(
+      [["data"]],
+      { timestamp: "created_at", open: "open", high: "high", low: "low", close: "close", volume: "volume" },
+    ),
+  }),
+  defineCandidate({
+    id: "coinbase-intx",
+    name: "Coinbase International Perpetual",
+    market: "perpetual",
+    priority: 3,
+    timeframeMinutes: 1,
+    officialDocs: "https://docs.cdp.coinbase.com/intx/reference/getinstrumentcandles",
+    supportedBases: ["BTC", "ETH", "SOL", "XRP", "DOGE", "LTC", "BCH", "ADA", "AVAX", "LINK", "DOT"],
+    buildRequest: ({ symbol, limit, now }) => {
+      const window = minuteWindow(now, limit)
+      return {
+        url: query(
+          `https://api.international.coinbase.com/api/v1/instruments/${pairParts(symbol).base}-PERP/candles`,
+          { granularity: "ONE_MINUTE", start: new Date(window.startMs).toISOString() },
+        ),
+      }
+    },
+    parse: standardObjectParser(
+      [["aggregations"]],
+      { timestamp: "start", open: "open", high: "high", low: "low", close: "close", volume: "volume" },
+    ),
+  }),
 ] as const
 
-if (SIGNAL_SOURCE_DEFINITIONS.length !== 36) {
-  throw new Error(`Signal source registry contract violated: expected 36, got ${SIGNAL_SOURCE_DEFINITIONS.length}`)
+if (SIGNAL_SOURCE_DEFINITIONS.length !== SIGNAL_SOURCE_REGISTRY_SIZE) {
+  throw new Error(
+    `Signal source registry contract violated: expected ${SIGNAL_SOURCE_REGISTRY_SIZE}, got ${SIGNAL_SOURCE_DEFINITIONS.length}`,
+  )
 }
+
+/** Sources that must pass validation before they may ever dispatch. */
+export const SIGNAL_CANDIDATE_SOURCE_IDS: readonly string[] = SIGNAL_SOURCE_DEFINITIONS
+  .filter((source) => source.lifecycle === "candidate")
+  .map((source) => source.id)
 
 const SOURCE_BY_ID = new Map(SIGNAL_SOURCE_DEFINITIONS.map((source) => [source.id, source]))
 
@@ -1096,6 +1292,7 @@ export function getSignalSourceDescriptors(): SignalSourceDescriptor[] {
     timeframeMinutes: source.timeframeMinutes,
     officialDocs: source.officialDocs,
     enabledByDefault: source.enabledByDefault,
+    lifecycle: source.lifecycle || "established",
   }))
 }
 

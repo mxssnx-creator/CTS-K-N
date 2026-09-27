@@ -1108,6 +1108,8 @@ export function ActiveConnectionCard({
     progressionFetchSeqRef.current++
     liveStatsFetchSeqRef.current++
     setStatsSnapshot(null)
+    setProgression(null)
+    setLiveStats(null)
     setConnectionStageOverview(null)
     setStrategyRows(null)
     setRealAverages(null)
@@ -1332,7 +1334,9 @@ export function ActiveConnectionCard({
               drawdownHours: nonNegativeMetric(positions12.drawdown?.maxDurationHours),
             },
           })
-        } else if (signalStatsVisible) {
+        } else if (signalStatsVisible && signalRes?.ok) {
+          // Only a successful empty read clears the panel; a transient HTTP
+          // failure keeps the last good snapshot instead of blanking it.
           setSignalOverview(null)
         }
         if (presetData?.success && presetData?.data) {
@@ -1381,7 +1385,7 @@ export function ActiveConnectionCard({
               error: presetData.data.progress?.error,
             },
           })
-        } else if (presetMode) {
+        } else if (presetMode && presetRes?.ok) {
           setPresetOverview(null)
         }
         // Signal/Preset have their own compact read models.  All shared
@@ -3888,7 +3892,7 @@ export function ActiveConnectionCard({
                   title={`Newest ${connectionStageOverview.pfComparison.window} closed physical positions; Real and Live use the same ${connectionStageOverview.pfComparison.matchedPositions} matched snapshots. Ratio baseline 1.00 means parity.`}
                 >
                   <span className="font-semibold text-muted-foreground">Real ↔ Live PF</span>
-                  {connectionStageOverview.pfComparison.ratio === null ? (
+                  {connectionStageOverview.pfComparison.ratio == null ? (
                     <span className="text-muted-foreground">
                       Waiting for matched closes ({connectionStageOverview.pfComparison.availableClosedPositions} available)
                     </span>

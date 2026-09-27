@@ -94,6 +94,16 @@ function fixturePayload(sourceId: string): unknown {
     case "cryptocompare":
       return { Data: { Data: [{ time: timestampSeconds, open: 100, high: 102, low: 99, close: 101, volumefrom: 12 }] } }
     case "blofin": return { data: [standard] }
+    case "binance-spot-data": return [standard]
+    case "okx-spot": return { data: [standard] }
+    case "kucoin-spot": return { data: [[timestampSeconds, "100", "101", "102", "99", "12", "1200"]] }
+    case "gateio-spot": return [[String(timestampSeconds), "1200", "101", "102", "99", "100", "12", "true"]]
+    case "bitget-spot": return { data: [standard] }
+    case "mexc-spot": return [standard]
+    case "htx-spot": return { data: [{ id: timestampSeconds, open: 100, high: 102, low: 99, close: 101, vol: 12 }] }
+    case "coinex-spot": return { data: [{ created_at: timestamp, open: "100", high: "102", low: "99", close: "101", volume: "12" }] }
+    case "coinbase-intx":
+      return { aggregations: [{ start: "2023-11-14T22:13:20Z", open: "100", high: "102", low: "99", close: "101", volume: "12" }] }
     case "instaforex-charts": return [
       "<ArrayOfChart xmlns=\"http://schemas.datacontract.org/2004/07/Charts\">",
       "<Chart><Timestamp>1700000000</Timestamp><Open>100</Open><High>102</High>",
@@ -104,9 +114,19 @@ function fixturePayload(sourceId: string): unknown {
 }
 
 describe("Signal source registry and low-stop calculation", () => {
-  test("registers exactly 36 unique, documented, default-enabled public feeds", () => {
-    expect(SIGNAL_SOURCE_DEFINITIONS).toHaveLength(36)
-    expect(new Set(SIGNAL_SOURCE_DEFINITIONS.map((source) => source.id)).size).toBe(36)
+  test("registers exactly 45 unique, documented, default-enabled public feeds (36 established + 9 candidates)", () => {
+    expect(SIGNAL_SOURCE_DEFINITIONS).toHaveLength(45)
+    expect(new Set(SIGNAL_SOURCE_DEFINITIONS.map((source) => source.id)).size).toBe(45)
+    expect(SIGNAL_SOURCE_DEFINITIONS.filter((source) => source.lifecycle === "candidate").map((source) => source.id).sort())
+      .toEqual([
+        "binance-spot-data", "bitget-spot", "coinbase-intx", "coinex-spot", "gateio-spot",
+        "htx-spot", "kucoin-spot", "mexc-spot", "okx-spot",
+      ])
+    // Candidate adapters are public read-only GETs.
+    for (const source of SIGNAL_SOURCE_DEFINITIONS.filter((item) => item.lifecycle === "candidate")) {
+      const request = source.buildRequest({ symbol: "BTCUSDT", limit: 60, now: 1_700_000_060_000 })
+      expect(request.init?.method || "GET").toBe("GET")
+    }
     for (const source of SIGNAL_SOURCE_DEFINITIONS) {
       expect(source.enabledByDefault).toBe(true)
       expect(source.officialDocs).toMatch(/^https:\/\//)

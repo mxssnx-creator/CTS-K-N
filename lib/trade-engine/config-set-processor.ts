@@ -13,6 +13,7 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
+import { HISTORIC_POS_HISTORY_INDICATION_TYPES } from "@/lib/strategy-indication-policy"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import {
@@ -2193,6 +2194,10 @@ export class ConfigSetProcessor {
                           return {
                             symbol: p.symbol || symbol,
                             indicationType: p.indication_type || config.type || "unknown",
+                            // Base reads pos_history by indication type
+                            // (direction/move/…), never by the strategy
+                            // family label, so write the buckets it reads.
+                            indicationTypes: HISTORIC_POS_HISTORY_INDICATION_TYPES,
                             direction: p.direction,
                             pnl: resultPct,
                             pnlPct: resultPct,
@@ -2438,7 +2443,12 @@ export class ConfigSetProcessor {
     )
     return all
       .filter((r) => r.stats.totalPositions > 0)
-      .sort((a, b) => b.stats.winRate - a.stats.winRate)
+      .sort((a, b) => {
+        const aw = Number.isFinite(Number(a.stats.winRate)) ? Number(a.stats.winRate) : Number.NEGATIVE_INFINITY
+        const bw = Number.isFinite(Number(b.stats.winRate)) ? Number(b.stats.winRate) : Number.NEGATIVE_INFINITY
+        if (aw !== bw) return bw > aw ? 1 : -1
+        return String(a.config.id).localeCompare(String(b.config.id))
+      })
       .slice(0, limit)
   }
 }

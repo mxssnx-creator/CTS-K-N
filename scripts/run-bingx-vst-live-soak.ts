@@ -283,7 +283,10 @@ function inactiveUnit(unit: string): boolean {
     encoding: "utf8",
     timeout: 5_000,
   })
-  return String(result.stdout || "").trim() === "inactive"
+  if (String(result.stdout || "").trim() === "inactive") return true
+  // A host that was not booted with systemd cannot run these units at all.
+  // Only that exact systemctl diagnostic counts; any other failure stays active.
+  return /System has not been booted with systemd/.test(String(result.stderr || ""))
 }
 
 function assertSoakHostGuard(): void {
@@ -2568,7 +2571,13 @@ async function main(): Promise<void> {
     const listMissingOrderIds: string[] = []
     const missingDetailIds: string[] = []
     for (const symbol of soakSymbols) {
-      const snapshot = await connector.getOrderHistorySnapshot(symbol, 50)
+      // Read-only audit call: retry BingX's transient "109500 network issue"
+      // a few times before failing the run.
+      let snapshot = await connector.getOrderHistorySnapshot(symbol, 50)
+      for (let attempt = 1; !snapshot.ok && /109500|network issue/i.test(String(snapshot.error || "")) && attempt <= 3; attempt++) {
+        await sleep(2_000 * attempt)
+        snapshot = await connector.getOrderHistorySnapshot(symbol, 50)
+      }
       if (!snapshot.ok) throw new Error(`Order history failed for ${symbol}: ${snapshot.error || "unknown"}`)
       const historyIds = new Set(snapshot.rows.map((row: any) => orderIdOf(row)).filter(Boolean))
       const expected = trackedVenueEntries

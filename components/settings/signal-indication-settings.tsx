@@ -11,6 +11,10 @@ import { Label } from "@/components/ui/label"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { toast } from "@/lib/simple-toast"
+import {
+  SignalSourceValidationPanel,
+  type SourceValidationSettingsValue,
+} from "@/components/settings/signal-source-validation-panel"
 
 interface SourceDescriptor {
   id: string
@@ -21,6 +25,7 @@ interface SourceDescriptor {
   timeframeMinutes: number
   officialDocs: string
   enabledByDefault: boolean
+  lifecycle?: "established" | "candidate"
 }
 
 interface SourceHealth {
@@ -92,6 +97,7 @@ interface SignalSettings {
   circuitFailureThreshold: number
   circuitCooldownSeconds: number
   databaseSize: number
+  sourceValidation: SourceValidationSettingsValue
   sources: Record<string, {
     enabled: boolean
     weight: number
@@ -114,6 +120,7 @@ export function SignalIndicationSettings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [connectionIds, setConnectionIds] = useState<string[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -131,6 +138,7 @@ export function SignalIndicationSettings() {
         const status = await statusResponse.json()
         const healthBySource: Record<string, SourceHealth> = {}
         const allPerformance: PerformanceState[] = []
+        setConnectionIds((status.connections || []).map((connection: any) => String(connection.connectionId)).filter(Boolean))
         for (const connection of status.connections || []) {
           for (const item of connection.sourceHealth || []) {
             const previous = healthBySource[item.sourceId]
@@ -676,13 +684,20 @@ export function SignalIndicationSettings() {
         </CardContent>
       </Card>
 
+      {settings.sourceValidation && (
+        <SignalSourceValidationPanel
+          value={settings.sourceValidation}
+          connectionIds={connectionIds}
+          onChange={(next) => update("sourceValidation", next)}
+        />
+      )}
+
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm">Free public source adapters</CardTitle>
           <CardDescription className="text-xs">
-            Four liquid derivatives feeds remain in every batch; the remaining enabled sources rotate so all 35
-            are exercised without a request storm. Source priority selects batches; current low-stop quality
-            and configured weight influence consensus.
+            Every enabled compatible adapter is evaluated each cycle ({sources.length} registered). Sources
+            marked &ldquo;candidate&rdquo; are fetched and scored but never dispatch until they pass validation.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -706,6 +721,9 @@ export function SignalIndicationSettings() {
                       <span className="truncate text-sm font-medium">{source.name}</span>
                       <Badge variant="outline" className="text-[10px]">P{source.priority}</Badge>
                       <Badge variant="secondary" className="text-[10px]">{source.market}</Badge>
+                      {source.lifecycle === "candidate" && (
+                        <Badge variant="outline" className="text-[10px]">candidate · unvalidated</Badge>
+                      )}
                     </div>
                     <div className="mt-1 text-[10px] text-muted-foreground">
                       {source.timeframeMinutes}m · {sourceHealth?.lastCandleCount || 0} candles ·

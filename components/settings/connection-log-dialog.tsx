@@ -96,6 +96,9 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
   const loadLogs = async () => {
     try {
       setLoading(true)
+      // Don't show the previous connection's logs while (re)loading.
+      setLogs([])
+      setSummary(null)
 
       const response = await fetch(`/api/connections/progression/${connectionId}/logs`)
       if (!response.ok) throw new Error("Failed to load logs")
@@ -107,7 +110,7 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
       setSummary({
         total: data.logsCount || 0,
         errors: data.logs?.filter((l: any) => l.level === "error").length || 0,
-        warnings: data.logs?.filter((l: any) => l.level === "warn").length || 0,
+        warnings: data.logs?.filter((l: any) => l.level === "warn" || l.level === "warning").length || 0,
         info: data.logs?.filter((l: any) => l.level === "info").length || 0,
         debug: data.logs?.filter((l: any) => l.level === "debug").length || 0,
         latestTimestamp: data.logs?.[0]?.timestamp || null,
@@ -181,6 +184,7 @@ export function ConnectionLogDialog({ open, onOpenChange, connectionId, connecti
       case "error":
         return <Badge variant="destructive">Error</Badge>
       case "warn":
+      case "warning":
         return <Badge variant="secondary">Warning</Badge>
       case "info":
         return <Badge variant="outline">Info</Badge>

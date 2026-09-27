@@ -74,6 +74,9 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
   const [activeTab, setActiveTab] = useState("overview")
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
+  const inFlightRef = useRef(false)
+  const connRef = useRef(activeConnectionId)
+  connRef.current = activeConnectionId
 
   const addLog = useCallback((type: LogEntry["type"], message: string, details?: any) => {
     setLogs(prev => [
@@ -87,6 +90,9 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
       addLog("info", "Select an active connection before monitoring processing.")
       return
     }
+    if (inFlightRef.current) return
+    inFlightRef.current = true
+    const requestedConnectionId = activeConnectionId
     try {
       // Single canonical /stats endpoint — returns historic, realtime, breakdown in one call
       const statsRes = await fetch(
@@ -105,6 +111,8 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
       ])
 
       const s = await statsRes.json()
+      // Drop responses for a connection the user already switched away from.
+      if (connRef.current !== requestedConnectionId) return
 
       const historicSymbols   = s.historic?.symbolsProcessed || 0
       const historicTotal     = s.historic?.symbolsTotal     || 0
@@ -204,6 +212,8 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
 
     } catch (err) {
       addLog("error", "Failed to fetch engine stats", { error: String(err) })
+    } finally {
+      inFlightRef.current = false
     }
   }, [activeConnectionId, addLog])
 
@@ -211,6 +221,7 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
     if (!activeConnectionId) return
     setIsPolling(true)
     addLog("info", `Started monitoring: ${activeConnectionId}`)
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
     fetchStats()
     pollIntervalRef.current = setInterval(fetchStats, 2000)
   }, [fetchStats, addLog, activeConnectionId])
@@ -236,6 +247,7 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
 
   // Re-start polling when connection changes while open
   useEffect(() => {
+    setStats(null)
     if (!open) return
     stopPolling()
     startPolling()

@@ -45,7 +45,7 @@ export function MonitoringAlerts() {
       })
 
       if (response.ok) {
-        setAlerts(alerts.filter(a => a.id !== alertId))
+        setAlerts((current) => current.filter(a => a.id !== alertId))
         toast.success("Alert acknowledged")
       }
     } catch (error) {

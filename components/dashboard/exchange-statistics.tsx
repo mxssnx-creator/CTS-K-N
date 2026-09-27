@@ -12,12 +12,13 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
   const [stats, setStats] = useState<any>(null)
 
   useEffect(() => {
+    let disposed = false
     const loadStats = async () => {
       try {
         const res = await fetch(`/api/connections/progression/${connectionId}/stats`, { cache: "no-store" })
         if (res.ok) {
           const data = await res.json()
-          setStats(data)
+          if (!disposed) setStats(data)
         }
       } catch (err) {
         console.error("[Stats] Error:", err)
@@ -26,7 +27,10 @@ const ExchangeStatisticsComponent = ({ connectionId, connectionName }: ExchangeS
 
     loadStats()
     const interval = setInterval(loadStats, 30000)
-    return () => clearInterval(interval)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
   }, [connectionId])
 
   if (!stats) return null

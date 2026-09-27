@@ -68,7 +68,9 @@ export function PresetConnectionManager() {
       const connectionsRes = await fetch("/api/settings/connections")
       if (connectionsRes.ok) {
         const data = await connectionsRes.json()
-        const validConnections = data
+        // GET /api/settings/connections returns { success, connections: [...] }.
+        const list: any[] = Array.isArray(data) ? data : (data?.connections || [])
+        const validConnections = list
           .filter((c: any) => !c.is_predefined && c.is_active !== false)
           .map((c: any) => ({
             id: c.id,

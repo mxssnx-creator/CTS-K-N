@@ -275,8 +275,12 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main"
   const [expandedSymbols, setExpandedSymbols] = useState<Set<string>>(new Set())
   const [mutatingSymbol, setMutatingSymbol] = useState("")
   const initialLoad = useRef(true)
+  const loadRequestRef = useRef(0)
 
   const load = useCallback(async (initial = false) => {
+    // Filters (e.g. the symbol search) can fire overlapping requests; only
+    // the newest one may write state.
+    const requestId = ++loadRequestRef.current
     if (initial) setLoading(true)
     else setRefreshing(true)
     setError("")
@@ -290,15 +294,19 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main"
         cache: "no-store",
       })
       const data = await response.json()
+      if (requestId !== loadRequestRef.current) return
       if (!response.ok || !data.success) throw new Error(data.error || "Statistics request failed")
       setPayload(data)
     } catch (loadError) {
+      if (requestId !== loadRequestRef.current) return
       const message = loadError instanceof Error ? loadError.message : "Failed to load indication statistics"
       setError(message)
       toast.error(message)
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (requestId === loadRequestRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }, [connectionId, deferredSymbol, direction, group])
 

@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
+import { createRequestSequence } from "@/lib/request-sequence"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -110,7 +111,21 @@ export function ProgressionLogsDialog({
   // Category filter for the log list — "all" by default, otherwise by level
   const [logFilter, setLogFilter] = useState<"all" | "info" | "warning" | "error" | "debug">("all")
 
+  // Each load gets a sequence token; only the newest request may apply its
+  // data or clear the spinner (a connection switch invalidates in-flight ones).
+  const requestSeqRef = useRef(createRequestSequence())
+
+  // Never show the previous connection's stats/logs after a switch.
+  useEffect(() => {
+    requestSeqRef.current.invalidate()
+    setStats(null)
+    setTradingState(null)
+    setLogs([])
+  }, [connectionId])
+
   const loadData = useCallback(async () => {
+    const seq = requestSeqRef.current
+    const token = seq.begin()
     setIsLoading(true)
     try {
       // Primary: /stats endpoint (canonical historic + realtime + breakdown)
@@ -120,10 +135,12 @@ export function ProgressionLogsDialog({
         fetch(`/api/connections/progression/${connectionId}/logs?t=${Date.now()}`, { cache: "no-store" }),
       ])
 
-      if (statsRes.ok) setStats(await statsRes.json())
+      const statsData = statsRes.ok ? await statsRes.json() : null
+      const logsData = logsRes.ok ? await logsRes.json() : null
+      if (!seq.isCurrent(token)) return
+      if (statsData) setStats(statsData)
 
-      if (logsRes.ok) {
-        const logsData = await logsRes.json()
+      if (logsData) {
         const logsArr: ProgressionLog[] = (logsData.logs || logsData.recentLogs || []).slice(0, 150)
         setLogs(logsArr)
         // Trading activity fields come from /logs progressionState
@@ -134,7 +151,7 @@ export function ProgressionLogsDialog({
     } catch {
       // non-critical
     } finally {
-      setIsLoading(false)
+      if (seq.isCurrent(token)) setIsLoading(false)
     }
   }, [connectionId])
 

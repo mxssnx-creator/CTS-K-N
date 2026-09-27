@@ -48,6 +48,9 @@ export function PresetSelectionDialog({ open, onOpenChange, onSelectPreset, conn
       setSelectedPreset(null)
       return
     }
+    // Drop the previous connection's list/selection before reloading.
+    setPresets([])
+    setSelectedPreset(null)
     try {
       setIsLoading(true)
       const response = await fetch(`/api/presets?connectionId=${encodeURIComponent(connectionId)}`, {

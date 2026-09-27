@@ -45,7 +45,12 @@ export function SystemHealthCheck() {
     )
   }
 
-  const { success, results } = status
+  const { success } = status
+  // The client-side error path (network/JSON failure) carries no `results`.
+  const results = {
+    system: status.results?.system ?? {},
+    connections: { count: 0, ...status.results?.connections, errors: status.results?.connections?.errors ?? [] },
+  }
   const allHealthy = success && results.system.connectionManager && results.system.tradeEngineCoordinator
 
   return (

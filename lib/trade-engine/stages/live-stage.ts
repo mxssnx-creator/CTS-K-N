@@ -4575,10 +4575,14 @@ async function findAuthoritativeAdjustmentParent(
   executionSlot = "default",
   allowBlockParent = false,
   fallbackExecutionSlot?: string,
+  allowDcaParent = false,
 ): Promise<LivePosition | null> {
   const matchesParent = (p: LivePosition, slot: string): boolean => {
+    // A live row with setVariant "dca" can only exist as an independent DCA
+    // seed (opened while Normal execution is off); later DCA steps attach to
+    // it. With Normal on, DCA never opens its own row, so this is inert.
     const parentVariant =
-      p.setVariant !== "dca" &&
+      (p.setVariant !== "dca" || allowDcaParent) &&
       (p.setVariant !== "block" || allowBlockParent)
     const active =
       p.status === "open" ||
@@ -7502,6 +7506,22 @@ async function ownSiblingSlotQuantity(position: LivePosition): Promise<number> {
   return total
 }
 
+/**
+ * Unfilled remainder of a pending accumulation: the requested delta minus the
+ * part already reflected in executed quantity (above the pre-submission
+ * baseline, or recorded as applied). Used as the exact own-order explanation
+ * for a venue quantity increase so foreign quantity is never absorbed.
+ */
+function pendingAccumulationUnfilledQuantity(position: LivePosition, executedBefore: number): number {
+  const pending = position.pendingAccumulation
+  if (!pending) return 0
+  const requested = Math.max(0, Number(pending.requestedQuantity || 0))
+  const baseline = Number(pending.positionQuantityBefore)
+  const filledAboveBaseline = Number.isFinite(baseline) ? Math.max(0, executedBefore - baseline) : 0
+  const applied = Math.max(0, Number(pending.appliedFilledQuantity || 0))
+  return Math.max(0, requested - Math.max(filledAboveBaseline, applied))
+}
+
 async function reconcileAuthoritativeExchangeQuantity(
   position: LivePosition,
   slotExchangeQuantity: number,
@@ -7514,7 +7534,7 @@ async function reconcileAuthoritativeExchangeQuantity(
   // quantity gap 0.03") while two sibling rows already held those 0.02 + 0.01,
   // so the book claimed 0.79 against 0.76 on the venue. The row's share is the
   // slot quantity minus what the OTHER own rows on the slot hold.
-  const exchangeQuantity = Math.max(0, slotExchangeQuantity - await ownSiblingSlotQuantity(position))
+  const slotShare = Math.max(0, slotExchangeQuantity - await ownSiblingSlotQuantity(position))
   const repairedPriceDomain = repairLiveEntryPriceDomain(position, exchangeEntryPrice)
   const direction = resolveLivePositionDirection(position)
   if (!direction) {
@@ -7522,6 +7542,28 @@ async function reconcileAuthoritativeExchangeQuantity(
     return false
   }
   const before = Number(position.executedQuantity || 0)
+  // A hedge-mode venue nets every position on one symbol/side into one slot,
+  // including a FOREIGN one. An increase is only this row's when an own order
+  // explains it: the unfilled rest of the entry or a pending accumulation.
+  // Anything above that is not provably ours and is never absorbed — a later
+  // reduce-only close or protection sized from it would touch foreign quantity.
+  const attributableIncrease =
+    Math.max(0, Number(position.remainingQuantity || 0)) +
+    pendingAccumulationUnfilledQuantity(position, before)
+  const attributableCeiling = before + attributableIncrease
+  const exchangeQuantity = Math.min(
+    slotShare,
+    attributableCeiling + Math.max(1e-12, attributableCeiling * 1e-8),
+  )
+  if (slotShare > exchangeQuantity) {
+    pushStep(
+      position,
+      "exchange_quantity_unattributed_increase",
+      false,
+      `venue slot share ${slotShare} exceeds own attributable ${attributableCeiling}; ` +
+        `${slotShare - exchangeQuantity} left unowned (foreign or unexplained)`,
+    )
+  }
   const tolerance = Math.max(1e-12, Math.max(before, exchangeQuantity) * 1e-8)
   const ledgerTarget = Math.max(
     exchangeQuantity + Math.max(0, Number(position.closedQuantity || 0)),
@@ -13731,9 +13773,23 @@ export async function executeLivePosition(
         isBlockVariant && executionSlot !== "default"
           ? "default"
           : undefined,
+        !isBlockVariant,
       )
       if (!existing) {
-        if (isBlockVariant) {
+        if (!isBlockVariant && realPosition.dcaIndependentSeed === true) {
+          // Normal execution is switched off, so no Normal parent will ever
+          // fill. DCA is still derived from the Normal base and must keep
+          // executing: open the base-volume parent (step 0) through the
+          // ordinary entry pipeline. Subsequent DCA steps accumulate into it.
+          realPosition = { ...realPosition, sizeMultiplier: 1 }
+          livePosition.sizeMultiplier = 1
+          pushStep(
+            livePosition,
+            "dca_independent_parent_seed",
+            true,
+            `opening DCA base parent for ${realPosition.setKey || "unknown"} (Normal execution off)`,
+          )
+        } else if (isBlockVariant) {
           // A fresh independent Block lane has no confirmed parent. Continue
           // into the ordinary entry pipeline with the already calculated
           // absolute Block multiplier; the persisted Block position becomes
@@ -17903,7 +17959,13 @@ export async function closeLivePosition(
                   clientOrderId: action.clientOrderId,
                 },
               )
-            : exchangeConnector.closePosition(position.symbol, position.direction)
+            // No quantity-scoped reduce-only order is available. A whole-
+            // position close would also flatten a foreign quantity netted on
+            // the same symbol/side, so it is refused rather than sent.
+            : Promise.resolve({
+                success: false,
+                error: "ownership_scoped_close_unavailable: connector has no reduce-only placeOrder; whole-position close refused",
+              })
           const r = (await withTimeout(
             request,
             CLOSE_ATTEMPT_TIMEOUT_MS,
@@ -22466,6 +22528,7 @@ export const __liveStageTest = {
   settleFilledRowControlsAcrossMembers,
   reconcilePendingAccumulationAndRearm,
   reconcileAuthoritativeExchangeQuantity,
+  pendingAccumulationUnfilledQuantity,
   reconcileInitialEntryBaseQuantity,
   admitAccumulationQuantity,
   physicalAccumulationCount,

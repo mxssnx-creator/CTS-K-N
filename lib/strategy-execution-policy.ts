@@ -28,7 +28,14 @@ export interface StrategyExecutionPolicy {
   axisEnabled: boolean
   blockEnabled: boolean
   dcaEnabled: boolean
-  /** Trailing follows the Normal switch it decorates. */
+  /**
+   * Global main-strategy Trailing switch. When off, plain Trailing Base rows
+   * are not dispatched and every other main family (Axis/Block/DCA) runs
+   * with fixed TP/SL only: trailing profiles are stripped at dispatch and
+   * the realtime trailing machine stops ratcheting/activating on their
+   * open positions. Plain Trailing rows additionally require Normal, since
+   * they are the trailed form of the Normal base. Signal is independent.
+   */
   trailingEnabled: boolean
 }
 
@@ -44,6 +51,26 @@ function bool(value: unknown, fallback: boolean): boolean {
   if (value === true || value === 1 || value === "1" || value === "true" || value === "on") return true
   if (value === false || value === 0 || value === "0" || value === "false" || value === "off") return false
   return fallback
+}
+
+/**
+ * Single resolver for the main Trailing switch, shared by the execution
+ * policy, the coordinator's `variants.trailing` and its BASE trailing master.
+ * Precedence: explicit policy keys, then `variantTrailingEnabled` (the
+ * dialog's primary key), then `strategyBaseTrailingEnabled`, then legacy
+ * `variant_trailing`. Redis string booleans ("false"/"0"/"off") disable.
+ */
+export function resolveTrailingSwitchRaw(source: Partial<Record<string, unknown>> | null | undefined): unknown {
+  const s = source || {}
+  return s.trailingEnabled ?? s.trailing_enabled ?? s.strategyTrailingEnabled
+    ?? s.variantTrailingEnabled ?? s.strategyBaseTrailingEnabled ?? s.variant_trailing
+}
+
+export function resolveTrailingSwitch(
+  source: Partial<Record<string, unknown>> | null | undefined,
+  fallback = true,
+): boolean {
+  return bool(resolveTrailingSwitchRaw(source), fallback)
 }
 
 export function normalizeStrategyExecutionPolicy(
@@ -71,9 +98,8 @@ export function normalizeStrategyExecutionPolicy(
         ?? source.variantDcaEnabled,
       DEFAULT_STRATEGY_EXECUTION_POLICY.dcaEnabled,
     ),
-    trailingEnabled: bool(
-      source.trailingEnabled ?? source.trailing_enabled ?? source.strategyTrailingEnabled
-        ?? source.variantTrailingEnabled,
+    trailingEnabled: resolveTrailingSwitch(
+      source,
       DEFAULT_STRATEGY_EXECUTION_POLICY.trailingEnabled,
     ),
   }
@@ -115,3 +141,32 @@ export function isStrategyExecutionFamilyEnabled(
   return policy.dcaEnabled
 }
 
+
+/**
+ * Whether automatic trailing may be used for a main-strategy row/position.
+ * The Signal lane owns its own trailing policy and is never suppressed here.
+ */
+export function isMainTrailingAllowed(
+  row: { indicationType?: unknown; signalRisk?: any; trailingMode?: unknown } | null | undefined,
+  policy: Pick<StrategyExecutionPolicy, "trailingEnabled">,
+): boolean {
+  if (policy.trailingEnabled) return true
+  if (String(row?.trailingMode || "").toLowerCase() === "signal_dynamic") return true
+  return isSignalSet(row)
+}
+
+/**
+ * Apply the global Trailing switch to one dispatch candidate. With Trailing
+ * off, an Axis/Block/DCA row derived from a trailing Base keeps its family
+ * (and therefore still executes) but loses its trailing profile, so it runs
+ * with fixed TP/SL only. Rows are returned unchanged when trailing is
+ * allowed; the input object is never mutated.
+ */
+export function applyTrailingExecutionPolicy<T extends Record<string, any>>(
+  set: T,
+  policy: Pick<StrategyExecutionPolicy, "trailingEnabled">,
+): T {
+  if (!set || !set.trailingProfile || isMainTrailingAllowed(set, policy)) return set
+  const { trailingProfile: _dropped, ...rest } = set
+  return rest as T
+}

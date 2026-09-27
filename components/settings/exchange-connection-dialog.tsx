@@ -527,9 +527,10 @@ export function ExchangeConnectionDialog({
         fetch("/api/settings"),
       ])
 
-      const indicationSettings = indicationRes.ok ? await indicationRes.json() : null
+      // Both routes wrap their payload as { settings }.
+      const indicationSettings = indicationRes.ok ? (await indicationRes.json())?.settings ?? null : null
       const strategySettings = strategyRes.ok ? await strategyRes.json() : null
-      const globalSettings = settingsRes.ok ? await settingsRes.json() : null
+      const globalSettings = settingsRes.ok ? (await settingsRes.json())?.settings ?? null : null
 
       const url = connection ? `/api/settings/connections/${connection.id}` : "/api/settings/connections"
       const method = connection ? "PATCH" : "POST"

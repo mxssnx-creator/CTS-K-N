@@ -8,6 +8,7 @@
  * 4. Track results and progression
  */
 
+import { isSystemCloseableRowStatus } from "@/lib/closeable-row-statuses"
 import { ExchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
 import { positionTracker, LivePosition, OrderRecord } from "@/lib/positions/position-tracker"
 import { indicatorCalculator, PriceData } from "@/lib/indicators/calculator"
@@ -454,14 +455,23 @@ export class TradeEngineStateMachine {
     try {
       console.log(`[v0] [TradeEngine] EMERGENCY: Closing all positions`)
 
-      const positions = await positionTracker.getPositions(this.config.connectionId)
+      // Only system-owned lifecycle rows are closed, each with its own
+      // quantity as a reduce-only order (closeLivePosition enforces exact
+      // ownership). A venue-wide closePosition(symbol) would also flatten
+      // foreign exposure netted on the same symbol/side, so it is never used.
+      const connectionId = this.config.connectionId
+      const { getLivePositions, closeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+      const positions = (await getLivePositions(connectionId)).filter(
+        (p) => isSystemCloseableRowStatus(p.status),
+      )
       let closedCount = 0
 
       for (const pos of positions) {
         try {
-          const result = await connector.closePosition(pos.symbol)
-          if (result.success) {
-            await positionTracker.removePosition(this.config.connectionId, pos.symbol)
+          const price = Number(pos.exchangeData?.markPrice) || pos.averageExecutionPrice || pos.entryPrice
+          const result = await closeLivePosition(connectionId, pos.id!, price, connector, "emergency_close")
+          if (result && result.status === "closed") {
+            await positionTracker.removePosition(connectionId, pos.symbol).catch(() => undefined)
             closedCount++
           }
         } catch (error) {

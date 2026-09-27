@@ -65,6 +65,7 @@ import {
   getStrategySetLedgerBatch,
   getStrategyLedgerTotals,
   getStrategySetWindowBatch as readStrategySetWindowBatch,
+  baseMeasuredHistoryRejection,
   type StrategySetLedgerSnapshot,
   type PosWindowStats,
 } from "@/lib/pos-history"
@@ -151,9 +152,12 @@ import {
   accountRealStageInputs,
 } from "@/lib/strategy-stage-accounting"
 import {
+  applyTrailingExecutionPolicy,
   classifyStrategyExecutionFamily,
   hasAnyStrategyExecutionVariantEnabled,
+  isMainTrailingAllowed,
   isStrategyExecutionFamilyEnabled,
+  resolveTrailingSwitch,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
@@ -209,8 +213,12 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
   // changing any strategy calculation, ordering preference, or persistence.
   type RankedSet = { score: number; sequence: number; set: StrategySet }
   const top: RankedSet[] = []
-  const scoreFor = (set: StrategySet) =>
-    Number(set.avgProfitFactor || 0) * 10_000 + Number(set.avgConfidence || 0) * 100 - Number(set.avgDrawdownTime || 0)
+  const scoreFor = (set: StrategySet) => {
+    const score =
+      Number(set.avgProfitFactor || 0) * 10_000 + Number(set.avgConfidence || 0) * 100 - Number(set.avgDrawdownTime || 0)
+    // NaN would defeat every heap comparison and could evict a real best row.
+    return Number.isFinite(score) ? score : Number.NEGATIVE_INFINITY
+  }
   const lowerRank = (left: RankedSet, right: RankedSet) =>
     left.score < right.score || (left.score === right.score && left.sequence > right.sequence)
   const siftUp = (index: number) => {
@@ -462,10 +470,61 @@ function stableIndicationConfig(value: unknown): string {
 }
 
 /**
+ * Metadata fields that describe *how* a direct (non-exact) indication was
+ * configured, as opposed to what it measured this cycle. Only these fields
+ * may contribute to the fallback Set identity. Live measurements such as
+ * bodyRatio, rangePercent, score, agreement, directionEvaluation,
+ * multiRangeCoordination, activeOutbreak metrics or `primary` change every
+ * cycle; hashing them created a new Base Set (and its Redis index/ring/pause
+ * entries) for nearly every indication, so per-Set history never accumulated
+ * and Redis grew without a plateau (finding F2).
+ */
+export const STRATEGY_INDICATION_CONFIGURATION_FIELDS = [
+  "mode",
+  "alignment",
+  "rangeUnit",
+  "sameMarketMoveRequired",
+  "postDirectionChangeOnly",
+  "exitVariant",
+  "timeframe",
+  "timeframeMode",
+  "timeframeMinutes",
+  "timeframesMinutes",
+  "combined",
+  "configuredDrawdownFactor",
+  "configuredLastSituationRatio",
+  "configuredActiveSituationRatio",
+  "higherRangeDrawdownScale",
+  "minimumAgreement",
+  "rangeSteps",
+] as const
+
+function allowListedIndicationConfiguration(metadata: unknown): Record<string, unknown> {
+  const source = metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : {}
+  const selected: Record<string, unknown> = {}
+  for (const field of STRATEGY_INDICATION_CONFIGURATION_FIELDS) {
+    const value = source[field]
+    if (value === undefined || value === null) continue
+    // Configuration fields are scalars or scalar lists; nested objects are
+    // always computed diagnostics and never part of the identity.
+    if (typeof value === "object" && !(Array.isArray(value) && value.every((item) => typeof item !== "object"))) continue
+    selected[field] = value
+  }
+  return selected
+}
+
+/**
  * Complete configuration identity used by Base, open-slot dedupe, cooldowns,
  * lineage, and current statistics. Persisted indication Set keys are already
- * exact and therefore take precedence; direct/fallback indications derive the
- * same deterministic identity from their complete configuration payload.
+ * exact and therefore take precedence; direct/fallback indications derive a
+ * deterministic identity from their explicit `config` payload or, failing
+ * that, from the allow-listed configuration fields of their metadata only.
+ *
+ * `configSet` (stamped by storeIndications) is deliberately NOT an identity:
+ * getConfigurationSet() returns the constant "config:default" for every
+ * numeric-valued indication, so honouring it would collapse unrelated modes
+ * of a type/direction into one Set and make the snapshot path disagree with
+ * the direct path for the same indication.
  */
 export function strategyIndicationConfigurationIdentity(indication: any): string {
   const name = String(
@@ -481,8 +540,7 @@ export function strategyIndicationConfigurationIdentity(indication: any): string
     indication?.setKey ??
     indication?.set_key ??
     indication?.configurationId ??
-    indication?.configId ??
-    indication?.configSet
+    indication?.configId
   // Persisted indication Set keys already encode type, name, complete config,
   // symbol and direction. Preserve them byte-for-byte so an upgrade does not
   // rename historical Strategy/Base lineage or create duplicate lanes.
@@ -497,8 +555,11 @@ export function strategyIndicationConfigurationIdentity(indication: any): string
       `sl=${Number(signal.stopLossPct) || 0}`,
     ].join("|")
   }
+  const explicitConfig = indication?.config ?? indication?.metadata?.configuration
   return `name=${name}|config=${stableIndicationConfig(
-    indication?.config ?? indication?.metadata?.configuration ?? indication?.metadata ?? {},
+    explicitConfig && typeof explicitConfig === "object"
+      ? explicitConfig
+      : allowListedIndicationConfiguration(indication?.metadata),
   )}`
 }
 
@@ -1203,7 +1264,7 @@ export function selectLiveDispatchCandidates(
     // all-off guard in createLiveSets prevents them from bypassing the global
     // execution switch when Normal/Trailing/Block/DCA are all disabled.
     if (isAxis) {
-      selected.push(candidate)
+      selected.push(applyTrailingExecutionPolicy(candidate, policy))
       seenKeys.add(candidate.setKey)
       continue
     }
@@ -1238,7 +1299,8 @@ export function selectLiveDispatchCandidates(
     }
 
     if (!isStrategyExecutionFamilyEnabled(family, policy)) continue
-    selected.push(candidate)
+    // Trailing off: Block/DCA rows keep executing, but with fixed TP/SL.
+    selected.push(applyTrailingExecutionPolicy(candidate, policy))
     seenKeys.add(candidate.setKey)
   }
   return selected
@@ -1600,6 +1662,44 @@ export function buildPositionContextFingerprint(ctx: PositionContext): string {
 }
 
 /**
+ * Best-first ordering for StrategySets: higher profit factor first, a
+ * non-finite (NaN/undefined) profit factor always sorts last, and equal
+ * profit factors tie-break deterministically by setKey so Map/insertion
+ * order never decides which row survives a downstream limit.
+ */
+/** Per-symbol Live dispatch counters for a cycle with nothing executable. */
+export function idleLiveDispatchSymbolFields(symbol: string): Record<string, string> {
+  const zero = [
+    "candidates", "eligible_count", "selected_count", "deferred_count", "suppressed_count",
+    "budget", "family_count", "attempted_count", "placed_count", "filled_count", "pending_count",
+    "blocked_count", "rejected_count", "errored_count", "missing_entry_count", "no_result_count",
+    "other_status_count", "failed_to_open_count",
+  ]
+  const fields: Record<string, string> = {}
+  for (const name of zero) fields[`s:${symbol}:dispatch_${name}`] = "0"
+  fields[`s:${symbol}:dispatch_selected`] = "[]"
+  fields[`s:${symbol}:dispatch_deferred`] = "[]"
+  fields[`s:${symbol}:dispatch_suppressed`] = "[]"
+  return fields
+}
+
+export function compareStrategySetsBestFirst(
+  left: Pick<StrategySet, "avgProfitFactor" | "setKey">,
+  right: Pick<StrategySet, "avgProfitFactor" | "setKey">,
+): number {
+  const l = Number(left?.avgProfitFactor)
+  const r = Number(right?.avgProfitFactor)
+  // NaN/undefined sort last; a +Infinity PF (no losing closes) is a real
+  // best value and must stay first, not be demoted with the non-finite rows.
+  const lv = Number.isNaN(l) ? Number.NEGATIVE_INFINITY : l
+  const rv = Number.isNaN(r) ? Number.NEGATIVE_INFINITY : r
+  if (lv !== rv) return rv > lv ? 1 : -1
+  const lk = String(left?.setKey || "")
+  const rk = String(right?.setKey || "")
+  return lk < rk ? -1 : lk > rk ? 1 : 0
+}
+
+/**
  * Preserve exact active Set lineages and append every newly-qualified Live
  * candidate. Sibling Sets sharing only a parent are not treated as active.
  */
@@ -1624,8 +1724,8 @@ export function selectLiveSetsWithActivePriority(
       candidates.push(set)
     }
   }
-  active.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
-  candidates.sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+  active.sort(compareStrategySetsBestFirst)
+  candidates.sort(compareStrategySetsBestFirst)
   return {
     active,
     selected: active.concat(candidates),
@@ -1803,7 +1903,7 @@ export function materializeContinuousStageRows(
     } as StrategySet)
   }
 
-  rows.sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+  rows.sort(compareStrategySetsBestFirst)
   return { rows, evaluated, rejected }
 }
 
@@ -1880,7 +1980,7 @@ export function selectRealSetsWithActiveAndVariantPriority(
   const ordered = Array.from(new Map(
     inputSets
       .slice()
-      .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+      .sort(compareStrategySetsBestFirst)
       .map((set) => [set.setKey, set]),
   ).values())
   const active = ordered.filter((set) => activeSetKeys.has(set.setKey))
@@ -3382,7 +3482,7 @@ export class StrategyCoordinator {
       // flag; trailing Sets are created at BASE, not emitted as Main Adjusts.
       // The bool() helper only falls back to the default when the key is genuinely
       // absent — an explicit "false" is honoured.
-      this._coordinationSettings.variants.trailing = bool(s.variantTrailingEnabled, true)
+      this._coordinationSettings.variants.trailing = resolveTrailingSwitch(s, true)
       this._coordinationSettings.variants.block    = bool(s.variantBlockEnabled,    true)
       this._coordinationSettings.variants.dca      = bool(s.variantDcaEnabled,      false)
       this._coordinationSettings.indicationVariants =
@@ -4001,7 +4101,8 @@ export class StrategyCoordinator {
           Math.max(MIN_BASE_STEP, Math.round(rawMin)),
         )
       }
-      const enabledMaster = settings.strategyBaseTrailingEnabled !== false
+      // Redis hashes store booleans as strings: "false" must disable too.
+      const enabledMaster = resolveTrailingSwitch(settings, true)
       if (!enabledMaster) {
         ;(this as any)._trailingVariantsCache = []
         return []
@@ -5096,11 +5197,12 @@ export class StrategyCoordinator {
       // reported — it simply does not become an input for Main until it has
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
-      const measuredCount = Number(baseSet.prevPos?.positionCostRatioCount ?? 0)
-      if (requireMeasuredHistoryForBaseValidity && measuredCount < baseHistoryMinCount) {
+      const measuredHistoryRejection = requireMeasuredHistoryForBaseValidity
+        ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount)
+        : null
+      if (measuredHistoryRejection) {
         baseSet.status = "invalid"
-        baseSet.rejectionReason =
-          `base_awaiting_measured_history: ${measuredCount} < ${baseHistoryMinCount}`
+        baseSet.rejectionReason = measuredHistoryRejection
         continue
       }
       if (
@@ -7665,7 +7767,7 @@ export class StrategyCoordinator {
       symbol,
       shouldContinue,
     ))
-      .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+      .sort(compareStrategySetsBestFirst)
 
     // ── HEDGE NETTING (operator spec: Real stage only) ─────────────────────
     //
@@ -7844,9 +7946,7 @@ export class StrategyCoordinator {
       // When hasLong === hasShort === true: symmetric cancel is correct — no bootstrap.
       // When hasLong === hasShort === false: no sets at all — nothing to bootstrap.
     }
-    let realPostHedge = [...effectiveNetted, ...axisPassthrough].sort(
-      (a, b) => b.avgProfitFactor - a.avgProfitFactor,
-    )
+    let realPostHedge = [...effectiveNetted, ...axisPassthrough].sort(compareStrategySetsBestFirst)
 
     // Materialize the complete regular Block ladder at Real from normal
     // Base-derived Sets only. Pos-Count axis Sets remain their own execution
@@ -7871,7 +7971,7 @@ export class StrategyCoordinator {
       if (independentBlockCounts.length > 0) {
         realPostHedge = realPostHedge
           .concat(independentBlockCounts)
-          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -7898,7 +7998,7 @@ export class StrategyCoordinator {
         realStageRelatedCreated += scopedBlockOverlays.length
         realPostHedge = realPostHedge
           .concat(scopedBlockOverlays)
-          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -7925,7 +8025,7 @@ export class StrategyCoordinator {
         realStageRelatedCreated += activePositionBlockOverlays.length
         realPostHedge = realPostHedge
           .concat(activePositionBlockOverlays)
-          .sort((a, b) => b.avgProfitFactor - a.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -8036,7 +8136,7 @@ export class StrategyCoordinator {
       if (rowRealSets.length > 0) {
         realPostHedge = realPostHedge
           .concat(rowRealSets)
-          .sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+          .sort(compareStrategySetsBestFirst)
       }
     } catch (err) {
       console.warn(
@@ -8054,7 +8154,7 @@ export class StrategyCoordinator {
     const realCandidateCount = realPostHedge.length
     const qualifiedRealSets = Array.from(new Map(
       realPostHedge.map((set) => [set.setKey, set]),
-    ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    ).values()).sort(compareStrategySetsBestFirst)
     const configuredRealMaterializationCeiling = Number.parseInt(
       process.env.STRATEGY_REAL_SETS_CEILING || "0",
       10,
@@ -8983,7 +9083,7 @@ export class StrategyCoordinator {
       }
     }
 
-    return rows.sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    return rows.sort(compareStrategySetsBestFirst)
   }
 
 
@@ -9182,7 +9282,7 @@ export class StrategyCoordinator {
     const rowQualifying = rowLive.rows.concat(rowLiveBlock)
     const allQualifying = Array.from(new Map(
       rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
-    ).values()).sort((left, right) => right.avgProfitFactor - left.avgProfitFactor)
+    ).values()).sort(compareStrategySetsBestFirst)
     if (coordIndex) {
       for (const row of allQualifying) {
         const sourceKey = row.rowSourceSetKey || row.setKey
@@ -9411,6 +9511,9 @@ export class StrategyCoordinator {
           [`s:${symbol}:apf`]:        String(liveAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(liveAvgDDT)),
           [`s:${symbol}:ts`]:         String(Date.now()),
+          // With nothing executable the dispatch block does not run, so clear
+          // this symbol's dispatch counters instead of leaving the last cycle's.
+          ...(qualifying.length === 0 ? idleLiveDispatchSymbolFields(symbol) : {}),
         }),
         client.expire(liveDetailKey, 86400),
         // `set` with EX in a single command avoids the separate expire round-trip.
@@ -9808,9 +9911,14 @@ export class StrategyCoordinator {
                 // anchored at the trailing stop distance rather than a generic
                 // PF-derived value. For all other variants `protection.stopLossPct`
                 // is already variant-scaled (block: sizeMultiplier-up, dca: 0.5×).
+                // With the global Trailing switch off, a Block/DCA/Axis row
+                // derived from a trailing Base must not re-acquire the Base
+                // profile here (fixed TP/SL only). Signal keeps its own lane.
                 const resolvedTrailingProfile: TrailingProfile | undefined =
-                  set.trailingProfile ??
-                  (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
+                  isMainTrailingAllowed(set, executionPolicy)
+                    ? set.trailingProfile ??
+                      (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
+                    : undefined
 
                 let sl = protection.stopLossPct
                 // CRITICAL FIX: Add slippage buffer to block variant SL prices
@@ -9901,6 +10009,10 @@ export class StrategyCoordinator {
                     parentSetKey: set.parentSetKey,
                     indicationType: set.indicationType,
                     setVariant:   set.variant,
+                    // Normal off: DCA may seed its own base parent (step 0).
+                    ...(set.variant === "dca" && !executionPolicy.normalEnabled
+                      ? { dcaIndependentSeed: true }
+                      : {}),
                     axisWindows:  set.axisWindows,
                     signalRisk: resolvedSignalRisk,
                     specialPositionPlan: bestEntry.specialPositionPlan,
@@ -10368,7 +10480,8 @@ export class StrategyCoordinator {
                   signalProtection?.takeProfitPct ??
                   adaptiveTrendTp ??
                   positionCostProtection.takeProfitPct
-                const profile = set.trailingProfile
+                const mainTrailingAllowed = isMainTrailingAllowed(set, executionPolicy)
+                const profile = mainTrailingAllowed ? set.trailingProfile : undefined
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
                 const sl = signalDynamicTrailing
                   ? Math.max(0.8, (profile.minStopRatio ?? profile.stopRatio) * 100)
@@ -10383,7 +10496,7 @@ export class StrategyCoordinator {
                 // Strategy → Trailing. Sets WITHOUT a profile keep the
                 // legacy single-step behaviour with statistical on/off
                 // (`bestEntry.confidence >= 0.85`).
-                const trailing = profile ? true : bestEntry.confidence >= 0.85
+                const trailing = mainTrailingAllowed && (profile ? true : bestEntry.confidence >= 0.85)
 
                 // Build a fully-qualified uniqueness key including TP, SL,
                 // direction and trailing so sets with the same indicationType

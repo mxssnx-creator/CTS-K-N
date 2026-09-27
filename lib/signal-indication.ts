@@ -36,6 +36,15 @@ import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { isForexSymbol } from "@/lib/forex-market"
 import { INDICATION_SET_RETENTION_SECONDS } from "@/lib/redis-retention"
 import { iterateRedisSetMembers } from "@/lib/redis-scan"
+import {
+  SIGNAL_SOURCE_VALIDATION_SETTINGS_DEFAULT,
+  dedupeCorrelatedSignalEvaluations,
+  filterDispatchableSignalEvaluations,
+  normalizeSignalSourceValidationSettings,
+  validatedConsensusSatisfied,
+  type SignalSourceValidationSettings,
+} from "@/lib/signal-source-validation"
+import { readSignalSourceSnapshot, snapshotDispatchView } from "@/lib/signal-source-validation-store"
 
 export type SignalDirection = "long" | "short"
 export type SignalPerformanceDirection = SignalDirection | "overall"
@@ -93,6 +102,8 @@ export interface SignalIndicationSettings {
   circuitFailureThreshold: number
   circuitCooldownSeconds: number
   databaseSize: number
+  /** Source validation gate, active-source capacity and coordination tactics. */
+  sourceValidation: SignalSourceValidationSettings
   sources: Record<string, SignalSourceSettings>
 }
 
@@ -309,6 +320,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   circuitFailureThreshold: 3,
   circuitCooldownSeconds: 120,
   databaseSize: 250,
+  sourceValidation: SIGNAL_SOURCE_VALIDATION_SETTINGS_DEFAULT,
   sources: DEFAULT_SOURCE_SETTINGS,
 }
 
@@ -505,6 +517,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     circuitFailureThreshold: Math.round(boundedNumber(raw.circuitFailureThreshold, 3, 1, 20)),
     circuitCooldownSeconds: Math.round(boundedNumber(raw.circuitCooldownSeconds, 120, 10, 3600)),
     databaseSize: Math.round(boundedNumber(raw.databaseSize, 250, 25, 2000)),
+    sourceValidation: normalizeSignalSourceValidationSettings(raw.sourceValidation),
     sources,
   }
 }
@@ -1808,6 +1821,58 @@ function lowStopConsensus(
   }
 }
 
+/**
+ * Consensus with risk-only vetoes: the gated consensus is emitted only when the
+ * baseline population, the gated population and (when enabled) the
+ * venue-deduplicated population all reach consensus in the same direction and
+ * the validated-consensus tactic is satisfied. Stops/targets come from the
+ * gated population so blocked sources never shape risk.
+ */
+export function signalConsensusWithVetoes(input: {
+  baseline: SignalSourceEvaluation[]
+  gated: SignalSourceEvaluation[]
+  settings: SignalIndicationSettings
+  requiredSourceSignals: number
+  dispatchView: ReturnType<typeof snapshotDispatchView>
+}): ReturnType<typeof lowStopConsensus> {
+  const baseline = lowStopConsensus(input.baseline, input.settings, input.requiredSourceSignals)
+  if (!baseline) return null
+  const gated = lowStopConsensus(input.gated, input.settings, input.requiredSourceSignals)
+  if (!gated || gated.direction !== baseline.direction) return null
+  const tactics = input.settings.sourceValidation.tactics
+  if (tactics.correlationDedupe) {
+    const deduped = lowStopConsensus(
+      dedupeCorrelatedSignalEvaluations(input.gated, input.dispatchView?.ranks ?? new Map()),
+      input.settings,
+      input.requiredSourceSignals,
+    )
+    if (!deduped || deduped.direction !== gated.direction) return null
+  }
+  if (tactics.validatedConsensus && !validatedConsensusSatisfied(gated.contributors, input.dispatchView)) {
+    return null
+  }
+  return gated
+}
+
+const STARTUP_OPTIMIZATION_SCHEDULED = new Set<string>()
+
+function scheduleSignalSourceStartupOptimization(connectionId: string, fetchImpl?: typeof fetch): void {
+  // Explicit adapter/test calls never trigger background work.
+  if (fetchImpl || process.env.NODE_ENV === "test") return
+  if (STARTUP_OPTIMIZATION_SCHEDULED.has(connectionId)) return
+  STARTUP_OPTIMIZATION_SCHEDULED.add(connectionId)
+  void import("@/lib/signal-source-optimizer")
+    .then(({ runSignalSourceOptimization }) => runSignalSourceOptimization({
+      connectionId,
+      trigger: "engine_start",
+      force: true,
+      fetchImpl: fetch,
+    }))
+    .catch(() => {
+      STARTUP_OPTIMIZATION_SCHEDULED.delete(connectionId)
+    })
+}
+
 export function normalizeSignalRisk(value: unknown): SignalRisk | undefined {
   const raw = value && typeof value === "object" ? value as Record<string, any> : {}
   const sourceIds = Array.isArray(raw.sourceIds)
@@ -2167,12 +2232,40 @@ async function processSignalIndicationsUncached(
     return decision.allowed ? evaluation : null
   }))).filter((evaluation): evaluation is SignalSourceEvaluation => Boolean(evaluation))
 
-  const consensus = lowStopConsensus(allowedEvaluations, settings, requiredSourceSignals)
+  // Source activation gate + risk-only tactics. Unvalidated candidate sources
+  // never dispatch; tactics can only veto, never add.
+  const validationSnapshot = await readSignalSourceSnapshot(options.connectionId, { now }).catch(() => null)
+  if (!validationSnapshot) scheduleSignalSourceStartupOptimization(options.connectionId, options.fetchImpl)
+  const dispatchView = snapshotDispatchView(validationSnapshot)
+  const lifecycleById = new Map(SIGNAL_SOURCE_DEFINITIONS.map((source) => [
+    source.id,
+    source.lifecycle || "established",
+  ] as const))
+  const gated = filterDispatchableSignalEvaluations({
+    evaluations: allowedEvaluations,
+    snapshot: dispatchView,
+    lifecycleById,
+    settings: settings.sourceValidation,
+    stopLossAtrMultiplier: settings.stopLossAtrMultiplier,
+    stopLossMaxPct: settings.stopLossMaxPct,
+    now,
+  })
+  const dispatchEvaluations = gated.allowed
+  const consensus = signalConsensusWithVetoes({
+    // Baseline = exactly the pre-validation population (established sources
+    // only). The gated consensus must agree with it, so the gate can never
+    // turn a previously rejected consensus into an accepted one.
+    baseline: allowedEvaluations.filter((evaluation) => lifecycleById.get(evaluation.sourceId) !== "candidate"),
+    gated: dispatchEvaluations,
+    settings,
+    requiredSourceSignals,
+    dispatchView,
+  })
   const indications: any[] = []
   // Every website source remains an independent Signal lane. Source and
   // source×symbol diagnostics do not suppress another exact configuration;
   // exact Previous-position quality is enforced downstream.
-  const directSources = [...allowedEvaluations].sort(
+  const directSources = [...dispatchEvaluations].sort(
     (left, right) =>
       left.stopLossPct - right.stopLossPct ||
       right.confidence - left.confidence ||
@@ -2274,6 +2367,9 @@ async function processSignalIndicationsUncached(
       selectedSources: sources.map((source) => source.id),
       successfulSources: evaluated.map((evaluation) => evaluation.sourceId),
       performanceAllowedSources: allowedEvaluations.map((evaluation) => evaluation.sourceId),
+      dispatchableSources: dispatchEvaluations.map((evaluation) => evaluation.sourceId),
+      sourceValidationVetoes: gated.vetoed,
+      sourceValidationSnapshotAt: validationSnapshot?.generatedAt ?? null,
       direction: indications[0]?.metadata?.direction ?? null,
       sourceRegistrySize: SIGNAL_SOURCE_DEFINITIONS.length,
       requiredSourceSignals,

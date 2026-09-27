@@ -22,6 +22,7 @@ export default function PositionMonitor({ connectionId }: { connectionId: string
   const [error, setError] = useState("")
 
   useEffect(() => {
+    let cancelled = false
     // Fetch positions periodically
     const fetchPositions = async () => {
       if (!connectionId) {
@@ -38,9 +39,11 @@ export default function PositionMonitor({ connectionId }: { connectionId: string
         if (!response.ok || !payload.success) {
           throw new Error(payload.error || "Active positions unavailable")
         }
+        if (cancelled) return
         setPositions(Array.isArray(payload.data) ? payload.data : [])
         setError("")
       } catch (loadError) {
+        if (cancelled) return
         setError(loadError instanceof Error ? loadError.message : "Active positions unavailable")
       }
     }
@@ -61,6 +64,7 @@ export default function PositionMonitor({ connectionId }: { connectionId: string
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility)
 
     return () => {
+      cancelled = true
       clearInterval(interval)
       if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility)
     }

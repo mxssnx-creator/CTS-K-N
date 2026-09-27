@@ -17,6 +17,7 @@ export function RealTimeTicker() {
   const [isConnected, setIsConnected] = useState(false)
 
   useEffect(() => {
+    let disposed = false
     const loadRealPrices = async () => {
       try {
         const response = await fetch("/api/market/prices")
@@ -26,7 +27,7 @@ export function RealTimeTicker() {
           const priceMap = new Map<string, PriceData>()
 
           symbols.forEach((symbol) => {
-            if (data[symbol]) {
+            if (data[symbol] && Number.isFinite(data[symbol].price) && Number.isFinite(data[symbol].change_24h)) {
               priceMap.set(symbol, {
                 price: data[symbol].price,
                 change_24h: data[symbol].change_24h,
@@ -34,13 +35,14 @@ export function RealTimeTicker() {
             }
           })
 
+          if (disposed) return
           setPrices(priceMap)
           setIsConnected(true)
         }
       } catch {
         // silently ignore
       } finally {
-        setIsLoading(false)
+        if (!disposed) setIsLoading(false)
       }
     }
 
@@ -48,7 +50,10 @@ export function RealTimeTicker() {
 
     const interval = setInterval(loadRealPrices, 5000)
 
-    return () => clearInterval(interval)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
   }, [])
 
   if (isLoading) {

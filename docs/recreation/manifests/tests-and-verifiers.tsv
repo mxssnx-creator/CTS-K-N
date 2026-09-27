@@ -58,7 +58,9 @@ unit	__tests__/unit/axis-default-engages.test.ts
 unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
 unit	__tests__/unit/base-position-batch-coordination.test.ts
+unit	__tests__/unit/base-prehistoric-measured-history.test.ts
 unit	__tests__/unit/base-stage-concurrency.test.ts
+unit	__tests__/unit/best-first-ordering.test.ts
 unit	__tests__/unit/bingx-account-snapshot-recovery.test.ts
 unit	__tests__/unit/bingx-instrument-rules.test.ts
 unit	__tests__/unit/bingx-library-fast-path.test.ts
@@ -85,12 +87,14 @@ unit	__tests__/unit/bots-backtest.test.ts
 unit	__tests__/unit/bots-cron-nonblocking.test.ts
 unit	__tests__/unit/bots-runner.test.ts
 unit	__tests__/unit/bounded-concurrency.test.ts
+unit	__tests__/unit/branch-audit-fixes.test.ts
 unit	__tests__/unit/bybit-connector-contract.test.ts
 unit	__tests__/unit/cache-margin-leverage-setup.test.ts
 unit	__tests__/unit/canonical-pipeline-admission.test.ts
 unit	__tests__/unit/clear-progressions-recovery.test.ts
 unit	__tests__/unit/close-accounting-backfill.test.ts
 unit	__tests__/unit/close-adopted-positions.test.ts
+unit	__tests__/unit/closeable-row-statuses.test.ts
 unit	__tests__/unit/coherent-stage-thresholds.test.ts
 unit	__tests__/unit/connection-card-stage-overview-contract.test.ts
 unit	__tests__/unit/connection-coordinator.test.ts
@@ -182,6 +186,7 @@ unit	__tests__/unit/exchange-position-trailing.test.ts
 unit	__tests__/unit/exchange-quantity-ledger.test.ts
 unit	__tests__/unit/family-statistics-surface.test.ts
 unit	__tests__/unit/forced-symbols.test.ts
+unit	__tests__/unit/foreign-order-ownership-matrix.test.ts
 unit	__tests__/unit/foreign-position-isolation.test.ts
 unit	__tests__/unit/forex-support.test.ts
 unit	__tests__/unit/fresh-position-snapshot.test.ts
@@ -221,6 +226,7 @@ unit	__tests__/unit/instaforex-base-connection.test.ts
 unit	__tests__/unit/install-deployment-contract.test.ts
 unit	__tests__/unit/live-config-performance.test.ts
 unit	__tests__/unit/live-counts-exclude-block.test.ts
+unit	__tests__/unit/live-dispatch-idle-reset.test.ts
 unit	__tests__/unit/live-dispatch-outcome.test.ts
 unit	__tests__/unit/live-entry-budget-block-cache.test.ts
 unit	__tests__/unit/live-entry-protection-admission.test.ts
@@ -269,6 +275,7 @@ unit	__tests__/unit/market-data-1s-backfill.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
+unit	__tests__/unit/market-data-synthetic-continuation.test.ts
 unit	__tests__/unit/minimum-scales-with-variant.test.ts
 unit	__tests__/unit/monitoring-stats-route.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
@@ -276,6 +283,7 @@ unit	__tests__/unit/navigation-and-pages.test.ts
 unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
 unit	__tests__/unit/no-foreign-quantity-adoption.test.ts
+unit	__tests__/unit/normal-trailing-switch-matrix.test.ts
 unit	__tests__/unit/orchestrated-verifier-safety.test.ts
 unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
@@ -349,6 +357,7 @@ unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
 unit	__tests__/unit/release-entry-lock-on-early-exit.test.ts
+unit	__tests__/unit/request-sequence.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
 unit	__tests__/unit/reset-db-preserves-foreign-keys.test.ts
 unit	__tests__/unit/resume-stalled-system-close.test.ts
@@ -378,9 +387,11 @@ unit	__tests__/unit/shutdown-keeps-positions.test.ts
 unit	__tests__/unit/signal-analytics.test.ts
 unit	__tests__/unit/signal-capacity-self-heal.test.ts
 unit	__tests__/unit/signal-config-matrix.test.ts
+unit	__tests__/unit/signal-historic-eval.test.ts
 unit	__tests__/unit/signal-indication.test.ts
 unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
+unit	__tests__/unit/signal-source-validation.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
 unit	__tests__/unit/site-logs-key.test.ts
 unit	__tests__/unit/slot-audit-type-separation.test.ts
@@ -415,6 +426,7 @@ unit	__tests__/unit/strategy-position-entry-ledger.test.ts
 unit	__tests__/unit/strategy-profit-factor-contract.test.ts
 unit	__tests__/unit/strategy-real-materialization-limit.test.ts
 unit	__tests__/unit/strategy-real-stats.test.ts
+unit	__tests__/unit/strategy-set-identity-and-block-pause-retention.test.ts
 unit	__tests__/unit/strategy-sets-processor.test.ts
 unit	__tests__/unit/strategy-snapshot-consistency.test.ts
 unit	__tests__/unit/strategy-stage-accounting.test.ts

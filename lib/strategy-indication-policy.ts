@@ -12,6 +12,16 @@ export const STRATEGY_INDICATION_TYPES = [
 ] as const
 
 export type StrategyIndicationType = typeof STRATEGY_INDICATION_TYPES[number]
+
+/**
+ * Base buckets fed by the historic strategy simulation. That walk enters on a
+ * causal price deviation from a rolling mean and exits on TP/SL; it does not
+ * depend on the strategy family label, so its closes are measured outcomes
+ * for every price-derived Base type of that symbol × direction. Signal is
+ * excluded: it is external realtime consensus that replay never fetches.
+ */
+export const HISTORIC_POS_HISTORY_INDICATION_TYPES: readonly StrategyIndicationType[] =
+  STRATEGY_INDICATION_TYPES.filter((type) => type !== "signal")
 export type StrategyIndicationVariant = "trailing" | "block"
 export type StrategyIndicationVariantPolicy = Record<
   StrategyIndicationType,

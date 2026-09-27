@@ -57,6 +57,7 @@ interface EngineTimings {
   // Stored as number in Redis (0/1 for boolean). Live-settings contract: hot-path,
   // changes apply within ~10 s (engine-timings cache TTL), no engine restart needed.
   normalizeEnabled: number         // 0=off, 1=on
+  marginCallEnabled: number        // system-wide margin control master, 0=off (default)
   normalizeThresholdPct: number    // imbalance % before normalization kicks in
   normalizeMaxPerDirection: number // per-direction cap for hedge accumulator
   normalizeVolumeMode: string      // "neutralize" | "rebalance" | "reduce"
@@ -109,6 +110,8 @@ const DEFAULT_TIMINGS: EngineTimings = {
    // Disabled by default to preserve existing behaviour for existing installs.
    // Operator enables explicitly once the accumulator behaviour is wanted.
    normalizeEnabled:            0,
+   // Margin control is off until an operator explicitly enables it.
+   marginCallEnabled:           0,
    normalizeThresholdPct:       10,
    normalizeMaxPerDirection:    200,
    normalizeVolumeMode:         "neutralize",
@@ -203,6 +206,10 @@ const TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; max: number; uni
     min: 10, max: 200, unit: "ms", live: true,
     help: "Breath after each LivePositions sync (exchange mark price + SL/TP cross + protection orders). Default 50 ms gives the 200 ms cadence a comfortable margin.",
   },
+  marginCallEnabled: {
+    min: 0, max: 1, unit: "bool", live: true,
+    help: "System-wide margin control master. OFF (default): no connection is monitored, entry-locked or flattened by session equity, regardless of its own margin-call switch. ON: each connection's own switch and equity floor apply (system-owned positions only).",
+  },
   // ── Hedge / Directional Accumulation ────────────────────────────────────
   normalizeEnabled: {
     min: 0, max: 1, unit: "bool", live: true,
@@ -292,6 +299,9 @@ export function SystemSettings() {
           readNum("realtime_cycle_pause_ms",       "realtimeCyclePauseMs")
           readNum("live_positions_cycle_pause_ms", "livePositionsCyclePauseMs")
 
+          const rawMargin = sys["margin_call_enabled"]
+          ;(next as any).marginCallEnabled = rawMargin === "1" || rawMargin === 1 || rawMargin === true ? 1 : 0
+
           // ── Hedge / directional normalize (numeric + string fields) ──────────
           const rawEn = sys["neutralize_enabled"] ?? (sys as any)["normalizeEnabled"]
           if (rawEn !== undefined && rawEn !== null && rawEn !== "") {
@@ -372,6 +382,7 @@ export function SystemSettings() {
             realtime_cycle_pause_ms:       timings.realtimeCyclePauseMs,
             live_positions_cycle_pause_ms: timings.livePositionsCyclePauseMs,
             // ── Hedge / Directional Accumulation settings ───────────────────
+            margin_call_enabled:           timings.marginCallEnabled,
             normalize_enabled:             timings.normalizeEnabled,
             normalize_threshold_pct:       timings.normalizeThresholdPct,
             normalize_max_per_direction:   timings.normalizeMaxPerDirection,
@@ -612,6 +623,36 @@ export function SystemSettings() {
        * caches these values; StrategyCoordinator and live-stage read them via
        * `getEngineTimings()` at cycle start.
        */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CardTitle>Margin Control</CardTitle>
+            <Badge variant="secondary">{timings.marginCallEnabled === 1 ? "ON" : "OFF"}</Badge>
+          </div>
+          <CardDescription>
+            System-wide master switch for the per-connection margin call. While off, no
+            connection is monitored, entry-locked or closed by session equity. When on, each
+            connection&apos;s own switch and equity floor apply, and only system-owned positions
+            and orders are closed.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between p-4 border rounded-lg">
+            <div>
+              <Label htmlFor="margin-control-enabled" className="font-medium text-sm">Enable Margin Control</Label>
+              <p className="text-xs text-muted-foreground">Default: off. Saved with the settings below.</p>
+            </div>
+            <input
+              type="checkbox"
+              id="margin-control-enabled"
+              checked={timings.marginCallEnabled === 1}
+              onChange={(e) => setTimings({ ...timings, marginCallEnabled: e.target.checked ? 1 : 0 })}
+              className="w-5 h-5 rounded cursor-pointer"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       <Card className="border-emerald-200 bg-emerald-50/30">
         <CardHeader>
           <div className="flex items-center gap-2">

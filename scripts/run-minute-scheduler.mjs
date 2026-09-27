@@ -13,6 +13,7 @@ export const CRON_PATHS = [
   "/api/cron/historic-test",
   "/api/cron/bots",
   "/api/cron/close-accounting",
+  "/api/cron/signal-source-optimization",
 ]
 
 export function runtimeMaintenanceActive(env = process.env, cwd = process.cwd()) {

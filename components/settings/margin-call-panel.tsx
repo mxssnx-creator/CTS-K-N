@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { DEFAULT_MARGIN_CALL_EQUITY_PERCENT, type MarginCallSession } from "@/lib/margin-call-policy"
 
-type Snapshot = { enabled?: boolean; equityPercent: number; session: MarginCallSession | null; entriesBlocked: boolean; lastError?: string }
+type Snapshot = { enabled?: boolean; systemEnabled?: boolean; active?: boolean; equityPercent: number; session: MarginCallSession | null; entriesBlocked: boolean; lastError?: string }
 
 export function MarginCallPanel({ connectionId }: { connectionId: string }) {
   const [data, setData] = useState<Snapshot | null>(null)
@@ -96,9 +96,11 @@ export function MarginCallPanel({ connectionId }: { connectionId: string }) {
         </Badge>
       </div>
       <p className="text-xs text-muted-foreground">
-        {data?.enabled === false
+        {data?.systemEnabled === false
+          ? "Margin control is disabled system-wide (Settings → System → Margin Control). Nothing is monitored, locked or closed."
+          : data?.enabled === false
           ? "Margin call is disabled. Live entries are not locked or flattened by session equity."
-          : `Close every position on this connection when equity falls below ${percent}% of the session’s starting equity. New entries and accumulation stay locked after a margin call.`}
+          : `Close every system-owned position on this connection when equity falls below ${percent}% of the session’s starting equity. New entries and accumulation stay locked after a margin call.`}
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">

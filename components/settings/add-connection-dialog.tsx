@@ -470,14 +470,14 @@ export function AddConnectionDialog({ open, onOpenChange, onConnectionAdded, onS
       })
 
       if (!response.ok) {
-        const error = await response.json()
+        const error = await response.json().catch(() => ({}))
 
         // Handle duplicate API key error
         if (response.status === 409) {
           throw new Error(error.details || "This API key is already connected. Please remove the existing connection first.")
         }
 
-        throw new Error(error.message || error.details || "Failed to add connection")
+        throw new Error(error.error || error.message || error.details || "Failed to add connection")
       }
 
       const result = await response.json()

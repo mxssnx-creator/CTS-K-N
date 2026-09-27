@@ -1,4 +1,5 @@
 import blockVolume from "./block-volume-ratio.cjs"
+import { readBlockPauseSymbolStates } from "./block-count-outcomes"
 export interface BlockLegState {
   setKey: string
   lifecycleKey?: string
@@ -479,7 +480,9 @@ export async function getUnavailableBlockSetKeys(
   const normalized = symbolKey(symbol)
   const [active, pauses] = await Promise.all([
     redis.hgetall(activeKey(connectionId, normalized)).catch(() => ({})),
-    redis.hgetall(pauseKey(connectionId)).catch(() => ({})),
+    readBlockPauseSymbolStates(redis, connectionId, normalized)
+      .then((result) => result.fields)
+      .catch(() => ({})),
   ])
   const unavailable = new Set<string>(Object.keys(active || {}))
   for (const [field, raw] of Object.entries(pauses || {})) {
@@ -524,8 +527,8 @@ export async function advanceBlockCountPausesOnPositionClose(redis: any, positio
 export async function getBlockCountLifecycleStates(
   redis: any, connectionId: string, symbol: string,
 ): Promise<Map<string, import("./block-count-lifecycle").BlockCountLifecycle>> {
-  const stored = await redis.hgetall(pauseKey(connectionId)) as Record<string, string>
   const normalized = symbolKey(symbol)
+  const { fields: stored } = await readBlockPauseSymbolStates(redis, connectionId, normalized)
   const states = new Map<string, import("./block-count-lifecycle").BlockCountLifecycle>()
   for (const [field, raw] of Object.entries(stored || {})) {
     if (!field.startsWith(`${normalized}|`)) continue

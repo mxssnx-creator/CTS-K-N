@@ -1573,3 +1573,16 @@ describe("cumulative reduction settlement accounting", () => {
     expect(row.realizedPnlComplete).toBe(true)
   })
 })
+
+describe("pending accumulation attributable ceiling", () => {
+  test("only the unfilled remainder of an accumulation explains a venue increase", () => {
+    const fn = __liveStageTest.pendingAccumulationUnfilledQuantity
+    const base = { pendingAccumulation: { clientOrderId: "a", setKey: "s", requestedQuantity: 0.5, positionQuantityBefore: 1, submittedAt: 1 } }
+    expect(fn(base as any, 1)).toBeCloseTo(0.5)
+    // 0.3 of the 0.5 already in executed quantity: only 0.2 may still arrive.
+    expect(fn(base as any, 1.3)).toBeCloseTo(0.2)
+    expect(fn({ pendingAccumulation: { ...base.pendingAccumulation, appliedFilledQuantity: 0.4 } } as any, 1)).toBeCloseTo(0.1)
+    expect(fn(base as any, 2)).toBe(0)
+    expect(fn({} as any, 1)).toBe(0)
+  })
+})
