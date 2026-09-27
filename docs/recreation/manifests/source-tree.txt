@@ -108,6 +108,7 @@ __tests__/unit/canonical-pipeline-admission.test.ts
 __tests__/unit/clear-progressions-recovery.test.ts
 __tests__/unit/close-accounting-backfill.test.ts
 __tests__/unit/close-adopted-positions.test.ts
+__tests__/unit/closeable-row-statuses.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
 __tests__/unit/connection-coordinator.test.ts
@@ -369,6 +370,7 @@ __tests__/unit/redis-runtime-root.test.ts
 __tests__/unit/redis-secondary-indexes.test.ts
 __tests__/unit/redis-stats.test.ts
 __tests__/unit/release-entry-lock-on-early-exit.test.ts
+__tests__/unit/request-sequence.test.ts
 __tests__/unit/requested-regressions.test.ts
 __tests__/unit/reset-db-preserves-foreign-keys.test.ts
 __tests__/unit/resume-stalled-system-close.test.ts
@@ -1261,6 +1263,7 @@ lib/ccxt-helper.ts
 lib/circuit-breaker.ts
 lib/client-session-persistence.ts
 lib/close-accounting-backfill.ts
+lib/closeable-row-statuses.ts
 lib/common-indicator-config.ts
 lib/comprehensive-error-handler.ts
 lib/config.ts
@@ -1548,6 +1551,7 @@ lib/redis-runtime-bootstrap.ts
 lib/redis-runtime-root.ts
 lib/redis-scan.ts
 lib/redis-service.ts
+lib/request-sequence.ts
 lib/risk-manager.ts
 lib/route-presentation.ts
 lib/runtime-boot-id.ts
