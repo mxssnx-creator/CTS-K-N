@@ -1667,6 +1667,22 @@ export function buildPositionContextFingerprint(ctx: PositionContext): string {
  * profit factors tie-break deterministically by setKey so Map/insertion
  * order never decides which row survives a downstream limit.
  */
+/** Per-symbol Live dispatch counters for a cycle with nothing executable. */
+export function idleLiveDispatchSymbolFields(symbol: string): Record<string, string> {
+  const zero = [
+    "candidates", "eligible_count", "selected_count", "deferred_count", "suppressed_count",
+    "budget", "family_count", "attempted_count", "placed_count", "filled_count", "pending_count",
+    "blocked_count", "rejected_count", "errored_count", "missing_entry_count", "no_result_count",
+    "other_status_count", "failed_to_open_count",
+  ]
+  const fields: Record<string, string> = {}
+  for (const name of zero) fields[`s:${symbol}:dispatch_${name}`] = "0"
+  fields[`s:${symbol}:dispatch_selected`] = "[]"
+  fields[`s:${symbol}:dispatch_deferred`] = "[]"
+  fields[`s:${symbol}:dispatch_suppressed`] = "[]"
+  return fields
+}
+
 export function compareStrategySetsBestFirst(
   left: Pick<StrategySet, "avgProfitFactor" | "setKey">,
   right: Pick<StrategySet, "avgProfitFactor" | "setKey">,
@@ -9495,6 +9511,9 @@ export class StrategyCoordinator {
           [`s:${symbol}:apf`]:        String(liveAvgPF.toFixed(4)),
           [`s:${symbol}:addt`]:       String(Math.round(liveAvgDDT)),
           [`s:${symbol}:ts`]:         String(Date.now()),
+          // With nothing executable the dispatch block does not run, so clear
+          // this symbol's dispatch counters instead of leaving the last cycle's.
+          ...(qualifying.length === 0 ? idleLiveDispatchSymbolFields(symbol) : {}),
         }),
         client.expire(liveDetailKey, 86400),
         // `set` with EX in a single command avoids the separate expire round-trip.
