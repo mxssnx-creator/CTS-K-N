@@ -404,6 +404,7 @@ __tests__/unit/signal-config-matrix.test.ts
 __tests__/unit/signal-indication.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
+__tests__/unit/signal-source-validation.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/site-logs-key.test.ts
 __tests__/unit/slot-audit-type-separation.test.ts
@@ -543,6 +544,7 @@ app/api/cron/generate-indications/route.ts
 app/api/cron/historic-test/route.ts
 app/api/cron/schedule-indications/route.ts
 app/api/cron/server-continuity/route.ts
+app/api/cron/signal-source-optimization/route.ts
 app/api/cron/sync-live-positions/route.ts
 app/api/data/indications/route.ts
 app/api/data/positions/[id]/route.ts
@@ -714,6 +716,7 @@ app/api/settings/indications/active-advanced/route.ts
 app/api/settings/indications/common/route.ts
 app/api/settings/indications/main/route.ts
 app/api/settings/indications/signal/route.ts
+app/api/settings/indications/signal/sources/route.ts
 app/api/settings/risk-and-engines/route.ts
 app/api/settings/route.ts
 app/api/settings/set-limits/route.ts
@@ -1026,6 +1029,7 @@ components/settings/settings-editor-dialog.tsx
 components/settings/settings-file-manager.tsx
 components/settings/settings-protection-panel.tsx
 components/settings/signal-indication-settings.tsx
+components/settings/signal-source-validation-panel.tsx
 components/settings/statistics-overview.tsx
 components/settings/strategy-coordination-section.tsx
 components/settings/strategy/base-strategy-settings.tsx
@@ -1577,7 +1581,10 @@ lib/signal-analytics.ts
 lib/signal-config-matrix.ts
 lib/signal-indication.ts
 lib/signal-position-policy.ts
+lib/signal-source-optimizer.ts
 lib/signal-source-registry.ts
+lib/signal-source-validation-store.ts
+lib/signal-source-validation.ts
 lib/signal-trailing.ts
 lib/simple-icons.tsx
 lib/simple-toast.ts
@@ -1817,6 +1824,7 @@ scripts/runtime-recovery.sh
 scripts/scan-release-secrets.mjs
 scripts/service-control.sh
 scripts/setup-github-cli.sh
+scripts/simulate-signal-source-ranking.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs
 scripts/start-development.mjs
