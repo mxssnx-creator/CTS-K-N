@@ -48,7 +48,7 @@ export function PositionRowCompact({ position, onClose, onModify, index }: Posit
 
   const isProfit = position.unrealizedPnl >= 0
   const priceChange = position.currentPrice - position.entryPrice
-  const priceChangePercent = (priceChange / position.entryPrice) * 100
+  const priceChangePercent = position.entryPrice > 0 ? (priceChange / position.entryPrice) * 100 : 0
 
   // Smart decimal precision: use enough digits to show non-zero value
   // e.g. 0.01765 → "0.01765", 1234.56 → "1234.56", 0.00042 → "0.00042"

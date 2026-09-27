@@ -100,16 +100,8 @@ export function useTradeEngineStatus(options: UseTradeEngineStatusOptions = {}) 
     window.addEventListener(TRADE_ENGINE_STATUS_INVALIDATE_EVENT, handleInvalidation)
     window.addEventListener(CONNECTION_STATE_CHANGED_EVENT, handleInvalidation)
 
-    // Set up auto-refresh if enabled
-    if (autoRefresh) {
-      const interval = setInterval(fetchStatus, refreshInterval)
-      return () => {
-        clearInterval(interval)
-        window.removeEventListener(TRADE_ENGINE_STATUS_INVALIDATE_EVENT, handleInvalidation)
-        window.removeEventListener(CONNECTION_STATE_CHANGED_EVENT, handleInvalidation)
-      }
-    }
-
+    // Auto-refresh is handled by usePoll above; a second setInterval here
+    // doubled the request rate and raced overlapping responses.
     return () => {
       window.removeEventListener(TRADE_ENGINE_STATUS_INVALIDATE_EVENT, handleInvalidation)
       window.removeEventListener(CONNECTION_STATE_CHANGED_EVENT, handleInvalidation)

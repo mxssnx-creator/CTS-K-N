@@ -64,7 +64,7 @@ export function useRealTimePrices(symbols: string[]) {
                 newPrices.set(symbol, {
                   symbol,
                   price: latest.close,
-                  change_24h: ((latest.close - latest.open) / latest.open) * 100,
+                  change_24h: latest.open ? ((latest.close - latest.open) / latest.open) * 100 : 0,
                   volume_24h: latest.volume,
                   last_update: latest.timestamp,
                 })

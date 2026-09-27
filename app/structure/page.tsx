@@ -113,12 +113,13 @@ export default function OverviewPage() {
       selectedConnectionId && !selectedConnectionId.startsWith("demo")
         ? `?connectionId=${encodeURIComponent(selectedConnectionId)}`
         : ""
+    let disposed = false
 
     const fetchMetrics = async () => {
       try {
         const response = await fetch(`/api/structure/metrics${qs}`, { cache: "no-store" })
         const result = await response.json()
-        if (result.success) {
+        if (!disposed && result.success) {
           setSystemMetrics(result.data.systemMetrics)
           setTradingLogistics(result.data.tradingLogistics)
         }
@@ -131,7 +132,7 @@ export default function OverviewPage() {
       try {
         const response = await fetch(`/api/structure/modules${qs}`, { cache: "no-store" })
         const result = await response.json()
-        if (result.success) {
+        if (!disposed && result.success) {
           setModules(result.data)
         }
       } catch (error) {
@@ -149,7 +150,10 @@ export default function OverviewPage() {
       fetchModules()
     }, 5000)
 
-    return () => clearInterval(interval)
+    return () => {
+      disposed = true
+      clearInterval(interval)
+    }
   }, [selectedConnectionId])
 
   const getStatusColor = (status: string) => {

@@ -80,7 +80,7 @@ function PerformanceWindow({ label, metric }: { label: string; metric?: ProfitFa
         <div>
           <div className={`text-sm font-semibold tabular-nums ${tone(pnl)}`}>{formatCompactMoney(pnl)}</div>
           <div className="text-[10px] text-muted-foreground">
-            {metric?.wins || 0}W / {metric?.losses || 0}L · {metric?.winRate.toFixed(0) || "0"}%
+            {metric?.wins || 0}W / {metric?.losses || 0}L · {Number(metric?.winRate ?? 0).toFixed(0)}%
           </div>
         </div>
         <div className="text-right">
