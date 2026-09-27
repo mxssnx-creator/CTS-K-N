@@ -231,6 +231,7 @@ import {
   connectionTrackingId,
   isConnectionOwnedClientOrderId,
   isExactSystemPositionOwner,
+  clientOrderSystemPrefix,
 } from "@/lib/system-order-ownership"
 import {
   auditLiveEntryProtectionAdmission,
@@ -4130,11 +4131,12 @@ async function recordPositionAdjustmentProgression(
 }
 
 function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "id" | "symbol" | "connectionId">): string {
-  const connection = String(position.connectionId || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 8)
+  // "kn" + system hash identifies THIS system on the connection (see
+  // clientOrderSystemPrefix); other systems on the same account never match.
   const kind = String(prefix || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const symbol = String(position.symbol || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const suffix = nanoid(8).replace(/[^a-zA-Z0-9]/g, "")
-  return `cts${connection}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
+  return `${clientOrderSystemPrefix(position.connectionId)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
 }
 
 function firstNonEmptyIdentifier(...values: unknown[]): string | undefined {
@@ -10561,6 +10563,8 @@ function securityStopPriceRearmDeferred(
 export const MANUAL_CLOSE_SUPPRESS_SECONDS = 7 * 24 * 60 * 60
 /** A system close whose phase has not moved for this long is driven again by the sync. */
 export const SYSTEM_CLOSE_RESUME_AFTER_MS = 60_000
+/** How often the sync re-audits a genuine connection halt. */
+export const GENUINE_HALT_RECHECK_SECONDS = 120
 /** How long an externally closed signal is held back until its close is classified. */
 export const PROVISIONAL_EXTERNAL_CLOSE_HOLD_SECONDS = 10 * 60
 export function manualCloseKeyOf(connectionId: string, realPositionId: string): string {
@@ -12481,6 +12485,9 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
           JSON.stringify({ at: Date.now(), reason: input.reason, transient: false, slot: slotKey, violations: decision.violations.slice(0, 24) }),
         ).catch(() => {})
       }
+      // No connection-level violation remains: a connection halt left from an
+      // earlier audit is replaced by these slot halts.
+      await client.del(haltKey).catch(() => 0)
       return decision
     }
     await client.setex(
@@ -20605,6 +20612,32 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     // window without ever deleting a row that could represent a submitted
     // order, and it keeps foreign venue state completely outside the write
     // set. The same guard is deliberately retained in every future tick.
+    // Recheck a genuine connection halt. It is cleared only by a safe
+    // protection audit, and that audit ran only on an entry — which the halt
+    // rejects first. On X01 the halt outlived its cause (a stalled SOLUSDT
+    // close, since resolved) by a day. The full audit now runs from the sync
+    // at most every two minutes: safe -> cleared; only slot violations ->
+    // replaced by slot halts; connection-level violations -> kept.
+    {
+      const haltRaw = await client.get(entryProtectionHaltKeyOf(connectionId)).catch(() => null)
+      let haltRecord: any = null
+      try { haltRecord = haltRaw ? JSON.parse(String(haltRaw)) : null } catch { haltRecord = null }
+      if (haltRecord && haltRecord.transient !== true) {
+        const probe = (allOpen as any[]).find((row) => Number(row?.executedQuantity || 0) > 0 && resolveLivePositionDirection(row))
+        const gate = probe
+          ? await client.set(`live:halt-recheck:${connectionId}`, String(Date.now()), { NX: true, EX: GENUINE_HALT_RECHECK_SECONDS }).catch(() => null)
+          : null
+        if (probe && gate) {
+          await verifyConnectionProtectionAndPersistHalt({
+            connectionId,
+            symbol: probe.symbol,
+            direction: resolveLivePositionDirection(probe) as ProtectionSlotDirection,
+            connector: exchangeConnector,
+            reason: "genuine_halt_recheck",
+          }).catch(() => undefined)
+        }
+      }
+    }
     // Resume stalled system closes. The control barrier runs only inside
     // closeLivePosition; when its first pass answered "wait", the action was
     // persisted and nothing ever called the close again. On X01 (mainnet) a

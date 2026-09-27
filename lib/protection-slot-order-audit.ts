@@ -1,3 +1,4 @@
+import { isConnectionOwnedClientOrderId } from "@/lib/system-order-ownership"
 import type { AggregateProtectionPlan } from "@/lib/aggregate-protection-coordination"
 
 export type ProtectionSlotDirection = "long" | "short"
@@ -274,7 +275,7 @@ export function isConnectionOwnedProtectionOrderForSlot(
   direction: ProtectionSlotDirection,
 ): boolean {
   const clientOrderId = protectionOrderClientId(order).toLowerCase()
-  return clientOrderId.startsWith(protectionClientOrderPrefix(connectionId))
+  return isConnectionOwnedClientOrderId(clientOrderId, connectionId)
     && orderMatchesSlot(
       order,
       normalizeProtectionSlotSymbol(symbol),
