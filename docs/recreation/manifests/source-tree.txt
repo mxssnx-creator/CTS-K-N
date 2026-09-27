@@ -73,6 +73,7 @@ __tests__/unit/backtest-result-accounting.test.ts
 __tests__/unit/balanced-config-selection.test.ts
 __tests__/unit/base-position-batch-coordination.test.ts
 __tests__/unit/base-stage-concurrency.test.ts
+__tests__/unit/best-first-ordering.test.ts
 __tests__/unit/bingx-account-snapshot-recovery.test.ts
 __tests__/unit/bingx-instrument-rules.test.ts
 __tests__/unit/bingx-library-fast-path.test.ts
@@ -196,6 +197,7 @@ __tests__/unit/exchange-position-trailing.test.ts
 __tests__/unit/exchange-quantity-ledger.test.ts
 __tests__/unit/family-statistics-surface.test.ts
 __tests__/unit/forced-symbols.test.ts
+__tests__/unit/foreign-order-ownership-matrix.test.ts
 __tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
@@ -283,6 +285,7 @@ __tests__/unit/market-data-1s-backfill.test.ts
 __tests__/unit/market-data-fetch-deadline.test.ts
 __tests__/unit/market-data-history-contract.test.ts
 __tests__/unit/market-data-second-coverage.test.ts
+__tests__/unit/market-data-synthetic-continuation.test.ts
 __tests__/unit/minimum-scales-with-variant.test.ts
 __tests__/unit/monitoring-stats-route.test.ts
 __tests__/unit/multi-range-coordination.test.ts
@@ -810,7 +813,6 @@ app/login/page.tsx
 app/logistics/layout.tsx
 app/logistics/page.tsx
 app/main/layout.tsx
-app/main/page.tsx
 app/main/realtime/layout.tsx
 app/main/realtime/page.tsx
 app/monitoring-advanced/layout.tsx
@@ -1713,6 +1715,7 @@ scripts/audit-bingx-account-readonly.ts
 scripts/audit-bingx-vst-soak-settlements.ts
 scripts/audit-dca-sl-candidates.ts
 scripts/audit-live-position-ledgers.mjs
+scripts/audit-offline-engine-stats.mjs
 scripts/autotest-drift.mjs
 scripts/backup-local-redis.mjs
 scripts/baseline/fetch-candles-1m.mjs
@@ -1796,6 +1799,7 @@ scripts/run-engine-probe.mjs
 scripts/run-managed-db-migrate.mjs
 scripts/run-minute-scheduler.mjs
 scripts/run-native-redis-coordination.mjs
+scripts/run-offline-50-engine-soak.mjs
 scripts/run-prod-20symbols-8h.sh
 scripts/run-prod-preview-check.mjs
 scripts/run-production-inline-ui-audit.mjs
