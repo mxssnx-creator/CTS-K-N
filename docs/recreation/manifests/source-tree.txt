@@ -401,6 +401,7 @@ __tests__/unit/shutdown-keeps-positions.test.ts
 __tests__/unit/signal-analytics.test.ts
 __tests__/unit/signal-capacity-self-heal.test.ts
 __tests__/unit/signal-config-matrix.test.ts
+__tests__/unit/signal-historic-eval.test.ts
 __tests__/unit/signal-indication.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
@@ -1579,6 +1580,7 @@ lib/settings-storage.ts
 lib/short-range-grid.ts
 lib/signal-analytics.ts
 lib/signal-config-matrix.ts
+lib/signal-historic-eval.ts
 lib/signal-indication.ts
 lib/signal-position-policy.ts
 lib/signal-source-optimizer.ts
@@ -1758,6 +1760,8 @@ scripts/ensure-server-autoboot.sh
 scripts/fetch-dca-public-history.py
 scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
+scripts/historic-signal-data.ts
+scripts/historic-signal-eval.ts
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
 scripts/inspect-redis-aof-key-history.mjs
