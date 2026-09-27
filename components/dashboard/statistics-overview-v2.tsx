@@ -684,6 +684,7 @@ export function StatisticsOverviewV2() {
   const statsFetchSeqRef = useRef(0)
   const historyFetchSeqRef = useRef(0)
   const lastHistoryClosedCountRef = useRef(0)
+  const completeHistoryLoadInFlightRef = useRef(false)
 
   const mergeHistoryRows = useCallback((previous: TradeHistoryRow[], incoming: TradeHistoryRow[]) => {
     const byId = new Map<string, TradeHistoryRow>()
@@ -698,7 +699,11 @@ export function StatisticsOverviewV2() {
 
   const loadTradeHistory = useCallback(async (force = false, complete = false) => {
     if (!connectionId) return
+    // An incremental refresh must not supersede (and thereby discard) the
+    // complete paged load; that load already includes page zero.
+    if (!complete && completeHistoryLoadInFlightRef.current) return
     const requestSequence = ++historyFetchSeqRef.current
+    if (complete) completeHistoryLoadInFlightRef.current = true
     try {
       const fetchPage = async (offset: number, refresh: boolean) => {
         const response = await fetch(
@@ -750,6 +755,8 @@ export function StatisticsOverviewV2() {
     } catch {
       // Keep the last successful exchange snapshot/local stats fallback. A
       // transient venue error must not blank history or reset W/L counters.
+    } finally {
+      if (complete && requestSequence === historyFetchSeqRef.current) completeHistoryLoadInFlightRef.current = false
     }
   }, [connectionId, mergeHistoryRows, tradeHistoryMode])
 
@@ -763,6 +770,7 @@ export function StatisticsOverviewV2() {
     return () => {
       window.clearInterval(interval)
       historyFetchSeqRef.current++
+      completeHistoryLoadInFlightRef.current = false
     }
   }, [connectionId, tradeHistoryMode, loadTradeHistory])
 
@@ -785,6 +793,13 @@ export function StatisticsOverviewV2() {
     }
   }, [])
   useDashboardEvents(connectionId, dashboardEventHandlers)
+
+  // Never show the previous connection's counters while the newly selected
+  // connection's first stats payload is loading (or if it fails).
+  useEffect(() => {
+    statsFetchSeqRef.current++
+    setStats(EMPTY)
+  }, [connectionId])
 
   useEffect(() => {
     let mounted = true
@@ -996,7 +1011,7 @@ export function StatisticsOverviewV2() {
                     ? Math.round((volumeUsd / leverage) * 100) / 100
                     : 0
                 const unrealizedPnl = Number(p.unrealizedPnl) || 0
-                const roiPct = Number(p.roiPct) !== 0
+                const roiPct = Number.isFinite(Number(p.roiPct)) && Number(p.roiPct) !== 0
                   ? Number(p.roiPct)
                   : marginUsd > 0
                     ? Math.round((unrealizedPnl / marginUsd) * 10000) / 100

@@ -283,7 +283,7 @@ export function ConnectionCard({
     if (showInfo) {
       loadConnectionInfo()
     }
-  }, [showInfo])
+  }, [showInfo, connection.id])
 
   useEffect(() => {
     const loadPresetConfig = async () => {
@@ -684,7 +684,7 @@ export function ConnectionCard({
 
       if (response.ok) {
         setTestResult({ success: true, ...data })
-        toast.success(`Connection successful! Balance: ${data.balance?.toFixed(2)} USDT (${data.apiType || connection.api_type || "futures"})`)
+        toast.success(`Connection successful! Balance: ${Number.isFinite(Number(data.balance)) ? Number(data.balance).toFixed(2) : "—"} USDT (${data.apiType || connection.api_type || "futures"})`)
       } else {
         setTestResult({ success: false, error: data.details || data.error })
         toast.error(data.details || data.error || "Connection test failed")

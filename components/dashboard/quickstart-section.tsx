@@ -507,6 +507,7 @@ export function QuickstartSection() {
   // prehistoric poll is already in flight. Apply only the newest response so
   // slower old requests cannot collapse fresh counters back to stale values.
   const statsFetchSeqRef = useRef(0)
+  const liveStatusSeqRef = useRef(0)
 
   // ── fetch live stats ──────────────────────────────────────────────────────
   const fetchStats = useCallback(async (silent = false) => {
@@ -812,7 +813,9 @@ export function QuickstartSection() {
       }
       if (s.metadata?.engineRunning === false && !startingRef.current && !startingGraceRef.current) setIsRunning(false)
     } catch { /* non-critical */ }
-    finally { if (!silent && requestSeq === statsFetchSeqRef.current) setLoadingStats(false) }
+    // A silent poll can supersede a visible load; the newest request must
+    // still clear the spinner or it stays stuck until the next manual load.
+    finally { if (requestSeq === statsFetchSeqRef.current) setLoadingStats(false) }
   }, [connectionId])
 
   // ── fetch volatile symbol ──────────────────────────────────────────────────
@@ -849,7 +852,7 @@ export function QuickstartSection() {
       const symRes = await fetch(`/api/exchange/${ex}/top-symbols?sort=volatility&t=` + Date.now(), { cache: "no-store" })
       if (!symRes.ok) throw new Error("no symbols")
       const sym = await symRes.json()
-      setVolatileSymbol({ symbol: sym.symbol || "BTCUSDT", exchange: ex, pct: sym.priceChangePercent ?? null, loading: false })
+      setVolatileSymbol({ symbol: sym.symbol || "BTCUSDT", exchange: ex, pct: Number.isFinite(Number(sym.priceChangePercent)) && sym.priceChangePercent !== null && sym.priceChangePercent !== "" ? Number(sym.priceChangePercent) : null, loading: false })
     } catch {
       setVolatileSymbol(s => ({ ...s, loading: false }))
     }
@@ -877,6 +880,10 @@ export function QuickstartSection() {
   useEffect(() => {
     setLiveSummary(null)
     setLiveSummaryError(null)
+    // Drop in-flight stats of the previous connection and never keep its
+    // counters on screen for the newly selected one.
+    statsFetchSeqRef.current++
+    setStats(EMPTY_STATS)
     return () => {
       liveSummaryRequestRef.current?.controller.abort()
       liveSummaryRequestRef.current = null
@@ -1002,7 +1009,7 @@ export function QuickstartSection() {
               : (sym.symbol ? [sym.symbol] : [])
         if (list.length > 0) chosen = list.slice(0, clampedCount)
         const top = chosen[0]
-        addLog(`Selected: ${chosen.join(", ")} (top: ${sym.priceChangePercent?.toFixed(2) ?? "—"}% 24h volatile)`, "success")
+        addLog(`Selected: ${chosen.join(", ")} (top: ${(Number.isFinite(Number(sym.priceChangePercent)) && sym.priceChangePercent != null ? Number(sym.priceChangePercent).toFixed(2) : "—")}% 24h volatile)`, "success")
         setVolatileSymbol({ symbol: top, exchange: ex, pct: sym.priceChangePercent ?? null, loading: false })
       }
 
@@ -1100,6 +1107,7 @@ export function QuickstartSection() {
     // without keys) must not keep showing "Live paused: valid API key" over
     // the BingX connection the operator currently has selected.
     const id = connectionId || activeConnectionId
+    const requestSeq = ++liveStatusSeqRef.current
     if (!id) {
       setLiveReadiness(null)
       return
@@ -1113,6 +1121,9 @@ export function QuickstartSection() {
         fetch(`/api/settings/connections?t=${Date.now()}`, { cache: "no-store" }),
         fetch(`/api/connections/${encodeURIComponent(id)}/engine-states`, { cache: "no-store" }),
       ])
+      // A slower response for a previously selected connection must not
+      // overwrite the live flag/readiness of the current one.
+      if (requestSeq !== liveStatusSeqRef.current) return
       if (connectionResponse.ok) {
         const data = await connectionResponse.json()
         const conns: any[] = Array.isArray(data) ? data : (data?.connections || [])
@@ -1121,6 +1132,7 @@ export function QuickstartSection() {
       }
       if (stateResponse.ok) {
         const data = await stateResponse.json()
+        if (requestSeq !== liveStatusSeqRef.current) return
         const mode = data?.live || data?.modes?.mainTrade
         if (mode && typeof mode === "object") {
           const executionMode = mode.executionMode === "live" || mode.executionMode === "blocked" || mode.executionMode === "simulation"
@@ -1287,7 +1299,7 @@ export function QuickstartSection() {
             // replaces it immediately and remains authoritative.
             const age = Date.now() - (parsed.updatedAt ?? 0)
             if (age < 24 * 60 * 60 * 1000) {
-              setStats(parsed)
+              setStats({ ...EMPTY_STATS, ...parsed })
               localStorage.setItem(key, cached)
               sessionStorage.removeItem(key)
             }

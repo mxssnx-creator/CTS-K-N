@@ -379,6 +379,7 @@ export function DirectTradeSection() {
     setState({ ...DEFAULT_STATE, connectionId: selectedConnectionId })
     setStats(DEFAULT_STATS)
     setOverview48h(null)
+    setExchangeAccount15h(null)
     setActiveConfigs(0)
     setOpenPositions(0)
     setClosedPositions(0)
@@ -642,7 +643,8 @@ export function DirectTradeSection() {
 
   const formatPF = (pf: number | null, infinite = false) => infinite ? "∞" : pf == null ? "—" : pf.toFixed(2)
   const formatDDT = (ddt: number) => ddt > 0 ? `${ddt.toFixed(1)}m` : "0.0m"
-  const formatPnl = (pnl: number) => {
+  const formatPnl = (rawPnl: number) => {
+    const pnl = Number.isFinite(Number(rawPnl)) ? Number(rawPnl) : 0
     if (pnl === 0) return "0.00%"
     return `${pnl > 0 ? "+" : ""}${pnl.toFixed(3)}%`
   }
@@ -1504,7 +1506,7 @@ export function DirectTradeSection() {
                   <div className={`font-mono text-sm font-semibold ${pnlColor(exchangeAccount15h?.pnlPercent || 0)}`}>
                     {exchangeAccount15h?.pnlRatio == null
                       ? "—"
-                      : `${exchangeAccount15h.pnlRatio.toFixed(4)}× (${exchangeAccount15h.pnlPercent! >= 0 ? "+" : ""}${exchangeAccount15h.pnlPercent!.toFixed(2)}%)`}
+                      : `${exchangeAccount15h.pnlRatio.toFixed(4)}× (${Number(exchangeAccount15h.pnlPercent ?? 0) >= 0 ? "+" : ""}${Number(exchangeAccount15h.pnlPercent ?? 0).toFixed(2)}%)`}
                   </div>
                 </div>
               </div>
