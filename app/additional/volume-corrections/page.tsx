@@ -36,7 +36,7 @@ export default function VolumeCorrectionsPage() {
       </Alert>
 
       <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="progression">Progression</TabsTrigger>
           <TabsTrigger value="strategies">Strategies</TabsTrigger>

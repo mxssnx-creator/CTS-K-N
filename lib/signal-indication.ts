@@ -1,5 +1,11 @@
 import { getRedisClient, initRedis, type RedisClientLike } from "@/lib/redis-db"
 import {
+  DEFAULT_MIN_STOP_LOSS_PCT,
+  DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
+  getActiveProtectionFloors,
+  resolveProtectionFloors,
+} from "@/lib/protection-floors"
+import {
   SIGNAL_SOURCE_DEFINITIONS,
   getSignalSourceDescriptors,
   signalSourceSupportsSymbol,
@@ -91,6 +97,10 @@ export interface SignalIndicationSettings {
   minimumStrength: number
   stopLossMinPct: number
   stopLossMaxPct: number
+  /** Operator floor for every Signal stop-loss distance (percent, default 0.5). */
+  minStopLossPct: number
+  /** Operator floor for every Signal trailing-stop distance (percent, default 0.5). */
+  minTrailingStopDistancePct: number
   stopLossAtrMultiplier: number
   takeProfitRewardRisk: number
   takeProfitMaxPct: number
@@ -309,6 +319,8 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   minimumStrength: 0.2,
   stopLossMinPct: 0.2,
   stopLossMaxPct: 1.5,
+  minStopLossPct: DEFAULT_MIN_STOP_LOSS_PCT,
+  minTrailingStopDistancePct: DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
   stopLossAtrMultiplier: 0.85,
   takeProfitRewardRisk: 1.8,
   takeProfitMaxPct: 5,
@@ -353,6 +365,16 @@ export function invalidateSignalCycleCache(): void {
 
 export function invalidateSignalSettingsCache(): void {
   delete globalSignalState.__signalSettingsCache
+}
+
+/** Effective Signal SL minimum: configured stopLossMinPct raised to the operator floor. */
+export function effectiveSignalStopLossMinPct(
+  settings: Pick<SignalIndicationSettings, "stopLossMinPct"> & Partial<Pick<SignalIndicationSettings, "minStopLossPct">>,
+): number {
+  return Math.max(
+    Number(settings.stopLossMinPct) || 0,
+    Number(settings.minStopLossPct) || DEFAULT_MIN_STOP_LOSS_PCT,
+  )
 }
 
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -407,8 +429,10 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     0.2,
     2,
   )
+  const protectionFloors = resolveProtectionFloors(raw)
   const stopLossMaxPct = Math.max(
     stopLossMinPct,
+    protectionFloors.minStopLossPct,
     boundedNumber(raw.stopLossMaxPct, DEFAULT_SIGNAL_INDICATION_SETTINGS.stopLossMaxPct, 0.2, 5),
   )
   // Exact-config evaluation uses a fixed window so equal lanes always use the
@@ -469,7 +493,9 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     trailingMinStopPct: boundedNumber(
       raw.trailingMinStopPct,
       DEFAULT_SIGNAL_INDICATION_SETTINGS.trailingMinStopPct,
-      SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR,
+      // The pre-existing 0.8 % Signal floor stays the effective minimum while
+      // it is higher than the operator trailing-distance floor.
+      Math.max(SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR, protectionFloors.minTrailingStopDistancePct),
       10,
     ),
     trailingPositiveMoveRatio: boundedNumber(
@@ -504,6 +530,8 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     minimumStrength: boundedNumber(raw.minimumStrength, 0.2, 0.05, 0.95),
     stopLossMinPct,
     stopLossMaxPct,
+    minStopLossPct: protectionFloors.minStopLossPct,
+    minTrailingStopDistancePct: protectionFloors.minTrailingStopDistancePct,
     stopLossAtrMultiplier: boundedNumber(raw.stopLossAtrMultiplier, 0.85, 0.1, 3),
     takeProfitRewardRisk: boundedNumber(raw.takeProfitRewardRisk, 1.8, 1.1, 5),
     takeProfitMaxPct: boundedNumber(raw.takeProfitMaxPct, 5, 0.5, 22),
@@ -1431,8 +1459,8 @@ export function evaluateSignalCandles(input: {
   if (rawStopLossPct > input.settings.stopLossMaxPct * 1.25) return null
   const stopLossPct = clamp(
     rawStopLossPct,
-    input.settings.stopLossMinPct,
-    input.settings.stopLossMaxPct,
+    effectiveSignalStopLossMinPct(input.settings),
+    Math.max(input.settings.stopLossMaxPct, effectiveSignalStopLossMinPct(input.settings)),
   )
   const rewardRisk = input.settings.takeProfitRewardRisk
   const minimumTakeProfitPct = stopLossPct * rewardRisk
@@ -1778,8 +1806,8 @@ function lowStopConsensus(
       (sum, evaluation) => sum + evaluation.stopLossPct * voteWeight(evaluation),
       0,
     ) / Math.max(riskWeight, Number.EPSILON),
-    settings.stopLossMinPct,
-    settings.stopLossMaxPct,
+    effectiveSignalStopLossMinPct(settings),
+    Math.max(settings.stopLossMaxPct, effectiveSignalStopLossMinPct(settings)),
   )
   const averageRewardRisk = contributors.reduce(
     (sum, evaluation) => sum + evaluation.rewardRisk * voteWeight(evaluation),
@@ -1896,7 +1924,9 @@ export function normalizeSignalRisk(value: unknown): SignalRisk | undefined {
     stopLossPct: raw.stopLossPct,
     fallbackStopLossPct: raw.takeProfitPct,
     minimumTakeProfitPct: 0.01,
-    minimumStopLossPct: 0.01,
+    // Persisted/API Signal risk can never carry a stop tighter than the
+    // operator stop-loss floor (default 0.5 %).
+    minimumStopLossPct: getActiveProtectionFloors().minStopLossPct,
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const stopLossPct = protection.stopLossPct

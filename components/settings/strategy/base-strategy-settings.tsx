@@ -10,6 +10,13 @@ import {
   MAIN_TRADE_PF_RATIO_STEP,
   normalizeMainTradeStagePfRatio,
 } from "@/lib/main-trade-profit-factor"
+import {
+  DEFAULT_MIN_STOP_LOSS_PCT,
+  DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
+  PROTECTION_FLOOR_MAX_PCT,
+  PROTECTION_FLOOR_MIN_PCT,
+  normalizeProtectionFloorPct,
+} from "@/lib/protection-floors"
 // `Switch` no longer imported — the obsolete `Base Trailing Enabled`
 // toggle has been replaced with an engine-decided statistical-trailing
 // note (see comment block below).
@@ -103,6 +110,45 @@ export default function BaseStrategySettings({
                 No operator toggle is consulted on the live path.
               </p>
             </div>
+          </div>
+
+          <div className="border-t pt-6 space-y-4">
+            <h3 className="text-lg font-semibold border-b pb-2">Protection Floors</h3>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Minimum Stop-Loss (%)</Label>
+                <Input
+                  type="number"
+                  min={PROTECTION_FLOOR_MIN_PCT}
+                  max={PROTECTION_FLOOR_MAX_PCT}
+                  step={0.05}
+                  value={settings.minStopLossPct ?? DEFAULT_MIN_STOP_LOSS_PCT}
+                  onChange={(e) => handleSettingChange(
+                    "minStopLossPct",
+                    normalizeProtectionFloorPct(e.target.value, DEFAULT_MIN_STOP_LOSS_PCT),
+                  )}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Minimum Trailing-Stop Distance (%)</Label>
+                <Input
+                  type="number"
+                  min={PROTECTION_FLOOR_MIN_PCT}
+                  max={PROTECTION_FLOOR_MAX_PCT}
+                  step={0.05}
+                  value={settings.minTrailingStopDistancePct ?? DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT}
+                  onChange={(e) => handleSettingChange(
+                    "minTrailingStopDistancePct",
+                    normalizeProtectionFloorPct(e.target.value, DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT),
+                  )}
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Floors for Main/Preset/Direct live stops (range 0.05–10 %, default 0.5 %). Tighter
+              stops and trailing distances are raised to the floor; wider ones are unchanged.
+            </p>
           </div>
 
           <div className="border-t pt-6 space-y-4">

@@ -16,6 +16,10 @@ import {
   resolveSettledRealizedPnl,
 } from "@/lib/live-position-pnl"
 import {
+  computePositionBookStats,
+  type SplitPositionBookStats,
+} from "@/lib/position-book-stats"
+import {
   getExchangeLiveStateSummary,
   type ExchangeLiveStateSummary,
 } from "@/lib/exchange-live-state-summary"
@@ -77,6 +81,12 @@ export interface LiveExecutionSummary {
   simulated: ReturnType<typeof calculateLivePositionStatistics>
   unknown: ReturnType<typeof calculateLivePositionStatistics>
   all: ReturnType<typeof calculateLivePositionStatistics>
+  /**
+   * Independent ledger books computed from the durable rows only. `real` is
+   * the exchange-sourced ledger view; `simulated` holds paper/simulated rows
+   * and never contributes to any headline (exchange) field above.
+   */
+  books: SplitPositionBookStats
   exchange: ExchangeLiveStateSummary
   complete: boolean
   generatedAt: number
@@ -308,6 +318,11 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     simulated,
     unknown,
     all,
+    books: {
+      real: computePositionBookStats(lanes.real as Array<Record<string, any>>),
+      simulated: computePositionBookStats(lanes.simulated as Array<Record<string, any>>),
+      unknown: computePositionBookStats(lanes.unknown as Array<Record<string, any>>),
+    },
     exchange,
     complete:
       exchange.complete &&

@@ -3,6 +3,7 @@
 
 export const dynamic = "force-dynamic"
 import { useState, useEffect, useMemo } from "react"
+import { ConnectionSimulatedBook } from "@/components/stats/simulated-book-panel"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
@@ -579,7 +580,9 @@ export default function StatisticsPage() {
                 // Shape payload from /api/data/positions (camelCase) into the
                 // snake_case TradingPosition the AnalyticsEngine consumes.
                 const id = String(p.id || `${payload.id}:open:${p.symbol || "unknown"}`)
-                if (seen.has(id) || p.status === "closed") continue
+                // Simulated rows have their own independent book (see the
+                // Simulated card); they never enter real statistics.
+                if (seen.has(id) || p.status === "closed" || p.simulated === true) continue
                 seen.add(id)
                 const entryPrice = Number(p.entryPrice) || 0
                 const currentPrice = Number(p.currentPrice) || 0
@@ -1080,7 +1083,6 @@ export default function StatisticsPage() {
   return (
     <div className="min-w-0 space-y-4 p-3 sm:p-4">
       <StatisticsSectionNav />
-      <DeactivatedLiveConfigs key={selectedConnectionId} connectionId={selectedConnectionId} />
       {!hasRealConnections && (
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
           <div className="flex items-start gap-2">
@@ -1159,6 +1161,7 @@ export default function StatisticsPage() {
           </Button>
         </div>
       </div>
+      <DeactivatedLiveConfigs key={selectedConnectionId} connectionId={selectedConnectionId} />
 
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
         {[
@@ -1487,6 +1490,10 @@ export default function StatisticsPage() {
               <TabsTrigger value="history" className="flex items-center gap-2">
                 <Activity className="h-4 w-4" />
                 History
+              </TabsTrigger>
+              <TabsTrigger value="simulated" className="flex items-center gap-2">
+                <Activity className="h-4 w-4" />
+                Simulated
               </TabsTrigger>
             </TabsList>
 
@@ -2203,6 +2210,14 @@ export default function StatisticsPage() {
                     <p className="text-muted-foreground">Please wait while we load the system configuration.</p>
                   </CardContent>
                 </Card>
+              )}
+            </TabsContent>
+
+            <TabsContent value="simulated" className="space-y-4">
+              {selectedConnectionId ? (
+                <ConnectionSimulatedBook connectionId={selectedConnectionId} testIdPrefix="statistics-sim" />
+              ) : (
+                <p className="text-sm text-muted-foreground">Select a connection to view its simulated book.</p>
               )}
             </TabsContent>
 

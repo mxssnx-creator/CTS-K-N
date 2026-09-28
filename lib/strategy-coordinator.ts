@@ -94,6 +94,7 @@ import {
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   normalizeProtectionPercentages,
 } from "@/lib/trade-protection-contract"
+import { getActiveProtectionFloors } from "@/lib/protection-floors"
 import {
   MAIN_TRADE_PF_RATIO_BASE,
   MAIN_TRADE_PF_RATIO_MAX,
@@ -2303,7 +2304,11 @@ const MAX_LIVE_TAKE_PROFIT_PCT = 22
 // SL is derived from TP via the profit-factor ratio. The 0.2% floor is the
 // minimum distance from entry that a stop-loss may be placed — controlled from
 // the Real stage settings and enforced here as a hard lower bound.
-const MIN_LIVE_STOP_LOSS_PCT = 0.2
+const MIN_LIVE_STOP_LOSS_PCT_BASE = 0.2
+/** Base 0.2 % floor raised to the operator stop-loss floor (default 0.5 %). */
+function minLiveStopLossPct(): number {
+  return Math.max(MIN_LIVE_STOP_LOSS_PCT_BASE, getActiveProtectionFloors().minStopLossPct)
+}
 const MIN_LIVE_TAKE_PROFIT_PCT = 0.2
 
 export function deriveProtectionFromProfitFactor(
@@ -2314,7 +2319,7 @@ export function deriveProtectionFromProfitFactor(
 ): DerivedProtection & ProfitFactorProtection {
   const pf = sanitizeLiveProfitFactor(profitFactor, 1)
   const baseRiskPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
-  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), MIN_LIVE_STOP_LOSS_PCT, 5)
+  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), minLiveStopLossPct(), 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
@@ -2333,7 +2338,7 @@ export function deriveProtectionFromProfitFactor(
     takeProfitPct,
     stopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    minimumStopLossPct: minLiveStopLossPct(),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const effectiveTakeProfitPct = protection.takeProfitPct
@@ -2366,7 +2371,7 @@ export function deriveProtectionFromSignalRisk(
 ): (DerivedProtection & ProfitFactorProtection) | null {
   const risk = normalizeSignalRisk(value)
   if (!risk) return null
-  const stopLossPct = clampNumber(risk.stopLossPct, MIN_LIVE_STOP_LOSS_PCT, 5)
+  const stopLossPct = clampNumber(risk.stopLossPct, minLiveStopLossPct(), 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
@@ -2389,7 +2394,7 @@ export function deriveProtectionFromSignalRisk(
     takeProfitPct,
     stopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    minimumStopLossPct: minLiveStopLossPct(),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const effectiveTakeProfitPct = protection.takeProfitPct
@@ -2430,7 +2435,7 @@ export function deriveProtectionFromActiveOutbreak(
     takeProfitPct: requestedTakeProfitPct,
     stopLossPct: requestedStopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    minimumStopLossPct: minLiveStopLossPct(),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const stopLossPct = requestedProtection.stopLossPct
@@ -2453,7 +2458,7 @@ export function deriveProtectionFromActiveOutbreak(
     takeProfitPct,
     stopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    minimumStopLossPct: minLiveStopLossPct(),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const effectiveTakeProfitPct = protection.takeProfitPct
@@ -2495,7 +2500,7 @@ export function deriveProtectionFromSpecial(
     requestedStopLossPct,
     requestedTakeProfitPct * SPECIAL_MAX_SL_TO_TP_RATIO,
   )
-  const stopLossPct = clampNumber(boundedRequestedStop, MIN_LIVE_STOP_LOSS_PCT, 5)
+  const stopLossPct = clampNumber(boundedRequestedStop, minLiveStopLossPct(), 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
@@ -2515,7 +2520,7 @@ export function deriveProtectionFromSpecial(
     takeProfitPct,
     stopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: MIN_LIVE_STOP_LOSS_PCT,
+    minimumStopLossPct: minLiveStopLossPct(),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const effectiveTakeProfitPct = protection.takeProfitPct
@@ -2577,7 +2582,7 @@ function deriveConfiguredStatsFromProfitFactor(
   // Mirrors the Live-order coordinate: PositionCost is deducted once, so
   // 1.10 with a 0.10% cost maps to a 0.20% gross TP.
   const takeProfitPct = Math.max(MIN_LIVE_TAKE_PROFIT_PCT, mainTradePfRatioToGrossMovePct(pf, posCost))
-  const stopLossPct = clampNumber(posCost, MIN_LIVE_STOP_LOSS_PCT, 5)
+  const stopLossPct = clampNumber(posCost, minLiveStopLossPct(), 5)
   return {
     takeProfitPct,
     stopLossPct,

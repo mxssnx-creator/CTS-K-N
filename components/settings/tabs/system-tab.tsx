@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -16,6 +17,8 @@ import {
   MAIN_TRADE_PF_RATIO_STEP,
 } from "@/lib/main-trade-profit-factor"
 import { CANONICAL_FORCED_BASE_SYMBOLS } from "@/lib/forced-symbols"
+import { describeRedisMode } from "@/lib/redis-mode-label"
+import { MarginControlCard } from "@/components/settings/margin-control-card"
 
 interface SystemTabProps {
   settings: any
@@ -23,6 +26,18 @@ interface SystemTabProps {
 }
 
 export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
+  // `settings.databaseType` is never persisted, so the mode must come from the
+  // live backend status rather than always reading "In-Memory Fallback".
+  const [redisStatus, setRedisStatus] = useState<{ databaseConnected?: boolean; redisBackend?: string } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetch("/api/install/status", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : { databaseConnected: false }))
+      .then((data) => { if (!cancelled) setRedisStatus(data) })
+      .catch(() => { if (!cancelled) setRedisStatus({ databaseConnected: false }) })
+    return () => { cancelled = true }
+  }, [])
+
   return (
     <Tabs defaultValue="system" className="space-y-4">
       <TabsContent value="system" className="space-y-4">
@@ -58,7 +73,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                   <Label>Connection Status</Label>
                   <div className="p-3 border rounded-lg bg-muted/30">
                     <p className="text-sm">
-                      <strong>Mode:</strong> {settings.databaseType === "redis" ? "Persistent Redis" : "In-Memory Fallback"}
+                      <strong>Mode:</strong> {describeRedisMode(redisStatus)}
                     </p>
                     <p className="text-xs text-muted-foreground mt-1">
                       Configure REDIS_URL environment variable for persistent storage.
@@ -943,6 +958,7 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
             </div>
           </CardContent>
         </Card>
+        <MarginControlCard />
       </TabsContent>
     </Tabs>
   )

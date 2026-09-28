@@ -150,7 +150,7 @@ export default function CommonIndicationsSettingsPage() {
             One durable contract for official technical indicators, presets and short-range coordination.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md border bg-muted/40 px-2 py-1 text-xs">
             {enabledCount}/{COMMON_INDICATOR_DEFINITIONS.length} enabled
           </span>

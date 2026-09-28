@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { initRedis, getAllConnections, getRedisClient } from "@/lib/redis-db"
 import { RedisMonitoring } from "@/lib/redis-operations"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { mergePositionBookStats } from "@/lib/position-book-stats"
 
 export const dynamic = "force-dynamic"
 export const fetchCache = "force-no-store"
@@ -116,6 +117,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
+      simulated: mergePositionBookStats(ledgers.map((ledger) => ledger.books?.simulated)),
       activeConnections: activeConnections.length,
       totalConnections: connections.length,
       totalPositions,

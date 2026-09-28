@@ -7,6 +7,7 @@ import { resolveSettledRealizedPnl, resolveUnrealizedPnl } from "@/lib/live-posi
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { isExecutedRealExchangePosition, isRealExchangePosition } from "@/lib/live-position-source"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { mergePositionBookStats } from "@/lib/position-book-stats"
 
 export const dynamic = "force-dynamic"
 
@@ -192,9 +193,11 @@ export async function GET(request: Request) {
     })
 
     return NextResponse.json({
-      // Closed-trade windows are chronological terminal windows. Current open
+      // Closed-trade windows
+      // (see `simulated` below: the paper book never enters these windows) are chronological terminal windows. Current open
       // exposure is included separately in each effective/unrealized total and
       // never consumes a closed-trade PF sample slot.
+      simulated: mergePositionBookStats(executionSummaries.map((row) => row.books?.simulated)),
       last250: applyAuthoritativeOpen(buildStats([...closedPositions.slice(0, 250), ...openPositions])),
       last50: applyAuthoritativeOpen(buildStats([...closedPositions.slice(0, 50), ...openPositions])),
       last32h: applyAuthoritativeOpen(buildStats(realPositions.filter((position) => lifecycleTimestamp(position) >= last32hCutoff))),

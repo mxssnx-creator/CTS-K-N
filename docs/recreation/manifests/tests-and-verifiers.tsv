@@ -304,6 +304,7 @@ unit	__tests__/unit/pipeline-cycle-outcome.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
+unit	__tests__/unit/position-book-stats.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/position-index-established-with-hash.test.ts
@@ -328,6 +329,7 @@ unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
 unit	__tests__/unit/protection-adopt-by-client-id.test.ts
+unit	__tests__/unit/protection-floors.test.ts
 unit	__tests__/unit/protection-ids-lost-update.test.ts
 unit	__tests__/unit/protection-slot-order-audit.test.ts
 unit	__tests__/unit/pseudo-position-close-idempotency.test.ts
@@ -390,10 +392,12 @@ unit	__tests__/unit/signal-config-matrix.test.ts
 unit	__tests__/unit/signal-consensus-validated-candidates.test.ts
 unit	__tests__/unit/signal-historic-eval.test.ts
 unit	__tests__/unit/signal-indication.test.ts
+unit	__tests__/unit/signal-orthogonal-sources.test.ts
 unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-source-validation.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
+unit	__tests__/unit/simulated-stats-routes.test.ts
 unit	__tests__/unit/site-logs-key.test.ts
 unit	__tests__/unit/slot-audit-type-separation.test.ts
 unit	__tests__/unit/slot-entry-serialize.test.ts
@@ -464,6 +468,7 @@ unit	__tests__/unit/transient-halt-short-ttl.test.ts
 unit	__tests__/unit/trend-indication.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
 unit	__tests__/unit/truthful-dispatch-reasons.test.ts
+unit	__tests__/unit/ui-browser-review.test.ts
 unit	__tests__/unit/unplaced-rows-not-exposure.test.ts
 unit	__tests__/unit/unsubmitted-live-retention.test.ts
 unit	__tests__/unit/validate-only-measured-sets.test.ts

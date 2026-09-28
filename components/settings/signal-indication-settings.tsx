@@ -86,6 +86,8 @@ interface SignalSettings {
   minimumStrength: number
   stopLossMinPct: number
   stopLossMaxPct: number
+  minStopLossPct: number
+  minTrailingStopDistancePct: number
   stopLossAtrMultiplier: number
   takeProfitRewardRisk: number
   takeProfitMaxPct: number
@@ -542,6 +544,8 @@ export function SignalIndicationSettings() {
             {([
               ["stopLossMinPct", "Minimum SL (%)", 0.2, 2, 0.05],
               ["stopLossMaxPct", "Short-trade maximum SL (%)", 0.2, 5, 0.05],
+              ["minStopLossPct", "SL floor, all Signal stops (%)", 0.05, 10, 0.05],
+              ["minTrailingStopDistancePct", "Trailing-stop distance floor (%)", 0.05, 10, 0.05],
               ["stopLossAtrMultiplier", "ATR multiplier", 0.1, 3, 0.05],
               ["takeProfitRewardRisk", "Minimum reward/risk", 1.1, 5, 0.1],
               ["takeProfitMaxPct", "Maximum TP (%)", 0.5, 22, 0.25],

@@ -7,6 +7,8 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Settings, Zap, Database, Network, Activity, TrendingUp, Wifi, WifiOff } from "lucide-react"
 import { useDashboardEvents } from "@/lib/dashboard-events"
+import type { PositionBookStats } from "@/lib/position-book-stats"
+import { SimulatedBookCard } from "@/components/stats/simulated-book-panel"
 
 interface SystemStats {
   tradeEngines: {
@@ -60,6 +62,7 @@ interface PerConnectionInfo {
 
 export function SystemOverview() {
   const [perConnectionList, setPerConnectionList] = useState<PerConnectionInfo[]>([])
+  const [simulatedBook, setSimulatedBook] = useState<PositionBookStats | null>(null)
   const [stats, setStats] = useState<SystemStats>({
     tradeEngines: {
       globalStatus: "idle",
@@ -192,6 +195,7 @@ export function SystemOverview() {
           const data = await response.json()
           if (requestSequence !== statsFetchSequenceRef.current) return
           setStats(normalizeSystemStats(data))
+          setSimulatedBook(data?.simulated ?? null)
         }
       } catch {
         // silently ignore stats load errors
@@ -485,6 +489,16 @@ export function SystemOverview() {
             </div>
           </div>
         </div>
+        {simulatedBook && (simulatedBook.total > 0 || simulatedBook.open > 0) ? (
+          <div className="mt-3">
+            <SimulatedBookCard
+              book={simulatedBook}
+              title="Simulated positions (all Main connections)"
+              showBreakdown={false}
+              testIdPrefix="dashboard-sim"
+            />
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   )

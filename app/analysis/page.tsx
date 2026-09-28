@@ -14,6 +14,10 @@ import { CalculationDemo } from "@/components/analysis/calculation-demo"
 import { TrendingUp, TrendingDown, Activity, DollarSign, Clock, Target } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
+import { resolvePositionQuantity } from "@/lib/live-position-pnl"
+import { isSimulatedPosition } from "@/lib/live-position-source"
+import type { PositionBookStats } from "@/lib/position-book-stats"
+import { ConnectionSimulatedBook, SimulatedBookCard } from "@/components/stats/simulated-book-panel"
 
 interface ActivePosition {
   id: string
@@ -28,6 +32,7 @@ interface ActivePosition {
   status: string
   created_at: string
   connection_id: string
+  simulated: boolean
 }
 
 interface PositionStats {
@@ -48,6 +53,7 @@ export default function AnalysisPage() {
   const [symbolAnalysis, setSymbolAnalysis] = useState<SymbolAnalysis | null>(null)
   const [activePositions, setActivePositions] = useState<ActivePosition[]>([])
   const [positionStats, setPositionStats] = useState<PositionStats | null>(null)
+  const [simulatedStats, setSimulatedStats] = useState<PositionBookStats | null>(null)
   const [connections, setConnections] = useState<any[]>([])
   const [selectedConnection, setSelectedConnection] = useState<string>("all")
   const [loading, setLoading] = useState(true)
@@ -122,12 +128,15 @@ export default function AnalysisPage() {
           direction,
           entry_price: Number(position.entry_price ?? position.entryPrice ?? position.averageExecutionPrice ?? 0),
           current_price: Number(position.current_price ?? position.currentPrice ?? position.markPrice ?? position.entryPrice ?? 0),
-          quantity: Number(position.quantity ?? position.executedQuantity ?? 0),
+          // Live mirrors keep `quantity: 0` while the filled size lives in
+          // `executedQuantity`; use the canonical open-quantity resolver.
+          quantity: resolvePositionQuantity(position) ?? 0,
           leverage: Number(position.leverage ?? 1),
           unrealized_pnl: Number(position.unrealized_pnl ?? position.unrealizedPnL ?? 0),
           unrealized_pnl_percent: Number(position.unrealized_pnl_percent ?? position.unrealizedRoi ?? position.roi ?? 0),
           created_at: String(position.created_at ?? position.createdAt ?? position.openedAt ?? ""),
           connection_id: String(position.connection_id ?? position.connectionId ?? ""),
+          simulated: isSimulatedPosition(position),
         }]
       }))
     } catch (error) {
@@ -147,6 +156,7 @@ export default function AnalysisPage() {
       if (res.ok) {
         const data = await res.json()
         if (requestId === statsRequestRef.current && data.stats) setPositionStats(data.stats)
+        if (requestId === statsRequestRef.current) setSimulatedStats(data.simulated ?? null)
       }
     } catch (error) {
       console.error("[v0] Failed to fetch stats:", error)
@@ -219,28 +229,28 @@ export default function AnalysisPage() {
           {[
             {
               icon: Activity,
-              label: "Active",
+              label: "Active (Real)",
               value: formatNumber(positionStats.active_positions),
               sub: `${formatNumber(positionStats.total_positions)} total`,
               tint: "text-primary",
             },
             {
               icon: DollarSign,
-              label: "Total P&L",
+              label: "Total P&L (Real)",
               value: formatCurrency(positionStats.total_pnl),
               sub: "Realized + current open",
               tint: positionStats.total_pnl >= 0 ? "text-green-500" : "text-red-500",
             },
             {
               icon: Target,
-              label: "Win Rate",
+              label: "Win Rate (Real)",
               value: positionStats.win_rate === null ? "—" : `${positionStats.win_rate.toFixed(1)}%`,
               sub: "Closed positions",
               tint: "text-indigo-500",
             },
             {
               icon: Clock,
-              label: "Avg P/L",
+              label: "Avg P/L (Real)",
               value: positionStats.avg_profit === null ? "—" : formatCurrency(positionStats.avg_profit),
               sub: positionStats.avg_loss === null ? "No settled losses" : `Loss ${formatCurrency(positionStats.avg_loss)}`,
               tint: "text-amber-500",
@@ -264,10 +274,20 @@ export default function AnalysisPage() {
         </div>
       )}
 
+      <SimulatedBookCard
+        book={simulatedStats}
+        title="Simulated positions"
+        showBreakdown={false}
+        testIdPrefix="analysis-sim-summary"
+      />
+
       <Tabs defaultValue="active" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-3 h-9">
+        <TabsList className="grid h-auto w-full grid-cols-2 sm:grid-cols-4">
           <TabsTrigger value="active" className="text-xs">
             Active Positions
+          </TabsTrigger>
+          <TabsTrigger value="simulated" className="text-xs">
+            Simulated
           </TabsTrigger>
           <TabsTrigger value="theoretical" className="text-xs">
             Theoretical Analysis
@@ -280,7 +300,9 @@ export default function AnalysisPage() {
         <TabsContent value="active" className="space-y-3">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Active Positions ({activePositions.length})</CardTitle>
+              <CardTitle className="text-base" data-testid="analysis-active-title">
+                Active Positions ({activePositions.filter((p) => !p.simulated).length} real · {activePositions.filter((p) => p.simulated).length} simulated)
+              </CardTitle>
               <CardDescription className="text-xs">Real-time position tracking with P&L updates</CardDescription>
             </CardHeader>
             <CardContent>
@@ -312,6 +334,9 @@ export default function AnalysisPage() {
                           <div className="text-[11px] text-muted-foreground uppercase">
                             {position.direction} &bull; {position.leverage}x
                           </div>
+                          {position.simulated && (
+                            <Badge variant="outline" className="mt-0.5 border-violet-400 text-[10px] text-violet-600">Simulated</Badge>
+                          )}
                         </div>
                         <div className="flex items-center gap-4 text-xs ml-auto flex-wrap">
                           <div>
@@ -350,6 +375,18 @@ export default function AnalysisPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="simulated" className="space-y-4">
+          {(selectedConnection === "all"
+            ? connections.map((connection) => String(connection.id || "")).filter(Boolean)
+            : [selectedConnection]
+          ).map((connectionId) => (
+            <div key={connectionId} className="space-y-1">
+              <div className="text-sm font-medium">{connections.find((c) => String(c.id) === connectionId)?.name || connectionId}</div>
+              <ConnectionSimulatedBook connectionId={connectionId} testIdPrefix={`analysis-sim-${connectionId}`} />
+            </div>
+          ))}
         </TabsContent>
 
         <TabsContent value="theoretical" className="space-y-4">

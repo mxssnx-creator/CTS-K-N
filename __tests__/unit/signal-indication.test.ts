@@ -117,6 +117,13 @@ import {
 } from "@/lib/signal-indication"
 import { initRedis } from "@/lib/redis-db"
 import { SIGNAL_SOURCE_DEFINITIONS } from "@/lib/signal-source-registry"
+import { setActiveProtectionFloors } from "@/lib/protection-floors"
+
+// These contracts pre-date the 0.5 % operator stop-loss floor; they are
+// exercised here with an explicitly lowered floor. Default-floor behavior
+// is covered by __tests__/unit/protection-floors.test.ts.
+beforeAll(() => { setActiveProtectionFloors({ minStopLossPct: 0.05, minTrailingStopDistancePct: 0.05 }) })
+afterAll(() => { setActiveProtectionFloors({}) })
 
 function recordSyntheticSignalOutcome(
   input: Parameters<typeof recordSignalPerformanceOutcome>[0],

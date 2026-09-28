@@ -8,6 +8,7 @@ import {
   isConnectionLiveTradeEnabled,
 } from "@/lib/connection-state-utils"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { emptyPositionBookStats, mergePositionBookStats } from "@/lib/position-book-stats"
 
 export const dynamic = "force-dynamic"
 
@@ -55,6 +56,8 @@ export async function GET() {
           accountingComplete: execution.complete,
           sourceCounts: execution.sourceCounts,
           statisticsAvailable: execution.totalPositions > 0,
+          // Paper/simulated book, reported independently of exchange figures.
+          simulated: execution.books?.simulated ?? emptyPositionBookStats(),
           progression,
           logs: logs.slice(0, 10),
           hasCredentials: hasConnectionCredentials(connection, 10),
@@ -83,6 +86,7 @@ export async function GET() {
         totalClosedPositions: items.reduce((sum, item) => sum + item.closedPositions, 0),
         totalProfit: items.reduce((sum, item) => sum + item.profit, 0),
         exchangeScope: "cts_tracked_only",
+        simulated: mergePositionBookStats(items.map((item) => item.simulated)),
       },
       timestamp: new Date().toISOString(),
     })

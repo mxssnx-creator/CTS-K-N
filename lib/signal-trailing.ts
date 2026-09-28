@@ -25,6 +25,9 @@ export type SignalTrailingSettings = {
   trailingMinStopPct: number
   trailingPositiveMoveRatio: number
   trailingUpdateStopRangeRatio: number
+  /** Operator trailing-distance floor in percent (default 0.5). The Signal
+   * lane keeps its own higher 0.8 % floor while that is larger. */
+  minTrailingStopDistancePct?: number
 }
 
 export type SignalExecutionLane = "default" | "signal_trailing"
@@ -50,6 +53,7 @@ export function buildSignalTrailingProfile(
   const startRatio = Math.max(0, Number(settings.trailingStartPct) || 0) / 100
   const minStopRatio = Math.max(
     SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR,
+    Number(settings.minTrailingStopDistancePct) || 0,
     Number(settings.trailingMinStopPct) || SIGNAL_TRAILING_DEFAULT_MIN_STOP_PCT,
   ) / 100
   const positiveMoveRatio = Math.max(

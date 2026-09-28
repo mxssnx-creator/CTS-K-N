@@ -18,6 +18,7 @@ import {
 } from "@/lib/live-position-pnl"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { getLivePositionSource, type LivePositionSource } from "@/lib/live-position-source"
+import { computePositionBookStats, positionBookRowState } from "@/lib/position-book-stats"
 import {
   lifetimeLaneDerived,
   readLivePositionLifetimeSummary,
@@ -138,6 +139,8 @@ function toLivePositionView(pos: any): Record<string, unknown> {
     dataSource: pos.dataSource,
     isRealExchangeData: pos.isRealExchangeData,
     isSimulated: pos.isSimulated,
+    // Shared classifier (real | simulated | unknown) so every UI splits books identically.
+    positionSource: getLivePositionSource(pos),
     entryPrice: pos.entryPrice,
     averageExecutionPrice: pos.averageExecutionPrice,
     markPrice: pos.markPrice,
@@ -462,6 +465,13 @@ async function buildLivePositionsResponse(request: Request) {
       positions: filtered.map(viewFor),
       realPositions: realPositions.map(viewFor),
       simulatedPositions: simulatedPositions.map(viewFor),
+      // Independent simulated book: counters and lists come from one
+      // classifier so the UI can never show "0 open" beside open rows.
+      simulatedBook: {
+        stats: computePositionBookStats(simulatedPositions),
+        open: simulatedPositions.filter((p) => positionBookRowState(p) === "open").map(viewFor),
+        closed: simulatedPositions.filter((p) => positionBookRowState(p) === "closed").map(viewFor),
+      },
       counts: {
         total: all.length,
         real: realPositions.length,
@@ -499,6 +509,11 @@ async function buildLivePositionsResponse(request: Request) {
         complete: completeStatistics,
         realComplete: realExchangeStatistics,
         simulatedComplete: simulatedStatistics,
+        // Independent ledger books (PF, drawdown, per symbol/strategy/hour).
+        books: {
+          real: computePositionBookStats(realPositions),
+          simulated: computePositionBookStats(simulatedPositions),
+        },
       },
       partialLegacyScan,
       dataIntegrity: {

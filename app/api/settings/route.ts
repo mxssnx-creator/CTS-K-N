@@ -60,6 +60,14 @@ import {
   specialSettingsFromAppSettings,
 } from "@/lib/special-strategy"
 import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
+import {
+  DEFAULT_MIN_STOP_LOSS_PCT,
+  DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
+  PROTECTION_FLOOR_KEYS,
+  normalizeProtectionFloorPct,
+  setActiveProtectionFloors,
+  validateProtectionFloorInput,
+} from "@/lib/protection-floors"
 import { liveConfigLossPolicy, normalizeLiveConfigLossWindow } from "@/lib/live-config-loss-policy"
 
 /**
@@ -174,6 +182,13 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
   // aliases. Dynamic and connection-local symbols may extend it elsewhere,
   // but settings writes can never remove or reorder these four symbols.
   normalized.forcedSymbols = canonicalForcedBaseSymbols()
+  for (const key of PROTECTION_FLOOR_KEYS) {
+    if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
+    normalized[key] = normalizeProtectionFloorPct(
+      normalized[key],
+      key === "minStopLossPct" ? DEFAULT_MIN_STOP_LOSS_PCT : DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
+    )
+  }
   normalized.forced_symbols = canonicalForcedSymbols()
   if (Object.prototype.hasOwnProperty.call(normalized, "minStep")) {
     normalized.minStep = normalizeBaseMinStep(normalized.minStep)
@@ -236,6 +251,8 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
 
 function getDefaultSettings(): Record<string, any> {
   return {
+    minStopLossPct: DEFAULT_MIN_STOP_LOSS_PCT,
+    minTrailingStopDistancePct: DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
     overallControlOrdersOnly: false,
     overall_control_orders_only: false,
     liveConfigAutoDeactivateEnabled: true,
@@ -521,6 +538,11 @@ async function handlePost(request: Request) {
       ? parsedBody as Record<string, any>
       : {}
 
+    const floorErrors = validateProtectionFloorInput(body)
+    if (floorErrors.length > 0) {
+      return NextResponse.json({ error: "Invalid settings", details: floorErrors.join("; ") }, { status: 400 })
+    }
+
     console.log("[v0] Saving settings to Redis (POST):", Object.keys(body).length, "keys")
 
     await initRedis()
@@ -544,6 +566,7 @@ async function handlePost(request: Request) {
     )
     if (changedKeys.length > 0) {
       await setAppSettings(mergedSettings)
+      setActiveProtectionFloors(mergedSettings)
       // Bust the in-process compaction config cache only for a real change.
       invalidateCompactionCache()
     }
@@ -581,6 +604,11 @@ async function handlePut(request: Request) {
       ? body.settings as Record<string, any>
       : body
 
+    const floorErrors = validateProtectionFloorInput(incoming)
+    if (floorErrors.length > 0) {
+      return NextResponse.json({ error: "Invalid settings", details: floorErrors.join("; ") }, { status: 400 })
+    }
+
     console.log("[v0] Saving settings to Redis (PUT):", Object.keys(incoming).length, "keys")
 
     await initRedis()
@@ -598,6 +626,7 @@ async function handlePut(request: Request) {
     )
     if (putChangedKeys.length > 0) {
       await setAppSettings(mergedSettings)
+      setActiveProtectionFloors(mergedSettings)
       invalidateCompactionCache()
     }
     await emitSettingsChanged(putChangedKeys.length, putChangedKeys)

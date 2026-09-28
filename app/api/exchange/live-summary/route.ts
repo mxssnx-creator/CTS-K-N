@@ -6,6 +6,8 @@ import {
 } from "@/lib/exchange-account-performance"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { getExchangeLiveStateSummary } from "@/lib/exchange-live-state-summary"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { emptyPositionBookStats, mergePositionBookStats } from "@/lib/position-book-stats"
 import {
   isConnectionAssignedToMain,
   isConnectionProcessingEnabled,
@@ -330,7 +332,16 @@ export async function GET(request: Request) {
           .catch(() => calculateExchangeAccountPerformance15h(currentAccountSnapshot, []))
       : calculateExchangeAccountPerformance15h(null, [])
 
+    // Paper/simulated book, kept independent from every exchange total above.
+    const simulatedBooks = await Promise.all(
+      activeConns.map((conn) =>
+        getLiveExecutionSummary(String(conn.id))
+          .then((summary) => summary.books?.simulated)
+          .catch(() => emptyPositionBookStats()),
+      ),
+    )
     return NextResponse.json({
+      simulated: mergePositionBookStats(simulatedBooks),
       connections: perConnection,
       totals: {
         ...totals,

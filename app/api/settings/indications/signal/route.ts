@@ -22,6 +22,7 @@ import { invalidateSignalSourceSnapshotCache } from "@/lib/signal-source-validat
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { normalizeIdentityVolumeFactor } from "@/lib/constants"
 import { SystemLogger } from "@/lib/system-logger"
+import { validateProtectionFloorInput } from "@/lib/protection-floors"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -75,6 +76,11 @@ export async function POST(request: Request) {
   }
   if (!body.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) {
     return NextResponse.json({ success: false, error: "Settings are required" }, { status: 400 })
+  }
+
+  const floorErrors = validateProtectionFloorInput(body.settings as Record<string, unknown>)
+  if (floorErrors.length > 0) {
+    return NextResponse.json({ success: false, error: floorErrors.join("; ") }, { status: 400 })
   }
 
   const rawValidation = (body.settings as Record<string, any>).sourceValidation

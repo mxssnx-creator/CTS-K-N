@@ -294,7 +294,7 @@ export default function OverviewPage() {
 
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid h-auto w-full grid-cols-2 md:grid-cols-4">
           <TabsTrigger value="system">System Metrics</TabsTrigger>
           <TabsTrigger value="logistics">Trading Logistics</TabsTrigger>
           <TabsTrigger value="modules">Module Status</TabsTrigger>

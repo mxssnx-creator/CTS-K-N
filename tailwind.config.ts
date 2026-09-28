@@ -2,7 +2,10 @@ import type { Config } from "tailwindcss"
 import animate from "tailwindcss-animate"
 
 const config: Config = {
-  darkMode: ["class"],
+  // `blackwhiteblue` (the default theme) is a dark palette applied as a class
+  // on <html>; without it here every `dark:` override was skipped there and
+  // light `bg-*-50` tiles rendered white-on-white.
+  darkMode: ["variant", "&:is(.dark *, .blackwhiteblue *)"],
   content: [
     "./pages/**/*.{ts,tsx}",
     "./components/**/*.{ts,tsx}",

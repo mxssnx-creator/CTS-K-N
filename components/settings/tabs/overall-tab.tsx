@@ -96,7 +96,7 @@ export function OverallTab({
         </CardHeader>
       </Card>
       <Tabs value={overallSubTab} onValueChange={setOverallSubTab}>
-        <TabsList className="grid grid-cols-5 w-full bg-muted/50 p-1">
+        <TabsList className="grid h-auto grid-cols-3 sm:grid-cols-5 w-full bg-muted/50 p-1">
           <TabsTrigger value="main" className="settings-tab-trigger">Main</TabsTrigger>
           <TabsTrigger value="connection" className="settings-tab-trigger">Connection</TabsTrigger>
           <TabsTrigger value="monitoring" className="settings-tab-trigger">Monitoring</TabsTrigger>
