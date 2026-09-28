@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
 import { getAllConnections, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
 import { getLiveExecutionSummary, type LiveExecutionSummary } from "@/lib/live-execution-summary"
+import { mergePositionBookStats } from "@/lib/position-book-stats"
 
 export const dynamic = "force-dynamic"
 export const fetchCache = "force-no-store"
@@ -129,6 +130,10 @@ export async function GET(request: NextRequest) {
         largest_loss: !openOnly && largestLosses.length > 0 ? Math.min(...largestLosses) : null,
         data_available: visibleTotal > 0,
       },
+      // Independent books: `simulated` never feeds `stats` (exchange/real)
+      // and `real` here is the durable-ledger view of exchange rows only.
+      simulated: mergePositionBookStats(summaries.map((summary) => summary.books?.simulated)),
+      real: mergePositionBookStats(summaries.map((summary) => summary.books?.real)),
       exchange: summaries.map((summary) => summary.exchange),
       duration: Date.now() - startedAt,
     })

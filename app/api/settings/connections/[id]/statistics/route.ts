@@ -127,6 +127,7 @@ export async function GET(
 
     return NextResponse.json({
       success: true,
+      simulated: execution.books?.simulated,
       connection: {
         id: connectionId,
         exchange: conn.exchange,

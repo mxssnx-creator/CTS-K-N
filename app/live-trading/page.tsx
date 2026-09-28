@@ -32,6 +32,7 @@ import type { TradeHistoryRow } from "@/lib/trade-history"
 import { useExchange } from "@/lib/exchange-context"
 import { usePositionUpdates } from "@/lib/use-websocket"
 import { toast } from "@/lib/simple-toast"
+import { ConnectionSimulatedBook } from "@/components/stats/simulated-book-panel"
 
 const OPEN_STATUSES = new Set([
   "open",
@@ -338,6 +339,12 @@ export default function LiveTradingPage() {
   useEffect(() => {
     setOlderHistoryRows([]); setOlderNextOffset(null); setOlderHasMore(null)
   }, [selectedConnectionId])
+  // Simulated rows live in their own independent book below; the exchange
+  // overview/table only ever sees non-simulated positions.
+  const realPositions = useMemo(
+    () => positions.filter((position) => (position as unknown as Record<string, unknown>).positionSource !== "simulated"),
+    [positions],
+  )
   const combinedHistoryRows = useMemo(() => {
     const byId = new Map<string, TradeHistoryRow>()
     for (const row of [...historyRows, ...olderHistoryRows]) if (!byId.has(String(row.id))) byId.set(String(row.id), row)
@@ -414,14 +421,15 @@ export default function LiveTradingPage() {
               </div>
             ) : (
               <>
-                <LiveOverviewCompact account={account} positions={positions} analytics={historyResponse?.analytics || null} />
+                <LiveOverviewCompact account={account} positions={realPositions} analytics={historyResponse?.analytics || null} />
                 <LivePositionTable
-                  positions={positions}
+                  positions={realPositions}
                   busyId={busyId}
                   onClose={closePosition}
                   onUpdateProtection={updateProtection}
                   onRestoreProtection={restoreProtection}
                 />
+                <ConnectionSimulatedBook connectionId={selectedConnectionId} testIdPrefix="live-sim" />
                 <TradeHistoryPanel
                   rows={combinedHistoryRows}
                   response={historyResponse}

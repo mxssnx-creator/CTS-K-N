@@ -11,6 +11,18 @@ function truthyFlag(value: unknown): boolean {
   return value === true || value === 1 || normalizedValue === "true" || normalizedValue === "1"
 }
 
+/** SimulatedConnector fills carry `sim-` order ids; they never reached a venue. */
+function hasSimulatedConnectorOrderId(position: Record<string, any>): boolean {
+  const exchange = position.exchangeData && typeof position.exchangeData === "object"
+    ? position.exchangeData
+    : {}
+  const id = String(
+    position.orderId ?? position.order_id ?? position.exchangeOrderId ??
+    exchange.orderId ?? exchange.exchangeOrderId ?? "",
+  ).trim().toLowerCase()
+  return id.startsWith("sim-")
+}
+
 /**
  * Classify the durable lifecycle row by execution source. Explicit simulation
  * markers win over order-id aliases so a paper connector cannot leak into
@@ -28,7 +40,12 @@ export function getLivePositionSource(position: Record<string, any> | null | und
     [executionMode, mode, environment].some((value) => ["simulation", "simulated", "paper"].includes(value)) ||
     truthyFlag(position.isSimulated) ||
     truthyFlag(position.simulated) ||
-    statusReason.includes("live_trade disabled")
+    statusReason.includes("live_trade disabled") ||
+    truthyFlag(position.isPaper) ||
+    truthyFlag(position.paper) ||
+    normalized(position.exchange) === "simulated" ||
+    normalized(position.connector ?? position.connectorType) === "simulated" ||
+    hasSimulatedConnectorOrderId(position)
   ) {
     return "simulated"
   }

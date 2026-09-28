@@ -13,6 +13,8 @@ import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { toast } from "@/lib/simple-toast"
+import type { PositionBookStats } from "@/lib/position-book-stats"
+import { ConnectionSimulatedBook, SimulatedBookCard } from "@/components/stats/simulated-book-panel"
 
 interface TrackingProgression {
   cyclesCompleted: number
@@ -48,6 +50,7 @@ interface TrackingItem {
   accountingPending?: number
   accountingComplete?: boolean
   statisticsAvailable?: boolean
+  simulated?: PositionBookStats
   progression: TrackingProgression
   logs: TrackingLog[]
   hasCredentials: boolean
@@ -65,6 +68,7 @@ interface TrackingOverviewResponse {
     totalActivePositions: number
     totalClosedPositions: number
     totalProfit: number
+    simulated?: PositionBookStats
   }
 }
 
@@ -167,16 +171,16 @@ export default function TrackingPage() {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Active Positions</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Active Positions (Real)</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{data?.summary?.totalActivePositions || 0}</div>
-              <p className="text-xs text-muted-foreground">Currently active positions</p>
+              <p className="text-xs text-muted-foreground">Exchange-confirmed · {data?.summary?.simulated?.open ?? 0} simulated open (below)</p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Closed Positions</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Closed Positions (Real)</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">{data?.summary?.totalClosedPositions || 0}</div>
@@ -185,7 +189,7 @@ export default function TrackingPage() {
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">Portfolio P&amp;L</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground">Portfolio P&amp;L (Real)</CardTitle>
             </CardHeader>
             <CardContent>
               <div className={`text-3xl font-bold ${(data?.summary?.totalProfit || 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
@@ -195,6 +199,13 @@ export default function TrackingPage() {
             </CardContent>
           </Card>
         </div>
+
+        <SimulatedBookCard
+          book={selectedItem ? selectedItem.simulated : data?.summary?.simulated}
+          title={selectedItem ? `Simulated positions · ${selectedItem.connectionName}` : "Simulated positions · all connections"}
+          showBreakdown={false}
+          testIdPrefix="tracking-sim-summary"
+        />
 
         {visibleItems.length === 0 && !isLoading && (
           <Alert>
@@ -206,7 +217,7 @@ export default function TrackingPage() {
         )}
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="overview" className="flex items-center gap-2">
               <BarChart3 className="h-4 w-4" />
               Overview
@@ -214,6 +225,10 @@ export default function TrackingPage() {
             <TabsTrigger value="progression" className="flex items-center gap-2">
               <TrendingUp className="h-4 w-4" />
               Progression
+            </TabsTrigger>
+            <TabsTrigger value="simulated" className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" />
+              Simulated
             </TabsTrigger>
             <TabsTrigger value="errors" className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4" />
@@ -310,6 +325,15 @@ export default function TrackingPage() {
                   </div>
                 </CardContent>
               </Card>
+            ))}
+          </TabsContent>
+
+          <TabsContent value="simulated" className="space-y-4">
+            {activeTab === "simulated" && visibleItems.map((item) => (
+              <div key={item.connectionId} className="space-y-1">
+                <div className="text-sm font-medium">{item.connectionName}</div>
+                <ConnectionSimulatedBook connectionId={item.connectionId} testIdPrefix={`tracking-sim-${item.connectionId}`} />
+              </div>
             ))}
           </TabsContent>
 

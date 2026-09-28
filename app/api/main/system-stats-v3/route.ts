@@ -13,6 +13,7 @@ import {
   isTruthyFlag,
 } from "@/lib/connection-state-utils"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { mergePositionBookStats } from "@/lib/position-book-stats"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -223,6 +224,7 @@ export async function GET() {
     console.log(`[v0] [SystemStats] Response: exchangeConnections.total=${insertedBaseConnections.length}, debug: base=${baseConnections.length}, enabled=${enabledBase.length}, inserted=${insertedBaseConnections.length}`)
     
     return NextResponse.json({
+      simulated: mergePositionBookStats(executionRows.map((row) => row.summary.books?.simulated)),
       success: true,
       tradeEngines: {
         globalStatus,

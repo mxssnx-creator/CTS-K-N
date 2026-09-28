@@ -9,6 +9,7 @@ import {
   resolveUnrealizedPnl,
 } from "@/lib/live-position-pnl"
 import { hydrateLivePositionReadModel } from "@/lib/live-position-read-model"
+import { isSimulatedPosition } from "@/lib/live-position-source"
 
 /**
  * Live Positions API
@@ -45,6 +46,8 @@ interface Position {
   stopLossPrice?: number
   createdAt: string
   status: "open" | "closing" | "closed"
+  /** Paper/simulated live row; consumers must keep it out of real statistics. */
+  simulated?: boolean
 }
 
 function generateMockPositions(connectionId: string, count: number = 25): Position[] {
@@ -222,6 +225,7 @@ function normaliseLivePosition(raw: Record<string, any>): Position | null {
     stopLossPrice: slPrice > 0 ? slPrice : undefined,
     createdAt: String(raw.createdAt || raw.created_at || new Date().toISOString()),
     status: isLiveOpenStatus(status) ? "open" : "closed",
+    simulated: isSimulatedPosition(raw),
   }
 }
 
