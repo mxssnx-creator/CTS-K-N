@@ -7,12 +7,12 @@ route	dynamic_segments	imported_components	source
 /admin/check-tables		ui/button,ui/card	app/admin/check-tables/page.tsx
 /admin/migrate		ui/button,ui/card	app/admin/migrate/page.tsx
 /alerts		page-scaffold,ui/badge,ui/button,ui/card,ui/tabs	app/alerts/page.tsx
-/analysis		analysis/calculation-demo,analysis/position-breakdown,page-header,ui/badge,ui/card,ui/select,ui/tabs	app/analysis/page.tsx
+/analysis		analysis/calculation-demo,analysis/position-breakdown,page-header,stats/simulated-book-panel,ui/badge,ui/card,ui/select,ui/tabs	app/analysis/page.tsx
 /autotest		page-header,test-dashboard	app/autotest/page.tsx
 /bots		ui/badge,ui/button,ui/card,ui/select,ui/slider,ui/switch	app/bots/page.tsx
 /health		ui/card	app/health/page.tsx
 /indications		indications/indication-filters-advanced,indications/indication-row-compact,page-header,ui/button,ui/card	app/indications/page.tsx
-/live-trading		live-trading/live-overview-compact,live-trading/live-position-table,live-trading/live-trading-types,live-trading/trade-history-panel,page-header,ui/badge,ui/button,ui/card	app/live-trading/page.tsx
+/live-trading		live-trading/live-overview-compact,live-trading/live-position-table,live-trading/live-trading-types,live-trading/trade-history-panel,page-header,stats/simulated-book-panel,ui/badge,ui/button,ui/card	app/live-trading/page.tsx
 /login		ui/button,ui/card,ui/input,ui/label	app/login/page.tsx
 /logistics		auth-guard,page-header,ui/badge,ui/button,ui/collapsible,ui/progress	app/logistics/page.tsx
 /main/realtime		realtime/market-data-monitor,realtime/position-monitor	app/main/realtime/page.tsx
@@ -30,7 +30,7 @@ route	dynamic_segments	imported_components	source
 /settings/indications/main		ui/badge,ui/button,ui/card,ui/checkbox,ui/input,ui/label,ui/slider,ui/switch	app/settings/indications/main/page.tsx
 /settings/indications/optimal		ui/alert,ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/optimal/page.tsx
 /settings/indications/signal		settings/signal-indication-settings	app/settings/indications/signal/page.tsx
-/statistics		dashboard/trade-history-table,page-header,settings/statistics-overview,statistics/adjust-strategy-stats,statistics/analytics-filters,statistics/block-strategy-stats,statistics/deactivated-live-configs,statistics/family-performance-panel,statistics/preset-trade-stats,statistics/statistics-section-nav,statistics/strategy-performance-table,ui/badge,ui/button,ui/card,ui/progress,ui/select,ui/tabs	app/statistics/page.tsx
+/statistics		dashboard/trade-history-table,page-header,settings/statistics-overview,statistics/adjust-strategy-stats,statistics/analytics-filters,statistics/block-strategy-stats,statistics/deactivated-live-configs,statistics/family-performance-panel,statistics/preset-trade-stats,statistics/statistics-section-nav,statistics/strategy-performance-table,stats/simulated-book-panel,ui/badge,ui/button,ui/card,ui/progress,ui/select,ui/tabs	app/statistics/page.tsx
 /statistics/direct-trade		page-header,statistics/direct-trade-statistics,statistics/statistics-section-nav	app/statistics/direct-trade/page.tsx
 /statistics/indications/common		statistics/indication-analytics-dashboard	app/statistics/indications/common/page.tsx
 /statistics/indications/main		statistics/indication-analytics-dashboard	app/statistics/indications/main/page.tsx
@@ -40,4 +40,4 @@ route	dynamic_segments	imported_components	source
 /testing/connection		page-header,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/select,ui/switch,ui/tabs	app/testing/connection/page.tsx
 /testing/engine		page-header,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/progress,ui/select,ui/switch	app/testing/engine/page.tsx
 /testing/orders		ui/alert,ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/testing/orders/page.tsx
-/tracking		ui/alert,ui/badge,ui/button,ui/card,ui/progress,ui/select,ui/separator,ui/tabs	app/tracking/page.tsx
+/tracking		stats/simulated-book-panel,ui/alert,ui/badge,ui/button,ui/card,ui/progress,ui/select,ui/separator,ui/tabs	app/tracking/page.tsx

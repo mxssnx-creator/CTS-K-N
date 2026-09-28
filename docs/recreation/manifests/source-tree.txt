@@ -318,6 +318,7 @@ __tests__/unit/pipeline-cycle-outcome.test.ts
 __tests__/unit/pnl-stats-route.test.ts
 __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
+__tests__/unit/position-book-stats.test.ts
 __tests__/unit/position-cost-net-results.test.ts
 __tests__/unit/position-flow-calculations.test.ts
 __tests__/unit/position-index-established-with-hash.test.ts
@@ -410,6 +411,7 @@ __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-source-validation.test.ts
 __tests__/unit/signal-trailing.test.ts
+__tests__/unit/simulated-stats-routes.test.ts
 __tests__/unit/site-logs-key.test.ts
 __tests__/unit/slot-audit-type-separation.test.ts
 __tests__/unit/slot-entry-serialize.test.ts
@@ -1066,6 +1068,7 @@ components/statistics/indication-analytics-dashboard.tsx
 components/statistics/preset-trade-stats.tsx
 components/statistics/statistics-section-nav.tsx
 components/statistics/strategy-performance-table.tsx
+components/stats/simulated-book-panel.tsx
 components/strategies/strategy-bar.tsx
 components/strategies/strategy-filters-advanced.tsx
 components/strategies/strategy-filters.tsx
@@ -1508,6 +1511,7 @@ lib/portfolio-analytics.ts
 lib/pos-count-live-target.ts
 lib/pos-count-volume-ratio.ts
 lib/pos-history.ts
+lib/position-book-stats.ts
 lib/position-calculator.ts
 lib/position-cost.ts
 lib/position-data-retrieval.ts

@@ -304,6 +304,7 @@ unit	__tests__/unit/pipeline-cycle-outcome.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
+unit	__tests__/unit/position-book-stats.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/position-index-established-with-hash.test.ts
@@ -396,6 +397,7 @@ unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-source-validation.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
+unit	__tests__/unit/simulated-stats-routes.test.ts
 unit	__tests__/unit/site-logs-key.test.ts
 unit	__tests__/unit/slot-audit-type-separation.test.ts
 unit	__tests__/unit/slot-entry-serialize.test.ts
