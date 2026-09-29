@@ -4,12 +4,25 @@ import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { applyCloseSettlement, closeOrderCandidates, needsDeferredCloseAccounting } from "@/lib/close-accounting-backfill"
 import { isManualCloseAtPrice, matchVenuePositionClose, normalizeVenuePositionHistory, venueCloseSettlement } from "@/lib/venue-position-close"
 import { MANUAL_CLOSE_SUPPRESS_SECONDS, manualCloseKeyOf } from "@/lib/trade-engine/stages/live-stage"
+import { withTimeout } from "@/lib/async-safety"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 55
 
 const PER_RUN = 25
 const ATTEMPT_TTL_S = 6 * 3600 // a row is retried at most every 6 h
+// The whole run shares the one-minute scheduler tick with server-continuity and
+// the position sync, and the tick lasts as long as its slowest path. Measured
+// on X02 the run took 28-55 s, three ticks in fifteen above 30 s and twice
+// exactly 55 s: the orphan-mirror sweep below ran until its 55 s cut-off over
+// thousands of keys, and a single settlement could still spend its venue calls
+// after the 40 s row budget. A slow tick made the last installer check see a
+// stale continuity tick and cost a deploy. No new row is started after
+// SETTLE_BUDGET_MS, the sweep stops at SWEEP_BUDGET_MS, and every venue call is
+// bounded; the rotating cursor and the attempt lock carry the rest to the next run.
+const SETTLE_BUDGET_MS = 18_000
+const SWEEP_BUDGET_MS = 28_000
+const VENUE_CALL_TIMEOUT_MS = 6_000
 
 /** Settle closed rows whose accounting was left unresolved, from their own closing order. */
 export async function GET(request: Request) {
@@ -33,7 +46,7 @@ export async function GET(request: Request) {
   const keys = [...allKeys.slice(startAt), ...allKeys.slice(0, startAt)]
   let visited = 0
   for (const key of keys) {
-    if (attempted >= PER_RUN || Date.now() - started > 40_000) break
+    if (attempted >= PER_RUN || Date.now() - started > SETTLE_BUDGET_MS) break
     scanned++
     visited++
     // Cheap pre-filter: most rows never filled or are already settled.
@@ -61,13 +74,13 @@ export async function GET(request: Request) {
     attempted++
     const { orderIds, clientIds } = closeOrderCandidates(row)
     for (const cid of clientIds) {
-      const o = await connector.getOrderDetails?.(row.symbol, undefined, cid).catch(() => null)
+      const o = await withTimeout(Promise.resolve(connector.getOrderDetails?.(row.symbol, undefined, cid)), VENUE_CALL_TIMEOUT_MS, "close-accounting:orderDetails").catch(() => null)
       const id = String(o?.orderId || o?.data?.orderId || "")
       if (id && !orderIds.includes(id)) orderIds.push(id)
     }
     let done = false
     for (const orderId of orderIds) {
-      const st = await connector.getOrderSettlement(row.symbol, orderId, { startTime: Number(row.createdAt || 0) || undefined }).catch(() => null)
+      const st = await withTimeout(Promise.resolve(connector.getOrderSettlement(row.symbol, orderId, { startTime: Number(row.createdAt || 0) || undefined })), VENUE_CALL_TIMEOUT_MS, "close-accounting:orderSettlement").catch(() => null)
       if (st && applyCloseSettlement(row, st, orderId)) {
         await client.hset(key, {
           closePrice: String(row.closePrice), exitPrice: String(row.exitPrice), closeOrderId: row.closeOrderId,
@@ -82,7 +95,7 @@ export async function GET(request: Request) {
       // No own closing order: the venue's position history is the only source
       // of this row's exit. Used only for an unambiguous match.
       const closes = normalizeVenuePositionHistory(
-        await connector.getPositionHistory(row.symbol, Number(row.createdAt || Date.now()) - 3_600_000, Date.now()).catch(() => []),
+        await withTimeout(Promise.resolve(connector.getPositionHistory(row.symbol, Number(row.createdAt || Date.now()) - 3_600_000, Date.now())), VENUE_CALL_TIMEOUT_MS, "close-accounting:positionHistory").catch(() => []),
       )
       const match = matchVenuePositionClose(row, closes)
       if (match && applyCloseSettlement(row, venueCloseSettlement(row, match), `venue-position:${match.positionId}`)) {
@@ -119,7 +132,7 @@ export async function GET(request: Request) {
   let orphanMirrorsRemoved = 0
   const mirrorKeys: string[] = ((await client.keys(`live:position:live:${connectionId}:*`).catch(() => [])) as string[])
   for (const mirrorKey of mirrorKeys) {
-    if (orphanMirrorsRemoved >= 300 || Date.now() - started > 55_000) break
+    if (orphanMirrorsRemoved >= 300 || Date.now() - started > SWEEP_BUDGET_MS) break
     const positionId = mirrorKey.slice("live:position:".length)
     if (await client.exists(`live_positions:${connectionId}:${positionId}`).catch(() => 1)) continue
     let mirror: any = {}

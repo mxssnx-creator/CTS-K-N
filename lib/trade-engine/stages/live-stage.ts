@@ -12345,6 +12345,51 @@ function entryProtectionHaltKeyOf(connectionId: string): string {
 function entryProtectionSlotHaltKeyOf(connectionId: string, slotKey: string): string {
   return `live:entry-protection-halt:${connectionId}:slot:${slotKey}`
 }
+
+/** How often the sync looks for slot halts whose slot is empty. */
+export const SLOT_HALT_SWEEP_SECONDS = 60
+const SLOT_HALT_TERMINAL_STATUSES = new Set(["closed", "rejected", "cancelled", "canceled", "expired", "error", "failed"])
+
+/**
+ * A slot halt (24 h) guards the protection of the positions IN that slot. Once
+ * the slot has no position with quantity, nothing is left to protect and the
+ * halt only blocks new entries on a clean slot: on X01, where other systems hold
+ * a shared venue position per symbol and side, 24 of 25 halts sat on slots
+ * without any own row, a day of lost entries for symbols that were fine.
+ *
+ * Clears the halt of every slot that no row with executed quantity and a
+ * non-terminal status occupies. Ownership is deliberately NOT asked here: a row
+ * of any kind keeps its slot's halt, so when in doubt the halt stays. A slot that
+ * is still occupied is left to the audit, which re-evaluates it on every entry.
+ * Returns the cleared slots.
+ */
+export async function sweepEmptySlotProtectionHalts(
+  client: any,
+  connectionId: string,
+  rows: ReadonlyArray<Record<string, any>>,
+): Promise<string[]> {
+  if (!client || typeof client.keys !== "function") return []
+  const keys: string[] = ((await client.keys(`live:entry-protection-halt:${connectionId}:slot:*`).catch(() => [])) || []).map(String)
+  if (keys.length === 0) return []
+  const occupied = new Set<string>()
+  for (const row of rows || []) {
+    if (!(Number(row?.executedQuantity || 0) > 0)) continue
+    if (SLOT_HALT_TERMINAL_STATUSES.has(String(row?.status || "").toLowerCase())) continue
+    const direction = resolveLivePositionDirection(row as any)
+    if (!direction) continue
+    occupied.add(`${normalizeProtectionSlotSymbol(row.symbol)}|${direction}`)
+  }
+  const cleared: string[] = []
+  for (const key of keys) {
+    const slot = key.split(":slot:")[1] || ""
+    const [symbol, direction] = slot.split("|")
+    if (!symbol || !direction) continue
+    if (occupied.has(`${normalizeProtectionSlotSymbol(symbol)}|${direction}`)) continue
+    await client.del(key).catch(() => 0)
+    cleared.push(slot)
+  }
+  return cleared
+}
 async function isEntrySlotProtectionHalted(client: any, connectionId: string, symbol: string, direction: string): Promise<boolean> {
   const dir = String(direction || "").toLowerCase() === "short" ? "short" : "long"
   const key = entryProtectionSlotHaltKeyOf(connectionId, aggregateProtectionSlot(symbol, dir as ProtectionSlotDirection))
@@ -20889,6 +20934,18 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             connector: exchangeConnector,
             reason: "genuine_halt_recheck",
           }).catch(() => undefined)
+        }
+      }
+    }
+    // Clear slot halts whose slot is empty. Only with live trading on: that is
+    // when the full row list is loaded, and a partial list must never free a
+    // slot that is still occupied.
+    if (liveTradeOn) {
+      const sweepGate = await client.set(`live:slot-halt-sweep:${connectionId}`, String(Date.now()), { NX: true, EX: SLOT_HALT_SWEEP_SECONDS }).catch(() => null)
+      if (sweepGate) {
+        const cleared = await sweepEmptySlotProtectionHalts(client, connectionId, allOpenRaw as any[]).catch(() => [] as string[])
+        if (cleared.length > 0) {
+          console.log(`${LOG_PREFIX} cleared ${cleared.length} slot halt(s) on empty slots for ${connectionId}: ${cleared.slice(0, 8).join(", ")}${cleared.length > 8 ? " …" : ""}`)
         }
       }
     }
