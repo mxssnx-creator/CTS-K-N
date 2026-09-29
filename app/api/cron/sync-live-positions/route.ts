@@ -1,3 +1,4 @@
+import { runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { initRedis, getRedisClient, getAllConnections, isConnectionAssignedToMain, withSharedPersistenceLease } from "@/lib/redis-db"
 import { reconcileLivePositions, syncWithExchange } from "@/lib/trade-engine/stages/live-stage"
@@ -208,6 +209,10 @@ export async function runLivePositionRecoverySweep(): Promise<SweepSummary> {
 }
 
 export async function GET(request: Request) {
+  return runCronTimeBoxed("sync-live-positions", request, () => handle(request))
+}
+
+async function handle(request: Request): Promise<Response> {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
 

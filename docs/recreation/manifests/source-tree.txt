@@ -133,6 +133,7 @@ __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/create-checkpoint-script.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
+__tests__/unit/cron-time-box.test.ts
 __tests__/unit/cycle-diagnostic-timing.test.ts
 __tests__/unit/dangling-live-index.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
@@ -192,6 +193,7 @@ __tests__/unit/engine-state-mirror.test.ts
 __tests__/unit/engine-status-canonical-connections.test.ts
 __tests__/unit/engine-structured-logging.test.ts
 __tests__/unit/env-credential-loading.test.ts
+__tests__/unit/event-loop-yield.test.ts
 __tests__/unit/event-stream-stability.test.ts
 __tests__/unit/events/canonical-events.test.ts
 __tests__/unit/exchange-account-performance.test.ts
@@ -1339,6 +1341,7 @@ lib/core/entity-types.ts
 lib/correlation-tracking.ts
 lib/cron-auth.ts
 lib/cron-engine-eligibility.ts
+lib/cron-time-box.ts
 lib/dashboard-events.ts
 lib/dashboard-metrics.ts
 lib/dashboard-poll-utils.ts
@@ -1411,6 +1414,7 @@ lib/error-handling-production.ts
 lib/error-handling.ts
 lib/error-logger.ts
 lib/event-broadcaster.ts
+lib/event-loop-yield.ts
 lib/events/emitter.ts
 lib/events/schema.ts
 lib/exchange-account-performance.ts

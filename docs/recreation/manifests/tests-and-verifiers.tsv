@@ -119,6 +119,7 @@ unit	__tests__/unit/control-order-capacity.test.ts
 unit	__tests__/unit/cooperative-task-timeout.test.ts
 unit	__tests__/unit/create-checkpoint-script.test.ts
 unit	__tests__/unit/cron-generate-indications-eligibility.test.ts
+unit	__tests__/unit/cron-time-box.test.ts
 unit	__tests__/unit/cycle-diagnostic-timing.test.ts
 unit	__tests__/unit/dangling-live-index.test.ts
 unit	__tests__/unit/dashboard-event-polling.test.ts
@@ -178,6 +179,7 @@ unit	__tests__/unit/engine-state-mirror.test.ts
 unit	__tests__/unit/engine-status-canonical-connections.test.ts
 unit	__tests__/unit/engine-structured-logging.test.ts
 unit	__tests__/unit/env-credential-loading.test.ts
+unit	__tests__/unit/event-loop-yield.test.ts
 unit	__tests__/unit/event-stream-stability.test.ts
 unit	__tests__/unit/events/canonical-events.test.ts
 unit	__tests__/unit/exchange-account-performance.test.ts

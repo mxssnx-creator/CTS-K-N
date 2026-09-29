@@ -1,3 +1,4 @@
+import { runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { getRedisClient, initRedis, withSharedPersistenceLease } from "@/lib/redis-db"
 import { runTradeEngineHealingSweep } from "@/lib/trade-engine-auto-start"
@@ -63,6 +64,10 @@ async function runCronTask(
  * migrations, and the trade-engine auto-start monitor once per minute.
  */
 export async function GET(request: Request) {
+  return runCronTimeBoxed("server-continuity", request, () => handle(request))
+}
+
+async function handle(request: Request): Promise<Response> {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
   const maintenance = getRuntimeMaintenanceState()
@@ -163,6 +168,4 @@ export async function GET(request: Request) {
   }, { ttlMs: 75_000, waitMs: 2_000 })
 }
 
-export async function POST(request: Request) {
-  return GET(request)
-}
+export const POST = GET

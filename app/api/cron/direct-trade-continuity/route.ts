@@ -1,3 +1,4 @@
+import { runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { getRedisClient, initRedis, withSharedPersistenceLease } from "@/lib/redis-db"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
@@ -34,6 +35,10 @@ function source(request: Request): string {
  * durable position stage and waits for the former six-second lease to expire.
  */
 export async function GET(request: Request) {
+  return runCronTimeBoxed("direct-trade-continuity", request, () => handle(request))
+}
+
+async function handle(request: Request): Promise<Response> {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
 
@@ -186,6 +191,4 @@ export async function GET(request: Request) {
   }, { ttlMs: 70_000, waitMs: 2_000 })
 }
 
-export async function POST(request: Request) {
-  return GET(request)
-}
+export const POST = GET
