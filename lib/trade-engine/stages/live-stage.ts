@@ -12392,6 +12392,60 @@ const SLOT_HALT_TERMINAL_STATUSES = new Set(["closed", "rejected", "cancelled", 
  * is still occupied is left to the audit, which re-evaluates it on every entry.
  * Returns the cleared slots.
  */
+function occupiedSlotKeysOf(rows: ReadonlyArray<Record<string, any>>): Set<string> {
+  const occupied = new Set<string>()
+  for (const row of rows || []) {
+    if (!(Number(row?.executedQuantity || 0) > 0)) continue
+    if (SLOT_HALT_TERMINAL_STATUSES.has(String(row?.status || "").toLowerCase())) continue
+    const direction = resolveLivePositionDirection(row as any)
+    if (!direction) continue
+    occupied.add(`${normalizeProtectionSlotSymbol(row.symbol)}|${direction}`)
+  }
+  return occupied
+}
+
+/**
+ * An UNCONFIRMED hold (entry_protection_rollback_unconfirmed /
+ * entry_fill_unconfirmed) keeps a slot closed for 24 h while a rollback or a
+ * fill is reconciled. Once the reconciliation is over — no row with executed
+ * quantity and a non-terminal status occupies the slot — the hold has nothing
+ * left to wait for. On X01 eleven of them (61,000-75,000 s left) blocked 533
+ * entries in two hours and every entry attempt landed on a held slot: the
+ * strategy re-qualifies the same top slots each cycle. Younger than the normal
+ * cooldown, or occupied, the hold stays. Ordinary 15-minute cooldowns are left
+ * to expire on their own.
+ */
+export const UNCONFIRMED_HOLD_REASONS: ReadonlySet<string> = new Set([
+  "entry_protection_rollback_unconfirmed",
+  "entry_fill_unconfirmed",
+])
+export async function sweepResolvedUnconfirmedEntryHolds(
+  client: any,
+  connectionId: string,
+  rows: ReadonlyArray<Record<string, any>>,
+  now: number = Date.now(),
+): Promise<string[]> {
+  if (!client || typeof client.keys !== "function") return []
+  const prefix = `live:entry-rollback-cooldown:${connectionId}:`
+  const keys: string[] = ((await client.keys(`${prefix}*`).catch(() => [])) || []).map(String)
+  if (keys.length === 0) return []
+  const occupied = occupiedSlotKeysOf(rows)
+  const cleared: string[] = []
+  for (const key of keys) {
+    const slot = key.slice(prefix.length)
+    const [symbol, direction] = slot.split(":")
+    if (!symbol || !direction) continue
+    let record: any = null
+    try { record = JSON.parse(String(await client.get(key))) } catch { record = null }
+    if (!record || !UNCONFIRMED_HOLD_REASONS.has(String(record.reason || ""))) continue
+    if (now - Number(record.at || 0) < ENTRY_ROLLBACK_COOLDOWN_SECONDS * 1000) continue
+    if (occupied.has(`${normalizeProtectionSlotSymbol(symbol)}|${direction}`)) continue
+    await client.del(key).catch(() => 0)
+    cleared.push(`${symbol.toUpperCase()}|${direction}`)
+  }
+  return cleared
+}
+
 export async function sweepEmptySlotProtectionHalts(
   client: any,
   connectionId: string,
@@ -21069,6 +21123,10 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         const cleared = await sweepEmptySlotProtectionHalts(client, connectionId, allOpenRaw as any[]).catch(() => [] as string[])
         if (cleared.length > 0) {
           console.log(`${LOG_PREFIX} cleared ${cleared.length} slot halt(s) on empty slots for ${connectionId}: ${cleared.slice(0, 8).join(", ")}${cleared.length > 8 ? " …" : ""}`)
+        }
+        const clearedHolds = await sweepResolvedUnconfirmedEntryHolds(client, connectionId, allOpenRaw as any[]).catch(() => [] as string[])
+        if (clearedHolds.length > 0) {
+          console.log(`${LOG_PREFIX} released ${clearedHolds.length} resolved unconfirmed entry hold(s) for ${connectionId}: ${clearedHolds.slice(0, 8).join(", ")}${clearedHolds.length > 8 ? " …" : ""}`)
         }
       }
     }
