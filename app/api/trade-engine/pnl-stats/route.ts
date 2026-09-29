@@ -12,6 +12,7 @@ import {
 } from "@/lib/live-position-pnl"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import { isRealExchangePosition } from "@/lib/live-position-source"
+import { readRealClosedWindow } from "@/lib/real-closed-window"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 
 export const dynamic = "force-dynamic"
@@ -96,6 +97,8 @@ interface PnLStatsSuccessResponse {
   success: true
   connectionId: string
   stats: PnLStats
+  /** How much of the closed list was read to find the real positions the statistics rest on. */
+  window?: { closed_rows_scanned: number; real_closed_in_window: number }
   duration: number
 }
 
@@ -104,7 +107,6 @@ interface PnLStatsSuccessResponse {
 // the operational dashboard.
 const CLOSED_HISTORY_LIMIT = 50
 const CLOSED_ANALYTICS_LIMIT = 75
-
 function firstFinite(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (value === undefined || value === null || typeof value === "boolean") continue
@@ -254,11 +256,12 @@ export async function GET(request: NextRequest) {
     // Read the canonical Redis lifecycle ledgers instead, which also includes
     // current open positions and therefore keeps realised and live PnL on the
     // same authoritative calculation path.
-    const [openLedger, closedLedger, executionSummary] = await Promise.all([
+    const [openLedger, closedWindow, executionSummary] = await Promise.all([
       getLivePositions(connectionId),
-      getClosedLivePositions(connectionId, CLOSED_ANALYTICS_LIMIT),
+      readRealClosedWindow((limit) => getClosedLivePositions(connectionId, limit), isRealExchangePosition),
       getLiveExecutionSummary(connectionId),
     ])
+    const closedLedger = closedWindow.rows
 
     const byId = new Map<string, any>()
     for (const position of closedLedger) {
@@ -481,6 +484,7 @@ export async function GET(request: NextRequest) {
       success: true,
       connectionId,
       stats,
+      window: { closed_rows_scanned: closedWindow.scanned, real_closed_in_window: closedWindow.real },
       duration: Date.now() - startTime,
     }
     return NextResponse.json<PnLStatsSuccessResponse>(response)

@@ -61,6 +61,7 @@ unit	__tests__/unit/base-position-batch-coordination.test.ts
 unit	__tests__/unit/base-prehistoric-measured-history.test.ts
 unit	__tests__/unit/base-stage-concurrency.test.ts
 unit	__tests__/unit/best-first-ordering.test.ts
+unit	__tests__/unit/bingx-account-hedge-mode.test.ts
 unit	__tests__/unit/bingx-account-snapshot-recovery.test.ts
 unit	__tests__/unit/bingx-instrument-rules.test.ts
 unit	__tests__/unit/bingx-library-fast-path.test.ts
@@ -306,6 +307,7 @@ unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/persistent-paths.test.ts
 unit	__tests__/unit/pf-coordinate-and-block-volume-contract.test.ts
 unit	__tests__/unit/pipeline-cycle-outcome.test.ts
+unit	__tests__/unit/pnl-stats-real-window.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts

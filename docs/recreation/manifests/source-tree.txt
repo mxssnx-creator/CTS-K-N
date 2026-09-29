@@ -75,6 +75,7 @@ __tests__/unit/base-position-batch-coordination.test.ts
 __tests__/unit/base-prehistoric-measured-history.test.ts
 __tests__/unit/base-stage-concurrency.test.ts
 __tests__/unit/best-first-ordering.test.ts
+__tests__/unit/bingx-account-hedge-mode.test.ts
 __tests__/unit/bingx-account-snapshot-recovery.test.ts
 __tests__/unit/bingx-instrument-rules.test.ts
 __tests__/unit/bingx-library-fast-path.test.ts
@@ -320,6 +321,7 @@ __tests__/unit/performance-profiler.test.ts
 __tests__/unit/persistent-paths.test.ts
 __tests__/unit/pf-coordinate-and-block-volume-contract.test.ts
 __tests__/unit/pipeline-cycle-outcome.test.ts
+__tests__/unit/pnl-stats-real-window.test.ts
 __tests__/unit/pnl-stats-route.test.ts
 __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
@@ -1564,6 +1566,7 @@ lib/quickstart-bootstrap-state.ts
 lib/quickstart-change-detection.ts
 lib/quickstart-timeouts.ts
 lib/rate-limiter.ts
+lib/real-closed-window.ts
 lib/real-trade-gates.ts
 lib/redis-db.ts
 lib/redis-idempotent-list.ts

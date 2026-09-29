@@ -1221,6 +1221,75 @@ export class BingXConnector extends BaseExchangeConnector {
     }
   }
 
+  // ── Account position mode, asked of the venue ────────────────────────
+  // Whether an order carries `positionSide` used to depend only on the CALLER's
+  // hedgeMode flag. On X01 every entry of 6 h (46 orders, both the SDK fast path
+  // and the REST fallback) went out without it and BingX answered 109400
+  // "positionSide: This field is required", while the account IS in hedge mode
+  // (GET /openApi/swap/v1/positionSide/dual -> dualSidePosition=true, the
+  // connection says position_mode=hedge, and the same orders pass BingX's
+  // order/test endpoint once positionSide is added). Nothing at the call site
+  // explained the missing field. The venue is the authority: the account's mode
+  // is read once per ten minutes and decides; a caller that disagrees is logged
+  // and overridden. If the read fails, the caller's flag stays in force.
+  private accountHedgeModeCache: { at: number; value: boolean } | null = null
+  private accountHedgeMismatchLoggedAt = 0
+  private static readonly ACCOUNT_HEDGE_MODE_TTL_MS = 10 * 60_000
+
+  invalidateAccountHedgeMode(): void {
+    this.accountHedgeModeCache = null
+  }
+
+  async resolveAccountHedgeMode(): Promise<boolean | null> {
+    if (this.credentials.apiType === "spot") return null
+    const now = Date.now()
+    if (this.accountHedgeModeCache && now - this.accountHedgeModeCache.at < BingXConnector.ACCOUNT_HEDGE_MODE_TTL_MS) {
+      return this.accountHedgeModeCache.value
+    }
+    try {
+      const { signature, queryString } = this.signParams({ timestamp: String(this.getTimestamp()) })
+      const url = `${this.getBaseUrl()}/openApi/swap/v1/positionSide/dual?${queryString}&signature=${signature}`
+      const response = await this.rateLimitedFetch(url, {
+        method: "GET",
+        headers: { "X-BX-APIKEY": this.credentials.apiKey },
+      })
+      const data = await this.safeJson(response)
+      if (!this.isBingXSuccess(data?.code)) return null
+      const raw = String(data?.data?.dualSidePosition ?? "").toLowerCase()
+      if (raw !== "true" && raw !== "false") return null
+      this.accountHedgeModeCache = { at: now, value: raw === "true" }
+      return this.accountHedgeModeCache.value
+    } catch {
+      return null
+    }
+  }
+
+  private reconcileHedgeMode(account: boolean | null, callerHedgeMode: boolean, context: string): boolean {
+    if (account === null || account === callerHedgeMode) return callerHedgeMode
+    if (Date.now() - this.accountHedgeMismatchLoggedAt > 60_000) {
+      this.accountHedgeMismatchLoggedAt = Date.now()
+      this.logError(`${context}: caller hedgeMode=${callerHedgeMode} but the account is ${account ? "hedge" : "one-way"} — using the account's mode`)
+    }
+    return account
+  }
+
+  /** The hedge flag an order must use: the account's, else the caller's. Asks the venue if the cache is cold. */
+  async effectiveHedgeMode(callerHedgeMode: boolean, context: string): Promise<boolean> {
+    return this.reconcileHedgeMode(await this.resolveAccountHedgeMode(), callerHedgeMode, context)
+  }
+
+  /**
+   * Same rule from the CACHE only, never a network call: the SDK fast path must
+   * not block on or fall back to REST. A cold cache leaves the caller's flag in
+   * force; if that order is rejected, the REST fallback asks the venue and fills
+   * the cache for every order after it.
+   */
+  peekEffectiveHedgeMode(callerHedgeMode: boolean, context: string): boolean {
+    const cached = this.accountHedgeModeCache
+    const fresh = cached && Date.now() - cached.at < BingXConnector.ACCOUNT_HEDGE_MODE_TTL_MS ? cached.value : null
+    return this.reconcileHedgeMode(fresh, callerHedgeMode, context)
+  }
+
   async placeOrder(
     symbol: string,
     side: "buy" | "sell",
@@ -1278,7 +1347,7 @@ export class BingXConnector extends BaseExchangeConnector {
           // positionSide in the common hedge-mode-without-explicit-side case
           // and BingX rejects with 109400 "positionSide: This field is
           // required".
-          const sdkHedgeMode = options.hedgeMode !== false
+          const sdkHedgeMode = this.peekEffectiveHedgeMode(options.hedgeMode !== false, "placeOrder(sdk)")
           const sdkEffectivePositionSide: "LONG" | "SHORT" =
             options.positionSide ||
             (options.reduceOnly
@@ -1361,7 +1430,7 @@ export class BingXConnector extends BaseExchangeConnector {
       //      only correct for OPENING orders. For reduce-only orders this
       //      would silently open a new opposite-side position, which is why
       //      callers should always pass options.positionSide for SL/TP/close.
-      const hedgeMode = options.hedgeMode !== false
+      const hedgeMode = isSpot ? options.hedgeMode !== false : await this.effectiveHedgeMode(options.hedgeMode !== false, "placeOrder(rest)")
       const explicitPositionSide = options.positionSide
       const derivedPositionSide: "LONG" | "SHORT" = side === "buy" ? "LONG" : "SHORT"
       const effectivePositionSide = explicitPositionSide
@@ -1525,6 +1594,7 @@ export class BingXConnector extends BaseExchangeConnector {
           }
           throw new Error(`BingX API error (code=${retryData.code}): ${retryData.msg || "Unknown error"}`)
         }
+        if (/positionSide/i.test(String(data.msg || ""))) this.invalidateAccountHedgeMode()
         throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
       }
 
@@ -1610,7 +1680,7 @@ export class BingXConnector extends BaseExchangeConnector {
       const stopStr = stopRounded.toFixed(8).replace(/\.?0+$/, "")
 
       const bingxSymbol = this.toBingXSymbol(symbol)
-      const hedgeMode = options.hedgeMode !== false
+      const hedgeMode = isSpot ? options.hedgeMode !== false : await this.effectiveHedgeMode(options.hedgeMode !== false, "placeStopOrder")
       // Closing a LONG ⇒ sell-side reduce-only against LONG position;
       // closing a SHORT ⇒ buy-side reduce-only against SHORT position.
       const positionSide: "LONG" | "SHORT" = options.positionSide
@@ -3124,6 +3194,7 @@ export class BingXConnector extends BaseExchangeConnector {
         throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
       }
 
+      this.invalidateAccountHedgeMode()
       this.log(`✓ Position mode set to ${hedgeMode ? "hedge" : "one-way"}`)
       return { success: true }
     } catch (error) {

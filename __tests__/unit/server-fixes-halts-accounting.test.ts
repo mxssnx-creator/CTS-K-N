@@ -113,3 +113,50 @@ describe("a failed fresh position snapshot says where the time went", () => {
     await expect(readFreshPositionSnapshot(connector, undefined, 500)).rejects.toThrow("Authoritative venue position snapshot is unavailable")
   })
 })
+
+describe("resolved unconfirmed entry holds are released", () => {
+  const { sweepResolvedUnconfirmedEntryHolds } = require("@/lib/trade-engine/stages/live-stage")
+  const holdKey = (slot: string) => `live:entry-rollback-cooldown:${conn}:${slot}`
+  const NOW = 1_800_000_000_000
+  function holds(entries: Record<string, { reason: string; ageMin: number }>) {
+    const store = new Map<string, string>()
+    for (const [slot, e] of Object.entries(entries)) store.set(holdKey(slot), JSON.stringify({ at: NOW - e.ageMin * 60_000, reason: e.reason }))
+    return {
+      store,
+      keys: async (pattern: string) => [...store.keys()].filter((k) => k.startsWith(pattern.replace("*", ""))),
+      get: async (k: string) => store.get(k) ?? null,
+      del: async (k: string) => (store.delete(k) ? 1 : 0),
+    }
+  }
+  test("old unconfirmed holds on unoccupied slots are released, occupied ones stay", async () => {
+    const client = holds({
+      "HYPEUSDT:long": { reason: "entry_protection_rollback_unconfirmed", ageMin: 600 },
+      "ONUSDT:long": { reason: "entry_fill_unconfirmed", ageMin: 600 },
+      "SOLUSDT:long": { reason: "entry_protection_rollback_unconfirmed", ageMin: 600 },
+    })
+    const released = await sweepResolvedUnconfirmedEntryHolds(client, conn, [{ symbol: "SOL-USDT", direction: "long", executedQuantity: 1, status: "open" }], NOW)
+    expect(released.sort()).toEqual(["HYPEUSDT|long", "ONUSDT|long"])
+    expect([...client.store.keys()]).toEqual([holdKey("SOLUSDT:long")])
+  })
+  test("a hold younger than the normal cooldown stays, and ordinary cooldowns are never touched", async () => {
+    const client = holds({
+      "AUSDT:long": { reason: "entry_protection_rollback_unconfirmed", ageMin: 5 },
+      "BUSDT:short": { reason: "entry_protection_contract_incomplete", ageMin: 600 },
+    })
+    expect(await sweepResolvedUnconfirmedEntryHolds(client, conn, [], NOW)).toEqual([])
+    expect(client.store.size).toBe(2)
+  })
+  test("only this connection's holds, and unreadable records are left alone", async () => {
+    const client = holds({ "AUSDT:long": { reason: "entry_fill_unconfirmed", ageMin: 600 } })
+    client.store.set("live:entry-rollback-cooldown:bingx-x02:BUSDT:long", JSON.stringify({ at: NOW - 600 * 60_000, reason: "entry_fill_unconfirmed" }))
+    client.store.set(holdKey("CUSDT:long"), "not json")
+    const released = await sweepResolvedUnconfirmedEntryHolds(client, conn, [], NOW)
+    expect(released).toEqual(["AUSDT|long"])
+    expect(client.store.has("live:entry-rollback-cooldown:bingx-x02:BUSDT:long")).toBe(true)
+    expect(client.store.has(holdKey("CUSDT:long"))).toBe(true)
+  })
+  test("the sync runs it in the same gated block as the slot halt sweep", () => {
+    const live = readFileSync(resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
+    expect(live).toContain("sweepResolvedUnconfirmedEntryHolds(client, connectionId, allOpenRaw as any[])")
+  })
+})
