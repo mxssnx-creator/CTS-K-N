@@ -8063,6 +8063,31 @@ function resolveMaxHoldMs(connId: string): number {
  *   • Any error containing "insufficient margin" / "insufficient balance"
  *     / "not enough" (cross-exchange variants we may encounter)
  */
+/**
+ * BingX 101209: "The maximum position value for this leverage is N USDT".
+ * The venue counts the WHOLE position on the symbol and side against the
+ * leverage tier — on a shared account another system's position fills that
+ * tier long before ours (X01: 20 rejections in 4 h at 5,000 / 10,000 USDT
+ * caps while our own entries were a few USDT). Returns the cap when the
+ * error is this one, else null.
+ */
+export function leverageTierCapFromError(payload: unknown): number | null {
+  const text = typeof payload === "string" ? payload
+    : payload instanceof Error ? payload.message
+    : payload && typeof payload === "object" ? String((payload as any).error ?? (payload as any).message ?? "")
+    : String(payload ?? "")
+  if (!/\b101209\b/.test(text) && !/maximum position value for this leverage/i.test(text)) return null
+  const cap = /([\d.]+)\s*USDT/i.exec(text)
+  return cap ? Number(cap[1]) || 0 : 0
+}
+
+/** The next lower leverage to try after a tier rejection: halve, never below 5x, never the same. */
+export function nextLowerLeverageTier(current: number, floor = 5): number | null {
+  const now = Math.max(1, Math.floor(Number(current) || 1))
+  const next = Math.max(floor, Math.floor(now / 2))
+  return next < now ? next : null
+}
+
 function isNonRecoverableExchangeError(payload: unknown): boolean {
   if (!payload) return false
   let text = ""
@@ -15793,6 +15818,44 @@ export async function executeLivePosition(
     if (await abortSuperseded()) {
       await savePosition(livePosition).catch(() => {})
       return livePosition
+    }
+
+    // ── Leverage tier on 101209 (position value above the tier cap) ─────
+    // Our own quantity is tiny; the shared venue position on this symbol and
+    // side (other systems included) already fills the cap of the maximum
+    // leverage tier. A lower leverage has a higher cap, so step the leverage
+    // down (halve, floor 5x) and resubmit the same quantity, up to three
+    // times. Leverage only changes the margin, never the quantity or the
+    // bracket, so the executed trade stays the one the Set evaluated.
+    for (let tierAttempt = 1; tierAttempt <= 3; tierAttempt++) {
+      if (!(await isCurrent()) || orderResult?.success) break
+      const cap = leverageTierCapFromError(orderResult)
+      if (cap === null) break
+      const lower = nextLowerLeverageTier(livePosition.leverage)
+      if (lower === null) {
+        console.warn(`${LOG_PREFIX} 101209 on ${realPosition.symbol}: tier cap ${cap} USDT at ${livePosition.leverage}x and no lower tier left`)
+        break
+      }
+      console.warn(`${LOG_PREFIX} 101209 on ${realPosition.symbol}: tier cap ${cap} USDT at ${livePosition.leverage}x — retrying at ${lower}x (attempt ${tierAttempt}/3)`)
+      try {
+        await setupLiveOrderMarginAndLeverage(exchangeConnector, realPosition.symbol, { marginType: livePosition.marginType, leverage: lower })
+      } catch (error) {
+        console.warn(`${LOG_PREFIX} 101209 on ${realPosition.symbol}: could not set ${lower}x: ${error instanceof Error ? error.message : String(error)}`)
+        break
+      }
+      livePosition.leverage = lower
+      pushStep(livePosition, "set_leverage", true, `tier cap ${cap} USDT → leverage lowered to ${lower}x`)
+      orderResult = await retry(
+        () => submitEntryQuantity(computedVolume, `tier-${lower}x`),
+        (r: any) => !!r?.success,
+        "placeOrder-lowerTier",
+        1,
+        isCurrent,
+      )
+      if (await abortSuperseded()) {
+        await savePosition(livePosition).catch(() => {})
+        return livePosition
+      }
     }
 
     // ── Volume reduction on 101204 (Insufficient margin) ────────────────
