@@ -297,6 +297,7 @@ __tests__/unit/market-data-second-coverage.test.ts
 __tests__/unit/market-data-synthetic-continuation.test.ts
 __tests__/unit/minimum-scales-with-variant.test.ts
 __tests__/unit/minute-scheduler-once-retry.test.ts
+__tests__/unit/monitor-live-health.test.ts
 __tests__/unit/monitoring-stats-route.test.ts
 __tests__/unit/multi-range-coordination.test.ts
 __tests__/unit/navigation-and-pages.test.ts
@@ -1798,6 +1799,7 @@ scripts/inject-bingx-creds.js
 scripts/inspect-redis-aof-key-history.mjs
 scripts/inspect-redis-retention.ts
 scripts/instaforex-mt5-bridge.py
+scripts/install-monitor.sh
 scripts/install-pull-agent.sh
 scripts/install.sh
 scripts/kill-test-dev-port.mjs
@@ -1807,6 +1809,7 @@ scripts/limit-runtime-logs.sh
 scripts/local-redis.sh
 scripts/logistics-test-suite.mjs
 scripts/maintain-github-origin.sh
+scripts/monitor-live-health.mjs
 scripts/monitor-prod-8h.sh
 scripts/next-build-race-classifier.mjs
 scripts/next-fs-rm-compat.cjs
