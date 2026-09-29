@@ -8,6 +8,20 @@
  */
 
 export const MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO = 1.5
+/**
+ * Live results on 2026-09-29 (52 settled X01 rows, 14 on X02): every row ran
+ * TP 0.333 % against SL 0.5 % — the 0.5 % stop floor raised the stop and the
+ * 1.5x cap set the target to 0.5/1.5, a reward/risk of 0.67 that no signal
+ * quality can carry once the 0.26 % round trip is paid (net +0.07 on a win,
+ * -0.76 on a loss; 33 % wins, PF 0.44). The Real stage had evaluated the same
+ * Sets with adaptive targets of 2-10x PositionCost and their own stops.
+ *
+ * One rule keeps the executed bracket comparable to the evaluated one: when
+ * the stop is raised by a floor, the requested target is raised by the same
+ * factor, so the Set's reward/risk survives the floor. The 1.5x cap on the
+ * stop is unchanged (Sets with a wide stop and a high win rate are legitimate:
+ * the stable baseline runs TP 0.5 % / SL 2.0 % at 95 % wins).
+ */
 export const MIN_PROTECTION_PERCENT = 0.01
 export const DEFAULT_PROTECTION_TAKE_PROFIT_PERCENT = 0.1
 
@@ -71,11 +85,19 @@ export function normalizeProtectionPercentages(input: {
     minimumStopLossPct,
     Math.min(maximumStopLossPct, requested),
   )
+  // The floor raised the stop: raise the REQUESTED target by the same factor
+  // so the requested reward/risk survives (this only ever raises the target).
+  const floorFactor = requested > 0 && stopLossPct > requested ? stopLossPct / requested : 1
+  const requestedTarget = requestedTakeProfit ?? fallbackTakeProfit ?? takeProfitPct
+  const scaledTakeProfitPct = Math.max(
+    takeProfitPct,
+    Number((requestedTarget * floorFactor).toFixed(6)),
+  )
 
   return {
-    takeProfitPct,
+    takeProfitPct: scaledTakeProfitPct,
     stopLossPct,
-    stopLossToTakeProfitRatio: takeProfitPct > 0 ? stopLossPct / takeProfitPct : 0,
+    stopLossToTakeProfitRatio: scaledTakeProfitPct > 0 ? stopLossPct / scaledTakeProfitPct : 0,
     stopLossMissing,
     stopLossCapped: stopLossPct !== requested,
     takeProfitDefaulted,

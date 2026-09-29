@@ -17837,6 +17837,46 @@ async function settleControlOrdersBeforeQuantityMutation(
  *      the open index forever on manual close).
  *   5. Release the dedup lock so a subsequent signal can re-enter.
  */
+/**
+ * Names a generic close by the control order that closed it. Only a generic
+ * reason (reconciliation / unknown) is refined; an explicit reason stays.
+ */
+export function attributeCloseReasonByOrderId(
+  position: Pick<LivePosition, "closeOrderId" | "stopLossOrderId" | "takeProfitOrderId" | "securityStopOrderId" | "orderId"> & { closeReason?: string },
+  closeReason: string,
+): string {
+  const generic = new Set(["exchange_reconciliation", "exchange_externally_closed", "external", "unknown", ""])
+  if (!generic.has(String(closeReason || ""))) return closeReason
+  const closeOrderId = String(position.closeOrderId || "").trim()
+  if (!closeOrderId) return closeReason
+  if (closeOrderId === String(position.stopLossOrderId || "").trim()) return "stop_loss"
+  if (closeOrderId === String(position.takeProfitOrderId || "").trim()) return "take_profit"
+  if (closeOrderId === String(position.securityStopOrderId || "").trim()) return "security_stop"
+  return closeReason
+}
+
+/**
+ * Slippage of a control-order close: how far the fill lies beyond the armed
+ * price, in percent of the armed price, positive = worse than armed. Recorded
+ * on the row so the statistics can show it; on X02 stops on illiquid symbols
+ * filled 1.2-2.5 % beyond their price and no figure showed it.
+ */
+export function controlCloseSlippagePct(
+  position: Pick<LivePosition, "direction" | "stopLossPrice" | "takeProfitPrice" | "securityStopPrice" | "closePrice"> & { closeReason?: string },
+): number | null {
+  const fill = Number(position.closePrice || 0)
+  if (!(fill > 0)) return null
+  const armed = position.closeReason === "stop_loss" ? Number(position.stopLossPrice || 0)
+    : position.closeReason === "take_profit" ? Number(position.takeProfitPrice || 0)
+    : position.closeReason === "security_stop" ? Number(position.securityStopPrice || 0)
+    : 0
+  if (!(armed > 0)) return null
+  const long = String(position.direction) === "long"
+  // For a long, a fill BELOW the armed price is worse; for a short, a fill above.
+  const worse = long ? (armed - fill) / armed : (fill - armed) / armed
+  return Math.round(worse * 100 * 1e4) / 1e4
+}
+
 export async function closeLivePosition(
   connectionId: string,
   livePositionId: string,
@@ -18595,7 +18635,13 @@ export async function closeLivePosition(
     position.aggregateProtectionMutationReason = undefined
     position.aggregateProtectionOwner = false
     position.aggregateProtectionQuantity = 0
-    position.closeReason = closeReason
+    // A close through one of the row's OWN control orders is attributed by
+    // order id: 'exchange_reconciliation' was written for every stop-loss and
+    // take-profit fill (42 of 52 settled X01 rows, 11 of 14 on X02), so the
+    // statistics could not tell a stop from a target from a foreign close. The
+    // ids are the coordination: whichever control order id the closing order
+    // carries names the reason.
+    position.closeReason = attributeCloseReasonByOrderId(position, closeReason)
     // Persist the actual exit price so the stats route and trade-history
     // table can show the real close price without needing to back-derive
     // it from realizedPnL. This is the definitive source of truth for
@@ -18606,6 +18652,10 @@ export async function closeLivePosition(
       .find((price) => price > 0) || 0
     const accountedClosePrice = isSimulationClose ? closePrice : lastActualExecutionPrice
     if (accountedClosePrice > 0) position.closePrice = Math.round(accountedClosePrice * 1e8) / 1e8
+    {
+      const slippage = controlCloseSlippagePct(position)
+      if (slippage !== null) (position as any).closeSlippagePct = slippage
+    }
     
     // Step annotation distinguishes the three real outcomes:
     //   • ok            → connector returned success
