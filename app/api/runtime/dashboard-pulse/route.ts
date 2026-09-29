@@ -61,7 +61,7 @@ export async function POST(request: Request) {
     },
   })
   const continuityRoute = await import("@/app/api/cron/server-continuity/route")
-  const continuityResponse = await continuityRoute.GET(internalRequest("/api/cron/server-continuity"))
+  const continuityResponse = await continuityRoute.GET(internalRequest("/api/cron/server-continuity?wait=1"))
   const continuity = await continuityResponse.json().catch(() => null)
 
   let recoveryResponse: Response | null = null
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
   }
   if (authenticatedAdmin) {
     const recoveryRoute = await import("@/app/api/cron/sync-live-positions/route")
-    recoveryResponse = await recoveryRoute.GET(internalRequest("/api/cron/sync-live-positions"))
+    recoveryResponse = await recoveryRoute.GET(internalRequest("/api/cron/sync-live-positions?wait=1"))
     recovery = await recoveryResponse.json().catch(() => null)
   }
   const success = continuityResponse.ok && (recoveryResponse?.ok ?? true)

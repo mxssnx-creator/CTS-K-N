@@ -12,6 +12,7 @@
  *
  * Nothing here ever touches a venue: the Historic Test is simulation only.
  */
+import { yieldToEventLoop } from "@/lib/event-loop-yield"
 import {
   DEFAULT_HISTORIC_TEST_SETTINGS,
   HISTORIC_TEST_STRATEGY_FAMILIES,
@@ -152,6 +153,9 @@ export async function runHistoricTest(input: HistoricTestRunInput): Promise<Hist
             continue
           }
           scores.push(scoreHistoricCombination(key, trades, settings.minProfitFactor))
+          // The replay is CPU-bound (X02: 58 s in one pass); without a break here the
+          // HTTP server, and with it the scheduler tick, waits for the whole pass.
+          await yieldToEventLoop()
         }
       }
     }

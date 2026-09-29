@@ -7,7 +7,14 @@ describe("Historic Test trigger", () => {
   test("it is authorized like every other cron route", () => {
     expect(route).toContain("authorizeCronRequest(request)")
     expect(route).toContain("if (!auth.ok) return cronAuthorizationResponse(auth)")
-    expect((route.match(/authorizeCronRequest\(request\)/g) || []).length).toBe(2) // GET and POST
+    // GET and POST are the same handler now (the time box wraps it), so the one check covers both:
+    // it runs inside `handle`, before any work, and both methods go through it.
+    expect((route.match(/authorizeCronRequest\(request\)/g) || []).length).toBe(1)
+    expect(route).toContain('export async function GET(request: Request) {\n  return runCronTimeBoxed("historic-test", request, () => handle(request))')
+    expect(route).toContain("export const POST = GET")
+    const handle = route.slice(route.indexOf("async function handle(request: Request)"))
+    expect(handle.indexOf("authorizeCronRequest(request)")).toBeGreaterThan(-1)
+    expect(handle.indexOf("authorizeCronRequest(request)")).toBeLessThan(handle.indexOf("await sweep()"))
   })
 
   test("it honours the isolation rule: only connection-relevant lanes are validated", () => {

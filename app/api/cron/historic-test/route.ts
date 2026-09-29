@@ -1,3 +1,4 @@
+import { runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { getAllConnections, getRedisClient, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
@@ -99,13 +100,13 @@ async function sweep(): Promise<HistoricTestSweepSummary> {
 }
 
 export async function GET(request: Request) {
+  return runCronTimeBoxed("historic-test", request, () => handle(request))
+}
+
+async function handle(request: Request): Promise<Response> {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
   return NextResponse.json(await sweep())
 }
 
-export async function POST(request: Request) {
-  const auth = authorizeCronRequest(request)
-  if (!auth.ok) return cronAuthorizationResponse(auth)
-  return NextResponse.json(await sweep())
-}
+export const POST = GET

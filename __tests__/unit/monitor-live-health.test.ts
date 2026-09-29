@@ -23,7 +23,7 @@ const healthy = () => ({
   openings: { "bingx-x01": { last60: 3, lastAgoMin: 12 } },
   gate: { "bingx-x01": { freshSymbols: 9, candidates: 100, eligible: 60, selected: 60, suppressed: 40, suppressedHistoric: 40, suppressedReasons: {}, blockedReasons: {}, historic: { enabled: true, validated: 30, families: { normal: 20, axis: 10 }, indications: ["optimal", "move"], ranAt: AT } } },
   entries: { attempts: 6, success: 5, failed: 1, errors: {}, blocked: {} },
-  ticks: { count: 20, over30s: 0, maxMs: 4000 },
+  ticks: { count: 20, over1s: 0, maxMs: 700 },
   resources: { rssMb: 1700, load1: 1.1, diskPct: 40, redisMb: 700 },
   collectorFailures: [],
 })
@@ -124,8 +124,14 @@ describe("the live health verdict", () => {
     expect(ids(evaluate(s), "CRIT")).toContain("pf24h_bingx-x01")
   })
   test("slow scheduler ticks, and memory including growth between runs", () => {
-    const s = healthy(); s.ticks = { count: 20, over30s: 3, maxMs: 55000 }
+    const s: any = healthy(); s.ticks = { count: 20, over1s: 3, maxMs: 4200 }
     expect(ids(evaluate(s), "WARN")).toContain("ticks_slow")
+    s.ticks = { count: 20, over1s: 1, maxMs: 1200 }
+    expect(ids(evaluate(s), "WARN")).toContain("ticks_slow") // the target is one second: a single tick above it warns
+    s.ticks = { count: 20, over1s: 4, maxMs: 55000 }
+    expect(ids(evaluate(s), "CRIT")).toContain("ticks_slow")
+    s.ticks = { count: 20, over1s: 0, maxMs: 640 }
+    expect(evaluate(s).checks.find((c: any) => c.id === "ticks").level).toBe("OK")
     const big = healthy(); big.resources.rssMb = 2700
     expect(ids(evaluate(big), "WARN")).toContain("rss")
     big.resources.rssMb = 3600

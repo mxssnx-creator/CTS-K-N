@@ -79,7 +79,7 @@ export async function runTickWithRetry({ tick, retries = 0, delayMs = 0, sleep =
   return summary
 }
 
-async function invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal }) {
+async function invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal, waitForCompletion = false }) {
   const controller = new AbortController()
   const onAbort = () => controller.abort(signal?.reason)
   if (signal) {
@@ -91,7 +91,12 @@ async function invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal 
   const startedAt = Date.now()
 
   try {
-    const response = await fetchImpl(new URL(path, baseUrl), {
+    // Every cron route answers within its time budget and runs its work once in the
+    // background (lib/cron-time-box.ts). The installer's --once check must see FINISHED
+    // work and fresh continuity, so it asks the routes to wait.
+    const url = new URL(path, baseUrl)
+    if (waitForCompletion) url.searchParams.set("wait", "1")
+    const response = await fetchImpl(url, {
       method: "GET",
       cache: "no-store",
       headers: {
@@ -143,10 +148,11 @@ export async function runSchedulerTick({
   timeoutMs = 58_000,
   fetchImpl = fetch,
   signal,
+  waitForCompletion = false,
 }) {
   const startedAt = Date.now()
   const results = await Promise.all(
-    CRON_PATHS.map((path) => invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal })),
+    CRON_PATHS.map((path) => invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal, waitForCompletion })),
   )
   return {
     ok: results.every((result) => result.ok),
@@ -191,7 +197,7 @@ export async function main() {
         }
       : config.once
         ? await runTickWithRetry({
-            tick: () => runSchedulerTick({ ...config, signal: lifecycle.signal }),
+            tick: () => runSchedulerTick({ ...config, signal: lifecycle.signal, waitForCompletion: true }),
             retries: config.onceRetries,
             delayMs: config.onceRetryDelayMs,
             // Only the LAST attempt decides; earlier ones are logged so the

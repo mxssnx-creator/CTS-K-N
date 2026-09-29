@@ -49,10 +49,13 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   blockedWarn: 100,
   // Funnel: consecutive runs with Main evaluating nothing.
   funnelStarvedRuns: 3,
-  // Scheduler ticks (the installer's freshness limit is 90 s).
-  tickSlowMs: 30_000,
-  tickSlowWarnCount: 2,
-  tickMaxWarnMs: 50_000,
+  // Scheduler ticks: operator target, every tick under one second (the cron routes
+  // answer within a time budget and run their work in the background). The
+  // installer's freshness limit is 90 s; a tick that long is critical.
+  tickSlowMs: 1_000,
+  tickSlowWarnCount: 1,
+  tickMaxWarnMs: 1_000,
+  tickCritMs: 30_000,
   // Resources.
   rssWarnMb: 2500,
   rssCritMb: 3500,
@@ -213,9 +216,10 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
 
   // ── scheduler ticks ─────────────────────────────────────────────────
   if (snap.ticks && snap.ticks.count > 0) {
-    if (snap.ticks.over30s >= t.tickSlowWarnCount) add("ticks_slow", "WARN", `${snap.ticks.over30s} of ${snap.ticks.count} scheduler ticks took more than ${t.tickSlowMs / 1000}s`, snap.ticks.over30s)
-    else if (snap.ticks.maxMs >= t.tickMaxWarnMs) add("ticks_max", "WARN", `slowest scheduler tick ${Math.round(snap.ticks.maxMs / 1000)}s`, snap.ticks.maxMs)
-    else add("ticks", "OK", `scheduler ticks fine (max ${Math.round(snap.ticks.maxMs / 1000)}s of ${snap.ticks.count})`)
+    const over = snap.ticks.over1s ?? snap.ticks.over30s ?? 0
+    if (snap.ticks.maxMs >= t.tickCritMs) add("ticks_slow", "CRIT", `slowest scheduler tick ${Math.round(snap.ticks.maxMs / 1000)}s (target under ${t.tickSlowMs / 1000}s)`, snap.ticks.maxMs)
+    else if (over >= t.tickSlowWarnCount) add("ticks_slow", "WARN", `${over} of ${snap.ticks.count} scheduler ticks took more than ${t.tickSlowMs / 1000}s (slowest ${(snap.ticks.maxMs / 1000).toFixed(1)}s)`, over)
+    else add("ticks", "OK", `all ${snap.ticks.count} scheduler ticks under ${t.tickSlowMs / 1000}s (max ${snap.ticks.maxMs} ms)`)
   }
 
   // ── resources ───────────────────────────────────────────────────────
@@ -442,7 +446,7 @@ function collectTicks() {
     if (!line.includes("minute_scheduler_tick")) continue
     try { const d = JSON.parse(line.trim()); if (Number.isFinite(d.durationMs)) durations.push(d.durationMs) } catch { /* partial line */ }
   }
-  return { count: durations.length, over30s: durations.filter((d) => d > DEFAULT_THRESHOLDS.tickSlowMs).length, maxMs: durations.reduce((m, d) => Math.max(m, d), 0) }
+  return { count: durations.length, over1s: durations.filter((d) => d > DEFAULT_THRESHOLDS.tickSlowMs).length, maxMs: durations.reduce((m, d) => Math.max(m, d), 0) }
 }
 
 function collectResources() {

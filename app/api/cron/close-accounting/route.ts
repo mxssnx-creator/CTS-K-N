@@ -1,3 +1,4 @@
+import { runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
@@ -34,6 +35,10 @@ const DEFAULT_CONNECTIONS = ["bingx-x01", "bingx-x02"] as const
 
 /** Settle closed rows whose accounting was left unresolved, from their own closing order. */
 export async function GET(request: Request) {
+  return runCronTimeBoxed("close-accounting", request, () => handle(request))
+}
+
+async function handle(request: Request): Promise<Response> {
   const auth = authorizeCronRequest(request)
   if (!auth.ok) return cronAuthorizationResponse(auth)
   await initRedis()
@@ -90,12 +95,14 @@ async function settleConnection(client: any, exchangeConnectorFactory: any, conn
     attempted++
     const { orderIds, clientIds } = closeOrderCandidates(row)
     for (const cid of clientIds) {
+      if (Date.now() - started > SWEEP_BUDGET_MS) break // no new venue call once the run's budget is spent
       const o = await withTimeout(Promise.resolve(connector.getOrderDetails?.(row.symbol, undefined, cid)), VENUE_CALL_TIMEOUT_MS, "close-accounting:orderDetails").catch(() => null)
       const id = String(o?.orderId || o?.data?.orderId || "")
       if (id && !orderIds.includes(id)) orderIds.push(id)
     }
     let done = false
     for (const orderId of orderIds) {
+      if (Date.now() - started > SWEEP_BUDGET_MS) break
       const st = await withTimeout(Promise.resolve(connector.getOrderSettlement(row.symbol, orderId, { startTime: Number(row.createdAt || 0) || undefined })), VENUE_CALL_TIMEOUT_MS, "close-accounting:orderSettlement").catch(() => null)
       if (st && applyCloseSettlement(row, st, orderId)) {
         await client.hset(key, {
@@ -107,7 +114,7 @@ async function settleConnection(client: any, exchangeConnectorFactory: any, conn
         settled++; done = true; break
       }
     }
-    if (!done && externallyClosed && typeof connector.getPositionHistory === "function") {
+    if (!done && externallyClosed && typeof connector.getPositionHistory === "function" && Date.now() - started <= SWEEP_BUDGET_MS) {
       // No own closing order: the venue's position history is the only source
       // of this row's exit. Used only for an unambiguous match.
       const closes = normalizeVenuePositionHistory(
