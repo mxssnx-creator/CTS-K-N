@@ -85,6 +85,17 @@ class MemoryManager {
   private checkAndGC() {
     const usage = this.getUsage()
     const warningLevel = Math.round(this.maxHeapMB * this.warningThreshold)
+    // One line every five minutes, whether or not the warning fires: the app
+    // sat at 1.9 GB RSS with a 4.5 GB heap limit and nothing said whether that
+    // was heap, external buffers or growth. Compared over hours this shows a
+    // leak (monotone growth) apart from a large but stable working set.
+    {
+      const mem = process.memoryUsage()
+      const arrayBuffers = Math.round((mem as any).arrayBuffers / 1024 / 1024 || 0)
+      const first = this.snapshots[0]
+      const trend = first ? ` heapΔ=${usage.heapUsed - first.heapUsed}MB over ${Math.round((Date.now() - first.timestamp) / 60000)}min` : ""
+      console.log(`[v0] [Memory] rss=${usage.rss}MB heapUsed=${usage.heapUsed}MB heapTotal=${usage.heapTotal}MB external=${usage.external}MB arrayBuffers=${arrayBuffers}MB limit=${this.maxHeapMB}MB${trend}`)
+    }
 
     if (usage.heapUsed > warningLevel) {
       console.log(`[v0] [Memory] WARNING: High memory usage (${usage.heapUsed}MB / ${this.maxHeapMB}MB)`)
