@@ -3,6 +3,25 @@ export const SIGNAL_MAX_POSITIONS_MIN = 1
 export const SIGNAL_MAX_POSITIONS_MAX = 350
 export const SIGNAL_POSITION_SELECTION_MODE = "best_first" as const
 
+/**
+ * Signal-only limits (operator, 2026-09-29). They do not touch Main, Preset,
+ * Direct Trade or the system-wide Previous-position contract.
+ *
+ * Per symbol: at most this many active Signal positions (Long + Short) may
+ * exist on one symbol. A value below 32 is raised to 32; the upper bound is the
+ * overall Signal limit.
+ */
+export const SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT = 32
+export const SIGNAL_MAX_POSITIONS_PER_SYMBOL_MIN = 32
+/**
+ * Minimum profit factor for Signals. A value below 1.2 is raised to 1.25; a
+ * value from 1.2 upward is kept. Applies to the Signal source validation and to
+ * the Signal exact-configuration gate.
+ */
+export const SIGNAL_MIN_PF_RAISE_BELOW = 1.2
+export const SIGNAL_MIN_PF_DEFAULT = 1.25
+export const SIGNAL_MIN_PF_MAX = 5
+
 export type SignalPositionDirection = "long" | "short"
 export type SignalPositionSelectionMode = typeof SIGNAL_POSITION_SELECTION_MODE
 
@@ -23,11 +42,15 @@ export interface SignalCandidateRank {
 
 export interface SignalPositionCapacity {
   allowed: boolean
-  reason: "available" | "total_limit" | "invalid_direction"
+  reason: "available" | "total_limit" | "symbol_limit" | "invalid_direction"
   total: number
   long: number
   short: number
   limit: number
+  /** Active Signal positions on the candidate's symbol (set when the symbol was checked). */
+  symbolTotal?: number
+  /** The per-symbol limit that applied. */
+  symbolLimit?: number
 }
 
 const TERMINAL_POSITION_STATUSES = new Set([
@@ -64,6 +87,27 @@ export function normalizeSignalMaxPositions(value: unknown): number {
     SIGNAL_MAX_POSITIONS_MAX,
     SIGNAL_MAX_POSITIONS_DEFAULT,
   ))
+}
+
+export function normalizeSignalMaxPositionsPerSymbol(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < SIGNAL_MAX_POSITIONS_PER_SYMBOL_MIN) {
+    return SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT
+  }
+  return Math.round(Math.min(SIGNAL_MAX_POSITIONS_MAX, parsed))
+}
+
+export function normalizeSignalMinProfitFactor(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < SIGNAL_MIN_PF_RAISE_BELOW) return SIGNAL_MIN_PF_DEFAULT
+  return Math.round(Math.min(SIGNAL_MIN_PF_MAX, parsed) * 100) / 100
+}
+
+/** Pure per-symbol admission decision: room for one more when the count is below the limit. */
+export function evaluateSignalSymbolCapacity(symbolCount: unknown, limit: unknown): { allowed: boolean; symbolTotal: number; symbolLimit: number } {
+  const symbolLimit = normalizeSignalMaxPositionsPerSymbol(limit)
+  const symbolTotal = Math.max(0, Math.floor(Number(symbolCount) || 0))
+  return { allowed: symbolTotal < symbolLimit, symbolTotal, symbolLimit }
 }
 
 export function normalizeSignalPositionSelectionMode(

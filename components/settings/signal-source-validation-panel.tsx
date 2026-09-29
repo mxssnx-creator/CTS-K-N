@@ -166,7 +166,7 @@ export function SignalSourceValidationPanel(props: {
           {([
             ["maxActiveSources", "Active sources (1–200)", 1, 200, 1],
             ["minSamples", "Min samples (≥12)", 12, 500, 1],
-            ["minProfitFactor", "Min PF after costs (>1)", 1, 5, 0.05],
+            ["minProfitFactor", "Min PF after costs (below 1.2 becomes 1.25)", 1.2, 5, 0.05],
             ["maxDrawdownPct", "Max drawdown % (≤3)", 0.1, 3, 0.1],
             ["maxLossStreak", "Max loss streak (≤5)", 1, 5, 1],
           ] as const).map(([key, label, min, max, step]) => (

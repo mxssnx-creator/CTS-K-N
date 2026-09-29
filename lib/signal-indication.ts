@@ -29,6 +29,10 @@ import {
   SIGNAL_POSITION_SELECTION_MODE,
   calculateSignalCandidateQuality,
   normalizeSignalMaxPositions,
+  normalizeSignalMaxPositionsPerSymbol,
+  normalizeSignalMinProfitFactor,
+  SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
+  SIGNAL_MIN_PF_DEFAULT,
   normalizeSignalPositionSelectionMode,
   signalCandidateRankKey,
   type SignalPositionSelectionMode,
@@ -58,7 +62,11 @@ export const SIGNAL_PERFORMANCE_LOOKBACK = 12
 export const SIGNAL_SOURCE_PERFORMANCE_LOOKBACK = 12
 export const SIGNAL_LANE_PERFORMANCE_LOOKBACK = 10
 export const SIGNAL_LIVE_DISABLE_LOOKBACK = 16
-export const SIGNAL_CONFIG_MINIMUM_PF_RATIO = PREVIOUS_POSITION_MIN_PF_RATIO
+// Signal's OWN exact-configuration minimum. It used to alias the system-wide
+// Previous-position contract (1.1), which Axis and Stage logic share and which
+// stays as it is; Signals now have their own operator setting whose default is
+// 1.25 (a value below 1.2 is raised to 1.25, see normalizeSignalMinProfitFactor).
+export const SIGNAL_CONFIG_MINIMUM_PF_RATIO = SIGNAL_MIN_PF_DEFAULT
 export const SIGNAL_REQUEST_INTERVAL_MIN_SECONDS = 30
 export const SIGNAL_REQUEST_INTERVAL_MAX_SECONDS = 3600
 
@@ -82,6 +90,8 @@ export interface SignalIndicationSettings {
   candleLimit: number
   maxSourcesPerCycle: number
   maxPositionsTotal: number
+  /** Most active Signal positions (Long + Short) on ONE symbol; below 32 is raised to 32. */
+  maxPositionsPerSymbol: number
   sourceBasePositionsLimit: number
   symbolsPerSourceLimit: number
   sourceSymbolOrder: "volatility_12h"
@@ -305,6 +315,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   candleLimit: 60,
   maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length,
   maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
+  maxPositionsPerSymbol: SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   sourceBasePositionsLimit: SIGNAL_MAX_POSITIONS_DEFAULT,
   symbolsPerSourceLimit: 10,
   sourceSymbolOrder: "volatility_12h",
@@ -516,6 +527,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     candleLimit: Math.round(boundedNumber(raw.candleLimit, 60, 20, 250)),
     maxSourcesPerCycle,
     maxPositionsTotal: normalizeSignalMaxPositions(raw.maxPositionsTotal),
+    maxPositionsPerSymbol: normalizeSignalMaxPositionsPerSymbol(raw.maxPositionsPerSymbol),
     sourceBasePositionsLimit: normalizeSignalMaxPositions(raw.sourceBasePositionsLimit ?? raw.maxPositionsTotal),
     symbolsPerSourceLimit: Math.round(boundedNumber(raw.symbolsPerSourceLimit, 10, 1, 100)),
     sourceSymbolOrder: "volatility_12h",
@@ -538,9 +550,11 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     performanceLookback,
     performanceMinSamples,
     performanceDisableBelowPnl: 0,
-    // This is a system-wide Previous-position contract, not a per-request
-    // tuning knob. Legacy payloads cannot weaken or raise the exact gate.
-    configMinimumPfRatio: SIGNAL_CONFIG_MINIMUM_PF_RATIO,
+    // Signal's own operator setting. It is decoupled from the system-wide
+    // Previous-position contract (PREVIOUS_POSITION_MIN_PF_RATIO, 1.1), which
+    // Axis and the Stage pipeline keep. A legacy or missing value (for example
+    // the old 0.3) below 1.2 becomes 1.25.
+    configMinimumPfRatio: normalizeSignalMinProfitFactor(raw.configMinimumPfRatio),
     performanceCooldownMinutes: Math.round(boundedNumber(raw.performanceCooldownMinutes, 60, 1, 24 * 60)),
     circuitFailureThreshold: Math.round(boundedNumber(raw.circuitFailureThreshold, 3, 1, 20)),
     circuitCooldownSeconds: Math.round(boundedNumber(raw.circuitCooldownSeconds, 120, 10, 3600)),
@@ -2439,6 +2453,7 @@ export async function processSignalIndications(
     candleLimit: settings.candleLimit,
     maxSourcesPerCycle: settings.maxSourcesPerCycle,
     maxPositionsTotal: settings.maxPositionsTotal,
+    maxPositionsPerSymbol: settings.maxPositionsPerSymbol,
     positionSelectionMode: settings.positionSelectionMode,
     requestIntervalSeconds: settings.requestIntervalSeconds,
     minimumSourceSignals: settings.minimumSourceSignals,
