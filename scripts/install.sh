@@ -2264,7 +2264,7 @@ verify_and_restart() {
     return 1
   fi
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
-    env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" \
+    env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" SCHEDULER_ONCE_RETRIES=3 \
     node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once \
     || return 1
   before_id="$(site_instance_id)" || return 1
@@ -2277,7 +2277,7 @@ verify_and_restart() {
   start_runtime || return 1
   wait_for_health 90 || return 1
   node "$PROJECT_ROOT/scripts/run-with-env.mjs" "$ENV_FILE" -- \
-    env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" \
+    env NODE_ENV=production SCHEDULER_BASE_URL="$base_url" SCHEDULER_ONCE_RETRIES=3 \
     node "$PROJECT_ROOT/scripts/run-minute-scheduler.mjs" --once \
     || return 1
   after_id="$(site_instance_id)" || return 1
