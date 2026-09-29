@@ -48,12 +48,35 @@ export function resolveSchedulerConfig(env = process.env, argv = process.argv.sl
   }
 
   const timeoutMs = Math.max(1_000, Math.min(59_000, Number(env.SCHEDULER_REQUEST_TIMEOUT_MS || 58_000)))
+  // --once is the installer's final check. The very first tick after a start
+  // can find the app still busy loading market data: on X01 the
+  // auto-start-healing-sweep hit its 20 s limit, server-continuity answered
+  // degraded, and one degraded tick failed an otherwise healthy install — which
+  // had already removed the previous build and left the service down for two
+  // days. A bounded retry lets that start-up transient pass; a real failure
+  // still fails after the last attempt. Default 0 keeps every other caller as is.
+  const onceRetries = Math.max(0, Math.min(5, Math.floor(Number(env.SCHEDULER_ONCE_RETRIES || 0)) || 0))
+  const onceRetryDelayMs = Math.max(0, Math.min(120_000, Number(env.SCHEDULER_ONCE_RETRY_DELAY_MS ?? 30_000) || 0))
   return {
     baseUrl: baseUrl.toString(),
     secret,
     timeoutMs,
     once: argv.includes("--once") || env.SCHEDULER_RUN_ONCE === "1",
+    onceRetries,
+    onceRetryDelayMs,
   }
+}
+
+/** Runs one tick and, while it is not ok and attempts remain, waits and runs it again. */
+export async function runTickWithRetry({ tick, retries = 0, delayMs = 0, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), onAttempt }) {
+  let summary = null
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    summary = await tick()
+    onAttempt?.(summary, attempt, retries + 1)
+    if (summary.ok || attempt > retries) break
+    await sleep(delayMs)
+  }
+  return summary
 }
 
 async function invokePath({ baseUrl, path, secret, timeoutMs, fetchImpl, signal }) {
@@ -166,7 +189,20 @@ export async function main() {
           durationMs: 0,
           results: [],
         }
-      : await runSchedulerTick({ ...config, signal: lifecycle.signal })
+      : config.once
+        ? await runTickWithRetry({
+            tick: () => runSchedulerTick({ ...config, signal: lifecycle.signal }),
+            retries: config.onceRetries,
+            delayMs: config.onceRetryDelayMs,
+            // Only the LAST attempt decides; earlier ones are logged so the
+            // transient stays visible in the install log.
+            onAttempt: (attemptSummary, attempt, attempts) => {
+              if (!attemptSummary.ok && attempt < attempts) {
+                console.log(JSON.stringify({ type: "minute_scheduler_tick_retry", attempt, attempts, ...attemptSummary }))
+              }
+            },
+          })
+        : await runSchedulerTick({ ...config, signal: lifecycle.signal })
     failed ||= !summary.ok
     console.log(JSON.stringify({ type: "minute_scheduler_tick", ...summary }))
     if (config.once || lifecycle.signal.aborted) break
