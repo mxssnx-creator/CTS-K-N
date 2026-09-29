@@ -388,6 +388,7 @@ unit	__tests__/unit/settings-continuity.test.ts
 unit	__tests__/unit/settings-hot-reload.test.ts
 unit	__tests__/unit/settings-propagation.test.ts
 unit	__tests__/unit/settled-rows-auto-close.test.ts
+unit	__tests__/unit/shared-slot-post-entry-audit.test.ts
 unit	__tests__/unit/short-range-grid.test.ts
 unit	__tests__/unit/shutdown-keeps-positions.test.ts
 unit	__tests__/unit/signal-analytics.test.ts

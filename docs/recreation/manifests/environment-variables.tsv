@@ -10,6 +10,7 @@ ALLOW_PROD_INLINE_REDIS	application-runtime	no	yes	9	.env.example,__tests__/unit
 ALLOW_PROD_SIMULATED	application-runtime	no	yes	10	.env.example,__tests__/integration/live-order-service.test.ts,__tests__/unit/exchange-connector-factory.test.ts,__tests__/unit/exchange-force-simulated.test.ts,__tests__/unit/requested-regressions.test.ts,app/api/trade-engine/quick-start/route.ts,lib/exchange-connectors/factory.ts,lib/exchange-connectors/index.ts,lib/live-order-service.ts,lib/market-data-loader.ts
 ALLOW_REAL_ORDER_TEST	test-or-operator-tool	no	no	2	__tests__/unit/requested-regressions.test.ts,scripts/test-quickstart-3symbols.js
 API_BASE	test-or-operator-tool	no	no	1	scripts/validate-comprehensive.mjs
+AUDIT_HOURS	test-or-operator-tool	no	no	1	scripts/audit-live-results.ts
 AWS_LAMBDA_FUNCTION_NAME	platform-provided	no	no	2	lib/deployment-runtime.ts,lib/redis-persistence.ts
 BACKUP_PATH	application-runtime	no	yes	2	.env.example,lib/auto-backup.ts
 BASE_POSITION_SYMBOL_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
