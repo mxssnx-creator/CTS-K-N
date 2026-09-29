@@ -11,4 +11,8 @@ describe("post-entry audit on a shared account", () => {
     expect(set).toContain('"owned_slot_aggregate_plan_invalid"')
     expect(set).toContain('"owned_slot_security_quantity_mismatch"')
   })
+  test("the control-scope transition and the row quantity mismatches settle like their siblings (X01, 2026-09-29 11:05-11:06 UTC)", () => {
+    const set = live.slice(live.indexOf("const POST_ENTRY_SETTLING_VIOLATIONS"), live.indexOf("function postEntryViolationsMaySettle"))
+    for (const code of ["owned_control_scope_transition_pending", "owned_row_stop_loss_quantity_mismatch", "owned_row_take_profit_quantity_mismatch"]) expect(set).toContain(`"${code}"`)
+  })
 })

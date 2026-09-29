@@ -1334,6 +1334,16 @@ const POST_ENTRY_SETTLING_VIOLATIONS: ReadonlySet<string> = new Set([
   // quantity — the fill not yet reflected — exactly the lag the schedule
   // exists for. It was final on the first read (X01: 4 of 9 rollbacks).
   "owned_slot_aggregate_plan_invalid",
+  // Seen on X01 at 11:05 and 11:06 UTC on 2026-09-29, in one rollback each, 8 s
+  // after the controls were placed, together with the codes above: the row's
+  // control scope is moving from per-row to the slot's aggregate controls (the
+  // step just before the audit is `aggregate_protection_member`) and the armed
+  // quantity of the row controls does not match until the aggregate is re-armed.
+  // They describe OUR just-placed state, so they settle like their siblings; a
+  // single code outside this set made the whole audit final on the first read.
+  "owned_control_scope_transition_pending",
+  "owned_row_stop_loss_quantity_mismatch",
+  "owned_row_take_profit_quantity_mismatch",
 ])
 function postEntryViolationsMaySettle(violations: readonly string[]): boolean {
   return violations.length > 0 && violations.every((v) => POST_ENTRY_SETTLING_VIOLATIONS.has(v))

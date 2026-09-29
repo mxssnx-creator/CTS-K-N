@@ -44,6 +44,9 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   slotHaltsWarn: 5,
   slotHaltsCrit: 15,
   cooldownBlocksWarn: 50,
+  // Eligible candidates but nothing opened for this long; dispatches blocked before the venue.
+  noOpeningWarnMin: 60,
+  blockedWarn: 100,
   // Funnel: consecutive runs with Main evaluating nothing.
   funnelStarvedRuns: 3,
   // Scheduler ticks (the installer's freshness limit is 90 s).
@@ -171,6 +174,26 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
       add(`dispatch_gate_${conn}`, "CRIT", message, g.candidates)
     } else if (g.freshSymbols > 0 && g.candidates > 0) {
       add(`dispatch_gate_${conn}`, "OK", `${conn}: ${g.eligible} of ${g.candidates} live candidates eligible, ${g.selected} selected`)
+    }
+  }
+
+  // ── openings: rows with executed quantity, counted in Redis ─────────
+  // The journal is not a reliable source for this: journald rate-limits the app
+  // (849 lines dropped in one hour on 2026-09-29) and "[LiveOrder] [POST]: 0"
+  // was reported while positions were being opened. Rows are the ground truth.
+  for (const conn of live) {
+    const o = snap.openings?.[conn]
+    const g = snap.gate?.[conn]
+    if (!o) continue
+    const top = Object.entries(g?.blockedReasons || {}).sort((a, b) => b[1] - a[1])[0]
+    const blockedTotal = Object.values(g?.blockedReasons || {}).reduce((a, b) => a + b, 0)
+    if (g && g.freshSymbols > 0 && g.eligible > 0 && (o.lastAgoMin === null || o.lastAgoMin >= t.noOpeningWarnMin)) {
+      add(`no_entries_${conn}`, "WARN", `${conn}: ${g.eligible} eligible live candidate(s) but no position opened for ${o.lastAgoMin === null ? "as long as recorded" : `${o.lastAgoMin} min`}${top ? ` — most frequent block: ${top[0]} (${top[1]}x)` : ""}`, o.lastAgoMin)
+    } else {
+      add(`openings_${conn}`, "OK", `${conn}: ${o.last60} position(s) opened in the last hour, last ${o.lastAgoMin === null ? "never" : `${o.lastAgoMin} min ago`}`)
+    }
+    if (blockedTotal >= t.blockedWarn && top) {
+      add(`dispatch_blocked_${conn}`, "INFO", `${conn}: ${blockedTotal} dispatches blocked before the venue, most frequent: ${top[0]} (${top[1]}x)`, blockedTotal)
     }
   }
 
@@ -358,6 +381,25 @@ function collectDispatchGate(now, liveConnections) {
   return gate
 }
 
+function collectOpenings(now, liveConnections) {
+  const openings = {}
+  for (const conn of liveConnections) {
+    const keys = lines(redis(["--scan", "--pattern", `live_positions:${conn}:*`]))
+    const out = batch(keys.map((k) => `HMGET ${k} createdAt executedQuantity system_tracking_id`))
+    let last60 = 0, last = 0
+    keys.forEach((k, i) => {
+      const [created, qty, tracking] = out.slice(i * 3, i * 3 + 3)
+      if (!(num(qty) > 0)) return
+      if (tracking && !tracking.startsWith(`sys-${conn}-`)) return
+      const at = num(created)
+      if (at > last) last = at
+      if (at >= now - 60 * 60000) last60++
+    })
+    openings[conn] = { last60, lastAgoMin: last > 0 ? Math.round((now - last) / 60000) : null }
+  }
+  return openings
+}
+
 function collectAudit(now) {
   const audit = {}
   for (const conn of CONNECTIONS) {
@@ -432,6 +474,7 @@ export function collectSnapshot() {
     slotHalts: holdData.slotHalts,
     connHaltTtl: holdData.connHaltTtl,
     funnel: safe("funnel", collectFunnel, {}),
+    openings: safe("openings", () => collectOpenings(now, Object.entries(connections).filter(([, c]) => c.live === "1").map(([id]) => id)), {}),
     gate: safe("gate", () => collectDispatchGate(now, Object.entries(connections).filter(([, c]) => c.live === "1").map(([id]) => id)), {}),
     results: safe("results", () => collectResults(now), {}),
     audit: safe("audit", () => collectAudit(now), {}),
@@ -458,6 +501,7 @@ function runOnce() {
       lastClosedAgoMin: Object.fromEntries(Object.entries(snapshot.results || {}).map(([c, r]) => [c, r.lastClosedAgoMin])),
       pf6h: Object.fromEntries(Object.entries(snapshot.results || {}).map(([c, r]) => [c, r.window6h?.pf ?? null])),
       slotHalts: snapshot.slotHalts, live: snapshot.expectedLive,
+      opened60: Object.fromEntries(Object.entries(snapshot.openings || {}).map(([c, o]) => [c, o.last60])),
       eligible: Object.fromEntries(Object.entries(snapshot.gate || {}).map(([c, g]) => [c, `${g.eligible}/${g.candidates}`])),
       // Most severe first: the report shows the first one.
       issues: verdict.checks.filter((c) => c.level !== "OK").sort((a, b) => rank(b.level) - rank(a.level)).map((c) => `${c.level} ${c.message}`).slice(0, 6),
@@ -477,11 +521,11 @@ function report(count) {
   const rows = lines(redis(["lrange", HISTORY_KEY, "0", String(Math.max(1, count) - 1)])).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
   if (rows.length === 0) { console.log("no monitor history yet"); return }
   const pad = (v, n) => String(v ?? "-").padEnd(n)
-  console.log(`${pad("time (UTC)", 20)}${pad("level", 6)}${pad("rss MB", 8)}${pad("orders ok/all", 14)}${pad("last close (min)", 20)}${pad("PF 6h", 22)}${pad("eligible/cand", 15)}most severe finding`)
+  console.log(`${pad("time (UTC)", 20)}${pad("level", 6)}${pad("rss MB", 8)}${pad("orders ok/all", 14)}${pad("last close (min)", 20)}${pad("PF 6h", 22)}${pad("eligible/cand", 15)}${pad("opened 60m", 12)}most severe finding`)
   for (const r of rows) {
     const closes = Object.entries(r.lastClosedAgoMin || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v ?? "-"}`).join(" ")
     const pf = Object.entries(r.pf6h || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v === null || v === undefined ? "-" : v.toFixed(2)}`).join(" ")
-    console.log(`${pad(r.at.slice(0, 19).replace("T", " "), 20)}${pad(r.level, 6)}${pad(r.rssMb, 8)}${pad(`${r.ok ?? "-"}/${r.attempts ?? "-"}`, 14)}${pad(closes, 20)}${pad(pf, 22)}${pad(Object.entries(r.eligible || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v}`).join(" ") || "-", 15)}${(r.issues || [])[0] || ""}`)
+    console.log(`${pad(r.at.slice(0, 19).replace("T", " "), 20)}${pad(r.level, 6)}${pad(r.rssMb, 8)}${pad(`${r.ok ?? "-"}/${r.attempts ?? "-"}`, 14)}${pad(closes, 20)}${pad(pf, 22)}${pad(Object.entries(r.eligible || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v}`).join(" ") || "-", 15)}${pad(Object.entries(r.opened60 || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v}`).join(" ") || "-", 12)}${(r.issues || [])[0] || ""}`)
   }
 }
 

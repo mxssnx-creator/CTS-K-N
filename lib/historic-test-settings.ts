@@ -199,6 +199,67 @@ export function historicTestSettingsToHashFields(settings: HistoricTestSettings)
   }
 }
 
+/**
+ * The Historic Test settings live under four nested names and a set of flat
+ * fields, and normalizeHistoricTestSettings takes the FIRST nested name that is
+ * present, in this order. A save that names another one — or only a flat field —
+ * loses against whatever older object is stored: on 2026-09-29 a PUT that turned
+ * the test off answered `success:true` and changed nothing, because the stored
+ * `historic_test_settings` (third) outranked the submitted `historicTestSettings`
+ * (fourth). A switch in the UI that picks the "wrong" name would be dead the same
+ * way, which is exactly a setting that "resets itself".
+ */
+export const HISTORIC_TEST_NESTED_ALIASES = ["historicTest", "historic_test", "historic_test_settings", "historicTestSettings"] as const
+
+const isFlatHistoricKey = (key: string): boolean =>
+  (key.startsWith("historicTest") || key.startsWith("historic_test_"))
+  && !(HISTORIC_TEST_NESTED_ALIASES as readonly string[]).includes(key)
+
+/**
+ * Makes the request the last word. `merged` is the stored settings with the
+ * request already merged in; `incoming` is the request alone. Fields the request
+ * does not name keep their stored values.
+ */
+export function applyIncomingHistoricPrecedence(
+  merged: Record<string, any>,
+  incoming: Record<string, any> | null | undefined,
+): void {
+  const request = incoming || {}
+  const incomingNested = HISTORIC_TEST_NESTED_ALIASES.filter((alias) => request[alias] !== undefined && request[alias] !== null)
+  const incomingFlat = Object.keys(request).filter(isFlatHistoricKey)
+  if (incomingNested.length === 0 && incomingFlat.length === 0) return
+
+  if (incomingNested.length > 0) {
+    // What is stored, without the aliases the request names, is the base the request refines.
+    const stored: Record<string, any> = { ...merged }
+    for (const alias of incomingNested) delete stored[alias]
+    const base = normalizeHistoricTestSettings(stored)
+    for (const alias of HISTORIC_TEST_NESTED_ALIASES) {
+      if (!incomingNested.includes(alias as any)) delete merged[alias]
+    }
+    for (const alias of incomingNested) {
+      const named = asRecord(merged[alias])
+      merged[alias] = {
+        ...base,
+        ...named,
+        strategies: { ...base.strategies, ...asRecord(named.strategies) },
+        symbols: { ...base.symbols, ...asRecord(named.symbols) },
+      }
+    }
+    return
+  }
+
+  // Flat fields only: a stored nested object would outrank them, so it goes, and
+  // the stored effective settings are carried over as flat fields first.
+  const stored: Record<string, any> = { ...merged }
+  for (const key of incomingFlat) delete stored[key]
+  const base = normalizeHistoricTestSettings(stored)
+  for (const alias of HISTORIC_TEST_NESTED_ALIASES) delete merged[alias]
+  Object.assign(merged, historicTestSettingsToHashFields(base))
+  delete merged.historic_test_settings // a nested alias again: only flat fields may remain
+  for (const key of incomingFlat) merged[key] = request[key]
+}
+
 /** Every field the settings-change detector must treat as a recoordination trigger. */
 export const HISTORIC_TEST_SETTINGS_CHANGE_FIELDS = Object.keys(
   historicTestSettingsToHashFields(DEFAULT_HISTORIC_TEST_SETTINGS),
