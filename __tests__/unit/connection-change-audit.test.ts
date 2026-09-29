@@ -25,3 +25,10 @@ describe("connection settings changes are audited with their writer", () => {
     expect(sh).toContain('local app_heap_cap_mb="${CTS_APP_HEAP_MB_MAX:-3072}"')
   })
 })
+
+describe("dashboard state switches are audited too", () => {
+  test("updateConnectionState records the change with its writer", () => {
+    const db = readFileSync(resolve(process.cwd(), "lib/redis-db.ts"), "utf8")
+    expect(db).toContain('recordConnectionChangeAudit(client, id, "updateConnectionState", diffAuditedConnectionFields(existing, connectionPatch))')
+  })
+})

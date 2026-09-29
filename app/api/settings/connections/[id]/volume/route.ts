@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getConnection, initRedis } from "@/lib/redis-db"
 import { SystemLogger } from "@/lib/system-logger"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
+import { runAsOperatorVolumeEdit } from "@/lib/connection-volume-guard"
 
 /**
  * Per-connection volume-factor overrides.
@@ -133,7 +134,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (patch.signal_volume_factor !== undefined) settingsPatch.volume_factor_signal = patch.signal_volume_factor
     if (patch.volume_step_ratio !== undefined) settingsPatch.volume_step_ratio = patch.volume_step_ratio
 
-    const { connection: effectiveConnection, completion: recoordination } = await applyMainConnectionSettingsChange(id, conn, {
+    // The operator moves the slider here: this endpoint alone may lower a channel
+    // factor to the minimum (see lib/connection-volume-guard.ts).
+    const { connection: effectiveConnection, completion: recoordination } = await runAsOperatorVolumeEdit(() => applyMainConnectionSettingsChange(id, conn, {
       connectionPatch: patch,
       settingsPatch,
       // These are concrete flat sizing fields, not a partial opaque
@@ -143,7 +146,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       changedFieldsOverride: Array.from(new Set([...Object.keys(patch), ...Object.keys(settingsPatch)])),
       settingsVersion,
       logTag: "POST /settings/volume",
-    })
+    }))
 
     await SystemLogger.logConnection(
       `Volume factors updated: ${Object.entries(patch).map(([k, v]) => `${k}=${v}`).join(", ")}`,
