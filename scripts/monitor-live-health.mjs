@@ -148,6 +148,32 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
     }
   }
 
+  // ── dispatch gate: qualifying sets that may not be dispatched ───────
+  // X01 sat without an entry order for hours while the funnel produced
+  // thousands of live-ready sets: the Historic Test admitted nothing, and the
+  // dispatch detail labelled that "execution_family_disabled". This check reads
+  // the numbers, not the label.
+  for (const conn of live) {
+    const g = snap.gate?.[conn]
+    if (!g) continue
+    const wasOn = before?.gate?.[conn]?.historic?.enabled
+    if (wasOn !== undefined && g.historic && wasOn !== g.historic.enabled) {
+      add(`historic_toggle_${conn}`, "WARN", `${conn}: Historic Test switched ${wasOn ? "on" : "off"} -> ${g.historic.enabled ? "on" : "off"}`)
+    }
+    if (g.freshSymbols > 0 && g.candidates > 0 && g.eligible === 0) {
+      const top = Object.entries(g.suppressedReasons || {}).sort((a, b) => b[1] - a[1])[0]
+      let message = `${conn}: ${g.candidates} live candidate(s) in ${g.freshSymbols} symbol(s), none eligible for dispatch`
+      const h = g.historic
+      if (h?.enabled) {
+        const families = Object.entries(h.families || {}).map(([f, n]) => `${f}:${n}`).join(" ") || "none"
+        message += ` — Historic Test is ON with ${h.validated} validated combination(s) (${families}); it validated indications [${(h.indications || []).join(", ")}]`
+      } else if (top) message += ` (${top[0]})`
+      add(`dispatch_gate_${conn}`, "CRIT", message, g.candidates)
+    } else if (g.freshSymbols > 0 && g.candidates > 0) {
+      add(`dispatch_gate_${conn}`, "OK", `${conn}: ${g.eligible} of ${g.candidates} live candidates eligible, ${g.selected} selected`)
+    }
+  }
+
   // ── live results ────────────────────────────────────────────────────
   for (const [conn, r] of Object.entries(snap.results || {})) {
     if (!live.includes(conn)) continue
@@ -290,6 +316,48 @@ function collectResults(now) {
   return results
 }
 
+function collectDispatchGate(now, liveConnections) {
+  const gate = {}
+  for (const conn of liveConnections) {
+    const flat = lines(redis(["hgetall", `strategy_detail:${conn}:live`]))
+    const bySymbol = {}
+    for (let i = 0; i + 1 < flat.length; i += 2) {
+      const m = /^s:([A-Z0-9]+):(.+)$/.exec(flat[i])
+      if (m) (bySymbol[m[1]] ||= {})[m[2]] = flat[i + 1]
+    }
+    const g = { freshSymbols: 0, candidates: 0, eligible: 0, selected: 0, suppressed: 0, suppressedHistoric: 0, suppressedReasons: {}, blockedReasons: {} }
+    for (const d of Object.values(bySymbol)) {
+      if (num(d.dispatch_completed_at) < now - WINDOW_MIN * 60000) continue
+      g.freshSymbols++
+      g.candidates += num(d.dispatch_candidates)
+      g.eligible += num(d.dispatch_eligible_count)
+      g.selected += num(d.dispatch_selected_count)
+      g.suppressed += num(d.dispatch_suppressed_count)
+      g.suppressedHistoric += num(d.dispatch_suppressed_historic_count)
+      for (const [field, target] of [["dispatch_suppressed", g.suppressedReasons], ["dispatch_blocked_reasons", g.blockedReasons]]) {
+        try {
+          for (const row of JSON.parse(d[field] || "[]")) {
+            const reason = String(row.reason || "?").replace(/\b[A-Z0-9]{3,12}USDT\b/g, "SYM").replace(/[0-9]+(\.[0-9]+)? USD/g, "N USD")
+            target[reason] = (target[reason] || 0) + num(row.count)
+          }
+        } catch { /* not JSON */ }
+      }
+    }
+    let historic = null
+    try {
+      const settings = JSON.parse(redis(["hget", `connection_settings:${conn}`, "historicTestSettings"]).trim() || "null")
+      const validated = JSON.parse(redis(["get", `historic_test:validated:${conn}`]).trim() || "null")
+      const rows = Array.isArray(validated?.combinations) ? validated.combinations : []
+      const families = {}, indications = new Set()
+      for (const r of rows) { families[r.family] = (families[r.family] || 0) + 1; if (r.indication) indications.add(r.indication) }
+      historic = { enabled: settings?.enabled === true, validated: rows.length, families, indications: [...indications], ranAt: validated?.ranAt ?? null }
+    } catch { historic = null }
+    g.historic = historic
+    gate[conn] = g
+  }
+  return gate
+}
+
 function collectAudit(now) {
   const audit = {}
   for (const conn of CONNECTIONS) {
@@ -364,6 +432,7 @@ export function collectSnapshot() {
     slotHalts: holdData.slotHalts,
     connHaltTtl: holdData.connHaltTtl,
     funnel: safe("funnel", collectFunnel, {}),
+    gate: safe("gate", () => collectDispatchGate(now, Object.entries(connections).filter(([, c]) => c.live === "1").map(([id]) => id)), {}),
     results: safe("results", () => collectResults(now), {}),
     audit: safe("audit", () => collectAudit(now), {}),
     entries: safe("entries", collectEntries),
@@ -389,6 +458,7 @@ function runOnce() {
       lastClosedAgoMin: Object.fromEntries(Object.entries(snapshot.results || {}).map(([c, r]) => [c, r.lastClosedAgoMin])),
       pf6h: Object.fromEntries(Object.entries(snapshot.results || {}).map(([c, r]) => [c, r.window6h?.pf ?? null])),
       slotHalts: snapshot.slotHalts, live: snapshot.expectedLive,
+      eligible: Object.fromEntries(Object.entries(snapshot.gate || {}).map(([c, g]) => [c, `${g.eligible}/${g.candidates}`])),
       // Most severe first: the report shows the first one.
       issues: verdict.checks.filter((c) => c.level !== "OK").sort((a, b) => rank(b.level) - rank(a.level)).map((c) => `${c.level} ${c.message}`).slice(0, 6),
     }
@@ -407,11 +477,11 @@ function report(count) {
   const rows = lines(redis(["lrange", HISTORY_KEY, "0", String(Math.max(1, count) - 1)])).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
   if (rows.length === 0) { console.log("no monitor history yet"); return }
   const pad = (v, n) => String(v ?? "-").padEnd(n)
-  console.log(`${pad("time (UTC)", 20)}${pad("level", 6)}${pad("rss MB", 8)}${pad("orders ok/all", 14)}${pad("last close (min)", 20)}${pad("PF 6h", 22)}most severe finding`)
+  console.log(`${pad("time (UTC)", 20)}${pad("level", 6)}${pad("rss MB", 8)}${pad("orders ok/all", 14)}${pad("last close (min)", 20)}${pad("PF 6h", 22)}${pad("eligible/cand", 15)}most severe finding`)
   for (const r of rows) {
     const closes = Object.entries(r.lastClosedAgoMin || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v ?? "-"}`).join(" ")
     const pf = Object.entries(r.pf6h || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v === null || v === undefined ? "-" : v.toFixed(2)}`).join(" ")
-    console.log(`${pad(r.at.slice(0, 19).replace("T", " "), 20)}${pad(r.level, 6)}${pad(r.rssMb, 8)}${pad(`${r.ok ?? "-"}/${r.attempts ?? "-"}`, 14)}${pad(closes, 20)}${pad(pf, 22)}${(r.issues || [])[0] || ""}`)
+    console.log(`${pad(r.at.slice(0, 19).replace("T", " "), 20)}${pad(r.level, 6)}${pad(r.rssMb, 8)}${pad(`${r.ok ?? "-"}/${r.attempts ?? "-"}`, 14)}${pad(closes, 20)}${pad(pf, 22)}${pad(Object.entries(r.eligible || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v}`).join(" ") || "-", 15)}${(r.issues || [])[0] || ""}`)
   }
 }
 
