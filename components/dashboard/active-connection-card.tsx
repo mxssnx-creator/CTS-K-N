@@ -463,8 +463,12 @@ export function ActiveConnectionCard({
   } | null>(null)
   const [signalOverview, setSignalOverview] = useState<{
     openPositions: number
+    openLong: number
+    openShort: number
+    openOrders: number
     closedPositions: number
     maxPositionsTotal: number
+    maxOrders: number
     standardClosedPositions: number
     trailingClosedPositions: number
     positions12: {
@@ -1314,8 +1318,12 @@ export function ActiveConnectionCard({
           const positions12 = signalData.signal.windows?.positions12 || {}
           setSignalOverview({
             openPositions: nonNegativeMetric(signalData.signal.counts?.openPositions),
+            openLong: nonNegativeMetric(signalData.signal.counts?.openLong),
+            openShort: nonNegativeMetric(signalData.signal.counts?.openShort),
+            openOrders: nonNegativeMetric(signalData.signal.counts?.openOrders),
             closedPositions: nonNegativeMetric(signalData.signal.counts?.closedPositions),
             maxPositionsTotal: nonNegativeMetric(signalData.signal.settings?.maxPositionsTotal),
+            maxOrders: nonNegativeMetric(signalData.signal.settings?.maxOrders),
             standardClosedPositions: nonNegativeMetric(
               signalData.signal.counts?.standardClosedPositions,
             ),
@@ -2160,11 +2168,16 @@ export function ActiveConnectionCard({
           tone: "text-cyan-700 dark:text-cyan-400",
         },
         {
-          label: "Signal open",
+          label: "Signal positions/orders",
           value:
             `${signalOverview?.openPositions ?? 0}` +
-            `/${signalOverview?.maxPositionsTotal || 350}`,
-          title: "Open physical Signal positions across Long + Short.",
+            `/${signalOverview?.maxPositionsTotal || 100}` +
+            ` · ${signalOverview?.openOrders ?? 0}` +
+            `/${(signalOverview?.maxOrders ?? 0) > 0 ? signalOverview?.maxOrders : "∞"}`,
+          title:
+            `Open Signal positions (Long ${signalOverview?.openLong ?? 0}, Short ${signalOverview?.openShort ?? 0}, ` +
+            "each symbol × direction counted independently) / limit · orders of those positions " +
+            "including partial fills / limit (∞ = unlimited).",
           tone: "text-cyan-700 dark:text-cyan-400",
         },
         {

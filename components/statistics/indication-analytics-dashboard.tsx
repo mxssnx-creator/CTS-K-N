@@ -566,7 +566,11 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main"
               ],
               ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "35 crypto feeds + 1 InstaForex Charts feed; only compatible sources run"],
               ["Source quorum", `${payload.signal.settings.minimumSourceSignals} crypto · ${payload.signal.settings.minimumSourceSignalsForex ?? 1} Forex`, "Independent quorum by asset class"],
-              ["Position capacity", `${payload.signal.settings.maxPositionsTotal} total · ${payload.signal.settings.maxPositionsPerSymbol ?? 32} per symbol`, "Long + Short physical Signal positions"],
+              [
+                "Positions / Orders",
+                `${payload.signal.counts?.openPositions ?? 0}/${payload.signal.settings.maxPositionsTotal} · ${payload.signal.counts?.openOrders ?? 0}/${Number(payload.signal.settings.maxOrders) > 0 ? payload.signal.settings.maxOrders : "∞"}`,
+                `Long ${payload.signal.counts?.openLong ?? 0} · Short ${payload.signal.counts?.openShort ?? 0} counted independently, ${payload.signal.settings.maxPositionsPerSymbol ?? 32} per symbol; orders include partial fills`,
+              ],
               ["Selection", "Best first", "Quality · confidence · agreement · R/R"],
               ["Trailing mode", payload.signal.settings.trailingEnabled ? "Enabled" : "Disabled", payload.signal.settings.trailingOnly ? "Trailing only" : "Parallel standard + trailing"],
               ["Trailing stop", `${payload.signal.settings.trailingMinStopPct}% min`, `Market ratio ${payload.signal.settings.trailingPositiveMoveRatio}`],

@@ -147,6 +147,8 @@ import {
 import {
   evaluateSignalPositionCapacity,
   isActiveSignalPosition,
+  countSignalPositionOrders,
+  evaluateSignalOrderCapacity,
   evaluateSignalSymbolCapacity,
   normalizeSignalMaxPositions,
   SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
@@ -3483,12 +3485,32 @@ async function persistSignalCapacitySnapshot(
  * The lease expires automatically after a crash; later terminal writes remove
  * the reservation through savePosition's normal open→closed transition.
  */
+// Orders of the active Signal positions (partial fills included), for a FINITE
+// order limit only — the default is unlimited and never reaches this. Read from
+// the rows behind the admission index, cached briefly so a burst of candidates
+// does not re-read them for each one.
+const SIGNAL_ORDER_COUNT_TTL_MS = 10_000
+const signalOrderCountCache = new Map<string, { at: number; orders: number }>()
+async function countActiveSignalOrders(client: any, connectionId: string): Promise<number> {
+  const cached = signalOrderCountCache.get(connectionId)
+  if (cached && Date.now() - cached.at < SIGNAL_ORDER_COUNT_TTL_MS) return cached.orders
+  const ids = (await scanRedisSetMembers(client, signalPositionAdmissionIndexKey(connectionId), { count: 250 }).catch(() => [])).map(String)
+  let orders = 0
+  for (const id of ids) {
+    const row = await readLivePositionSnapshot(client, connectionId, id).catch(() => null)
+    orders += countSignalPositionOrders(row as unknown as Record<string, any>)
+  }
+  signalOrderCountCache.set(connectionId, { at: Date.now(), orders })
+  return orders
+}
+
 async function reserveSignalPositionCapacity(
   connectionId: string,
   candidate: LivePosition,
   configuredLimit: number,
   selectionMode: string,
   maxPositionsPerSymbol: number = SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
+  maxOrders: number = 0,
 ): Promise<SignalCapacityReservation> {
   const client = getRedisClient()
   const candidateDirection = candidate.direction
@@ -3596,6 +3618,26 @@ async function reserveSignalPositionCapacity(
       }
       await persistSignalCapacitySnapshot(client, connectionId, limited, selectionMode, "limit")
       return { state: "limit", capacity: limited }
+    }
+
+    // Orders limit (Signal setting, 0 = unlimited): only a finite limit is
+    // checked. Every order of the active Signal positions counts, partial
+    // fills included.
+    if (maxOrders > 0) {
+      const orderCapacity = evaluateSignalOrderCapacity(await countActiveSignalOrders(client, connectionId), maxOrders)
+      if (!orderCapacity.allowed) {
+        const limited: SignalPositionCapacity = {
+          ...capacity,
+          allowed: false,
+          reason: "order_limit",
+          symbolTotal: symbolCapacity.symbolTotal,
+          symbolLimit: symbolCapacity.symbolLimit,
+          orders: orderCapacity.orders,
+          ordersLimit: orderCapacity.ordersLimit,
+        }
+        await persistSignalCapacitySnapshot(client, connectionId, limited, selectionMode, "limit")
+        return { state: "limit", capacity: limited }
+      }
     }
 
     // Write the compact membership first. If this process crashes before the
@@ -14199,6 +14241,7 @@ export async function executeLivePosition(
         signalSettings.maxPositionsTotal,
         signalSettings.positionSelectionMode,
         signalSettings.maxPositionsPerSymbol,
+        signalSettings.maxOrders,
       )
 
       if (admission.state === "existing") {
@@ -14214,7 +14257,9 @@ export async function executeLivePosition(
 
       if (admission.state === "limit" || admission.state === "busy") {
         livePosition.status = "rejected"
-        livePosition.statusReason = admission.state === "limit" && admission.capacity.reason === "symbol_limit"
+        livePosition.statusReason = admission.state === "limit" && admission.capacity.reason === "order_limit"
+          ? `Signal order capacity reached (${admission.capacity.orders}/${admission.capacity.ordersLimit} orders incl. partial fills); further entries deferred`
+          : admission.state === "limit" && admission.capacity.reason === "symbol_limit"
           ? `Signal per-symbol capacity reached (${admission.capacity.symbolTotal}/${admission.capacity.symbolLimit} on ${realPosition.symbol}, Long + Short); further entries on this symbol deferred`
           : admission.state === "limit"
           ? `Signal position capacity reached (${admission.capacity.total}/${admission.capacity.limit} Long + Short); lower-ranked candidate deferred`

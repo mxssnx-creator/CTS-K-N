@@ -814,7 +814,7 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(settings.performanceDisableBelowPnl).toBe(0)
   })
 
-  test("defaults all 45 registry sources, physical capacity 350 and best-first admission", () => {
+  test("defaults all 45 registry sources, 100 positions, unlimited orders and best-first admission", () => {
     const defaults = normalizeSignalIndicationSettings({})
     const clamped = normalizeSignalIndicationSettings({
       maxPositionsTotal: 9_999,
@@ -822,7 +822,8 @@ describe("Signal indication persistence and independent performance gates", () =
     })
     expect(defaults.maxSourcesPerCycle).toBe(45)
     expect(defaults.sourceValidation.maxActiveSources).toBe(50)
-    expect(defaults.maxPositionsTotal).toBe(350)
+    expect(defaults.maxPositionsTotal).toBe(100)
+    expect(defaults.maxOrders).toBe(0)
     expect(defaults.positionSelectionMode).toBe("best_first")
     expect(clamped.maxPositionsTotal).toBe(350)
     expect(clamped.positionSelectionMode).toBe("best_first")

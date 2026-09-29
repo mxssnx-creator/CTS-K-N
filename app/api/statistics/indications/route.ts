@@ -1,3 +1,4 @@
+import { countSignalPositionOrders, summarizeSignalCounts } from "@/lib/signal-position-policy"
 import { NextResponse } from "next/server"
 import {
   buildSignalAnalyticsWindows,
@@ -227,6 +228,7 @@ export async function GET(request: Request) {
         symbol: normalizeSymbol(position?.symbol),
         direction: positionDirection(position),
         sourceIds: signalSourceIds(position),
+        orders: countSignalPositionOrders(position),
         executionLane:
           String(position?.executionLane ?? position?.execution_lane ?? "") === "signal_trailing"
             ? "signal_trailing"
@@ -242,6 +244,14 @@ export async function GET(request: Request) {
       (!requestedGroup || row.trade.sourceIds.includes(requestedGroup))
     ))
     const signalTrades = signalRows.map((row) => row.trade)
+    // Positions and orders are separate figures. Long and Short (and every
+    // symbol) are counted independently; orders include partial fills.
+    const signalOpenSummary = summarizeSignalCounts(openRows.filter((row) =>
+      (row.type === "signal" || row.sourceIds.length > 0) &&
+      (!requestedDirection || row.direction === requestedDirection) &&
+      (!requestedSymbol || row.symbol.includes(requestedSymbol)) &&
+      (!requestedGroup || row.sourceIds.includes(requestedGroup)),
+    ))
     const nonSignalRowsUnfiltered = allClosed.filter((row) =>
       row.type !== "signal" && row.trade.sourceIds.length === 0,
     )
@@ -411,6 +421,11 @@ export async function GET(request: Request) {
             (!requestedSymbol || row.symbol.includes(requestedSymbol)) &&
             (!requestedGroup || row.sourceIds.includes(requestedGroup)),
           ).length,
+          openLong: signalOpenSummary.long,
+          openShort: signalOpenSummary.short,
+          openSymbols: signalOpenSummary.symbols,
+          openOrders: signalOpenSummary.orders,
+          openBySymbol: signalOpenSummary.bySymbol,
           standardClosedPositions: signalTrades.filter((trade) => trade.executionLane === "default").length,
           trailingClosedPositions: signalTrades.filter((trade) => trade.executionLane === "signal_trailing").length,
           attributedSourceLegs: signalSources.reduce((sum, source) => sum + source.closedPositions, 0),
@@ -422,6 +437,7 @@ export async function GET(request: Request) {
           maxSourcesPerCycle: signalSettings.maxSourcesPerCycle,
           maxPositionsTotal: signalSettings.maxPositionsTotal,
           maxPositionsPerSymbol: signalSettings.maxPositionsPerSymbol,
+          maxOrders: signalSettings.maxOrders,
           configMinimumPfRatio: signalSettings.configMinimumPfRatio,
           sourcePerformanceLookback: 12,
           lanePerformanceLookback: 10,

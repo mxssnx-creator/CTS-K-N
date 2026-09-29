@@ -9,7 +9,7 @@ import {
 
 describe("Signal position capacity and best-first policy", () => {
   test("normalizes the total Long + Short capacity independently from sources and symbols", () => {
-    expect(normalizeSignalMaxPositions(undefined)).toBe(350)
+    expect(normalizeSignalMaxPositions(undefined)).toBe(100)
     expect(normalizeSignalMaxPositions(0)).toBe(1)
     expect(normalizeSignalMaxPositions(350)).toBe(350)
     expect(normalizeSignalMaxPositions(50_000)).toBe(350)
