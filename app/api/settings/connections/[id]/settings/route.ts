@@ -1270,7 +1270,18 @@ export async function PATCH(
       flatKnobs.dcaMaxPositionVolumeRatio = String(dca.maxPositionVolumeRatio)
     }
 
+    // The channel factor an operator set (X01: live_volume_factor 10) must
+    // survive a save from the connection dialog. That dialog loads
+    // baseVolumeFactor* from the settings hash — where the channel factors do
+    // not live — normalises the missing value to the 0.1 minimum and sends it
+    // back; falling through to it here rewrote live_volume_factor to 0.1 on
+    // every save. Precedence is therefore: a channel factor named in THIS
+    // request, then the connection's current value, and the dialog's base
+    // alias only when neither exists.
+    const requestedLive = settings.volume_factor_live ?? settings.live_volume_factor
     const vfl = Number(
+      requestedLive ??
+      connection.live_volume_factor ??
       merged.volume_factor_live ??
       merged.live_volume_factor ??
       merged.baseVolumeFactorLive,
@@ -1280,7 +1291,10 @@ export async function PATCH(
       flatKnobs.live_volume_factor = flatKnobs.volume_factor_live
       connectionPatch.live_volume_factor = flatKnobs.volume_factor_live
     }
+    const requestedPreset = settings.volume_factor_preset ?? settings.preset_volume_factor
     const vfp = Number(
+      requestedPreset ??
+      connection.preset_volume_factor ??
       merged.volume_factor_preset ??
       merged.preset_volume_factor ??
       merged.baseVolumeFactorPreset,
@@ -1290,7 +1304,10 @@ export async function PATCH(
       flatKnobs.preset_volume_factor = flatKnobs.volume_factor_preset
       connectionPatch.preset_volume_factor = flatKnobs.volume_factor_preset
     }
+    const requestedSignal = settings.volume_factor_signal ?? settings.signal_volume_factor
     const vfs = Number(
+      requestedSignal ??
+      connection.signal_volume_factor ??
       merged.volume_factor_signal ??
       merged.signal_volume_factor ??
       merged.baseVolumeFactorSignal,
