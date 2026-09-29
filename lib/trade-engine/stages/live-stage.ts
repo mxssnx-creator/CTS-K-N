@@ -1330,6 +1330,10 @@ const POST_ENTRY_SETTLING_VIOLATIONS: ReadonlySet<string> = new Set([
   "owned_slot_security_stop_not_authoritatively_open",
   "owned_slot_security_owner_count_mismatch",
   "candidate_slot_open_controls_present",
+  // The plan is invalid while the venue shows LESS than our just-filled
+  // quantity — the fill not yet reflected — exactly the lag the schedule
+  // exists for. It was final on the first read (X01: 4 of 9 rollbacks).
+  "owned_slot_aggregate_plan_invalid",
 ])
 function postEntryViolationsMaySettle(violations: readonly string[]): boolean {
   return violations.length > 0 && violations.every((v) => POST_ENTRY_SETTLING_VIOLATIONS.has(v))
@@ -12606,8 +12610,14 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
         }
       }
     }
+    // Control orders of ANOTHER system on this slot are that system's business
+    // (operator, 2026-09-29: only system-own orders count; others are ignored
+    // and never touched). They used to be a violation and rolled back a
+    // correctly protected own entry on every shared slot (X01: 4 of 9
+    // rollbacks in 12 h, each holding the slot for a day). Noted, not held
+    // against the slot.
     if (slotAudit.externalOrUnknownSlotControlOrdersPreserved > 0) {
-      violations.push("owned_slot_external_controls_present")
+      orphanDetails.push(`external_controls_preserved=${slotAudit.externalOrUnknownSlotControlOrdersPreserved}`)
     }
     const slotDelta = violations.length - violationsBeforeSlot
     if (slotDelta > 0) {
