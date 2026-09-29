@@ -24,6 +24,14 @@ const SETTLE_BUDGET_MS = 18_000
 const SWEEP_BUDGET_MS = 28_000
 const VENUE_CALL_TIMEOUT_MS = 6_000
 
+// Without a connectionId the run covers the LIVE connection first. It used to default
+// to bingx-x02 alone, which is not live: X01's closed rows never got their accounting
+// (INITUSDT and SOONUSDT closed on 2026-09-29 with no realizedPnL, so the profit factor
+// and the overviews, which count settled rows only, left them out), while every minute
+// X02's thousands of rows used the whole 18 s settle budget. The budgets below count from
+// the start of the WHOLE run, so a second connection cannot lengthen the tick.
+const DEFAULT_CONNECTIONS = ["bingx-x01", "bingx-x02"] as const
+
 /** Settle closed rows whose accounting was left unresolved, from their own closing order. */
 export async function GET(request: Request) {
   const auth = authorizeCronRequest(request)
@@ -31,10 +39,18 @@ export async function GET(request: Request) {
   await initRedis()
   const client: any = getRedisClient()
   const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
-  const connectionId = new URL(request.url).searchParams.get("connectionId") || "bingx-x02"
-  const connector: any = await exchangeConnectorFactory.getOrCreateConnector(connectionId).catch(() => null)
-  if (!connector?.getOrderSettlement) return NextResponse.json({ ok: false, error: "no settling connector" }, { status: 503 })
+  const requested = new URL(request.url).searchParams.get("connectionId")
+  const connectionIds: readonly string[] = requested ? [requested] : DEFAULT_CONNECTIONS
   const started = Date.now()
+  const results: Array<Record<string, any>> = []
+  for (const connectionId of connectionIds) results.push(await settleConnection(client, exchangeConnectorFactory, connectionId, started))
+  if (results.length === 1) return NextResponse.json(results[0], { status: results[0].error ? 503 : 200 })
+  return NextResponse.json({ ok: results.every((r) => r.ok !== false), connections: results })
+}
+
+async function settleConnection(client: any, exchangeConnectorFactory: any, connectionId: string, started: number): Promise<Record<string, any>> {
+  const connector: any = await exchangeConnectorFactory.getOrCreateConnector(connectionId).catch(() => null)
+  if (!connector?.getOrderSettlement) return { ok: false, connectionId, error: "no settling connector" }
   let scanned = 0, attempted = 0, settled = 0, skipped = 0
   const allKeys: string[] = ((await client.keys(`live_positions:${connectionId}:*`).catch(() => [])) as string[]).slice().sort()
   // Resume where the previous run stopped. Every run used to start at the
@@ -147,6 +163,6 @@ export async function GET(request: Request) {
   }
   const nextCursor = allKeys.length > 0 ? (startAt + visited) % allKeys.length : 0
   await client.set(cursorKey, String(nextCursor)).catch(() => undefined)
-  return NextResponse.json({ ok: true, connectionId, scanned, attempted, settled, skipped, cursor: { from: startAt, next: nextCursor, total: allKeys.length }, orphanMirrorsRemoved, durationMs: Date.now() - started })
+  return { ok: true, connectionId, scanned, attempted, settled, skipped, cursor: { from: startAt, next: nextCursor, total: allKeys.length }, orphanMirrorsRemoved, durationMs: Date.now() - started }
 }
 export const POST = GET

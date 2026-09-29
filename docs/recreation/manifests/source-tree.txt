@@ -109,6 +109,7 @@ __tests__/unit/cache-margin-leverage-setup.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
 __tests__/unit/clear-progressions-recovery.test.ts
 __tests__/unit/close-accounting-backfill.test.ts
+__tests__/unit/close-accounting-connections.test.ts
 __tests__/unit/close-adopted-positions.test.ts
 __tests__/unit/closeable-row-statuses.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
