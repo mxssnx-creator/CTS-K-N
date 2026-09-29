@@ -30,10 +30,9 @@ import {
   calculateSignalCandidateQuality,
   normalizeSignalMaxPositions,
   normalizeSignalMaxOrders,
-  normalizeSignalMaxPositionsPerSymbol,
+  normalizeSignalMaxOrdersPerSymbol,
   normalizeSignalMinProfitFactor,
   SIGNAL_MAX_ORDERS_DEFAULT,
-  SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   SIGNAL_MIN_PF_DEFAULT,
   normalizeSignalPositionSelectionMode,
   signalCandidateRankKey,
@@ -92,10 +91,13 @@ export interface SignalIndicationSettings {
   candleLimit: number
   maxSourcesPerCycle: number
   maxPositionsTotal: number
-  /** Most active Signal positions (Long + Short) on ONE symbol; below 32 is raised to 32. */
-  maxPositionsPerSymbol: number
-  /** Most orders of the active Signal positions, partial fills included; 0 = unlimited (default). */
+  /**
+   * Most orders of the active Signal positions, partial fills included, every
+   * internal position row counting as an order; 0 = unlimited (default).
+   */
   maxOrders: number
+  /** Optional cap on the orders of ONE symbol; 0 = unlimited (default), a finite value below 32 becomes 32. */
+  maxOrdersPerSymbol: number
   sourceBasePositionsLimit: number
   symbolsPerSourceLimit: number
   sourceSymbolOrder: "volatility_12h"
@@ -319,8 +321,8 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   candleLimit: 60,
   maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length,
   maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
-  maxPositionsPerSymbol: SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   maxOrders: SIGNAL_MAX_ORDERS_DEFAULT,
+  maxOrdersPerSymbol: SIGNAL_MAX_ORDERS_DEFAULT,
   sourceBasePositionsLimit: SIGNAL_MAX_POSITIONS_DEFAULT,
   symbolsPerSourceLimit: 10,
   sourceSymbolOrder: "volatility_12h",
@@ -532,8 +534,10 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     candleLimit: Math.round(boundedNumber(raw.candleLimit, 60, 20, 250)),
     maxSourcesPerCycle,
     maxPositionsTotal: normalizeSignalMaxPositions(raw.maxPositionsTotal),
-    maxPositionsPerSymbol: normalizeSignalMaxPositionsPerSymbol(raw.maxPositionsPerSymbol),
     maxOrders: normalizeSignalMaxOrders(raw.maxOrders),
+    // The former maxPositionsPerSymbol counted internal rows, which are orders;
+    // it is not carried over (a stored value is simply ignored).
+    maxOrdersPerSymbol: normalizeSignalMaxOrdersPerSymbol(raw.maxOrdersPerSymbol),
     sourceBasePositionsLimit: normalizeSignalMaxPositions(raw.sourceBasePositionsLimit ?? raw.maxPositionsTotal),
     symbolsPerSourceLimit: Math.round(boundedNumber(raw.symbolsPerSourceLimit, 10, 1, 100)),
     sourceSymbolOrder: "volatility_12h",
@@ -2459,7 +2463,8 @@ export async function processSignalIndications(
     candleLimit: settings.candleLimit,
     maxSourcesPerCycle: settings.maxSourcesPerCycle,
     maxPositionsTotal: settings.maxPositionsTotal,
-    maxPositionsPerSymbol: settings.maxPositionsPerSymbol,
+    maxOrders: settings.maxOrders,
+    maxOrdersPerSymbol: settings.maxOrdersPerSymbol,
     positionSelectionMode: settings.positionSelectionMode,
     requestIntervalSeconds: settings.requestIntervalSeconds,
     minimumSourceSignals: settings.minimumSourceSignals,

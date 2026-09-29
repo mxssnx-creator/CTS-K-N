@@ -2518,7 +2518,7 @@ describe("requested regression guardrails", () => {
     expect(signal).toContain("maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length")
     expect(signal).toContain("return { allowed: true, sourceAllowed: true, laneAllowed: true }")
     expect(policy).toContain("SIGNAL_MAX_POSITIONS_DEFAULT = 100")
-    expect(settings).toContain("Max positions (Long and Short each counted; default 100)")
+    expect(settings).toContain("Max positions (one per symbol + direction; default 100)")
     expect(settings).toContain("Automatic Previous-position bootstrap")
     expect(admission).toContain('lrange(`live:positions:${connectionId}`, 0, -1)')
     expect(admission).toContain("const READ_BATCH_SIZE = 250")

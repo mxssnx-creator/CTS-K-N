@@ -1751,6 +1751,7 @@ scripts/audit-offline-engine-stats.mjs
 scripts/autotest-drift.mjs
 scripts/backup-local-redis.mjs
 scripts/baseline/fetch-candles-1m.mjs
+scripts/baseline/simulate-12h-hourly.ts
 scripts/baseline/simulate-24h-portfolio.ts
 scripts/benchmark-direct-trade-symbol-coordination.cjs
 scripts/bingx-comprehensive-test.mjs

@@ -149,9 +149,9 @@ import {
   isActiveSignalPosition,
   countSignalPositionOrders,
   evaluateSignalOrderCapacity,
-  evaluateSignalSymbolCapacity,
+  normalizeSignalMaxOrdersPerSymbol,
+  signalSlotMember,
   normalizeSignalMaxPositions,
-  SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   type SignalPositionCapacity,
 } from "@/lib/signal-position-policy"
 import {
@@ -3168,9 +3168,11 @@ function signalCapacityKey(connectionId: string): string {
 // quadratically. Keep a compact authoritative membership index instead. It is
 // rebuilt once from the complete canonical book after an upgrade or legacy
 // snapshot restore.
-// v2 adds the per-symbol membership sets; bumping it makes the first admission
-// after the upgrade rebuild every index once from the canonical rows.
-const SIGNAL_POSITION_ADMISSION_INDEX_VERSION = "2"
+// v3: a POSITION is one symbol + direction (a slot); rows on it are orders. The
+// slot sets are new, and the per-symbol row sets of v2 are removed. Bumping the
+// version makes the first admission after the upgrade rebuild every index once
+// from the canonical rows.
+const SIGNAL_POSITION_ADMISSION_INDEX_VERSION = "3"
 
 function signalPositionAdmissionIndexKey(connectionId: string): string {
   return `signal:positions:${connectionId}`
@@ -3183,8 +3185,16 @@ function signalPositionAdmissionDirectionIndexKey(
   return `${signalPositionAdmissionIndexKey(connectionId)}:${direction}`
 }
 
-function signalPositionAdmissionSymbolIndexKey(connectionId: string, symbol: unknown): string {
-  return `${signalPositionAdmissionIndexKey(connectionId)}:symbol:${normalizeProtectionSlotSymbol(symbol)}`
+/** Row ids of ONE slot (symbol + direction). */
+function signalPositionAdmissionSlotKey(connectionId: string, symbol: unknown, direction: "long" | "short"): string {
+  return `${signalPositionAdmissionIndexKey(connectionId)}:slot:${normalizeProtectionSlotSymbol(symbol)}:${direction}`
+}
+/** The active slots (= positions): members "SYMBOL:direction". */
+function signalPositionAdmissionSlotsKey(connectionId: string): string {
+  return `${signalPositionAdmissionIndexKey(connectionId)}:slots`
+}
+function signalPositionAdmissionSlotsDirectionKey(connectionId: string, direction: "long" | "short"): string {
+  return `${signalPositionAdmissionSlotsKey(connectionId)}:${direction}`
 }
 
 function signalPositionAdmissionIndexReadyKey(connectionId: string): string {
@@ -3290,6 +3300,9 @@ async function keepSignalAdmissionIndexesDurable(client: any, connectionId: stri
     signalPositionAdmissionIndexKey(connectionId),
     signalPositionAdmissionDirectionIndexKey(connectionId, "long"),
     signalPositionAdmissionDirectionIndexKey(connectionId, "short"),
+    signalPositionAdmissionSlotsKey(connectionId),
+    signalPositionAdmissionSlotsDirectionKey(connectionId, "long"),
+    signalPositionAdmissionSlotsDirectionKey(connectionId, "short"),
     signalPositionAdmissionIndexReadyKey(connectionId),
   ]
   await Promise.all(keys.map(async (key) => {
@@ -3301,6 +3314,34 @@ async function keepSignalAdmissionIndexesDurable(client: any, connectionId: stri
   }))
 }
 
+/** A row occupies its slot: the slot (position) is active while it has at least one row. */
+export async function occupySignalSlot(client: any, connectionId: string, symbol: unknown, direction: "long" | "short", rowId: string): Promise<void> {
+  const member = signalSlotMember(symbol, direction)
+  const slotKey = signalPositionAdmissionSlotKey(connectionId, symbol, direction)
+  await Promise.all([
+    client.sadd(slotKey, rowId),
+    client.sadd(signalPositionAdmissionSlotsKey(connectionId), member),
+    client.sadd(signalPositionAdmissionSlotsDirectionKey(connectionId, direction), member),
+  ])
+  if (typeof client.persist === "function") await client.persist(slotKey).catch(() => 0)
+}
+/** A row leaves its slot; the last row leaving ends the position. */
+export async function releaseSignalSlotRow(client: any, connectionId: string, symbol: unknown, direction: "long" | "short", rowId: string): Promise<void> {
+  const slotKey = signalPositionAdmissionSlotKey(connectionId, symbol, direction)
+  await client.srem(slotKey, rowId).catch(() => 0)
+  // This index is derived: it must never break a position's lifecycle. When the
+  // count cannot be read the slot stays (the safe side: it still counts as a
+  // position) and the next index verification repairs it.
+  const remaining = typeof client.scard === "function" ? Number(await client.scard(slotKey).catch(() => 1)) : 1
+  if (remaining === 0) {
+    const member = signalSlotMember(symbol, direction)
+    await Promise.all([
+      client.srem(signalPositionAdmissionSlotsKey(connectionId), member).catch(() => 0),
+      client.srem(signalPositionAdmissionSlotsDirectionKey(connectionId, direction), member).catch(() => 0),
+    ])
+  }
+}
+
 async function updateSignalAdmissionIndexes(client: any, position: LivePosition): Promise<void> {
   const indexKey = signalPositionAdmissionIndexKey(position.connectionId)
   const longKey = signalPositionAdmissionDirectionIndexKey(position.connectionId, "long")
@@ -3308,14 +3349,16 @@ async function updateSignalAdmissionIndexes(client: any, position: LivePosition)
   const activeSignal = isActiveSignalPosition(position as unknown as Record<string, unknown>)
   const direction = resolveLivePositionDirection(position)
 
-  const symbolKey = signalPositionAdmissionSymbolIndexKey(position.connectionId, position.symbol)
   if (!activeSignal || !direction) {
     await Promise.all([
       client.srem(indexKey, position.id).catch(() => 0),
       client.srem(longKey, position.id).catch(() => 0),
       client.srem(shortKey, position.id).catch(() => 0),
-      client.srem(symbolKey, position.id).catch(() => 0),
     ])
+    // The row ends: it leaves its slot in either direction (the direction of an
+    // ended row may be unresolved); an emptied slot is no longer a position.
+    await releaseSignalSlotRow(client, position.connectionId, position.symbol, "long", position.id)
+    await releaseSignalSlotRow(client, position.connectionId, position.symbol, "short", position.id)
     return
   }
 
@@ -3327,10 +3370,9 @@ async function updateSignalAdmissionIndexes(client: any, position: LivePosition)
   await Promise.all([
     client.sadd(indexKey, position.id),
     client.sadd(ownDirectionKey, position.id),
-    client.sadd(symbolKey, position.id),
     client.srem(otherDirectionKey, position.id).catch(() => 0),
   ])
-  if (typeof client.persist === "function") await client.persist(symbolKey).catch(() => 0)
+  await occupySignalSlot(client, position.connectionId, position.symbol, direction, position.id)
   await keepSignalAdmissionIndexesDurable(client, position.connectionId)
 }
 
@@ -3364,26 +3406,41 @@ async function rebuildSignalAdmissionIndexes(
       client.srem(shortKey, ...staleIds).catch(() => 0),
     ])
   }
-  // Per-symbol sets: drop members that are no longer active, then add every
-  // active row to its own symbol's set.
-  const symbolIdsBySymbol = new Map<string, string[]>()
-  for (const position of active) {
-    const symbol = normalizeProtectionSlotSymbol(position.symbol)
-    symbolIdsBySymbol.set(symbol, [...(symbolIdsBySymbol.get(symbol) || []), position.id])
-  }
+  // Slot sets (positions): recomputed exactly from the active rows. The
+  // per-symbol row sets of index version 2 are obsolete and removed.
   try {
-    const existingSymbolKeys: string[] = (await client.keys(`${indexKey}:symbol:*`).catch(() => [])) || []
-    for (const symbolKey of existingSymbolKeys) {
-      const members = (await scanRedisSetMembers(client, symbolKey, { count: 250 }).catch(() => [])).map(String)
+    for (const obsolete of (await client.keys(`${indexKey}:symbol:*`).catch(() => [])) || []) await client.del(obsolete).catch(() => 0)
+    const activeSlots = new Map<string, { symbol: string; direction: "long" | "short"; ids: string[] }>()
+    for (const position of active) {
+      const direction = position.direction as "long" | "short"
+      const member = signalSlotMember(position.symbol, direction)
+      const slot = activeSlots.get(member) || { symbol: position.symbol, direction, ids: [] }
+      slot.ids.push(position.id)
+      activeSlots.set(member, slot)
+    }
+    const slotsKey = signalPositionAdmissionSlotsKey(connectionId)
+    const longSlotsKey = signalPositionAdmissionSlotsDirectionKey(connectionId, "long")
+    const shortSlotsKey = signalPositionAdmissionSlotsDirectionKey(connectionId, "short")
+    // Row sets of slots: remove members that are no longer active rows.
+    for (const slotKey of (await client.keys(`${indexKey}:slot:*`).catch(() => [])) || []) {
+      const members = (await scanRedisSetMembers(client, slotKey, { count: 250 }).catch(() => [])).map(String)
       const stale = members.filter((id) => !activeIds.has(id))
-      if (stale.length > 0) await client.srem(symbolKey, ...stale).catch(() => 0)
+      if (stale.length > 0) await client.srem(slotKey, ...stale).catch(() => 0)
     }
-    for (const [symbol, ids] of symbolIdsBySymbol) {
-      const symbolKey = `${indexKey}:symbol:${symbol}`
-      await client.sadd(symbolKey, ...ids)
-      if (typeof client.persist === "function") await client.persist(symbolKey).catch(() => 0)
+    // Slot membership sets: drop slots that are gone, add the active ones.
+    for (const key of [slotsKey, longSlotsKey, shortSlotsKey]) {
+      const current = (await scanRedisSetMembers(client, key, { count: 250 }).catch(() => [])).map(String)
+      const gone = current.filter((member) => !activeSlots.has(member) || (key === longSlotsKey && !member.endsWith(":long")) || (key === shortSlotsKey && !member.endsWith(":short")))
+      if (gone.length > 0) await client.srem(key, ...gone).catch(() => 0)
     }
-  } catch { /* the per-symbol repair is best effort; the next verify retries it */ }
+    for (const [member, slot] of activeSlots) {
+      const slotKey = signalPositionAdmissionSlotKey(connectionId, slot.symbol, slot.direction)
+      await client.sadd(slotKey, ...slot.ids)
+      await client.sadd(slotsKey, member)
+      await client.sadd(slot.direction === "long" ? longSlotsKey : shortSlotsKey, member)
+      if (typeof client.persist === "function") await client.persist(slotKey).catch(() => 0)
+    }
+  } catch { /* best effort: the next verify retries the slot repair */ }
   const longIds = active.filter((position) => position.direction === "long").map((position) => position.id)
   const shortIds = active.filter((position) => position.direction === "short").map((position) => position.id)
   if (activeIds.size > 0) await client.sadd(indexKey, ...activeIds)
@@ -3418,10 +3475,12 @@ async function readSignalAdmissionCapacity(
     }
   }
 
-  const [total, long, short] = await Promise.all([
+  // Positions are slots (symbol + direction), not rows.
+  const [total, long, short, rowCount] = await Promise.all([
+    client.scard(signalPositionAdmissionSlotsKey(connectionId)).catch(() => 0),
+    client.scard(signalPositionAdmissionSlotsDirectionKey(connectionId, "long")).catch(() => 0),
+    client.scard(signalPositionAdmissionSlotsDirectionKey(connectionId, "short")).catch(() => 0),
     client.scard(signalPositionAdmissionIndexKey(connectionId)).catch(() => 0),
-    client.scard(signalPositionAdmissionDirectionIndexKey(connectionId, "long")).catch(() => 0),
-    client.scard(signalPositionAdmissionDirectionIndexKey(connectionId, "short")).catch(() => 0),
   ])
   const limit = normalizeSignalMaxPositions(configuredLimit)
   const normalizedTotal = Math.max(0, Number(total) || 0)
@@ -3453,6 +3512,7 @@ async function readSignalAdmissionCapacity(
     long: Math.max(0, Number(long) || 0),
     short: Math.max(0, Number(short) || 0),
     limit,
+    rows: Math.max(0, Number(rowCount) || 0),
   }
 }
 
@@ -3485,22 +3545,30 @@ async function persistSignalCapacitySnapshot(
  * The lease expires automatically after a crash; later terminal writes remove
  * the reservation through savePosition's normal open→closed transition.
  */
-// Orders of the active Signal positions (partial fills included), for a FINITE
-// order limit only — the default is unlimited and never reaches this. Read from
-// the rows behind the admission index, cached briefly so a burst of candidates
-// does not re-read them for each one.
+// Orders of the active Signal positions: every internal position row is an
+// order and so is every order of it, partial fills included. Needed only for a
+// FINITE orders limit — the default is unlimited and never reaches this. Read
+// from the rows behind the admission index (for one symbol: behind its slots),
+// cached briefly so a burst of candidates does not re-read them for each one.
 const SIGNAL_ORDER_COUNT_TTL_MS = 10_000
 const signalOrderCountCache = new Map<string, { at: number; orders: number }>()
-async function countActiveSignalOrders(client: any, connectionId: string): Promise<number> {
-  const cached = signalOrderCountCache.get(connectionId)
+async function countActiveSignalOrders(client: any, connectionId: string, symbol?: unknown): Promise<number> {
+  const cacheKey = `${connectionId}|${symbol ? signalSlotMember(symbol, "long").split(":")[0] : "*"}`
+  const cached = signalOrderCountCache.get(cacheKey)
   if (cached && Date.now() - cached.at < SIGNAL_ORDER_COUNT_TTL_MS) return cached.orders
-  const ids = (await scanRedisSetMembers(client, signalPositionAdmissionIndexKey(connectionId), { count: 250 }).catch(() => [])).map(String)
+  const sources = symbol
+    ? [signalPositionAdmissionSlotKey(connectionId, symbol, "long"), signalPositionAdmissionSlotKey(connectionId, symbol, "short")]
+    : [signalPositionAdmissionIndexKey(connectionId)]
+  const ids = new Set<string>()
+  for (const source of sources) {
+    for (const id of await scanRedisSetMembers(client, source, { count: 250 }).catch(() => [])) ids.add(String(id))
+  }
   let orders = 0
   for (const id of ids) {
     const row = await readLivePositionSnapshot(client, connectionId, id).catch(() => null)
     orders += countSignalPositionOrders(row as unknown as Record<string, any>)
   }
-  signalOrderCountCache.set(connectionId, { at: Date.now(), orders })
+  signalOrderCountCache.set(cacheKey, { at: Date.now(), orders })
   return orders
 }
 
@@ -3509,8 +3577,8 @@ async function reserveSignalPositionCapacity(
   candidate: LivePosition,
   configuredLimit: number,
   selectionMode: string,
-  maxPositionsPerSymbol: number = SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   maxOrders: number = 0,
+  maxOrdersPerSymbol: number = 0,
 ): Promise<SignalCapacityReservation> {
   const client = getRedisClient()
   const candidateDirection = candidate.direction
@@ -3576,7 +3644,12 @@ async function reserveSignalPositionCapacity(
       )
       return { state: "existing", capacity, existing }
     }
-    if (!capacity.allowed) {
+    // A POSITION is one symbol + direction. Another row on a slot that is
+    // already active (another lane, an add-on) is not a new position: it counts
+    // as an order and never meets the position limit.
+    const candidateSlotKey = signalPositionAdmissionSlotKey(connectionId, candidate.symbol, candidateDirection)
+    const slotActive = Number(await client.scard(candidateSlotKey).catch(() => 0)) > 0
+    if (!slotActive && !capacity.allowed) {
       await persistSignalCapacitySnapshot(
         client,
         connectionId,
@@ -3587,42 +3660,24 @@ async function reserveSignalPositionCapacity(
       return { state: "limit", capacity }
     }
 
-    // Per-symbol limit (Signal setting, default 32): at most this many active
-    // Signal positions, Long + Short, on ONE symbol. Like the total, the index
-    // is verified against the canonical rows before it is allowed to defer an
-    // entry — at most once a minute per symbol.
-    const symbolIndexKey = signalPositionAdmissionSymbolIndexKey(connectionId, candidate.symbol)
-    let symbolCapacity = evaluateSignalSymbolCapacity(
-      await client.scard(symbolIndexKey).catch(() => 0),
-      maxPositionsPerSymbol,
-    )
-    if (!symbolCapacity.allowed) {
-      const gate = await client.set(
-        `${symbolIndexKey}:verify-lock`, String(Date.now()), { NX: true, EX: 60 } as any,
-      ).catch(() => null)
-      if (gate) {
-        await rebuildSignalAdmissionIndexes(client, connectionId)
-        symbolCapacity = evaluateSignalSymbolCapacity(
-          await client.scard(symbolIndexKey).catch(() => 0),
-          maxPositionsPerSymbol,
-        )
+    // Orders limits (Signal settings, 0 = unlimited): only a finite limit is
+    // checked. Every internal position row and every order of it counts,
+    // partial fills included.
+    const symbolOrdersLimit = normalizeSignalMaxOrdersPerSymbol(maxOrdersPerSymbol)
+    if (symbolOrdersLimit > 0) {
+      const symbolOrders = evaluateSignalOrderCapacity(await countActiveSignalOrders(client, connectionId, candidate.symbol), symbolOrdersLimit)
+      if (!symbolOrders.allowed) {
+        const limited: SignalPositionCapacity = {
+          ...capacity,
+          allowed: false,
+          reason: "symbol_limit",
+          symbolOrders: symbolOrders.orders,
+          symbolOrdersLimit: symbolOrders.ordersLimit,
+        }
+        await persistSignalCapacitySnapshot(client, connectionId, limited, selectionMode, "limit")
+        return { state: "limit", capacity: limited }
       }
     }
-    if (!symbolCapacity.allowed) {
-      const limited: SignalPositionCapacity = {
-        ...capacity,
-        allowed: false,
-        reason: "symbol_limit",
-        symbolTotal: symbolCapacity.symbolTotal,
-        symbolLimit: symbolCapacity.symbolLimit,
-      }
-      await persistSignalCapacitySnapshot(client, connectionId, limited, selectionMode, "limit")
-      return { state: "limit", capacity: limited }
-    }
-
-    // Orders limit (Signal setting, 0 = unlimited): only a finite limit is
-    // checked. Every order of the active Signal positions counts, partial
-    // fills included.
     if (maxOrders > 0) {
       const orderCapacity = evaluateSignalOrderCapacity(await countActiveSignalOrders(client, connectionId), maxOrders)
       if (!orderCapacity.allowed) {
@@ -3630,8 +3685,6 @@ async function reserveSignalPositionCapacity(
           ...capacity,
           allowed: false,
           reason: "order_limit",
-          symbolTotal: symbolCapacity.symbolTotal,
-          symbolLimit: symbolCapacity.symbolLimit,
           orders: orderCapacity.orders,
           ordersLimit: orderCapacity.ordersLimit,
         }
@@ -3647,15 +3700,16 @@ async function reserveSignalPositionCapacity(
     await updateSignalAdmissionIndexes(client, candidate)
     await savePosition(candidate)
     clearPositionCache(connectionId)
+    // Only a NEW slot adds a position; a further row on an active slot adds an order.
+    const addedPosition = slotActive ? 0 : 1
     const reservedCapacity: SignalPositionCapacity = {
       ...capacity,
-      total: capacity.total + 1,
-      long: capacity.long + (candidateDirection === "long" ? 1 : 0),
-      short: capacity.short + (candidateDirection === "short" ? 1 : 0),
-      allowed: capacity.total + 1 < capacity.limit,
-      reason: capacity.total + 1 < capacity.limit ? "available" : "total_limit",
-      symbolTotal: symbolCapacity.symbolTotal + 1,
-      symbolLimit: symbolCapacity.symbolLimit,
+      total: capacity.total + addedPosition,
+      long: capacity.long + (candidateDirection === "long" ? addedPosition : 0),
+      short: capacity.short + (candidateDirection === "short" ? addedPosition : 0),
+      allowed: capacity.total + addedPosition < capacity.limit,
+      reason: capacity.total + addedPosition < capacity.limit ? "available" : "total_limit",
+      rows: (capacity.rows ?? 0) + 1,
     }
     await persistSignalCapacitySnapshot(
       client,
@@ -14240,8 +14294,8 @@ export async function executeLivePosition(
         livePosition,
         signalSettings.maxPositionsTotal,
         signalSettings.positionSelectionMode,
-        signalSettings.maxPositionsPerSymbol,
         signalSettings.maxOrders,
+        signalSettings.maxOrdersPerSymbol,
       )
 
       if (admission.state === "existing") {
@@ -14260,7 +14314,7 @@ export async function executeLivePosition(
         livePosition.statusReason = admission.state === "limit" && admission.capacity.reason === "order_limit"
           ? `Signal order capacity reached (${admission.capacity.orders}/${admission.capacity.ordersLimit} orders incl. partial fills); further entries deferred`
           : admission.state === "limit" && admission.capacity.reason === "symbol_limit"
-          ? `Signal per-symbol capacity reached (${admission.capacity.symbolTotal}/${admission.capacity.symbolLimit} on ${realPosition.symbol}, Long + Short); further entries on this symbol deferred`
+          ? `Signal per-symbol order capacity reached (${admission.capacity.symbolOrders}/${admission.capacity.symbolOrdersLimit} orders on ${realPosition.symbol}); further entries on this symbol deferred`
           : admission.state === "limit"
           ? `Signal position capacity reached (${admission.capacity.total}/${admission.capacity.limit} Long + Short); lower-ranked candidate deferred`
           : "Signal position admission is coordinating another candidate; deferred to the next cycle"

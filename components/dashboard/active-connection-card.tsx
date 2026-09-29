@@ -2175,9 +2175,9 @@ export function ActiveConnectionCard({
             ` · ${signalOverview?.openOrders ?? 0}` +
             `/${(signalOverview?.maxOrders ?? 0) > 0 ? signalOverview?.maxOrders : "∞"}`,
           title:
-            `Open Signal positions (Long ${signalOverview?.openLong ?? 0}, Short ${signalOverview?.openShort ?? 0}, ` +
-            "each symbol × direction counted independently) / limit · orders of those positions " +
-            "including partial fills / limit (∞ = unlimited).",
+            `Open Signal positions (Long ${signalOverview?.openLong ?? 0}, Short ${signalOverview?.openShort ?? 0}): one per ` +
+            "symbol + direction, several rows on the same are ONE position / limit · orders: every internal " +
+            "position row and every order of it incl. partial fills / limit (∞ = unlimited).",
           tone: "text-cyan-700 dark:text-cyan-400",
         },
         {

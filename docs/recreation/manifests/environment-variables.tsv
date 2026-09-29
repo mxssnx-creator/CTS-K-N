@@ -78,7 +78,7 @@ CTS_ACCEPT_LEGACY_ORDER_PREFIX	application-runtime	no	no	3	__tests__/unit/foreig
 CTS_BACKUP_RETENTION_COUNT	test-or-operator-tool	no	yes	1	.env.example
 CTS_BACKUP_ROOT	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_BASE_REQUIRE_MEASURED_HISTORY	application-runtime	no	no	2	__tests__/unit/validate-only-measured-sets.test.ts,lib/strategy-coordinator.ts
-CTS_BASELINE_CANDLES	test-or-operator-tool	no	no	2	scripts/baseline/fetch-candles-1m.mjs,scripts/baseline/simulate-24h-portfolio.ts
+CTS_BASELINE_CANDLES	test-or-operator-tool	no	no	3	scripts/baseline/fetch-candles-1m.mjs,scripts/baseline/simulate-12h-hourly.ts,scripts/baseline/simulate-24h-portfolio.ts
 CTS_BINGX_RATE_LIMIT_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPM	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPS	test-or-operator-tool	no	yes	1	.env.example
@@ -138,6 +138,7 @@ CTS_RUNTIME_DIR	test-or-operator-tool	no	no	4	__tests__/unit/runtime-maintenance
 CTS_RUNTIME_INSTANCE_ID	test-or-operator-tool	no	yes	1	.env.example
 CTS_RUNTIME_STARTED_AT	application-runtime	no	no	4	__tests__/unit/runtime-boot-id.test.ts,lib/runtime-boot-id.ts,scripts/start-development.mjs,scripts/start-production.mjs
 CTS_SHUTDOWN_GRACE_MS	test-or-operator-tool	no	no	1	scripts/start-production.mjs
+CTS_SIM_OUT	test-or-operator-tool	no	no	1	scripts/baseline/simulate-12h-hourly.ts
 CTS_STATE_DIR	test-or-operator-tool	no	yes	2	.env.example,__tests__/unit/install-deployment-contract.test.ts
 CTS_STRATEGY_GC_CRITICAL_INTERVAL_MS	test-or-operator-tool	no	yes	1	.env.example
 CTS_STRATEGY_GC_ELEVATED_INTERVAL_MS	test-or-operator-tool	no	yes	2	.env.example,scripts/run-dev-preview-check.mjs

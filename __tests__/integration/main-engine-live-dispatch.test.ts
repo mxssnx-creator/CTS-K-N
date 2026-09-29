@@ -937,8 +937,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(stored).toHaveLength(3)
     expect(hashes.get(`signal:position_capacity:${connection.id}`)).toEqual(
       expect.objectContaining({
-        total: "3",
-        long: "3",
+        // three rows (three exact lanes) on one symbol and direction are ONE
+        // position; the rows are orders.
+        total: "1",
+        long: "1",
         short: "0",
         limit: "100",
       }),
