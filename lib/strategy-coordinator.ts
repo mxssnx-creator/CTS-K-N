@@ -1403,6 +1403,46 @@ export function limitLiveDispatchCandidatesFairly(
   return planLiveDispatchCandidatesFairly(candidates, rawBudget, rawCursor).selected
 }
 
+/**
+ * Splits the qualifying Sets into what may be dispatched and what may not, and
+ * says WHY. Two independent gates decide: the execution-family switches and the
+ * Historic Test admission. Both used to be reported as "execution_family_disabled",
+ * so a Historic Test that admitted nothing (X01, 2026-09-29: 21 validated
+ * combinations in family `trailing`, none matching any live Set) read as if the
+ * operator had switched the families off, while every family switch was on.
+ */
+export function partitionLiveDispatch(
+  candidates: readonly StrategySet[],
+  executionPolicy: StrategyExecutionPolicy,
+  anyExecutionFamilyEnabled: boolean,
+  historicSettings: Parameters<typeof filterHistoricAdmittedSets>[1],
+  validatedKeys: ReadonlySet<string>,
+): {
+  eligible: StrategySet[]
+  suppressed: StrategySet[]
+  suppressedByFamily: StrategySet[]
+  suppressedByHistoricTest: StrategySet[]
+} {
+  const familyEligible = anyExecutionFamilyEnabled ? selectLiveDispatchCandidates([...candidates], executionPolicy) : []
+  const eligible = filterHistoricAdmittedSets(familyEligible, historicSettings, validatedKeys)
+  const eligibleKeys = new Set(eligible.map((set) => set.setKey))
+  const familyKeys = new Set(familyEligible.map((set) => set.setKey))
+  const suppressed = candidates.filter((set) => !eligibleKeys.has(set.setKey))
+  return {
+    eligible,
+    suppressed,
+    suppressedByFamily: suppressed.filter((set) => !familyKeys.has(set.setKey)),
+    suppressedByHistoricTest: suppressed.filter((set) => familyKeys.has(set.setKey)),
+  }
+}
+
+function summarizeSuppressedDispatch(partition: ReturnType<typeof partitionLiveDispatch>) {
+  return [
+    ...summarizeLiveDispatchRows(partition.suppressedByFamily, "execution_family_disabled"),
+    ...summarizeLiveDispatchRows(partition.suppressedByHistoricTest, "historic_test_not_validated"),
+  ]
+}
+
 function summarizeLiveDispatchRows(
   candidates: readonly StrategySet[],
   reason: string,
@@ -9616,15 +9656,9 @@ export class StrategyCoordinator {
         classification: "blocked" | "error" = "error",
       ): Promise<void> => {
         try {
-          const eligible = anyExecutionFamilyEnabled
-            ? filterHistoricAdmittedSets(
-                selectLiveDispatchCandidates(qualifying, executionPolicy),
-                historicTestSettings,
-                historicValidatedKeys,
-              )
-            : []
-          const eligibleKeys = new Set(eligible.map((candidate) => candidate.setKey))
-          const suppressed = qualifying.filter((set) => !eligibleKeys.has(set.setKey))
+          const unavailablePartition = partitionLiveDispatch(qualifying, executionPolicy, anyExecutionFamilyEnabled, historicTestSettings, historicValidatedKeys)
+          const eligible = unavailablePartition.eligible
+          const suppressed = unavailablePartition.suppressed
           const completedAt = Date.now()
           const durationMs = Math.max(0, completedAt - dispatchPipelineStartedAt)
           const unavailableCount = eligible.length
@@ -9647,7 +9681,7 @@ export class StrategyCoordinator {
             dispatch_selected: "[]",
             dispatch_deferred: "[]",
             dispatch_suppressed: JSON.stringify(
-              summarizeLiveDispatchRows(suppressed, "execution_family_disabled"),
+              summarizeSuppressedDispatch(unavailablePartition),
             ),
             dispatch_attempted_count: "0",
             dispatch_placed_count: "0",
@@ -9675,7 +9709,7 @@ export class StrategyCoordinator {
             [`s:${symbol}:dispatch_selected`]: "[]",
             [`s:${symbol}:dispatch_deferred`]: "[]",
             [`s:${symbol}:dispatch_suppressed`]: JSON.stringify(
-              summarizeLiveDispatchRows(suppressed, "execution_family_disabled"),
+              summarizeSuppressedDispatch(unavailablePartition),
             ),
             [`s:${symbol}:dispatch_attempted_count`]: "0",
             [`s:${symbol}:dispatch_placed_count`]: "0",
@@ -9757,19 +9791,12 @@ export class StrategyCoordinator {
             // policy-enabled Set. Deduplication prevents duplicate writes, but
             // no hidden per-symbol budget may defer otherwise eligible Sets.
             const dispatchCandidates = qualifying
-            const policyEligibleDispatchSets = anyExecutionFamilyEnabled
-              ? filterHistoricAdmittedSets(
-                  selectLiveDispatchCandidates(dispatchCandidates, executionPolicy),
-                  historicTestSettings,
-                  historicValidatedKeys,
-                )
-              : []
+            const dispatchPartition = partitionLiveDispatch(dispatchCandidates, executionPolicy, anyExecutionFamilyEnabled, historicTestSettings, historicValidatedKeys)
+            const policyEligibleDispatchSets = dispatchPartition.eligible
             const policyEligibleKeys = new Set(
               policyEligibleDispatchSets.map((set) => set.setKey),
             )
-            const suppressedDispatchSets = dispatchCandidates.filter(
-              (set) => !policyEligibleKeys.has(set.setKey),
-            )
+            const suppressedDispatchSets = dispatchPartition.suppressed
             const dispatchClient = getRedisClient()
             const dispatchDetailKey = `strategy_detail:${this.connectionId}:live`
             const dispatchPlan = planLiveDispatchCandidatesFairly(policyEligibleDispatchSets)
@@ -9777,13 +9804,14 @@ export class StrategyCoordinator {
             try {
               const selectedSummary = summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")
               const deferredSummary = summarizeLiveDispatchRows(dispatchPlan.deferred, "physical_budget_deferred")
-              const suppressedSummary = summarizeLiveDispatchRows(suppressedDispatchSets, "execution_family_disabled")
+              const suppressedSummary = summarizeSuppressedDispatch(dispatchPartition)
               await dispatchClient.hset(dispatchDetailKey, {
                 dispatch_candidates: String(dispatchCandidates.length),
                 dispatch_eligible_count: String(policyEligibleDispatchSets.length),
                 dispatch_selected_count: String(dispatchSets.length),
                 dispatch_deferred_count: String(dispatchPlan.deferred.length),
                 dispatch_suppressed_count: String(suppressedDispatchSets.length),
+                dispatch_suppressed_historic_count: String(dispatchPartition.suppressedByHistoricTest.length),
                 dispatch_budget: String(dispatchPlan.budget),
                 dispatch_family_count: String(dispatchPlan.familyCount),
                 dispatch_cursor: String(dispatchPlan.nextCursor),

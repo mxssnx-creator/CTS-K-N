@@ -20,6 +20,7 @@ const healthy = () => ({
   funnel: { "bingx-x01": { baseCount: 18, mainEvaluated: 40, liveEvaluated: 90 } },
   results: { "bingx-x01": { lastClosedAgoMin: 30, window6h: { closed: 12, settled: 12, pf: 1.4, reasons: { stop_loss: 4, take_profit: 8 } }, window24h: { closed: 40, settled: 40, pf: 1.3, reasons: {} } } },
   audit: { "bingx-x01": { blockedVolumeResets: 0 } },
+  gate: { "bingx-x01": { freshSymbols: 9, candidates: 100, eligible: 60, selected: 60, suppressed: 40, suppressedHistoric: 40, suppressedReasons: {}, blockedReasons: {}, historic: { enabled: true, validated: 30, families: { normal: 20, axis: 10 }, indications: ["optimal", "move"], ranAt: AT } } },
   entries: { attempts: 6, success: 5, failed: 1, errors: {}, blocked: {} },
   ticks: { count: 20, over30s: 0, maxMs: 4000 },
   resources: { rssMb: 1700, load1: 1.1, diskPct: 40, redisMb: 700 },
@@ -153,5 +154,33 @@ describe("the live health verdict", () => {
     const src = readFileSync(script, "utf8")
     expect(src).toContain("sort((a, b) => rank(b.level) - rank(a.level)).map((c) => `${c.level} ${c.message}`)")
     expect(src).toContain("for (const c of [...issues].sort((a, b) => rank(b.level) - rank(a.level)))")
+  })
+  test("live candidates with nothing eligible are critical and name the Historic Test: X01 on 2026-09-29", () => {
+    const s: any = healthy()
+    s.gate["bingx-x01"] = { freshSymbols: 9, candidates: 1563, eligible: 0, selected: 0, suppressed: 1563, suppressedHistoric: 1563, suppressedReasons: { historic_test_not_validated: 1563 }, blockedReasons: {},
+      historic: { enabled: true, validated: 21, families: { trailing: 21 }, indications: ["momentum", "breakout", "mean_reversion"], ranAt: AT } }
+    const r = evaluate(s)
+    expect(r.level).toBe("CRIT")
+    const c = r.checks.find((x: any) => x.id === "dispatch_gate_bingx-x01")
+    expect(c.level).toBe("CRIT")
+    expect(c.message).toContain("1563 live candidate(s)")
+    expect(c.message).toContain("Historic Test is ON with 21 validated combination(s) (trailing:21)")
+    expect(c.message).toContain("momentum")
+  })
+  test("without the Historic Test the dominant suppression reason is named instead", () => {
+    const s: any = healthy()
+    s.gate["bingx-x01"] = { freshSymbols: 3, candidates: 40, eligible: 0, selected: 0, suppressed: 40, suppressedHistoric: 0, suppressedReasons: { execution_family_disabled: 40 }, blockedReasons: {}, historic: { enabled: false, validated: 0, families: {}, indications: [], ranAt: null } }
+    const c = evaluate(s).checks.find((x: any) => x.id === "dispatch_gate_bingx-x01")
+    expect(c.level).toBe("CRIT"); expect(c.message).toContain("execution_family_disabled")
+  })
+  test("eligible candidates are fine, and no fresh dispatch is not judged", () => {
+    expect(evaluate(healthy()).checks.find((x: any) => x.id === "dispatch_gate_bingx-x01").level).toBe("OK")
+    const s: any = healthy(); s.gate["bingx-x01"].freshSymbols = 0; s.gate["bingx-x01"].eligible = 0
+    expect(evaluate(s).checks.find((x: any) => x.id === "dispatch_gate_bingx-x01")).toBeUndefined()
+  })
+  test("switching the Historic Test between two runs warns", () => {
+    const before = { snapshot: healthy(), state: {} }
+    const s: any = healthy(); s.gate["bingx-x01"].historic.enabled = false
+    expect(ids(evaluate(s, before), "WARN")).toContain("historic_toggle_bingx-x01")
   })
 })
