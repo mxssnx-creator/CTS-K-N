@@ -124,6 +124,7 @@ __tests__/unit/connection-stage-overview.test.ts
 __tests__/unit/connection-symbol-aliases.test.ts
 __tests__/unit/connection-symbols.test.ts
 __tests__/unit/connection-test-stored-credentials.test.ts
+__tests__/unit/connection-volume-guard.test.ts
 __tests__/unit/connector-log-retention.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
@@ -1317,6 +1318,7 @@ lib/connection-symbol-aliases.ts
 lib/connection-symbols.ts
 lib/connection-test-scheduler.ts
 lib/connection-utils.ts
+lib/connection-volume-guard.ts
 lib/connections-file-storage.ts
 lib/console-logger.ts
 lib/constants.ts

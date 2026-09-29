@@ -1,3 +1,4 @@
+import { withoutImplicitVolumeReset } from "@/lib/connection-volume-guard"
 import {
   ensureUniqueSiteInstanceWithClient,
   GLOBAL_SITE_INSTANCE_KEY,
@@ -5158,6 +5159,19 @@ export const CONNECTION_AUDITED_FIELDS: ReadonlySet<string> = new Set([
   "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
   "base_min_profit_factor", "main_min_profit_factor", "real_min_profit_factor", "live_min_profit_factor",
 ])
+async function recordVolumeResetBlocked(
+  client: any,
+  id: string,
+  source: string,
+  blocked: Array<{ field: string; stored: string; attempted: string }>,
+): Promise<void> {
+  const stack = String(new Error().stack || "").split("\n").slice(3, 9).map((l) => l.trim().replace(/^at\s+/, "")).filter(Boolean)
+  console.warn(`[v0] [ConnectionAudit] ${id} ${source}: BLOCKED implicit volume reset ${blocked.map((b) => `${b.field} ${b.stored}→${b.attempted}`).join(", ")} | ${stack[0] || "?"}`)
+  if (client && typeof client.lpush === "function") {
+    await client.lpush(connectionChangeAuditKey(id), JSON.stringify({ at: new Date().toISOString(), source, blockedVolumeReset: blocked, stack })).catch(() => 0)
+    if (typeof client.ltrim === "function") await client.ltrim(connectionChangeAuditKey(id), 0, 199).catch(() => 0)
+  }
+}
 export function connectionChangeAuditKey(id: string): string {
   return `audit:connection-changes:${id}`
 }
@@ -5177,7 +5191,7 @@ export function diffAuditedConnectionFields(
 async function recordConnectionChangeAudit(
   client: any,
   id: string,
-  source: "updateConnection" | "saveConnection",
+  source: "updateConnection" | "saveConnection" | "updateConnectionState",
   changes: Array<{ field: string; from: string; to: string }>,
 ): Promise<void> {
   if (changes.length === 0 || !client || typeof client.lpush !== "function") return
@@ -6420,6 +6434,13 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
   // concurrent edits to unrelated fields because the last stale snapshot won.
   // Redis HSETs on disjoint fields now compose safely; same-field switches keep
   // normal last-writer semantics and are ordered by state_switch_version.
+  {
+    const guarded = withoutImplicitVolumeReset(existing, connectionPatch)
+    if (guarded.blocked.length > 0) {
+      for (const b of guarded.blocked) { delete (connectionPatch as any)[b.field]; delete (canonicalSettingsPatch as any)[b.field] }
+      await recordVolumeResetBlocked(client, id, "updateConnection", guarded.blocked)
+    }
+  }
   await recordConnectionChangeAudit(client, id, "updateConnection", diffAuditedConnectionFields(existing, connectionPatch))
   await Promise.all([
     client.hset(`connection:${id}`, connectionPatch),
@@ -6484,6 +6505,19 @@ export async function updateConnectionState(
     if (value !== undefined) patch[key] = redisHashValue(value)
     return patch
   }, {})
+  {
+    // Same rule as updateConnection: only the operator's volume control may lower a
+    // channel volume factor to the minimum (see lib/connection-volume-guard.ts).
+    const guarded = withoutImplicitVolumeReset(existing, connectionPatch)
+    if (guarded.blocked.length > 0) {
+      for (const b of guarded.blocked) delete connectionPatch[b.field]
+      await recordVolumeResetBlocked(client, id, "updateConnectionState", guarded.blocked)
+    }
+  }
+  // The dashboard's enable / live / assign switches write through this function
+  // (versioned state switch), not updateConnection — X02's re-enabling at 07:46
+  // UTC left no audit line for exactly that reason.
+  await recordConnectionChangeAudit(client, id, "updateConnectionState", diffAuditedConnectionFields(existing, connectionPatch))
   const canonicalSettingsPatch = Object.entries(connectionPatch).reduce<Record<string, string>>(
     (patch, [key, value]) => {
       if (key === "updated_at" || CONNECTION_SETTINGS_CANONICAL_FIELDS.has(key)) patch[key] = value
