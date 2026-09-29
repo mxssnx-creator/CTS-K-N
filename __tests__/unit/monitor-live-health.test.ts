@@ -20,6 +20,7 @@ const healthy = () => ({
   funnel: { "bingx-x01": { baseCount: 18, mainEvaluated: 40, liveEvaluated: 90 } },
   results: { "bingx-x01": { lastClosedAgoMin: 30, window6h: { closed: 12, settled: 12, pf: 1.4, reasons: { stop_loss: 4, take_profit: 8 } }, window24h: { closed: 40, settled: 40, pf: 1.3, reasons: {} } } },
   audit: { "bingx-x01": { blockedVolumeResets: 0 } },
+  openings: { "bingx-x01": { last60: 3, lastAgoMin: 12 } },
   gate: { "bingx-x01": { freshSymbols: 9, candidates: 100, eligible: 60, selected: 60, suppressed: 40, suppressedHistoric: 40, suppressedReasons: {}, blockedReasons: {}, historic: { enabled: true, validated: 30, families: { normal: 20, axis: 10 }, indications: ["optimal", "move"], ranAt: AT } } },
   entries: { attempts: 6, success: 5, failed: 1, errors: {}, blocked: {} },
   ticks: { count: 20, over30s: 0, maxMs: 4000 },
@@ -182,5 +183,30 @@ describe("the live health verdict", () => {
     const before = { snapshot: healthy(), state: {} }
     const s: any = healthy(); s.gate["bingx-x01"].historic.enabled = false
     expect(ids(evaluate(s, before), "WARN")).toContain("historic_toggle_bingx-x01")
+  })
+  test("eligible candidates but nothing opened for an hour warn and name the most frequent block", () => {
+    const s: any = healthy()
+    s.openings["bingx-x01"] = { last60: 0, lastAgoMin: 95 }
+    s.gate["bingx-x01"].blockedReasons = { "rejected::Exchange order blocked before preflight: entry protection halt requires reconciliation": 145, "rejected::other": 2 }
+    const c = evaluate(s).checks.find((x: any) => x.id === "no_entries_bingx-x01")
+    expect(c.level).toBe("WARN")
+    expect(c.message).toContain("95 min")
+    expect(c.message).toContain("entry protection halt requires reconciliation (145x)")
+  })
+  test("recent openings are fine; many blocked dispatches are noted without warning while positions open", () => {
+    expect(evaluate(healthy()).checks.find((x: any) => x.id === "openings_bingx-x01").level).toBe("OK")
+    const s: any = healthy(); s.gate["bingx-x01"].blockedReasons = { "rejected::PositionCost exposure ceiling N USD is already occupied": 300 }
+    const c = evaluate(s).checks.find((x: any) => x.id === "dispatch_blocked_bingx-x01")
+    expect(c.level).toBe("INFO"); expect(c.message).toContain("300")
+  })
+  test("no opening on record at all is reported as such", () => {
+    const s: any = healthy(); s.openings["bingx-x01"] = { last60: 0, lastAgoMin: null }
+    expect(evaluate(s).checks.find((x: any) => x.id === "no_entries_bingx-x01").message).toContain("as long as recorded")
+  })
+  test("the openings line stays when many dispatches are blocked", () => {
+    const s: any = healthy(); s.gate["bingx-x01"].blockedReasons = { "rejected::x": 300 }
+    const r = evaluate(s)
+    expect(r.checks.find((x: any) => x.id === "openings_bingx-x01").level).toBe("OK")
+    expect(r.checks.find((x: any) => x.id === "dispatch_blocked_bingx-x01").level).toBe("INFO")
   })
 })

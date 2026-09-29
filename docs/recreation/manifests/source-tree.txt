@@ -219,6 +219,7 @@ __tests__/unit/historic-profit-factor.test.ts
 __tests__/unit/historic-progression-generation.test.ts
 __tests__/unit/historic-replay-policy.test.ts
 __tests__/unit/historic-test-admission.test.ts
+__tests__/unit/historic-test-alias-precedence.test.ts
 __tests__/unit/historic-test-candles.test.ts
 __tests__/unit/historic-test-config-signals.test.ts
 __tests__/unit/historic-test-cron-contract.test.ts

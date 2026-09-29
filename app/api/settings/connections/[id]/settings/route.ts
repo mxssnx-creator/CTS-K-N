@@ -31,7 +31,7 @@ import {
 } from "@/lib/constants"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
-import { historicTestSettingsToHashFields, normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
+import { applyIncomingHistoricPrecedence, historicTestSettingsToHashFields, normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import {
   normalizeMainTradeStagePfRatio,
@@ -714,6 +714,7 @@ export async function PUT(
       mergeConnectionSettings(currentSettings, incomingSettings),
     ))
     normalizeCoordinationAxesInSettings(mergedSettings)
+    applyIncomingHistoricPrecedence(mergedSettings, incomingSettings)
     normalizeHistoricTestInSettings(mergedSettings)
     enforceCombinedStrategyPipeline(mergedSettings)
     const hasSymbols = Array.isArray(body.symbols)
@@ -886,6 +887,7 @@ export async function PATCH(
       mergeConnectionSettings(current, settings),
     ))
     normalizeCoordinationAxesInSettings(merged)
+    applyIncomingHistoricPrecedence(merged, settings)
     normalizeHistoricTestInSettings(merged)
     enforceCombinedStrategyPipeline(merged)
     // Keep the canonical nested coordination object in sync with the top-level
