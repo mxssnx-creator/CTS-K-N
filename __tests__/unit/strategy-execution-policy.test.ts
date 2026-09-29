@@ -6,13 +6,17 @@ import {
 } from "@/lib/strategy-execution-policy"
 
 describe("strategy execution family policy", () => {
-  test("defaults every family on and ignores the retired -only aliases", () => {
+  test("defaults every family on except DCA (off by default) and ignores the retired -only aliases", () => {
     expect(normalizeStrategyExecutionPolicy({ blockOnly: true, variantBlockOnly: true })).toEqual({
       normalEnabled: true,
       axisEnabled: true,
       trailingEnabled: true,
       blockEnabled: true,
+      dcaEnabled: false,
+    })
+    expect(normalizeStrategyExecutionPolicy({ variantDcaEnabled: true })).toMatchObject({
       dcaEnabled: true,
+      normalEnabled: true,
     })
     expect(normalizeStrategyExecutionPolicy({ variantDcaEnabled: false })).toMatchObject({
       dcaEnabled: false,

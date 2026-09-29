@@ -1,4 +1,4 @@
-import { DEFAULT_BASE_MIN_STEP, DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
+import { DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP, DEFAULT_VOLUME_STEP_RATIO } from "@/lib/constants"
 import { DEFAULT_MAX_STOP_LOSS_RATIO } from "@/lib/stoploss-ratio-range"
 import { Settings } from "./types"
 import { toast } from "@/lib/simple-toast"
@@ -45,7 +45,7 @@ export const initialSettings: Settings = {
   min_volume_enforcement: true, // Added missing min_volume_enforcement property
   minStep: DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio: DEFAULT_MAX_STOP_LOSS_RATIO, // 0.25-2.5 step 0.25 — max SL ratio for Base pseudo-position Sets
-  trailingMinStep: DEFAULT_BASE_MIN_STEP,
+  trailingMinStep: DEFAULT_TRAILING_MIN_STEP,
 
   // Base Strategy
   baseValueRangeMin: 0.5,

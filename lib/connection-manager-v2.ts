@@ -260,7 +260,7 @@ export class ConnectionManagerV2 {
         forex_execution_mode: isInstaForex ? forexExecutionMode : undefined,
         read_only: isInstaForex ? !bridgeSelected : input.read_only,
         margin_type: input.margin_type,
-        position_mode: input.position_mode,
+        position_mode: input.position_mode ?? (isInstaForex ? "one_way" : "hedge"),
         is_testnet: isInstaForex ? false : input.is_testnet,
         is_enabled: "0",
         is_enabled_dashboard: "0",

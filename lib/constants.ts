@@ -103,6 +103,13 @@ export const MAX_BASE_STEP = 30
  */
 export const MAX_INDICATION_WINDOW = 48
 export const DEFAULT_BASE_MIN_STEP = 5
+/**
+ * Default for the trailing minimum step (range 2-30). It shared DEFAULT_BASE_MIN_STEP
+ * (5) with minStep / indicationRangeMin and the settings comment even said 4;
+ * operator default since 2026-09-29 is 8, independent of the base step. Saved
+ * per-connection values (X01 11, X02 7) are the operator's and are not touched.
+ */
+export const DEFAULT_TRAILING_MIN_STEP = 8
 
 export function normalizeBaseMinStep(raw: unknown): number {
   const parsed = Number(raw)

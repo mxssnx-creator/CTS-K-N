@@ -43,7 +43,8 @@ export const DEFAULT_STRATEGY_EXECUTION_POLICY: StrategyExecutionPolicy = {
   normalEnabled: true,
   axisEnabled: true,
   blockEnabled: true,
-  dcaEnabled: true,
+  // DCA is off unless the operator switches it on (operator default, 2026-09-29).
+  dcaEnabled: false,
   trailingEnabled: true,
 }
 

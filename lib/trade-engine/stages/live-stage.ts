@@ -15629,7 +15629,12 @@ export async function executeLivePosition(
       || (lockedSettings as any).positionMode
       || "",
     ).toLowerCase()
-    const hedgeMode = positionMode.includes("hedge") || positionMode.includes("dual")
+    // Hedge is the default: a missing position_mode used to mean one-way, i.e.
+    // no positionSide on the order, which BingX rejects (109400) on a hedge
+    // account. Only forex, whose brokers have no hedge mode, keeps one-way.
+    const hedgeMode = positionMode === ""
+      ? livePosition.marketType !== "forex"
+      : positionMode.includes("hedge") || positionMode.includes("dual")
     const nativeForexProtection = (() => {
       if (livePosition.marketType !== "forex" || typeof exchangeConnector?.getCapabilities !== "function") return {}
       try {

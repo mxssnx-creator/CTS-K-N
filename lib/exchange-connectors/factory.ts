@@ -129,7 +129,7 @@ export class ExchangeConnectorFactory {
       apiType: connection.api_type || (isInstaForex ? "forex" : undefined),
       contractType: connection.contract_type || (isInstaForex ? "forex" : undefined),
       marginType: connection.margin_type,
-      positionMode: isInstaForex ? "one_way" : connection.position_mode,
+      positionMode: isInstaForex ? "one_way" : (connection.position_mode || "hedge"),
       connectionMethod: exchange === "bingx" ? "library" : (isInstaForex ? (bridgeSelected ? "bridge" : "rest") : (connection.connection_method || undefined)),
       connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk" : (isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (connection.connection_library || undefined)),
     }
@@ -177,7 +177,7 @@ export class ExchangeConnectorFactory {
       api_type: connection.api_type || "",
       contract_type: connection.contract_type || "",
       margin_type: connection.margin_type || "",
-      position_mode: isInstaForex ? "one_way" : (connection.position_mode || ""),
+      position_mode: isInstaForex ? "one_way" : (connection.position_mode || "hedge"),
       connection_method: exchange === "bingx" ? "library" : (isInstaForex ? (bridgeSelected ? "bridge" : "rest") : (connection.connection_method || "")),
       connection_library: exchange === "bingx" ? "sdk" : (isInstaForex ? (bridgeSelected ? "mt5-bridge" : "native-http") : (connection.connection_library || "")),
       exchange: exchange || "",

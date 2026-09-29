@@ -122,7 +122,7 @@ import {
   getRuntimeConcurrencyProfile,
 } from "@/lib/runtime-concurrency-profile"
 import {
-  DEFAULT_BASE_MIN_STEP,
+  DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP,
   MAX_BASE_STEP,
   MIN_BASE_STEP,
 } from "@/lib/constants"
@@ -458,6 +458,41 @@ function blockLaneSymbol(value: unknown): string {
     .slice(0, 32) || "UNKNOWN"
 }
 
+/**
+ * Measurements an indication reports about THIS cycle. They describe what the
+ * market did, not how the Set is configured, and they change every cycle. In the
+ * explicit-config path they went into the Set key: X01 held 432 Base Sets whose
+ * result rings each held 1-2 entries (limit 600) while Main requires 25, so no
+ * Set ever qualified, the funnel ran empty (Main evaluated 0) and 23,869
+ * indication:<conn>:config keys without a TTL piled up. The fallback path
+ * already keeps only allow-listed configuration fields (finding F2); this
+ * applies the same rule to a config object.
+ */
+const VOLATILE_INDICATION_CONFIG_FIELDS: ReadonlySet<string> = new Set([
+  "activeMarketChangePct", "activeSituationRatio", "adverseDrawdownFactor", "adverseDrawdownPct",
+  "averageOneMinuteChangePct", "continuationAgreement", "directionEvaluation", "lastSituationPct",
+  "lastSituationRatio", "marketChangePositionCostRatio", "positionCostRatio", "totalChangePct",
+  "calculatedMinFactor", "appliedMinFactor", "rangePercent", "primary", "bodyRatio", "score",
+  "scoreMargin", "agreement", "averageMagnitude", "evidenceCount", "totalEvidenceCount", "qualified",
+  "selectedDirection", "multiRangeCoordination", "activeOutbreak",
+])
+// The adaptive TP grid is derived from the measured market change each cycle.
+const VOLATILE_ADAPTIVE_TP_FIELDS: ReadonlySet<string> = new Set(["factors"])
+
+export function withoutVolatileIndicationConfigFields(value: unknown, inAdaptiveTpRange = false): unknown {
+  if (Array.isArray(value)) return value.map((item) => withoutVolatileIndicationConfigFields(item, inAdaptiveTpRange))
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (VOLATILE_INDICATION_CONFIG_FIELDS.has(key)) continue
+      if (inAdaptiveTpRange && VOLATILE_ADAPTIVE_TP_FIELDS.has(key)) continue
+      out[key] = withoutVolatileIndicationConfigFields(item, key === "adaptiveTpRange")
+    }
+    return out
+  }
+  return value
+}
+
 function stableIndicationConfig(value: unknown): string {
   if (value === null || value === undefined) return ""
   if (typeof value !== "object") return String(value)
@@ -559,7 +594,7 @@ export function strategyIndicationConfigurationIdentity(indication: any): string
   const explicitConfig = indication?.config ?? indication?.metadata?.configuration
   return `name=${name}|config=${stableIndicationConfig(
     explicitConfig && typeof explicitConfig === "object"
-      ? explicitConfig
+      ? withoutVolatileIndicationConfigFields(explicitConfig)
       : allowListedIndicationConfiguration(indication?.metadata),
   )}`
 }
@@ -4094,7 +4129,7 @@ export class StrategyCoordinator {
       // Progress Sets view and live control-order SL anchoring on the exact
       // range matrix the operator just saved.
       const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
-      let trailingMinStep = DEFAULT_BASE_MIN_STEP
+      let trailingMinStep = DEFAULT_TRAILING_MIN_STEP
       const rawMin = Number(
         settings.trailingMinStep ??
         settings.trailing_min_step ??

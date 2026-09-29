@@ -23,7 +23,7 @@ import {
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
 import {
-  DEFAULT_BASE_MIN_STEP,
+  DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP,
   MAX_BASE_STEP,
   MAX_VOLUME_FACTOR,
   MIN_VOLUME_FACTOR,
@@ -297,7 +297,7 @@ function normalizeUnlimitedPipeline<T extends Record<string, any>>(settings: T):
   mutable.minStep = minStep
   mutable.trailingMinStep = Math.max(
     minStep,
-    Math.min(MAX_BASE_STEP, Math.round(Number(mutable.trailingMinStep) || DEFAULT_BASE_MIN_STEP)),
+    Math.min(MAX_BASE_STEP, Math.round(Number(mutable.trailingMinStep) || DEFAULT_TRAILING_MIN_STEP)),
   )
   mutable.strategyRealSetsSafetyCeiling = 0
   mutable.maxRealSets = 0
@@ -450,7 +450,7 @@ export async function GET(
     const settings: Record<string, any> = normalizeUnlimitedPipeline({
       minStep: DEFAULT_BASE_MIN_STEP,
       maxStopLossRatio: 2.5,
-      trailingMinStep: DEFAULT_BASE_MIN_STEP,
+      trailingMinStep: DEFAULT_TRAILING_MIN_STEP,
       ...jsonSettings,
       ...hashSettings,
     })
