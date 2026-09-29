@@ -149,4 +149,9 @@ describe("the live health verdict", () => {
     expect(writes.length).toBeGreaterThan(0)
     for (const w of src.matchAll(/redis\(\["(set|lpush|ltrim|del|hset|expire)",\s*([A-Z_a-z:"-]+)/g)) expect(w[2]).toMatch(/LATEST_KEY|HISTORY_KEY/)
   })
+  test("the stored issues and the printed findings list the most severe first", () => {
+    const src = readFileSync(script, "utf8")
+    expect(src).toContain("sort((a, b) => rank(b.level) - rank(a.level)).map((c) => `${c.level} ${c.message}`)")
+    expect(src).toContain("for (const c of [...issues].sort((a, b) => rank(b.level) - rank(a.level)))")
+  })
 })

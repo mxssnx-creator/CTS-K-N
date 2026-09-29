@@ -389,7 +389,8 @@ function runOnce() {
       lastClosedAgoMin: Object.fromEntries(Object.entries(snapshot.results || {}).map(([c, r]) => [c, r.lastClosedAgoMin])),
       pf6h: Object.fromEntries(Object.entries(snapshot.results || {}).map(([c, r]) => [c, r.window6h?.pf ?? null])),
       slotHalts: snapshot.slotHalts, live: snapshot.expectedLive,
-      issues: verdict.checks.filter((c) => c.level !== "OK").map((c) => `${c.level} ${c.message}`).slice(0, 6),
+      // Most severe first: the report shows the first one.
+      issues: verdict.checks.filter((c) => c.level !== "OK").sort((a, b) => rank(b.level) - rank(a.level)).map((c) => `${c.level} ${c.message}`).slice(0, 6),
     }
     redis(["lpush", HISTORY_KEY, JSON.stringify(compact)])
     redis(["ltrim", HISTORY_KEY, "0", "671"])
@@ -398,7 +399,7 @@ function runOnce() {
   }
   const issues = verdict.checks.filter((c) => c.level !== "OK")
   console.log(`${priorityPrefix(verdict.level)}[monitor] ${snapshot.at} ${verdict.level} — ${issues.length === 0 ? "all checks ok" : `${issues.length} finding(s)`}`)
-  for (const c of issues) console.log(`${priorityPrefix(c.level)}[monitor]   ${c.level} ${c.id}: ${c.message}`)
+  for (const c of [...issues].sort((a, b) => rank(b.level) - rank(a.level))) console.log(`${priorityPrefix(c.level)}[monitor]   ${c.level} ${c.id}: ${c.message}`)
   return record
 }
 
@@ -406,11 +407,11 @@ function report(count) {
   const rows = lines(redis(["lrange", HISTORY_KEY, "0", String(Math.max(1, count) - 1)])).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
   if (rows.length === 0) { console.log("no monitor history yet"); return }
   const pad = (v, n) => String(v ?? "-").padEnd(n)
-  console.log(`${pad("time (UTC)", 20)}${pad("level", 6)}${pad("rss MB", 8)}${pad("orders ok/all", 14)}${pad("last close (min)", 18)}${pad("PF 6h", 14)}first finding`)
+  console.log(`${pad("time (UTC)", 20)}${pad("level", 6)}${pad("rss MB", 8)}${pad("orders ok/all", 14)}${pad("last close (min)", 20)}${pad("PF 6h", 22)}most severe finding`)
   for (const r of rows) {
     const closes = Object.entries(r.lastClosedAgoMin || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v ?? "-"}`).join(" ")
     const pf = Object.entries(r.pf6h || {}).map(([c, v]) => `${c.replace("bingx-", "")}:${v === null || v === undefined ? "-" : v.toFixed(2)}`).join(" ")
-    console.log(`${pad(r.at.slice(0, 19).replace("T", " "), 20)}${pad(r.level, 6)}${pad(r.rssMb, 8)}${pad(`${r.ok ?? "-"}/${r.attempts ?? "-"}`, 14)}${pad(closes, 18)}${pad(pf, 14)}${(r.issues || [])[0] || ""}`)
+    console.log(`${pad(r.at.slice(0, 19).replace("T", " "), 20)}${pad(r.level, 6)}${pad(r.rssMb, 8)}${pad(`${r.ok ?? "-"}/${r.attempts ?? "-"}`, 14)}${pad(closes, 20)}${pad(pf, 22)}${(r.issues || [])[0] || ""}`)
   }
 }
 
