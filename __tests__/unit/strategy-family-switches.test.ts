@@ -11,12 +11,12 @@ const policy = (over: Partial<typeof DEFAULT_STRATEGY_EXECUTION_POLICY> = {}) =>
 })
 
 describe("independent Normal/Axis/Block/DCA execution switches", () => {
-  test("all four families are enabled by default and the retired -only flag is gone", () => {
+  test("Normal, Axis and Block are enabled by default, DCA is off, and the retired -only flag is gone", () => {
     expect(DEFAULT_STRATEGY_EXECUTION_POLICY).toEqual({
       normalEnabled: true,
       axisEnabled: true,
       blockEnabled: true,
-      dcaEnabled: true,
+      dcaEnabled: false,
       trailingEnabled: true,
     })
     expect(normalizeStrategyExecutionPolicy({})).toEqual(DEFAULT_STRATEGY_EXECUTION_POLICY)
@@ -30,7 +30,8 @@ describe("independent Normal/Axis/Block/DCA execution switches", () => {
   test("each family switch governs only its own family", () => {
     expect(isStrategyExecutionFamilyEnabled("normal", policy({ normalEnabled: false }))).toBe(false)
     for (const family of ["axis", "block", "dca"] as const) {
-      expect(isStrategyExecutionFamilyEnabled(family, policy({ normalEnabled: false }))).toBe(true)
+      // DCA is off by default, so it is switched on explicitly here.
+      expect(isStrategyExecutionFamilyEnabled(family, policy({ normalEnabled: false, dcaEnabled: true }))).toBe(true)
     }
     expect(isStrategyExecutionFamilyEnabled("axis", policy({ axisEnabled: false }))).toBe(false)
     expect(isStrategyExecutionFamilyEnabled("block", policy({ blockEnabled: false }))).toBe(false)

@@ -58,7 +58,7 @@ import {
 } from "@/lib/dca-strategy"
 import { STRATEGY_AXIS_SPECS } from "@/lib/strategy-axis-settings"
 import {
-  DEFAULT_BASE_MIN_STEP,
+  DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP,
   MAX_BASE_STEP,
   MIN_BASE_STEP,
 } from "@/lib/constants"
@@ -216,7 +216,7 @@ export interface CoordinationSettings {
  * - trailing: on, block: on, dca: off (per directive)
  * - minStep: 5 (default; exhaustive configured minimum through 30)
  * - maxStopLossRatio: 2.5 (default=max; range 0.25-2.5, step 0.25)
- * - trailingMinStep: 4 (default; range 2-30)
+ * - trailingMinStep: 8 (default; range 2-30)
  * - PF defaults set in DEFAULT_STRATEGY_PROFILE (base=1.0, main/real=1.2)
  */
 export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
@@ -264,7 +264,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   liveEvalPosCount: 20,
   minStep:           DEFAULT_BASE_MIN_STEP,
   maxStopLossRatio:  2.5,
-  trailingMinStep:   DEFAULT_BASE_MIN_STEP,
+  trailingMinStep:   DEFAULT_TRAILING_MIN_STEP,
 }
 
 interface StrategyCoordinationSectionProps {

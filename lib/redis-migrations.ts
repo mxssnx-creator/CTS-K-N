@@ -38,7 +38,7 @@ import {
   DEFAULT_PRESET_INDICATION_PROFILE,
   INDICATION_PROFILE_TYPES,
 } from "./active-indication-profile"
-import { DEFAULT_BASE_MIN_STEP } from "./constants"
+import { DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP } from "./constants"
 import {
   DEFAULT_FOREX_LOT_SIZE,
   DEFAULT_FOREX_POSITIONS_AVERAGE,
@@ -5867,7 +5867,7 @@ const migrations: Migration[] = [
           patch.minStep = String(DEFAULT_BASE_MIN_STEP)
         }
         if (values.trailingMinStep == null || Number(values.trailingMinStep) === 2) {
-          patch.trailingMinStep = String(DEFAULT_BASE_MIN_STEP)
+          patch.trailingMinStep = String(DEFAULT_TRAILING_MIN_STEP)
         }
 
         for (const jsonField of ["connection_settings", "coordination_settings", "strategies"]) {
@@ -5903,7 +5903,7 @@ const migrations: Migration[] = [
                 coordination.trailingMinStep == null ||
                 Number(coordination.trailingMinStep) === 2
               ) {
-                coordination.trailingMinStep = DEFAULT_BASE_MIN_STEP
+                coordination.trailingMinStep = DEFAULT_TRAILING_MIN_STEP
                 changed = true
               }
             }
@@ -5915,7 +5915,7 @@ const migrations: Migration[] = [
               document.trailingMinStep == null ||
               Number(document.trailingMinStep) === 2
             ) {
-              document.trailingMinStep = DEFAULT_BASE_MIN_STEP
+              document.trailingMinStep = DEFAULT_TRAILING_MIN_STEP
               changed = true
             }
             for (const container of [document?.strategies, document]) {
