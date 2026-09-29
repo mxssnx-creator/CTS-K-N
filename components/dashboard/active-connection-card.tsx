@@ -2177,7 +2177,8 @@ export function ActiveConnectionCard({
           title:
             `Open Signal positions (Long ${signalOverview?.openLong ?? 0}, Short ${signalOverview?.openShort ?? 0}): one per ` +
             "symbol + direction, several rows on the same are ONE position / limit · orders: every internal " +
-            "position row and every order of it incl. partial fills / limit (∞ = unlimited).",
+            "position row and every order of it incl. partial fills / limit (∞ = unlimited). System-own only: " +
+            "other systems and bots on the account are not counted.",
           tone: "text-cyan-700 dark:text-cyan-400",
         },
         {

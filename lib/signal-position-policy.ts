@@ -1,3 +1,5 @@
+import { connectionTrackingId, isConnectionOwnedClientOrderId, systemTrackingPrefix } from "@/lib/system-order-ownership"
+
 // Signal limits (operator, 2026-09-29). They apply to SIGNALS only and do not
 // touch Main, Preset, Direct Trade or the system-wide Previous-position contract.
 //
@@ -152,8 +154,37 @@ function orderKey(value: unknown): string {
  * settlement ids — and every further fill of the same order counts as well,
  * so a partially filled order is not hidden behind its first fill.
  */
-export function countSignalPositionOrders(position: Record<string, any> | null | undefined): number {
+/**
+ * A Signal row that belongs to THIS system on THIS connection. Only these are
+ * counted as positions or orders and only these can meet a limit: other systems
+ * trade the same accounts (X01: a second system with client ids "ctsax1_…", the
+ * bots with "cb…") and must neither fill the limits nor be affected by them.
+ *
+ * A row is excluded only when it is PROVABLY foreign: a different connection
+ * id, or a system / connection tracking id that is present and does not match.
+ * A row without those fields (older rows) is this system's own — the live
+ * position list of a connection is written by this system only — because
+ * treating "not provable" as foreign would undercount and let the limit be
+ * exceeded.
+ */
+export function isSystemOwnSignalRow(row: Record<string, any> | null | undefined, connectionId: string): boolean {
+  if (!row || !connectionId) return false
+  const text = (value: unknown) => String(value ?? "").trim()
+  const rowConnection = text(row.connectionId ?? row.connection_id)
+  if (rowConnection && rowConnection !== connectionId) return false
+  const systemId = text(row.system_tracking_id ?? row.systemTrackingId)
+  if (systemId && !systemId.startsWith(systemTrackingPrefix(connectionId))) return false
+  const trackingId = text(row.connection_tracking_id ?? row.connectionTrackingId)
+  if (trackingId && trackingId !== connectionTrackingId(connectionId)) return false
+  return true
+}
+
+export function countSignalPositionOrders(position: Record<string, any> | null | undefined, connectionId?: string): number {
   if (!position) return 0
+  // With a connection the count is own-only: a row that is not this system's
+  // has no orders here, and a tracked client order id that is not this
+  // system's (another system's or a bot's) is not counted.
+  if (connectionId && !isSystemOwnSignalRow(position, connectionId)) return 0
   const orders = new Set<string>()
   const add = (value: unknown) => { const key = orderKey(value); if (key) orders.add(key) }
   add(position.orderId)
@@ -164,7 +195,11 @@ export function countSignalPositionOrders(position: Record<string, any> | null |
   for (const id of Array.isArray(position.settledOrderIds) ? position.settledOrderIds : []) add(id)
   for (const id of Array.isArray(position.entrySettlementOrderIds) ? position.entrySettlementOrderIds : []) add(id)
   const tracked = Array.isArray(position.exchangeData?.clientOrderIds) ? position.exchangeData.clientOrderIds : []
-  for (const entry of tracked) add(entry?.clientOrderId ?? entry?.id)
+  for (const entry of tracked) {
+    const clientId = entry?.clientOrderId ?? entry?.id
+    if (connectionId && orderKey(clientId) && !isConnectionOwnedClientOrderId(clientId, connectionId)) continue
+    add(clientId)
+  }
   const fillsPerOrder = new Map<string, number>()
   for (const fill of Array.isArray(position.fills) ? position.fills : []) {
     const key = orderKey(fill?.orderId)
