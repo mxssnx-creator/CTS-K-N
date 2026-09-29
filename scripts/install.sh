@@ -1089,6 +1089,12 @@ configure_memory_watchdog() {
   runtime_soft_mb=$(( runtime_max_mb * 75 / 100 ))
   app_heap_mb=$(( runtime_max_mb * 70 / 100 ))
   (( app_heap_mb < 512 )) && app_heap_mb=512
+  # A heap limit far above the working set lets V8 defer collection until the
+  # process is huge (measured: 1.9 GB RSS at a 4.5 GB limit on a 16 GB host).
+  # 3 GB is well above the measured working set and makes the collector work
+  # earlier; CTS_APP_HEAP_MB_MAX overrides it.
+  local app_heap_cap_mb="${CTS_APP_HEAP_MB_MAX:-3072}"
+  (( app_heap_mb > app_heap_cap_mb )) && app_heap_mb=$app_heap_cap_mb
   (( app_heap_mb > 12288 )) && app_heap_mb=12288
   scheduler_heap_mb=$(( app_heap_mb / 4 ))
   (( scheduler_heap_mb < 256 )) && scheduler_heap_mb=256

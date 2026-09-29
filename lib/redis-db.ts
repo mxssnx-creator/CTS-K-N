@@ -5141,6 +5141,58 @@ export async function reconcileLegacyConnectionsSetFromHashes(): Promise<Connect
   }
 }
 
+// ── Operator-setting change audit ─────────────────────────────────────────
+// Connection settings kept resetting in production (X02: is_live_trade,
+// is_active, is_assigned and is_enabled_dashboard flipped to 0 at 04:40 UTC
+// on 2026-09-29, right after a deploy; symbol_order / dev_symbol_count_override
+// rewritten at the same minute) and no record said WHO wrote them. Every
+// write that changes one of the operator fields below now leaves a line with
+// the old and new value and the caller's stack in a capped Redis list, so a
+// reset can be traced to its writer instead of guessed at.
+export const CONNECTION_AUDITED_FIELDS: ReadonlySet<string> = new Set([
+  "is_live_trade", "live_trade_requested", "live_trade_enabled", "is_active", "is_assigned",
+  "is_enabled", "is_enabled_dashboard", "is_preset_trade", "selected_symbols", "active_symbols",
+  "symbol_count", "dev_symbol_count_override", "symbol_order", "live_volume_factor",
+  "preset_volume_factor", "signal_volume_factor", "volume_factor", "max_leverage",
+  "maxPositionsLong", "maxPositionsShort", "maxPositionsPerConfigDirection",
+  "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
+  "base_min_profit_factor", "main_min_profit_factor", "real_min_profit_factor", "live_min_profit_factor",
+])
+export function connectionChangeAuditKey(id: string): string {
+  return `audit:connection-changes:${id}`
+}
+export function diffAuditedConnectionFields(
+  previous: Record<string, any> | null | undefined,
+  patch: Record<string, any> | null | undefined,
+): Array<{ field: string; from: string; to: string }> {
+  const out: Array<{ field: string; from: string; to: string }> = []
+  for (const [field, value] of Object.entries(patch || {})) {
+    if (!CONNECTION_AUDITED_FIELDS.has(field)) continue
+    const from = previous && previous[field] !== undefined ? String(previous[field]) : ""
+    const to = value === undefined || value === null ? "" : String(value)
+    if (from !== to) out.push({ field, from, to })
+  }
+  return out
+}
+async function recordConnectionChangeAudit(
+  client: any,
+  id: string,
+  source: "updateConnection" | "saveConnection",
+  changes: Array<{ field: string; from: string; to: string }>,
+): Promise<void> {
+  if (changes.length === 0 || !client || typeof client.lpush !== "function") return
+  const stack = String(new Error().stack || "")
+    .split("\n").slice(3, 9).map((l) => l.trim().replace(/^at\s+/, "")).filter(Boolean)
+  const entry = JSON.stringify({ at: new Date().toISOString(), source, changes, stack })
+  const key = connectionChangeAuditKey(id)
+  await client.lpush(key, entry).catch(() => 0)
+  if (typeof client.ltrim === "function") await client.ltrim(key, 0, 199).catch(() => 0)
+  const flips = changes.filter((c) => /^is_|_requested$|_enabled$/.test(c.field))
+  if (flips.length > 0) {
+    console.warn(`[v0] [ConnectionAudit] ${id} ${source}: ${flips.map((c) => `${c.field} ${c.from || "∅"}→${c.to || "∅"}`).join(", ")} | ${stack[0] || "?"}`)
+  }
+}
+
 export async function saveConnection(connection: any): Promise<void> {
   await initRedis()
   const client = getClient()
@@ -5160,6 +5212,7 @@ export async function saveConnection(connection: any): Promise<void> {
     updated_at: new Date().toISOString(),
   })
   
+  await recordConnectionChangeAudit(client, id, "saveConnection", diffAuditedConnectionFields(previous, data))
   await Promise.all([
     client.hset(`connection:${id}`, data),
     client.sadd("connections", id),
@@ -6367,6 +6420,7 @@ export async function updateConnection(id: string, updates: any): Promise<any> {
   // concurrent edits to unrelated fields because the last stale snapshot won.
   // Redis HSETs on disjoint fields now compose safely; same-field switches keep
   // normal last-writer semantics and are ordered by state_switch_version.
+  await recordConnectionChangeAudit(client, id, "updateConnection", diffAuditedConnectionFields(existing, connectionPatch))
   await Promise.all([
     client.hset(`connection:${id}`, connectionPatch),
     // Keep the canonical settings mirror in the same write barrier. Readers

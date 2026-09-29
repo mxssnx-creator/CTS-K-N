@@ -111,6 +111,7 @@ __tests__/unit/close-adopted-positions.test.ts
 __tests__/unit/closeable-row-statuses.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
+__tests__/unit/connection-change-audit.test.ts
 __tests__/unit/connection-coordinator.test.ts
 __tests__/unit/connection-rate-limiter-boundary.test.ts
 __tests__/unit/connection-recoordinator-concurrency.test.ts
