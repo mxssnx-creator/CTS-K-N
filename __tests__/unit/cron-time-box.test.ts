@@ -114,6 +114,13 @@ describe("wiring", () => {
     expect(pulse).toContain('"/api/cron/server-continuity?wait=1"')
     expect(pulse).toContain('"/api/cron/sync-live-positions?wait=1"')
   })
+  test("the deployment verifier waits for the finished tick: a 202 pending would fail the deploy (2026-09-29 13:07)", () => {
+    const verify = read("scripts/post-deploy-verify.sh")
+    expect(verify).toContain('http_status "${endpoint}?wait=1" "$CRON_TIMEOUT_SECONDS" --header "Authorization: Bearer ${cron_secret}"')
+    // the unauthenticated probe (expects 401) stays as it was
+    expect(verify).toContain('unauthenticated_status="$(http_status "$endpoint" "$READ_TIMEOUT_SECONDS")"')
+    expect(read("scripts/run-prod-preview-check.mjs")).toContain('"/api/cron/sync-live-positions?wait=1"')
+  })
   test("the scheduler asks for completion only in the installer's --once mode", () => {
     const script = resolve(process.cwd(), "scripts/run-minute-scheduler.mjs")
     const code = `import * as m from ${JSON.stringify("file://" + script)}
