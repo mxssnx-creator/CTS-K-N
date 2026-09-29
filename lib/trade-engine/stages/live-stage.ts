@@ -148,6 +148,7 @@ import {
   evaluateSignalPositionCapacity,
   isActiveSignalPosition,
   countSignalPositionOrders,
+  isSystemOwnSignalRow,
   evaluateSignalOrderCapacity,
   normalizeSignalMaxOrdersPerSymbol,
   signalSlotMember,
@@ -3346,7 +3347,11 @@ async function updateSignalAdmissionIndexes(client: any, position: LivePosition)
   const indexKey = signalPositionAdmissionIndexKey(position.connectionId)
   const longKey = signalPositionAdmissionDirectionIndexKey(position.connectionId, "long")
   const shortKey = signalPositionAdmissionDirectionIndexKey(position.connectionId, "short")
-  const activeSignal = isActiveSignalPosition(position as unknown as Record<string, unknown>)
+  // Only system-own rows are Signal positions here; a foreign row (other
+  // connection or other system tracking id) never enters the admission index.
+  const activeSignal =
+    isActiveSignalPosition(position as unknown as Record<string, unknown>) &&
+    isSystemOwnSignalRow(position as unknown as Record<string, any>, position.connectionId)
   const direction = resolveLivePositionDirection(position)
 
   if (!activeSignal || !direction) {
@@ -3383,6 +3388,7 @@ async function rebuildSignalAdmissionIndexes(
   const positions = await readPositionsForSignalAdmission(client, connectionId)
   const active = positions.filter((position) =>
     isActiveSignalPosition(position as unknown as Record<string, unknown>) &&
+    isSystemOwnSignalRow(position as unknown as Record<string, any>, connectionId) &&
     (position.direction === "long" || position.direction === "short"),
   )
   const indexKey = signalPositionAdmissionIndexKey(connectionId)
@@ -3566,7 +3572,7 @@ async function countActiveSignalOrders(client: any, connectionId: string, symbol
   let orders = 0
   for (const id of ids) {
     const row = await readLivePositionSnapshot(client, connectionId, id).catch(() => null)
-    orders += countSignalPositionOrders(row as unknown as Record<string, any>)
+    orders += countSignalPositionOrders(row as unknown as Record<string, any>, connectionId)
   }
   signalOrderCountCache.set(cacheKey, { at: Date.now(), orders })
   return orders

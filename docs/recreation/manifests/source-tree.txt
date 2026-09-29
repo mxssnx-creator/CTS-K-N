@@ -409,6 +409,7 @@ __tests__/unit/signal-historic-eval.test.ts
 __tests__/unit/signal-indication.test.ts
 __tests__/unit/signal-orthogonal-sources.test.ts
 __tests__/unit/signal-own-limits.test.ts
+__tests__/unit/signal-own-only.test.ts
 __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-positions-orders.test.ts
 __tests__/unit/signal-source-registry.test.ts

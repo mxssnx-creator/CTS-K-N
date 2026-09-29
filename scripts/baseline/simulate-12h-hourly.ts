@@ -24,6 +24,8 @@
  *   CTS_SIM_MAX_POS        concurrent positions in the replay     (default 100)
  *   CTS_SIM_MAX_PER_SYMBOL concurrent positions per symbol, 0=off (default 0)
  *   CTS_SIM_SYMBOLS        symbols used from the file             (default 22)
+ *   CTS_SIM_TP_MULT        take profit in PositionCost multiples  (default 5  = 0.50 %)
+ *   CTS_SIM_SL_MULT        stop loss in PositionCost multiples    (default 20 = 2.00 %)
  *   CTS_SIM_OUT            optional path for the hourly rows as JSON
  */
 import { readFileSync, writeFileSync } from "node:fs"
@@ -43,7 +45,9 @@ const BASE_PF = env("CTS_SIM_BASE_PF", 1.1)
 const EVAL = env("CTS_SIM_EVAL", 50)
 const MAX_POS = env("CTS_SIM_MAX_POS", 100)
 const MAX_PER_SYMBOL = env("CTS_SIM_MAX_PER_SYMBOL", 0)
-const PC = 0.1, COST = roundTripCostPercent(), TP = PC * 5, SL = PC * 20, HOLD = 240
+const PC = 0.1, COST = roundTripCostPercent(), HOLD = 240
+const TP_MULT = env("CTS_SIM_TP_MULT", 5), SL_MULT = env("CTS_SIM_SL_MULT", 20)
+const TP = PC * TP_MULT, SL = PC * SL_MULT
 const START = 10, LEV = 5, RISK_PER_POS = 0.003
 const SL_R = Math.abs((-SL - COST) / PC)
 const COST_R = COST / PC
@@ -83,8 +87,11 @@ for (const sym of SYMBOLS) for (const range of RANGES) {
 }
 // STAGE MAIN (Axis) and REAL (Block) on the lane's full sequence, then only the test window.
 const inTest = (t: T) => t.openedAt >= split
-const axisLanes = lanes.map((l) => (deriveAxisTrades(l as any, { prev: 6, last: 2, cont: 1, pause: 8 }) as T[]).map((t) => ({ ...t, family: "axis" })))
-const blockLanes = axisLanes.flatMap((l) => [1, 2].map((c) => (deriveBlockTrades(l as any, { volumeRatio: 0.2, maxStack: 6, fixedCount: c, incrementSteps: 3 }) as T[]).map((t) => ({ ...t, family: `block${c}` }))))
+// The derivations return new trade objects without the symbol: it is carried
+// through here from the lane, otherwise the per-symbol cap and breakdown break.
+const laneSyms = lanes.map((l) => l[0].sym)
+const axisLanes = lanes.map((l, i) => (deriveAxisTrades(l as any, { prev: 6, last: 2, cont: 1, pause: 8 }) as T[]).map((t) => ({ ...t, sym: laneSyms[i], family: "axis" })))
+const blockLanes = axisLanes.flatMap((l, i) => [1, 2].map((c) => (deriveBlockTrades(l as any, { volumeRatio: 0.2, maxStack: 6, fixedCount: c, incrementSteps: 3 }) as T[]).map((t) => ({ ...t, sym: laneSyms[i], family: `block${c}` }))))
 const candidates = [...axisLanes.flat(), ...blockLanes.flat()].filter(inTest).sort((a, b) => a.openedAt - b.openedAt)
 
 const hh = (ms: number) => new Date(ms).toISOString().slice(11, 16)

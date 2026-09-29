@@ -1,4 +1,4 @@
-import { countSignalPositionOrders, summarizeSignalCounts } from "@/lib/signal-position-policy"
+import { countSignalPositionOrders, isSystemOwnSignalRow, summarizeSignalCounts } from "@/lib/signal-position-policy"
 import { NextResponse } from "next/server"
 import {
   buildSignalAnalyticsWindows,
@@ -228,7 +228,8 @@ export async function GET(request: Request) {
         symbol: normalizeSymbol(position?.symbol),
         direction: positionDirection(position),
         sourceIds: signalSourceIds(position),
-        orders: countSignalPositionOrders(position),
+        own: isSystemOwnSignalRow(position, connectionId),
+        orders: countSignalPositionOrders(position, connectionId),
         executionLane:
           String(position?.executionLane ?? position?.execution_lane ?? "") === "signal_trailing"
             ? "signal_trailing"
@@ -247,6 +248,7 @@ export async function GET(request: Request) {
     // Positions and orders are separate figures. Long and Short (and every
     // symbol) are counted independently; orders include partial fills.
     const signalOpenSummary = summarizeSignalCounts(openRows.filter((row) =>
+      row.own &&
       (row.type === "signal" || row.sourceIds.length > 0) &&
       (!requestedDirection || row.direction === requestedDirection) &&
       (!requestedSymbol || row.symbol.includes(requestedSymbol)) &&

@@ -366,7 +366,7 @@ export function SignalIndicationSettings() {
                 <Badge variant="outline" className="text-[10px]">Best quality first</Badge>
               </div>
               <p className="mt-0.5 text-muted-foreground">
-                Positions: up to {settings.maxPositionsTotal}, counted per symbol + direction — several rows on one symbol and direction are ONE position, and a symbol held Long and Short is two. Orders: {settings.maxOrders > 0 ? `up to ${settings.maxOrders}` : "unlimited"}; every internal position row and every order of it counts, partial fills included{settings.maxOrdersPerSymbol > 0 ? `, at most ${settings.maxOrdersPerSymbol} per symbol` : ""}. Forex uses its explicit {settings.minimumSourceSignalsForex}-source broker quorum.
+                Positions: up to {settings.maxPositionsTotal}, counted per symbol + direction — several rows on one symbol and direction are ONE position, and a symbol held Long and Short is two. Orders: {settings.maxOrders > 0 ? `up to ${settings.maxOrders}` : "unlimited"}; every internal position row and every order of it counts, partial fills included{settings.maxOrdersPerSymbol > 0 ? `, at most ${settings.maxOrdersPerSymbol} per symbol` : ""}. Only this system's own positions and orders are counted or limited; other systems and bots on the same account are ignored and never touched. Forex uses its explicit {settings.minimumSourceSignalsForex}-source broker quorum.
                 Most volatile 12h symbols are processed first, then lower SL/drawdown (when available), consensus quality, confidence, agreement, strength, and reward/risk determine admission order.
               </p>
             </div>
