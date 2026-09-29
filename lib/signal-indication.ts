@@ -29,8 +29,10 @@ import {
   SIGNAL_POSITION_SELECTION_MODE,
   calculateSignalCandidateQuality,
   normalizeSignalMaxPositions,
+  normalizeSignalMaxOrders,
   normalizeSignalMaxPositionsPerSymbol,
   normalizeSignalMinProfitFactor,
+  SIGNAL_MAX_ORDERS_DEFAULT,
   SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   SIGNAL_MIN_PF_DEFAULT,
   normalizeSignalPositionSelectionMode,
@@ -92,6 +94,8 @@ export interface SignalIndicationSettings {
   maxPositionsTotal: number
   /** Most active Signal positions (Long + Short) on ONE symbol; below 32 is raised to 32. */
   maxPositionsPerSymbol: number
+  /** Most orders of the active Signal positions, partial fills included; 0 = unlimited (default). */
+  maxOrders: number
   sourceBasePositionsLimit: number
   symbolsPerSourceLimit: number
   sourceSymbolOrder: "volatility_12h"
@@ -316,6 +320,7 @@ export const DEFAULT_SIGNAL_INDICATION_SETTINGS: SignalIndicationSettings = {
   maxSourcesPerCycle: SIGNAL_SOURCE_DEFINITIONS.length,
   maxPositionsTotal: SIGNAL_MAX_POSITIONS_DEFAULT,
   maxPositionsPerSymbol: SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
+  maxOrders: SIGNAL_MAX_ORDERS_DEFAULT,
   sourceBasePositionsLimit: SIGNAL_MAX_POSITIONS_DEFAULT,
   symbolsPerSourceLimit: 10,
   sourceSymbolOrder: "volatility_12h",
@@ -528,6 +533,7 @@ export function normalizeSignalIndicationSettings(input: unknown): SignalIndicat
     maxSourcesPerCycle,
     maxPositionsTotal: normalizeSignalMaxPositions(raw.maxPositionsTotal),
     maxPositionsPerSymbol: normalizeSignalMaxPositionsPerSymbol(raw.maxPositionsPerSymbol),
+    maxOrders: normalizeSignalMaxOrders(raw.maxOrders),
     sourceBasePositionsLimit: normalizeSignalMaxPositions(raw.sourceBasePositionsLimit ?? raw.maxPositionsTotal),
     symbolsPerSourceLimit: Math.round(boundedNumber(raw.symbolsPerSourceLimit, 10, 1, 100)),
     sourceSymbolOrder: "volatility_12h",

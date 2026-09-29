@@ -940,7 +940,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         total: "3",
         long: "3",
         short: "0",
-        limit: "350",
+        limit: "100",
       }),
     )
     expect(placeOrder).not.toHaveBeenCalled()
