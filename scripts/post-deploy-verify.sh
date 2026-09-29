@@ -69,7 +69,10 @@ verify_cron() {
   if [ "${#cron_secret}" -ge 16 ]; then
     local status
     for endpoint in /api/cron/server-continuity /api/cron/sync-live-positions; do
-      status="$(http_status "$endpoint" "$CRON_TIMEOUT_SECONDS" --header "Authorization: Bearer ${cron_secret}")"
+      # The cron routes answer within a time budget and run their work in the background
+      # (HTTP 202 "pending"); the verification must see the FINISHED tick and fresh
+      # continuity, so it asks the route to wait for the whole run (?wait=1).
+      status="$(http_status "${endpoint}?wait=1" "$CRON_TIMEOUT_SECONDS" --header "Authorization: Bearer ${cron_secret}")"
       if [ "$status" = "200" ]; then
         echo "[Deploy Verify] PASS authorized minute tick ${endpoint} (HTTP 200)"
       else

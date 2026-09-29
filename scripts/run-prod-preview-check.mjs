@@ -407,7 +407,7 @@ async function verifyOpenPositionCrashRecovery(currentEngineServer, connectionId
   // Invoke the independent engine-down safety net once. With a live connector
   // this adopts/reconciles venue positions; in this forced-paper run it still
   // proves the authenticated recovery path is callable without issuing orders.
-  const recoveryTick = await requestJson("/api/cron/sync-live-positions", {
+  const recoveryTick = await requestJson("/api/cron/sync-live-positions?wait=1", {
     headers: { Authorization: `Bearer ${PREVIEW_CRON_SECRET}` },
   })
   if (recoveryTick?.ok !== true) throw new Error(`Authorized live-position recovery tick did not succeed after crash: ${JSON.stringify(recoveryTick)}`)
