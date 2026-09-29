@@ -131,7 +131,7 @@ export async function POST(request: Request) {
           ]),
           client.hset(`signal:position_capacity:${connectionId}`, {
             limit: String(settings.maxPositionsTotal),
-            limit_per_symbol: String(settings.maxPositionsPerSymbol),
+            limit_orders_per_symbol: settings.maxOrdersPerSymbol > 0 ? String(settings.maxOrdersPerSymbol) : "unlimited",
             limit_orders: settings.maxOrders > 0 ? String(settings.maxOrders) : "unlimited",
             selection_mode: settings.positionSelectionMode,
             state: "settings_updated",
@@ -149,7 +149,7 @@ export async function POST(request: Request) {
         enabledWebsiteSources: Object.values(settings.sources).filter((source) => source.enabled).length,
         websiteSourcesProcessed: "all-enabled",
         maxPositionsTotal: settings.maxPositionsTotal,
-        maxPositionsPerSymbol: settings.maxPositionsPerSymbol,
+        maxOrdersPerSymbol: settings.maxOrdersPerSymbol > 0 ? settings.maxOrdersPerSymbol : "unlimited",
         maxOrders: settings.maxOrders > 0 ? settings.maxOrders : "unlimited",
         minimumProfitFactor: { config: settings.configMinimumPfRatio, sourceValidation: settings.sourceValidation.minProfitFactor },
         positionSelectionMode: settings.positionSelectionMode,

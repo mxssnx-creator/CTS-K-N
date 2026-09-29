@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import {
-  evaluateSignalSymbolCapacity,
-  normalizeSignalMaxPositionsPerSymbol,
+  normalizeSignalMaxOrdersPerSymbol,
   normalizeSignalMinProfitFactor,
 } from "@/lib/signal-position-policy"
 import { normalizeSignalIndicationSettings, DEFAULT_SIGNAL_INDICATION_SETTINGS } from "@/lib/signal-indication"
@@ -10,16 +9,20 @@ import { normalizeSignalSourceValidationSettings } from "@/lib/signal-source-val
 
 const src = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
-describe("Signal max positions per symbol: below 32 becomes 32", () => {
-  test.each([[undefined, 32], [null, 32], ["", 32], ["abc", 32], [0, 32], [1, 32], [12, 32], [31, 32], [31.9, 32]])(
-    "%p -> %p", (input, expected) => expect(normalizeSignalMaxPositionsPerSymbol(input)).toBe(expected))
-  test.each([[32, 32], [33, 33], [100, 100], [350, 350], [351, 350], [9999, 350], ["40", 40]])(
-    "%p is kept (bounded by the overall Signal limit) -> %p", (input, expected) => expect(normalizeSignalMaxPositionsPerSymbol(input)).toBe(expected))
-  test("the default is 32", () => expect(DEFAULT_SIGNAL_INDICATION_SETTINGS.maxPositionsPerSymbol).toBe(32))
-  test("settings without the field, and a stored 12, both come out as 32", () => {
-    expect(normalizeSignalIndicationSettings({}).maxPositionsPerSymbol).toBe(32)
-    expect(normalizeSignalIndicationSettings({ maxPositionsPerSymbol: 12 }).maxPositionsPerSymbol).toBe(32)
-    expect(normalizeSignalIndicationSettings({ maxPositionsPerSymbol: 64 }).maxPositionsPerSymbol).toBe(64)
+describe("Signal orders per symbol: unlimited by default, a finite value below 32 becomes 32", () => {
+  test.each([[undefined, 0], [null, 0], ["", 0], ["abc", 0], [0, 0], [-4, 0]])(
+    "%p means unlimited -> %p", (input, expected) => expect(normalizeSignalMaxOrdersPerSymbol(input)).toBe(expected))
+  test.each([[1, 32], [12, 32], [31, 32], [31.9, 32]])(
+    "a finite %p is raised to the floor -> %p", (input, expected) => expect(normalizeSignalMaxOrdersPerSymbol(input)).toBe(expected))
+  test.each([[32, 32], [33, 33], [100, 100], ["500", 500], [5_000_000, 1_000_000]])(
+    "%p is kept (bounded) -> %p", (input, expected) => expect(normalizeSignalMaxOrdersPerSymbol(input)).toBe(expected))
+  test("the default is unlimited, and the former per-symbol POSITIONS value is no longer read", () => {
+    expect(DEFAULT_SIGNAL_INDICATION_SETTINGS.maxOrdersPerSymbol).toBe(0)
+    const settings = normalizeSignalIndicationSettings({ maxPositionsPerSymbol: 32 } as any)
+    expect(settings.maxOrdersPerSymbol).toBe(0)
+    expect((settings as any).maxPositionsPerSymbol).toBeUndefined()
+    expect(normalizeSignalIndicationSettings({ maxOrdersPerSymbol: 12 }).maxOrdersPerSymbol).toBe(32)
+    expect(normalizeSignalIndicationSettings({ maxOrdersPerSymbol: 64 }).maxOrdersPerSymbol).toBe(64)
   })
 })
 
@@ -28,7 +31,7 @@ describe("Signal minimum PF: below 1.2 becomes 1.25, 1.2 and above is kept", () 
     "%p -> %p", (input, expected) => expect(normalizeSignalMinProfitFactor(input)).toBe(expected))
   test.each([[1.2, 1.2], [1.22, 1.22], [1.25, 1.25], [1.6, 1.6], [5, 5], [9, 5]])(
     "%p is kept (max 5) -> %p", (input, expected) => expect(normalizeSignalMinProfitFactor(input)).toBe(expected))
-  test("the exact-configuration gate is now Signal's own setting: default 1.25, legacy 1.1 and 0.3 raised", () => {
+  test("the exact-configuration gate is Signal's own setting: default 1.25, legacy 1.1 and 0.3 raised", () => {
     expect(DEFAULT_SIGNAL_INDICATION_SETTINGS.configMinimumPfRatio).toBe(1.25)
     expect(normalizeSignalIndicationSettings({}).configMinimumPfRatio).toBe(1.25)
     expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.1 }).configMinimumPfRatio).toBe(1.25)
@@ -40,51 +43,34 @@ describe("Signal minimum PF: below 1.2 becomes 1.25, 1.2 and above is kept", () 
     expect(normalizeSignalSourceValidationSettings({ minProfitFactor: 1 }).minProfitFactor).toBe(1.25)
     expect(normalizeSignalSourceValidationSettings({ minProfitFactor: 1.3 }).minProfitFactor).toBe(1.3)
   })
-  test("the system-wide Previous-position contract is untouched (Axis and Stages keep 1.1)", () => {
-    const pf = src("lib/main-trade-profit-factor.ts")
-    expect(pf).toContain("export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1")
-  })
 })
 
-describe("the per-symbol decision", () => {
-  test("room while below the limit, none at the limit", () => {
-    expect(evaluateSignalSymbolCapacity(31, 32)).toEqual({ allowed: true, symbolTotal: 31, symbolLimit: 32 })
-    expect(evaluateSignalSymbolCapacity(32, 32)).toEqual({ allowed: false, symbolTotal: 32, symbolLimit: 32 })
-    expect(evaluateSignalSymbolCapacity(5, 12).symbolLimit).toBe(32) // a configured 12 is raised to 32
-    expect(evaluateSignalSymbolCapacity("junk", 40)).toEqual({ allowed: true, symbolTotal: 0, symbolLimit: 40 })
+describe("Signal-only: nothing outside Signals changes", () => {
+  test("the system-wide Previous-position contract keeps 1.1 (Axis and the stage pipeline)", () => {
+    expect(src("lib/main-trade-profit-factor.ts")).toContain("export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1")
   })
-})
-
-describe("the limit is enforced at Signal admission and shown in Settings", () => {
-  const live = src("lib/trade-engine/stages/live-stage.ts")
-  test("a per-symbol membership set is kept, rebuilt once after the upgrade, and cleaned when a row ends", () => {
-    expect(live).toContain('const SIGNAL_POSITION_ADMISSION_INDEX_VERSION = "2"')
-    expect(live).toContain("client.sadd(symbolKey, position.id)")
-    expect(live).toContain("client.srem(symbolKey, position.id).catch(() => 0)")
-    expect(live).toContain("const existingSymbolKeys: string[] = ")
+  test("the Base stage minimum keeps its own floor of 0.80", () => {
+    expect(src("lib/main-trade-profit-factor.ts")).toContain("export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8")
   })
-  test("admission defers an entry once the symbol is full, after verifying the index against the rows", () => {
-    expect(live).toContain("evaluateSignalSymbolCapacity(")
-    expect(live).toContain('reason: "symbol_limit",')
-    expect(live).toContain("`${symbolIndexKey}:verify-lock`")
-    expect(live).toContain("signalSettings.maxPositionsPerSymbol,")
-  })
-  test("the check runs after the total limit and never for an already-open exact lane", () => {
-    const existing = live.indexOf('if (existing && isActiveSignalPosition(existing as unknown as Record<string, unknown>)) {')
-    const total = live.indexOf("if (!capacity.allowed) {", existing)
-    const symbol = live.indexOf("const symbolIndexKey = signalPositionAdmissionSymbolIndexKey(connectionId, candidate.symbol)")
-    expect(existing).toBeGreaterThan(0)
-    expect(total).toBeGreaterThan(existing)
-    expect(symbol).toBeGreaterThan(total)
-  })
-  test("both new settings appear in the Signal settings form and the PF floor in the validation panel", () => {
-    const form = src("components/settings/signal-indication-settings.tsx")
-    expect(form).toContain('["maxPositionsPerSymbol", "Max positions per symbol, Long + Short (below 32 becomes 32)", 32, 350, 1]')
-    expect(form).toContain('["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.25)", 1.2, 5, 0.05]')
-    const panel = src("components/settings/signal-source-validation-panel.tsx")
-    expect(panel).toContain('["minProfitFactor", "Min PF after costs (below 1.2 becomes 1.25)", 1.2, 5, 0.05]')
-  })
-  test("Direct Trade keeps its own limits (12 per symbol) — this change is Signal-only", () => {
+  test("Direct Trade keeps its own limits (12 per symbol)", () => {
     expect(src("lib/direct-trade-limits.ts")).toContain("DIRECT_TRADE_DEFAULT_MAX_POSITIONS_PER_SYMBOL = 12")
+  })
+  test("the Signal limits are read by Signal code only: the slot and order checks live behind isActiveSignalPosition", () => {
+    const live = src("lib/trade-engine/stages/live-stage.ts")
+    const at = live.indexOf("const isSignalPositionCandidate = isActiveSignalPosition(")
+    const reserve = live.indexOf("await reserveSignalPositionCapacity(", at)
+    expect(at).toBeGreaterThan(0)
+    expect(reserve).toBeGreaterThan(at)
+    expect(live.slice(at, reserve)).toContain("if (isSignalPositionCandidate) {")
+  })
+})
+
+describe("the settings are in Settings", () => {
+  test("the Signal settings form has the per-symbol orders cap, and the PF floor is in the validation panel", () => {
+    const form = src("components/settings/signal-indication-settings.tsx")
+    expect(form).toContain('["maxOrdersPerSymbol", "Max orders per symbol (0 = unlimited, below 32 becomes 32)", 0, 1000000, 1]')
+    expect(form).toContain('["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.25)", 1.2, 5, 0.05]')
+    expect(src("components/settings/signal-source-validation-panel.tsx"))
+      .toContain('["minProfitFactor", "Min PF after costs (below 1.2 becomes 1.25)", 1.2, 5, 0.05]')
   })
 })

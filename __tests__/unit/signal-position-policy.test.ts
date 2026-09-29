@@ -78,6 +78,7 @@ describe("Signal position capacity and best-first policy", () => {
     const positions: Array<Record<string, unknown>> = [
       ...Array.from({ length: 175 }, (_, index) => ({
         id: `long-${index}`,
+        symbol: `L${index}USDT`,
         status: index === 0 ? "pending" : "simulated",
         direction: "long",
         indicationType: "signal",
@@ -85,6 +86,7 @@ describe("Signal position capacity and best-first policy", () => {
       })),
       ...Array.from({ length: 175 }, (_, index) => ({
         id: `short-${index}`,
+        symbol: `S${index}USDT`,
         status: "open",
         direction: "short",
         indicationType: "signal",
@@ -112,6 +114,7 @@ describe("Signal position capacity and best-first policy", () => {
       long: 175,
       short: 175,
       limit: 350,
+      rows: 350,
     })
     expect(evaluateSignalPositionCapacity(positions.slice(1), "short", 350)).toEqual({
       allowed: true,
@@ -120,6 +123,21 @@ describe("Signal position capacity and best-first policy", () => {
       long: 174,
       short: 175,
       limit: 350,
+      rows: 349,
     })
+  })
+
+  test("a position is one symbol + direction: several rows on it are ONE position, Long and Short are two", () => {
+    const row = (id: string, symbol: string, direction: string) => ({ id, symbol, direction, status: "open", indicationType: "signal", executionLane: "default" })
+    const positions = [
+      row("a1", "BTCUSDT", "long"), row("a2", "BTCUSDT", "long"), row("a3", "BTC-USDT", "long"), // three rows, ONE position
+      row("b1", "BTCUSDT", "short"),                                                              // same symbol, other direction: a second position
+      row("c1", "SOLUSDT", "long"), row("c2", "SOLUSDT", "long"),                                  // two rows, ONE position
+    ]
+    expect(evaluateSignalPositionCapacity(positions, "long", 100)).toEqual({
+      allowed: true, reason: "available", total: 3, long: 2, short: 1, limit: 100, rows: 6,
+    })
+    // the limit is met by positions, not by rows: 3 positions against a limit of 3
+    expect(evaluateSignalPositionCapacity(positions, "long", 3)).toMatchObject({ allowed: false, reason: "total_limit", total: 3, rows: 6 })
   })
 })

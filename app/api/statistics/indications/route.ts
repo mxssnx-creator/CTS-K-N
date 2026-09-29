@@ -415,12 +415,10 @@ export async function GET(request: Request) {
       signal: {
         counts: {
           closedPositions: signalTrades.length,
-          openPositions: openRows.filter((row) =>
-            (row.type === "signal" || row.sourceIds.length > 0) &&
-            (!requestedDirection || row.direction === requestedDirection) &&
-            (!requestedSymbol || row.symbol.includes(requestedSymbol)) &&
-            (!requestedGroup || row.sourceIds.includes(requestedGroup)),
-          ).length,
+          // A position is one symbol + direction; several rows on it are ONE
+          // position and count as orders (openRows / openOrders).
+          openPositions: signalOpenSummary.positions,
+          openRows: signalOpenSummary.rows,
           openLong: signalOpenSummary.long,
           openShort: signalOpenSummary.short,
           openSymbols: signalOpenSummary.symbols,
@@ -436,7 +434,7 @@ export async function GET(request: Request) {
           requestIntervalSeconds: signalSettings.requestIntervalSeconds,
           maxSourcesPerCycle: signalSettings.maxSourcesPerCycle,
           maxPositionsTotal: signalSettings.maxPositionsTotal,
-          maxPositionsPerSymbol: signalSettings.maxPositionsPerSymbol,
+          maxOrdersPerSymbol: signalSettings.maxOrdersPerSymbol,
           maxOrders: signalSettings.maxOrders,
           configMinimumPfRatio: signalSettings.configMinimumPfRatio,
           sourcePerformanceLookback: 12,

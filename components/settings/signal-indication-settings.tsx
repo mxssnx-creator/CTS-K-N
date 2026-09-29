@@ -72,8 +72,8 @@ interface SignalSettings {
   candleLimit: number
   maxSourcesPerCycle: number
   maxPositionsTotal: number
-  maxPositionsPerSymbol: number
   maxOrders: number
+  maxOrdersPerSymbol: number
   sourceBasePositionsLimit: number
   symbolsPerSourceLimit: number
   sourceSymbolOrder: "volatility_12h"
@@ -314,9 +314,9 @@ export function SignalIndicationSettings() {
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {([
-              ["maxPositionsTotal", "Max positions (Long and Short each counted; default 100)", 1, 350, 1],
-              ["maxOrders", "Max orders incl. partial fills (0 = unlimited)", 0, 1000000, 1],
-              ["maxPositionsPerSymbol", "Max positions per symbol, Long + Short (below 32 becomes 32)", 32, 350, 1],
+              ["maxPositionsTotal", "Max positions (one per symbol + direction; default 100)", 1, 350, 1],
+              ["maxOrders", "Max orders incl. position rows and partial fills (0 = unlimited)", 0, 1000000, 1],
+              ["maxOrdersPerSymbol", "Max orders per symbol (0 = unlimited, below 32 becomes 32)", 0, 1000000, 1],
               ["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.25)", 1.2, 5, 0.05],
               ["sourceBasePositionsLimit", "Source base positions limit (overall)", 1, 350, 1],
               ["symbolsPerSourceLimit", "Symbols per source", 1, 100, 1],
@@ -366,7 +366,7 @@ export function SignalIndicationSettings() {
                 <Badge variant="outline" className="text-[10px]">Best quality first</Badge>
               </div>
               <p className="mt-0.5 text-muted-foreground">
-                Positions: up to {settings.maxPositionsTotal} active Signal positions, every symbol × Long/Short counted independently (at most {settings.maxPositionsPerSymbol} per symbol). Orders: {settings.maxOrders > 0 ? `up to ${settings.maxOrders}` : "unlimited"}, every order counts, partial fills included. Forex uses its explicit {settings.minimumSourceSignalsForex}-source broker quorum.
+                Positions: up to {settings.maxPositionsTotal}, counted per symbol + direction — several rows on one symbol and direction are ONE position, and a symbol held Long and Short is two. Orders: {settings.maxOrders > 0 ? `up to ${settings.maxOrders}` : "unlimited"}; every internal position row and every order of it counts, partial fills included{settings.maxOrdersPerSymbol > 0 ? `, at most ${settings.maxOrdersPerSymbol} per symbol` : ""}. Forex uses its explicit {settings.minimumSourceSignalsForex}-source broker quorum.
                 Most volatile 12h symbols are processed first, then lower SL/drawdown (when available), consensus quality, confidence, agreement, strength, and reward/risk determine admission order.
               </p>
             </div>

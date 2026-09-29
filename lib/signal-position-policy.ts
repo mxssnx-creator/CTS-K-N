@@ -1,21 +1,18 @@
-// Positions and Orders are two separate Signal limits (operator, 2026-09-29).
-// Positions: default 100. A position is one active Signal row; Long and Short
-// are counted independently, so a symbol held Long and Short counts twice.
+// Signal limits (operator, 2026-09-29). They apply to SIGNALS only and do not
+// touch Main, Preset, Direct Trade or the system-wide Previous-position contract.
+//
+// POSITION = one symbol + direction. Several internal rows (lanes, add-ons) on
+// the same symbol and direction are ONE position; a symbol held Long and Short is
+// two, counted independently. The limit is 100 by default.
+//
+// ORDER = every internal position row and every order of it, partial fills
+// included. Orders are unlimited by default; an optional per-symbol orders
+// limit exists whose finite values below 32 are raised to 32.
 export const SIGNAL_MAX_POSITIONS_DEFAULT = 100
 export const SIGNAL_MAX_POSITIONS_MIN = 1
 export const SIGNAL_MAX_POSITIONS_MAX = 350
 export const SIGNAL_POSITION_SELECTION_MODE = "best_first" as const
 
-/**
- * Signal-only limits (operator, 2026-09-29). They do not touch Main, Preset,
- * Direct Trade or the system-wide Previous-position contract.
- *
- * Per symbol: at most this many active Signal positions (Long + Short) may
- * exist on one symbol. A value below 32 is raised to 32; the upper bound is the
- * overall Signal limit.
- */
-export const SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT = 32
-export const SIGNAL_MAX_POSITIONS_PER_SYMBOL_MIN = 32
 /**
  * Orders: every order of the active Signal positions counts, partial fills
  * included. 0 means unlimited, which is the default. A finite limit is
@@ -24,6 +21,8 @@ export const SIGNAL_MAX_POSITIONS_PER_SYMBOL_MIN = 32
 export const SIGNAL_MAX_ORDERS_UNLIMITED = 0
 export const SIGNAL_MAX_ORDERS_DEFAULT = SIGNAL_MAX_ORDERS_UNLIMITED
 export const SIGNAL_MAX_ORDERS_MAX = 1_000_000
+/** Optional orders limit for ONE symbol: 0 = unlimited (default); a finite value below 32 becomes 32. */
+export const SIGNAL_MAX_ORDERS_PER_SYMBOL_MIN = 32
 /**
  * Minimum profit factor for Signals. A value below 1.2 is raised to 1.25; a
  * value from 1.2 upward is kept. Applies to the Signal source validation and to
@@ -58,10 +57,12 @@ export interface SignalPositionCapacity {
   long: number
   short: number
   limit: number
-  /** Active Signal positions on the candidate's symbol (set when the symbol was checked). */
-  symbolTotal?: number
-  /** The per-symbol limit that applied. */
-  symbolLimit?: number
+  /** Orders on the candidate's symbol (set when a finite per-symbol orders limit was checked). */
+  symbolOrders?: number
+  /** The per-symbol orders limit that applied; 0 = unlimited. */
+  symbolOrdersLimit?: number
+  /** Internal position rows behind the positions (several rows on one symbol + direction are ONE position). */
+  rows?: number
   /** Orders of the active Signal positions (partial fills included); set when a finite order limit was checked. */
   orders?: number
   /** The order limit that applied; 0 = unlimited. */
@@ -104,25 +105,25 @@ export function normalizeSignalMaxPositions(value: unknown): number {
   ))
 }
 
-export function normalizeSignalMaxPositionsPerSymbol(value: unknown): number {
+/** Symbol as the position slots key it: upper case, letters and digits only. */
+export function signalSlotSymbol(symbol: unknown): string {
+  return String(symbol ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
+}
+/** The slot of a position: one symbol + one direction. */
+export function signalSlotMember(symbol: unknown, direction: unknown): string {
+  return `${signalSlotSymbol(symbol)}:${direction === "short" ? "short" : "long"}`
+}
+
+export function normalizeSignalMaxOrdersPerSymbol(value: unknown): number {
   const parsed = Number(value)
-  if (!Number.isFinite(parsed) || parsed < SIGNAL_MAX_POSITIONS_PER_SYMBOL_MIN) {
-    return SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT
-  }
-  return Math.round(Math.min(SIGNAL_MAX_POSITIONS_MAX, parsed))
+  if (!Number.isFinite(parsed) || parsed <= 0) return SIGNAL_MAX_ORDERS_UNLIMITED
+  return Math.round(Math.min(SIGNAL_MAX_ORDERS_MAX, Math.max(SIGNAL_MAX_ORDERS_PER_SYMBOL_MIN, parsed)))
 }
 
 export function normalizeSignalMinProfitFactor(value: unknown): number {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < SIGNAL_MIN_PF_RAISE_BELOW) return SIGNAL_MIN_PF_DEFAULT
   return Math.round(Math.min(SIGNAL_MIN_PF_MAX, parsed) * 100) / 100
-}
-
-/** Pure per-symbol admission decision: room for one more when the count is below the limit. */
-export function evaluateSignalSymbolCapacity(symbolCount: unknown, limit: unknown): { allowed: boolean; symbolTotal: number; symbolLimit: number } {
-  const symbolLimit = normalizeSignalMaxPositionsPerSymbol(limit)
-  const symbolTotal = Math.max(0, Math.floor(Number(symbolCount) || 0))
-  return { allowed: symbolTotal < symbolLimit, symbolTotal, symbolLimit }
 }
 
 export function normalizeSignalMaxOrders(value: unknown): number {
@@ -144,7 +145,8 @@ function orderKey(value: unknown): string {
 }
 
 /**
- * Orders of ONE Signal position, partial fills included. Every distinct order
+ * Orders of ONE internal Signal position row, partial fills included. The row
+ * itself counts as an order (at least one). Every distinct order
  * counts once — entry, add-on, protective (stop loss, take profit, security)
  * and close orders, from the tracked client ids, the stored order ids and the
  * settlement ids — and every further fill of the same order counts as well,
@@ -172,45 +174,54 @@ export function countSignalPositionOrders(position: Record<string, any> | null |
   }
   let extraFills = 0
   for (const count of fillsPerOrder.values()) extraFills += Math.max(0, count - 1)
-  return orders.size + extraFills
+  // An internal position row counts as an order in its own right, also before
+  // any venue order id is known (pending, simulated).
+  return Math.max(1, orders.size + extraFills)
 }
 
 export interface SignalCountSummary {
-  /** Active Signal positions; every row counts, Long and Short independently. */
+  /** Positions: distinct symbol + direction slots. Several rows on one slot are ONE position. */
   positions: number
+  /** Long positions (distinct symbols held Long) and Short positions, counted independently. */
   long: number
   short: number
   symbols: number
+  /** Internal position rows behind those positions. */
+  rows: number
+  /** Orders: every row and every order of it, partial fills included. */
   orders: number
-  bySymbol: Array<{ symbol: string; long: number; short: number; orders: number }>
+  bySymbol: Array<{ symbol: string; long: number; short: number; rows: number; orders: number }>
 }
 
-/** Independent Long / Short / per-symbol position counts and the order total. */
+/** Independent Long / Short / per-symbol POSITION counts, plus the rows and the order total. */
 export function summarizeSignalCounts(
   rows: ReadonlyArray<{ symbol?: unknown; direction?: unknown; orders?: number }>,
 ): SignalCountSummary {
-  const bySymbol = new Map<string, { symbol: string; long: number; short: number; orders: number }>()
-  let long = 0
-  let short = 0
+  const bySymbol = new Map<string, { symbol: string; long: number; short: number; rows: number; orders: number }>()
+  let rowCount = 0
   let orders = 0
   for (const row of rows) {
-    const symbol = String(row.symbol ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")
-    if (!symbol) continue
-    const entry = bySymbol.get(symbol) || { symbol, long: 0, short: 0, orders: 0 }
-    if (row.direction === "long") { entry.long++; long++ }
-    else if (row.direction === "short") { entry.short++; short++ }
-    else continue
+    const symbol = signalSlotSymbol(row.symbol)
+    if (!symbol || (row.direction !== "long" && row.direction !== "short")) continue
+    const entry = bySymbol.get(symbol) || { symbol, long: 0, short: 0, rows: 0, orders: 0 }
+    entry[row.direction] = 1 // one position per symbol + direction, however many rows it has
+    entry.rows++
     entry.orders += Math.max(0, Number(row.orders) || 0)
+    rowCount++
     orders += Math.max(0, Number(row.orders) || 0)
     bySymbol.set(symbol, entry)
   }
+  const entries = [...bySymbol.values()]
+  const long = entries.reduce((sum, e) => sum + e.long, 0)
+  const short = entries.reduce((sum, e) => sum + e.short, 0)
   return {
     positions: long + short,
     long,
     short,
-    symbols: bySymbol.size,
+    symbols: entries.length,
+    rows: rowCount,
     orders,
-    bySymbol: [...bySymbol.values()].sort((a, b) => (b.long + b.short) - (a.long + a.short) || a.symbol.localeCompare(b.symbol)).slice(0, 50),
+    bySymbol: entries.sort((a, b) => (b.long + b.short) - (a.long + a.short) || b.rows - a.rows || a.symbol.localeCompare(b.symbol)).slice(0, 50),
   }
 }
 
@@ -344,21 +355,30 @@ export function evaluateSignalPositionCapacity(
   configuredLimit: unknown,
 ): SignalPositionCapacity {
   const limit = normalizeSignalMaxPositions(configuredLimit)
-  let total = 0
-  let long = 0
-  let short = 0
+  // A position is one symbol + direction: several rows on it are ONE position,
+  // a symbol held Long and Short is two.
+  const slots = new Set<string>()
+  const longSlots = new Set<string>()
+  const shortSlots = new Set<string>()
+  let rows = 0
   for (const position of positions) {
     if (!isActiveSignalPosition(position)) continue
-    total++
-    if (position.direction === "long") long++
-    else if (position.direction === "short") short++
+    if (position.direction !== "long" && position.direction !== "short") continue
+    rows++
+    const slot = signalSlotMember(position.symbol, position.direction)
+    slots.add(slot)
+    if (position.direction === "long") longSlots.add(slot)
+    else shortSlots.add(slot)
   }
+  const total = slots.size
+  const long = longSlots.size
+  const short = shortSlots.size
   const direction =
     candidateDirection === "long" || candidateDirection === "short"
       ? candidateDirection
       : null
   if (!direction) {
-    return { allowed: false, reason: "invalid_direction", total, long, short, limit }
+    return { allowed: false, reason: "invalid_direction", total, long, short, limit, rows }
   }
   return {
     allowed: total < limit,
@@ -367,5 +387,6 @@ export function evaluateSignalPositionCapacity(
     long,
     short,
     limit,
+    rows,
   }
 }

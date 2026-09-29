@@ -569,7 +569,7 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main"
               [
                 "Positions / Orders",
                 `${payload.signal.counts?.openPositions ?? 0}/${payload.signal.settings.maxPositionsTotal} · ${payload.signal.counts?.openOrders ?? 0}/${Number(payload.signal.settings.maxOrders) > 0 ? payload.signal.settings.maxOrders : "∞"}`,
-                `Long ${payload.signal.counts?.openLong ?? 0} · Short ${payload.signal.counts?.openShort ?? 0} counted independently, ${payload.signal.settings.maxPositionsPerSymbol ?? 32} per symbol; orders include partial fills`,
+                `Long ${payload.signal.counts?.openLong ?? 0} · Short ${payload.signal.counts?.openShort ?? 0}: one position per symbol + direction (${payload.signal.counts?.openRows ?? 0} rows behind them); orders count every row and order incl. partial fills`,
               ],
               ["Selection", "Best first", "Quality · confidence · agreement · R/R"],
               ["Trailing mode", payload.signal.settings.trailingEnabled ? "Enabled" : "Disabled", payload.signal.settings.trailingOnly ? "Trailing only" : "Parallel standard + trailing"],
