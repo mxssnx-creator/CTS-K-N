@@ -421,6 +421,8 @@ export async function GET(request: Request) {
           requestIntervalSeconds: signalSettings.requestIntervalSeconds,
           maxSourcesPerCycle: signalSettings.maxSourcesPerCycle,
           maxPositionsTotal: signalSettings.maxPositionsTotal,
+          maxPositionsPerSymbol: signalSettings.maxPositionsPerSymbol,
+          configMinimumPfRatio: signalSettings.configMinimumPfRatio,
           sourcePerformanceLookback: 12,
           lanePerformanceLookback: 10,
           positionSelectionMode: signalSettings.positionSelectionMode,

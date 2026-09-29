@@ -394,6 +394,7 @@ unit	__tests__/unit/signal-consensus-validated-candidates.test.ts
 unit	__tests__/unit/signal-historic-eval.test.ts
 unit	__tests__/unit/signal-indication.test.ts
 unit	__tests__/unit/signal-orthogonal-sources.test.ts
+unit	__tests__/unit/signal-own-limits.test.ts
 unit	__tests__/unit/signal-position-policy.test.ts
 unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-source-validation.test.ts

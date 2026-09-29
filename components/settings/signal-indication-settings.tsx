@@ -72,6 +72,7 @@ interface SignalSettings {
   candleLimit: number
   maxSourcesPerCycle: number
   maxPositionsTotal: number
+  maxPositionsPerSymbol: number
   sourceBasePositionsLimit: number
   symbolsPerSourceLimit: number
   sourceSymbolOrder: "volatility_12h"
@@ -313,6 +314,8 @@ export function SignalIndicationSettings() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {([
               ["maxPositionsTotal", "Signal Sources base positions limit (overall)", 1, 350, 1],
+              ["maxPositionsPerSymbol", "Max positions per symbol, Long + Short (below 32 becomes 32)", 32, 350, 1],
+              ["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.25)", 1.2, 5, 0.05],
               ["sourceBasePositionsLimit", "Source base positions limit (overall)", 1, 350, 1],
               ["symbolsPerSourceLimit", "Symbols per source", 1, 100, 1],
               ["candleLimit", "Candles per source", 20, 250, 1],

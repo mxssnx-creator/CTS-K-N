@@ -147,7 +147,9 @@ import {
 import {
   evaluateSignalPositionCapacity,
   isActiveSignalPosition,
+  evaluateSignalSymbolCapacity,
   normalizeSignalMaxPositions,
+  SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
   type SignalPositionCapacity,
 } from "@/lib/signal-position-policy"
 import {
@@ -3164,7 +3166,9 @@ function signalCapacityKey(connectionId: string): string {
 // quadratically. Keep a compact authoritative membership index instead. It is
 // rebuilt once from the complete canonical book after an upgrade or legacy
 // snapshot restore.
-const SIGNAL_POSITION_ADMISSION_INDEX_VERSION = "1"
+// v2 adds the per-symbol membership sets; bumping it makes the first admission
+// after the upgrade rebuild every index once from the canonical rows.
+const SIGNAL_POSITION_ADMISSION_INDEX_VERSION = "2"
 
 function signalPositionAdmissionIndexKey(connectionId: string): string {
   return `signal:positions:${connectionId}`
@@ -3175,6 +3179,10 @@ function signalPositionAdmissionDirectionIndexKey(
   direction: "long" | "short",
 ): string {
   return `${signalPositionAdmissionIndexKey(connectionId)}:${direction}`
+}
+
+function signalPositionAdmissionSymbolIndexKey(connectionId: string, symbol: unknown): string {
+  return `${signalPositionAdmissionIndexKey(connectionId)}:symbol:${normalizeProtectionSlotSymbol(symbol)}`
 }
 
 function signalPositionAdmissionIndexReadyKey(connectionId: string): string {
@@ -3298,11 +3306,13 @@ async function updateSignalAdmissionIndexes(client: any, position: LivePosition)
   const activeSignal = isActiveSignalPosition(position as unknown as Record<string, unknown>)
   const direction = resolveLivePositionDirection(position)
 
+  const symbolKey = signalPositionAdmissionSymbolIndexKey(position.connectionId, position.symbol)
   if (!activeSignal || !direction) {
     await Promise.all([
       client.srem(indexKey, position.id).catch(() => 0),
       client.srem(longKey, position.id).catch(() => 0),
       client.srem(shortKey, position.id).catch(() => 0),
+      client.srem(symbolKey, position.id).catch(() => 0),
     ])
     return
   }
@@ -3315,8 +3325,10 @@ async function updateSignalAdmissionIndexes(client: any, position: LivePosition)
   await Promise.all([
     client.sadd(indexKey, position.id),
     client.sadd(ownDirectionKey, position.id),
+    client.sadd(symbolKey, position.id),
     client.srem(otherDirectionKey, position.id).catch(() => 0),
   ])
+  if (typeof client.persist === "function") await client.persist(symbolKey).catch(() => 0)
   await keepSignalAdmissionIndexesDurable(client, position.connectionId)
 }
 
@@ -3350,6 +3362,26 @@ async function rebuildSignalAdmissionIndexes(
       client.srem(shortKey, ...staleIds).catch(() => 0),
     ])
   }
+  // Per-symbol sets: drop members that are no longer active, then add every
+  // active row to its own symbol's set.
+  const symbolIdsBySymbol = new Map<string, string[]>()
+  for (const position of active) {
+    const symbol = normalizeProtectionSlotSymbol(position.symbol)
+    symbolIdsBySymbol.set(symbol, [...(symbolIdsBySymbol.get(symbol) || []), position.id])
+  }
+  try {
+    const existingSymbolKeys: string[] = (await client.keys(`${indexKey}:symbol:*`).catch(() => [])) || []
+    for (const symbolKey of existingSymbolKeys) {
+      const members = (await scanRedisSetMembers(client, symbolKey, { count: 250 }).catch(() => [])).map(String)
+      const stale = members.filter((id) => !activeIds.has(id))
+      if (stale.length > 0) await client.srem(symbolKey, ...stale).catch(() => 0)
+    }
+    for (const [symbol, ids] of symbolIdsBySymbol) {
+      const symbolKey = `${indexKey}:symbol:${symbol}`
+      await client.sadd(symbolKey, ...ids)
+      if (typeof client.persist === "function") await client.persist(symbolKey).catch(() => 0)
+    }
+  } catch { /* the per-symbol repair is best effort; the next verify retries it */ }
   const longIds = active.filter((position) => position.direction === "long").map((position) => position.id)
   const shortIds = active.filter((position) => position.direction === "short").map((position) => position.id)
   if (activeIds.size > 0) await client.sadd(indexKey, ...activeIds)
@@ -3456,6 +3488,7 @@ async function reserveSignalPositionCapacity(
   candidate: LivePosition,
   configuredLimit: number,
   selectionMode: string,
+  maxPositionsPerSymbol: number = SIGNAL_MAX_POSITIONS_PER_SYMBOL_DEFAULT,
 ): Promise<SignalCapacityReservation> {
   const client = getRedisClient()
   const candidateDirection = candidate.direction
@@ -3532,6 +3565,39 @@ async function reserveSignalPositionCapacity(
       return { state: "limit", capacity }
     }
 
+    // Per-symbol limit (Signal setting, default 32): at most this many active
+    // Signal positions, Long + Short, on ONE symbol. Like the total, the index
+    // is verified against the canonical rows before it is allowed to defer an
+    // entry — at most once a minute per symbol.
+    const symbolIndexKey = signalPositionAdmissionSymbolIndexKey(connectionId, candidate.symbol)
+    let symbolCapacity = evaluateSignalSymbolCapacity(
+      await client.scard(symbolIndexKey).catch(() => 0),
+      maxPositionsPerSymbol,
+    )
+    if (!symbolCapacity.allowed) {
+      const gate = await client.set(
+        `${symbolIndexKey}:verify-lock`, String(Date.now()), { NX: true, EX: 60 } as any,
+      ).catch(() => null)
+      if (gate) {
+        await rebuildSignalAdmissionIndexes(client, connectionId)
+        symbolCapacity = evaluateSignalSymbolCapacity(
+          await client.scard(symbolIndexKey).catch(() => 0),
+          maxPositionsPerSymbol,
+        )
+      }
+    }
+    if (!symbolCapacity.allowed) {
+      const limited: SignalPositionCapacity = {
+        ...capacity,
+        allowed: false,
+        reason: "symbol_limit",
+        symbolTotal: symbolCapacity.symbolTotal,
+        symbolLimit: symbolCapacity.symbolLimit,
+      }
+      await persistSignalCapacitySnapshot(client, connectionId, limited, selectionMode, "limit")
+      return { state: "limit", capacity: limited }
+    }
+
     // Write the compact membership first. If this process crashes before the
     // position snapshot is visible, the next admission only sees a stale
     // conservative reservation, which it removes during index repair; it can
@@ -3546,6 +3612,8 @@ async function reserveSignalPositionCapacity(
       short: capacity.short + (candidateDirection === "short" ? 1 : 0),
       allowed: capacity.total + 1 < capacity.limit,
       reason: capacity.total + 1 < capacity.limit ? "available" : "total_limit",
+      symbolTotal: symbolCapacity.symbolTotal + 1,
+      symbolLimit: symbolCapacity.symbolLimit,
     }
     await persistSignalCapacitySnapshot(
       client,
@@ -14130,6 +14198,7 @@ export async function executeLivePosition(
         livePosition,
         signalSettings.maxPositionsTotal,
         signalSettings.positionSelectionMode,
+        signalSettings.maxPositionsPerSymbol,
       )
 
       if (admission.state === "existing") {
@@ -14145,7 +14214,9 @@ export async function executeLivePosition(
 
       if (admission.state === "limit" || admission.state === "busy") {
         livePosition.status = "rejected"
-        livePosition.statusReason = admission.state === "limit"
+        livePosition.statusReason = admission.state === "limit" && admission.capacity.reason === "symbol_limit"
+          ? `Signal per-symbol capacity reached (${admission.capacity.symbolTotal}/${admission.capacity.symbolLimit} on ${realPosition.symbol}, Long + Short); further entries on this symbol deferred`
+          : admission.state === "limit"
           ? `Signal position capacity reached (${admission.capacity.total}/${admission.capacity.limit} Long + Short); lower-ranked candidate deferred`
           : "Signal position admission is coordinating another candidate; deferred to the next cycle"
         pushStep(livePosition, "signal_position_admission", false, livePosition.statusReason)

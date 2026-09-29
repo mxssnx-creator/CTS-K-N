@@ -1,3 +1,4 @@
+import { normalizeSignalMinProfitFactor, SIGNAL_MIN_PF_DEFAULT } from "@/lib/signal-position-policy"
 /**
  * Signal source validation, drawdown-first ranking, capacity-bounded
  * activation and risk-only coordination tactics.
@@ -27,7 +28,7 @@ export const SIGNAL_ACTIVE_SOURCES_MAX = 200
  */
 export const SIGNAL_SOURCE_VALIDATION_DEFAULTS = {
   minSamples: 12,
-  minProfitFactor: 1,
+  minProfitFactor: SIGNAL_MIN_PF_DEFAULT,
   maxDrawdownPct: 3,
   maxLossStreak: 5,
   /**
@@ -145,7 +146,8 @@ export function normalizeSignalSourceValidationSettings(input: unknown): SignalS
   ])) as unknown as SignalSourceTactics
   return {
     minSamples: Math.round(bounded(raw.minSamples, d.minSamples, d.minSamples, 500)),
-    minProfitFactor: bounded(raw.minProfitFactor, d.minProfitFactor, d.minProfitFactor, 5),
+    // Signal-only minimum PF: below 1.2 becomes 1.25, 1.2 and above is kept.
+    minProfitFactor: normalizeSignalMinProfitFactor(raw.minProfitFactor),
     maxDrawdownPct: bounded(raw.maxDrawdownPct, d.maxDrawdownPct, 0.1, d.maxDrawdownPct),
     maxLossStreak: Math.round(bounded(raw.maxLossStreak, d.maxLossStreak, 1, d.maxLossStreak)),
     strictActivation: flag(raw.strictActivation, d.strictActivation),

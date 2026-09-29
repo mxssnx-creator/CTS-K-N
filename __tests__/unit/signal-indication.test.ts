@@ -257,13 +257,18 @@ describe("Signal indication persistence and independent performance gates", () =
   })
 
   test("derives permanent exact-config disable only from real exchange closes", async () => {
+    // Direct execution cannot be switched off. The exact-config minimum is
+    // Signal's own operator setting since 2026-09-29: an operator value from
+    // 1.2 upward is kept, anything below 1.2 (legacy 1.1 or 0.3, missing) is
+    // raised to 1.25.
     expect(normalizeSignalIndicationSettings({
       directExecutionEnabled: false,
       configMinimumPfRatio: 2.7,
     })).toMatchObject({
       directExecutionEnabled: true,
-      configMinimumPfRatio: 1.1,
+      configMinimumPfRatio: 2.7,
     })
+    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.1 }).configMinimumPfRatio).toBe(1.25)
 
     const settings = normalizeSignalIndicationSettings({})
     const request = {
