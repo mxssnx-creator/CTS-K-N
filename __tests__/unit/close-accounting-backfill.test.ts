@@ -38,7 +38,10 @@ describe("deferred close accounting", () => {
   test("the job is bounded and scheduled", () => {
     const route = readFileSync(resolve(process.cwd(), "app/api/cron/close-accounting/route.ts"), "utf8")
     expect(route).toContain("const PER_RUN = 25")
-    expect(route).toContain("Date.now() - started > 40_000")
+    // The row budget was 40 s and the run took up to 55 s inside a one-minute tick;
+    // it is now 18 s with bounded venue calls (see server-fixes-halts-accounting.test.ts).
+    expect(route).toContain("const SETTLE_BUDGET_MS = 18_000")
+    expect(route).toContain("Date.now() - started > SETTLE_BUDGET_MS")
     expect(readFileSync(resolve(process.cwd(), "scripts/run-minute-scheduler.mjs"), "utf8")).toContain('"/api/cron/close-accounting"')
   })
 

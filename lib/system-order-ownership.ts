@@ -55,14 +55,24 @@ export function normalizeSystemOrderType(value: unknown): SystemOrderType {
   const v = text(value).toLowerCase()
   return (["main", "preset", "signal", "direct", "bot"] as const).includes(v as SystemOrderType) ? v as SystemOrderType : "main"
 }
+/** "kt" + system/connection hash: the prefix of ids that carry a type character. */
+export function clientOrderTypedPrefix(connectionId: unknown): string {
+  return `kt${systemOrderHash(connectionId)}`
+}
 export function clientOrderSystemTypePrefix(connectionId: unknown, type: unknown): string {
-  return `${clientOrderSystemPrefix(connectionId)}${TYPE_CODE[normalizeSystemOrderType(type)]}`
+  return `${clientOrderTypedPrefix(connectionId)}${TYPE_CODE[normalizeSystemOrderType(type)]}`
 }
 /** The type of one of our orders; "legacy" for ids before the short hash, null when not ours. */
 export function clientOrderTypeOf(clientOrderId: unknown, connectionId: unknown): SystemOrderType | "legacy" | null {
   const id = text(clientOrderId).toLowerCase()
-  const prefix = clientOrderSystemPrefix(connectionId).toLowerCase()
-  if (id.length > prefix.length && id.startsWith(prefix)) return CODE_TYPE[id.charAt(prefix.length)] ?? "legacy"
+  // Only a TYPED id ("kt" + hash + type character) carries a type. An id with
+  // the plain "kn" + hash prefix (#498, before the type character existed) has
+  // NO type: reading the character after its hash as a type turned the "s" of
+  // "sl…" (stop loss) into a Signal order and could make the slot audit miss an
+  // own control ("stop missing"). Those, and pre-hash ids, stay "legacy": owned,
+  // untyped.
+  const typed = clientOrderTypedPrefix(connectionId).toLowerCase()
+  if (id.length > typed.length + 1 && id.startsWith(typed)) return CODE_TYPE[id.charAt(typed.length)] ?? "legacy"
   return isConnectionOwnedClientOrderId(id, connectionId) ? "legacy" : null
 }
 /**
@@ -116,6 +126,8 @@ export function isConnectionOwnedClientOrderId(
   if (!id) return false
   const systemPrefix = clientOrderSystemPrefix(connectionId).toLowerCase()
   if (id.length > systemPrefix.length && id.startsWith(systemPrefix)) return true
+  const typedPrefix = clientOrderTypedPrefix(connectionId).toLowerCase()
+  if (id.length > typedPrefix.length && id.startsWith(typedPrefix)) return true
   if (!legacyOrderPrefixAccepted()) return false
   const legacyPrefix = clientOrderConnectionPrefix(connectionId)
   return id.length > legacyPrefix.length && id.startsWith(legacyPrefix)
