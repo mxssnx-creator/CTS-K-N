@@ -72,9 +72,13 @@ describe("the coordinator consults the gate at both dispatch sites", () => {
     expect(src).toContain("readHistoricTestValidatedKeys(historicRedis, this.connectionId)")
     // Settings come through the canonical overlay, never a raw hash read.
     expect(src).toContain("normalizeHistoricTestSettings(\n      (await getCanonicalConnectionSettingsOverlay(this.connectionId)")
-    expect((src.match(/filterHistoricAdmittedSets\(/g) || []).length).toBe(2)
+    // The gate lives in ONE helper (partitionLiveDispatch) that both dispatch sites call, so the
+    // two selections cannot drift apart and each suppression carries its true reason.
+    expect((src.match(/filterHistoricAdmittedSets\(/g) || []).length).toBe(1)
+    const calls = src.match(/partitionLiveDispatch\(\w+, executionPolicy, anyExecutionFamilyEnabled, historicTestSettings, historicValidatedKeys\)/g) || []
+    expect(calls.length).toBe(2)
     // The gate wraps the policy selection rather than replacing it.
-    expect(src).toContain("filterHistoricAdmittedSets(\n                selectLiveDispatchCandidates(qualifying, executionPolicy),")
+    expect(src).toContain("const familyEligible = anyExecutionFamilyEnabled ? selectLiveDispatchCandidates([...candidates], executionPolicy) : []\n  const eligible = filterHistoricAdmittedSets(familyEligible, historicSettings, validatedKeys)")
   })
 
   test("a disabled test costs nothing: no validated set is read", () => {
