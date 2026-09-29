@@ -1094,6 +1094,11 @@ configure_memory_watchdog() {
   # 3 GB is well above the measured working set and makes the collector work
   # earlier; CTS_APP_HEAP_MB_MAX overrides it.
   local app_heap_cap_mb="${CTS_APP_HEAP_MB_MAX:-3072}"
+  # The budget above shrinks with the memory that other projects on the host use
+  # at install time (1282 MB on 2026-09-29 11:14 UTC). The app's working set is
+  # above that, so a host with the memory keeps a floor.
+  local app_heap_floor_mb="${CTS_APP_HEAP_MB_MIN:-2048}"
+  (( total_mb >= 8192 && app_heap_mb < app_heap_floor_mb )) && app_heap_mb=$app_heap_floor_mb
   (( app_heap_mb > app_heap_cap_mb )) && app_heap_mb=$app_heap_cap_mb
   (( app_heap_mb > 12288 )) && app_heap_mb=12288
   scheduler_heap_mb=$(( app_heap_mb / 4 ))

@@ -6,6 +6,7 @@ import { basename, join, relative } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { isRecoverableNextFilesystemRace } from "./next-build-race-classifier.mjs"
+import { resolveBuildHeapMb } from "./build-heap.mjs"
 
 const distDir = process.env.NEXT_DIST_DIR || ".next"
 const maxAttempts = Math.max(1, Number(process.env.NEXT_TRACE_BUILD_ATTEMPTS || 4))
@@ -340,8 +341,13 @@ for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       // SSH session: that can make a constrained host launch a multi-gigabyte
       // build and abort before the services can be restored. An explicit
       // CTS_BUILD_NODE_OPTIONS remains available for CI and local overrides.
+      //
+      // The build heap is its own figure with a floor (scripts/build-heap.mjs): the
+      // runtime figure shrinks when other projects share the host, and a 1282 MB
+      // build aborted the deploy of 2026-09-29 with the target already removed.
+      CTS_BUILD_NODE_HEAP_MB: String(resolveBuildHeapMb(process.env)),
       NODE_OPTIONS: process.env.CTS_BUILD_NODE_OPTIONS ||
-        `--max-old-space-size=${process.env.CTS_NODE_HEAP_MB || "5632"} --max-semi-space-size=256 --expose-gc`,
+        `--max-old-space-size=${resolveBuildHeapMb(process.env)} --max-semi-space-size=256 --expose-gc`,
       COREPACK_HOME: process.env.COREPACK_HOME || join(tmpdir(), "cts-corepack-cache"),
     },
   )

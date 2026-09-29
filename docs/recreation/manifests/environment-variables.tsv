@@ -115,7 +115,7 @@ CTS_MONITOR_CONNECTIONS	test-or-operator-tool	no	no	1	scripts/monitor-live-healt
 CTS_MONITOR_WINDOW_MIN	test-or-operator-tool	no	no	1	scripts/monitor-live-health.mjs
 CTS_NATIVE_REDIS_VERIFY	test-or-operator-tool	no	no	1	scripts/verify-native-redis-coordination.ts
 CTS_NODE_BIN	test-or-operator-tool	no	no	1	scripts/start-production.mjs
-CTS_NODE_HEAP_MB	application-runtime	no	no	5	__tests__/unit/requested-regressions.test.ts,lib/startup-coordinator.ts,lib/trade-engine/engine-manager.ts,scripts/build-next-with-trace-retry.mjs,scripts/verify-prod-soak.mjs
+CTS_NODE_HEAP_MB	application-runtime	no	no	4	__tests__/unit/requested-regressions.test.ts,lib/startup-coordinator.ts,lib/trade-engine/engine-manager.ts,scripts/verify-prod-soak.mjs
 CTS_NPM_REDIS_ROOT	test-or-operator-tool	no	no	2	scripts/npm-redis-service.mjs,scripts/preview-redis-harness.mjs
 CTS_POST_ENTRY_AUDIT_READ_DELAYS_MS	application-runtime	no	no	2	__tests__/unit/post-entry-audit-retry.test.ts,lib/trade-engine/stages/live-stage.ts
 CTS_PREVIEW_REDIS_START_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/preview-redis-harness.mjs
