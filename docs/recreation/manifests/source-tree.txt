@@ -248,6 +248,7 @@ __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/leverage-tier-retry.test.ts
+__tests__/unit/liquidation-safe-leverage.test.ts
 __tests__/unit/live-bracket-geometry.test.ts
 __tests__/unit/live-config-performance.test.ts
 __tests__/unit/live-counts-exclude-block.test.ts
@@ -1474,6 +1475,7 @@ lib/integration-test-suite.ts
 lib/interval-progression-manager.ts
 lib/kilo-database-client.ts
 lib/leverage-policy.ts
+lib/liquidation-safe-leverage.ts
 lib/live-config-loss-policy.ts
 lib/live-config-performance.ts
 lib/live-dispatch-outcome.ts

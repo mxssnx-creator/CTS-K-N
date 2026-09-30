@@ -215,4 +215,24 @@ describe("the live health verdict", () => {
     expect(r.checks.find((x: any) => x.id === "openings_bingx-x01").level).toBe("OK")
     expect(r.checks.find((x: any) => x.id === "dispatch_blocked_bingx-x01").level).toBe("INFO")
   })
+  test("a zero exposure ceiling is critical and says the account is empty (X01, 2026-09-30: 0.0005 USDT)", () => {
+    const s: any = healthy()
+    s.openings["bingx-x01"] = { last60: 0, lastAgoMin: 144 }
+    s.gate["bingx-x01"].zeroCeiling = 2912
+    s.gate["bingx-x01"].blockedReasons = { "rejected::Calculated volume N was below the variant-scaled minimum N; Live exposure ceiling N USD is below the executable minimum": 2912 }
+    const r = evaluate(s)
+    const c = r.checks.find((x: any) => x.id === "balance_exhausted_bingx-x01")
+    expect(c.level).toBe("CRIT")
+    expect(c.message).toContain("no usable balance")
+    expect(c.message).toContain("funded")
+    expect(r.level).toBe("CRIT")
+  })
+  test("no zero ceiling, no balance finding", () => {
+    expect(evaluate(healthy()).checks.find((x: any) => x.id === "balance_exhausted_bingx-x01")).toBeUndefined()
+  })
+  test("the collector counts the zero ceiling before the amount is masked", () => {
+    const src = readFileSync(script, "utf8")
+    expect(src).toContain("exposure ceiling 0(?:\\.0+)? USD")
+    expect(src.indexOf("g.zeroCeiling += num(row.count)")).toBeLessThan(src.indexOf('.replace(/[0-9]+(\\.[0-9]+)? USD/g, "N USD")'))
+  })
 })

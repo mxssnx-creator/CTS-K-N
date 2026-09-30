@@ -1,3 +1,4 @@
+import { effectiveLeverageCap, maxLeverageForStop } from "@/lib/liquidation-safe-leverage"
 import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
@@ -14898,8 +14899,13 @@ export async function executeLivePosition(
       // real-funds connection can run at a secure leverage while others keep
       // the venue maximum.
       const connectionCap = Math.floor(Number((connRecord as any)?.max_leverage || 0))
-      livePosition.leverage = connectionCap > 0 ? Math.max(1, Math.min(venueMax, connectionCap)) : venueMax
-      ;(livePosition as any).leverageCap = connectionCap > 0 ? connectionCap : undefined
+      // The stop must be reached before the exchange liquidates the position: at 500x
+      // (0.20 %) and 300x (0.33 %) a 0.5 % stop never acts (lib/liquidation-safe-leverage.ts).
+      const stopLossForLeverage = Number((livePosition as any).assignedStopLoss ?? realPosition.stopLoss ?? 0)
+      const leverageCapForEntry = effectiveLeverageCap(connectionCap, stopLossForLeverage)
+      ;(livePosition as any).leverageStopCap = maxLeverageForStop(stopLossForLeverage) || undefined
+      livePosition.leverage = leverageCapForEntry > 0 ? Math.max(1, Math.min(venueMax, leverageCapForEntry)) : venueMax
+      ;(livePosition as any).leverageCap = leverageCapForEntry > 0 ? leverageCapForEntry : undefined
       pushStep(
         livePosition,
         "leverage_override",

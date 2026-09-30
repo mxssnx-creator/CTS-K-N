@@ -39,7 +39,11 @@ describe("per-connection leverage ceiling", () => {
   const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
   test("max_leverage caps the venue maximum; unset keeps the venue maximum", () => {
     expect(src).toContain("const connectionCap = Math.floor(Number((connRecord as any)?.max_leverage || 0))")
-    expect(src).toContain("livePosition.leverage = connectionCap > 0 ? Math.max(1, Math.min(venueMax, connectionCap)) : venueMax")
+    // The connection's max_leverage is one input of the effective ceiling; the stop-aware cap
+    // (lib/liquidation-safe-leverage.ts) is the other, and the smaller of the two applies. With
+    // neither, the venue maximum stays.
+    expect(src).toContain("const leverageCapForEntry = effectiveLeverageCap(connectionCap, stopLossForLeverage)")
+    expect(src).toContain("livePosition.leverage = leverageCapForEntry > 0 ? Math.max(1, Math.min(venueMax, leverageCapForEntry)) : venueMax")
     // ... and it survives the volume calculator, which reports its own maximum.
     const after = src.indexOf("livePosition.leverage = volumeResult?.leverage || livePosition.leverage")
     expect(src.indexOf("else if (cap > 0) livePosition.leverage = Math.max(1, Math.min(Number(livePosition.leverage) || cap, cap))", after)).toBeGreaterThan(after)
