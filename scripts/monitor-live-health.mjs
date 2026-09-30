@@ -180,6 +180,17 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
     }
   }
 
+  // ── account without balance ─────────────────────────────────────────
+  // X01, 2026-09-30: the BingX balance was 0.0005 USDT after a mass liquidation of another
+  // system's positions on the shared account (31 positions, -63 USDT, 09:51-09:58 UTC on
+  // 09-29). The exposure ceiling is derived from the balance, so every volume calculated to ~0
+  // and every entry was refused before the venue. The dispatch counters said "eligible",
+  // the log said "0 orders"; nothing said the account was empty.
+  for (const conn of live) {
+    const g = snap.gate?.[conn]
+    if (g && g.zeroCeiling > 0) add(`balance_exhausted_${conn}`, "CRIT", `${conn}: live exposure ceiling is 0.00 USD (${g.zeroCeiling} dispatches refused) — the account has no usable balance and every entry is refused before the venue; it has to be funded`, g.zeroCeiling)
+  }
+
   // ── openings: rows with executed quantity, counted in Redis ─────────
   // The journal is not a reliable source for this: journald rate-limits the app
   // (849 lines dropped in one hour on 2026-09-29) and "[LiveOrder] [POST]: 0"
@@ -352,7 +363,7 @@ function collectDispatchGate(now, liveConnections) {
       const m = /^s:([A-Z0-9]+):(.+)$/.exec(flat[i])
       if (m) (bySymbol[m[1]] ||= {})[m[2]] = flat[i + 1]
     }
-    const g = { freshSymbols: 0, candidates: 0, eligible: 0, selected: 0, suppressed: 0, suppressedHistoric: 0, suppressedReasons: {}, blockedReasons: {} }
+    const g = { freshSymbols: 0, candidates: 0, eligible: 0, selected: 0, suppressed: 0, suppressedHistoric: 0, zeroCeiling: 0, suppressedReasons: {}, blockedReasons: {} }
     for (const d of Object.values(bySymbol)) {
       if (num(d.dispatch_completed_at) < now - WINDOW_MIN * 60000) continue
       g.freshSymbols++
@@ -364,6 +375,10 @@ function collectDispatchGate(now, liveConnections) {
       for (const [field, target] of [["dispatch_suppressed", g.suppressedReasons], ["dispatch_blocked_reasons", g.blockedReasons]]) {
         try {
           for (const row of JSON.parse(d[field] || "[]")) {
+            // "Live exposure ceiling 0.00 USD": the exposure ceiling comes from the account balance,
+            // so 0 means the account has nothing to trade with. The normalisation below masks the
+            // amount, so it is counted here.
+            if (/exposure ceiling 0(?:\.0+)? USD/i.test(String(row.reason || ""))) g.zeroCeiling += num(row.count)
             const reason = String(row.reason || "?").replace(/\b[A-Z0-9]{3,12}USDT\b/g, "SYM").replace(/[0-9]+(\.[0-9]+)? USD/g, "N USD")
             target[reason] = (target[reason] || 0) + num(row.count)
           }
