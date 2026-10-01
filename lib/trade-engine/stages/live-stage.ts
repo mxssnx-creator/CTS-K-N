@@ -1,4 +1,4 @@
-import { ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
+import { confirmMissingControlOrders, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
   ADMISSION_COOLDOWN_FALLBACK_MS, ADMISSION_COOLDOWN_MAX_MS, ADMISSION_COOLDOWN_MIN_MS, deferredAdmissionResult,
   isRateLimitedSnapshotError, parseRetryAfterMs, readAdmissionCooldownUntil, setAdmissionCooldown,
@@ -12589,7 +12589,16 @@ async function readProtectionOrdersOrOwnFallback(
   positions: any[],
 ): Promise<Record<string, any>[]> {
   try {
-    return await readAuthoritativeProtectionOrders(connector)
+    const list = await readAuthoritativeProtectionOrders(connector)
+    // A valid list that lacks one of our armed control ids is confirmed on the single-order endpoint first.
+    const known = new Set<string>()
+    for (const order of list) for (const identifier of protectionOrderIdentifiers(order)) if (identifier) known.add(identifier)
+    const confirmed = await confirmMissingControlOrders(connector, positions, known).catch(() => [] as Record<string, any>[])
+    if (confirmed.length > 0) {
+      console.warn(`${LOG_PREFIX} ${connectionId}: ${confirmed.length} own control order(s) missing from the open-order list are alive on the venue (confirmed by id)`)
+      return [...list, ...confirmed]
+    }
+    return list
   } catch (error) {
     if (!(error instanceof AuthoritativeSnapshotUnavailableError) || !error.rateLimited) throw error
     if (!ownProtectionFallbackEnabled(connector)) throw error

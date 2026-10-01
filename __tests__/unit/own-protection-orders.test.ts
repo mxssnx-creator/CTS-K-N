@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { clearOwnProtectionOrderCache, ownControlOrderRefs, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
+import { clearOwnProtectionOrderCache, confirmMissingControlOrders, ownControlOrderRefs, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 
 const NOW = 1_790_880_000_000
 const row = (over: Record<string, any> = {}) => ({ id: "r1", symbol: "NCCOGOLD2USDUSDT", status: "open", executedQuantity: 0.0024, stopLossOrderId: "SL1", takeProfitOrderId: "TP1", ...over })
@@ -80,9 +80,35 @@ describe("our own control orders are verified one by one when the open-order lis
     expect(stage).toContain("const openOrders = await readProtectionOrdersOrOwnFallback(input.connectionId, input.connector, positions as any[])")
     const start = stage.indexOf("async function readProtectionOrdersOrOwnFallback(")
     const body = stage.slice(start, stage.indexOf("async function auditEntryProtectionBeforeVenueMutation(", start))
-    expect(body).toContain("return await readAuthoritativeProtectionOrders(connector)")
+    expect(body).toContain("const list = await readAuthoritativeProtectionOrders(connector)")
     expect(body).toContain("if (!(error instanceof AuthoritativeSnapshotUnavailableError) || !error.rateLimited) throw error")
     expect(body).toContain("if (!ownProtectionFallbackEnabled(connector)) throw error")
     expect(body).toContain("if (!own) throw error")
+  })
+})
+
+describe("a valid list that lacks our control ids is confirmed per id before it is a verdict", () => {
+  test("X02 gold: both ids absent from the list, the venue says NEW, so both count as alive", async () => {
+    const c = connector({ SL1: order("NEW"), TP1: order("NEW", { type: "TAKE_PROFIT_MARKET" }) })
+    const found = await confirmMissingControlOrders(c, [row()], new Set<string>(), NOW)
+    expect(found.map((o) => o.status)).toEqual(["NEW", "NEW"])
+    expect(c.calls).toEqual(["SL1", "TP1"])
+  })
+  test("ids already in the list are not asked for; nothing missing means no venue call", async () => {
+    const c = connector({})
+    expect(await confirmMissingControlOrders(c, [row()], new Set(["SL1", "TP1"]), NOW)).toEqual([])
+    expect(c.calls).toEqual([])
+    const c2 = connector({ TP1: order("NEW") })
+    expect((await confirmMissingControlOrders(c2, [row()], new Set(["SL1"]), NOW)).length).toBe(1)
+    expect(c2.calls).toEqual(["TP1"])
+  })
+  test("an id the venue does not know, or cannot answer for, adds nothing: the list verdict stands", async () => {
+    const c = connector({ SL1: { success: false, error: "BingX API error (code=109421): order does not exist" }, TP1: { success: false, error: "BingX order lookup cooldown active after missing-order pressure" } })
+    expect(await confirmMissingControlOrders(c, [row()], new Set<string>(), NOW)).toEqual([])
+  })
+  test("the audit confirms before it judges, for every account", () => {
+    const stage = readFileSync(resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
+    expect(stage).toContain("const confirmed = await confirmMissingControlOrders(connector, positions, known).catch(() => [] as Record<string, any>[])")
+    expect(stage).toContain("return [...list, ...confirmed]")
   })
 })
