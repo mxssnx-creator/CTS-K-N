@@ -1,3 +1,7 @@
+import {
+  ADMISSION_COOLDOWN_FALLBACK_MS, ADMISSION_COOLDOWN_MAX_MS, ADMISSION_COOLDOWN_MIN_MS, deferredAdmissionResult,
+  isRateLimitedSnapshotError, parseRetryAfterMs, readAdmissionCooldownUntil, setAdmissionCooldown,
+} from "@/lib/trade-engine/admission-cooldown"
 import { markLiveSyncPhase, trackLiveSyncConnector } from "@/lib/trade-engine/live-sync-phase"
 import { effectiveLeverageCap, maxLeverageForStop } from "@/lib/liquidation-safe-leverage"
 import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
@@ -12265,22 +12269,50 @@ async function readAuthoritativeProtectionOrders(
   return value
 }
 
-async function readAuthoritativeProtectionOrdersUncached(
+export class AuthoritativeSnapshotUnavailableError extends Error {
+  readonly rateLimited: boolean
+  readonly retryAfterMs: number
+  readonly snapshotError: string
+  constructor(snapshotError: string, connector?: any) {
+    super("Exact-slot reconciliation requires an authoritative venue open-order snapshot")
+    this.name = "AuthoritativeSnapshotUnavailableError"
+    this.snapshotError = snapshotError
+    this.rateLimited = isRateLimitedSnapshotError(snapshotError)
+    const connectorUntil = Number(typeof connector?.getRateLimitUntil === "function" ? connector.getRateLimitUntil() : 0)
+    this.retryAfterMs = /unblocked after/i.test(snapshotError)
+      ? parseRetryAfterMs(snapshotError)
+      : connectorUntil > Date.now()
+        ? Math.min(ADMISSION_COOLDOWN_MAX_MS, Math.max(ADMISSION_COOLDOWN_MIN_MS, connectorUntil - Date.now()))
+        : ADMISSION_COOLDOWN_FALLBACK_MS
+  }
+}
+
+export async function readAuthoritativeProtectionOrdersUncached(
   connector: any,
   symbol?: string,
 ): Promise<Record<string, any>[]> {
-  const orders = await withTimeout(
-    connector.getOpenOrders(symbol, { forceRefresh: true }) as Promise<any>,
-    25_000,
-    "getOpenOrders(exact-protection-slot)",
-  )
-  const status = typeof connector.getLastOpenOrdersSnapshotStatus === "function"
-    ? connector.getLastOpenOrdersSnapshotStatus()
-    : { ok: Array.isArray(orders) }
-  if (!Array.isArray(orders) || status?.ok !== true) {
-    throw new Error("Exact-slot reconciliation requires an authoritative venue open-order snapshot")
+  let lastError = ""
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const orders = await withTimeout(
+      connector.getOpenOrders(symbol, { forceRefresh: true }) as Promise<any>,
+      25_000,
+      "getOpenOrders(exact-protection-slot)",
+    )
+    const status = typeof connector.getLastOpenOrdersSnapshotStatus === "function"
+      ? connector.getLastOpenOrdersSnapshotStatus()
+      : { ok: Array.isArray(orders) }
+    if (Array.isArray(orders) && status?.ok === true) return orders
+    lastError = String(status?.error || "")
+    // The connector keeps ONE snapshot status per instance and sets "request_in_progress" while a call runs, so a
+    // second caller (the sync loop, another symbol's admission) can overwrite the status this call just earned.
+    // That is a race, not a refusal by the venue: look again shortly instead of rejecting the entry.
+    if (lastError === "request_in_progress" && attempt < 2) {
+      await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)))
+      continue
+    }
+    break
   }
-  return orders
+  throw new AuthoritativeSnapshotUnavailableError(lastError, connector)
 }
 
 function protectionSlotMemberIds(members: readonly LivePosition[]): string[] {
@@ -13375,6 +13407,12 @@ export async function executeLivePosition(
   }
   await initRedis()
   const client = getRedisClient()
+  // While the venue rate-limits our open-order reads, no row is created and the venue is not asked again
+  // (lib/trade-engine/admission-cooldown.ts). The result is classified as deferred, not as a rejection.
+  const admissionCooldownUntil = await readAdmissionCooldownUntil(client, connectionId)
+  if (admissionCooldownUntil > Date.now()) {
+    return deferredAdmissionResult(sourceRealPosition as unknown as Record<string, any>, connectionId, admissionCooldownUntil) as unknown as LivePosition
+  }
   const connectionTrackingId = makeConnectionTrackingId(connectionId)
   const entryProtectionHaltKey = `live:entry-protection-halt:${connectionId}`
   let realPosition = sourceRealPosition
@@ -15476,6 +15514,7 @@ export async function executeLivePosition(
     }
 
     let entryAdmission: EntryProtectionAdmissionDecision
+    let admissionSnapshotError: AuthoritativeSnapshotUnavailableError | null = null
     try {
       entryAdmission = await auditEntryProtectionBeforeVenueMutation({
         connectionId,
@@ -15485,6 +15524,7 @@ export async function executeLivePosition(
         connector: exchangeConnector,
       })
     } catch (error) {
+      if (error instanceof AuthoritativeSnapshotUnavailableError) admissionSnapshotError = error
       entryAdmission = {
         safe: false,
         violations: ["authoritative_admission_snapshot_unavailable"],
@@ -15505,6 +15545,19 @@ export async function executeLivePosition(
       console.warn(
         `${LOG_PREFIX} entry protection admission snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
       )
+    }
+    if (!entryAdmission.safe && admissionSnapshotError?.rateLimited) {
+      // The venue is rate limiting the open-orders read: defer, and keep the next attempts away until it ends.
+      const until = await setAdmissionCooldown(client, connectionId, admissionSnapshotError.retryAfterMs)
+      livePosition.status = "rejected"
+      livePosition.statusReason =
+        `Entry deferred: venue rate limit on open-order reads (${admissionSnapshotError.snapshotError.slice(0, 60) || "rate limited"}); will retry after ${new Date(until).toISOString()}`
+      pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      await logProgressionEvent(connectionId, "live_trading", "warning", livePosition.statusReason, {
+        symbol: realPosition.symbol, direction: realPosition.direction, retryAfterMs: admissionSnapshotError.retryAfterMs,
+      })
+      return livePosition
     }
     if (!entryAdmission.safe) {
       const codes = entryAdmission.violations.slice(0, 8).join(",")

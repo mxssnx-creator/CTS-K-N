@@ -63,6 +63,7 @@ __tests__/integration/progression-api.test.ts
 __tests__/unit/active-outbreak-indication.test.ts
 __tests__/unit/active-outbreak-strategy-protection.test.ts
 __tests__/unit/admin-auth.test.ts
+__tests__/unit/admission-cooldown.test.ts
 __tests__/unit/advanced-config-exhaustive.test.ts
 __tests__/unit/aggregate-protection-coordination.test.ts
 __tests__/unit/api-stats-fetcher.test.ts
@@ -1692,6 +1693,7 @@ lib/trade-engine-status-cache.ts
 lib/trade-engine-status-settings.ts
 lib/trade-engine-worker-heartbeat.ts
 lib/trade-engine.ts
+lib/trade-engine/admission-cooldown.ts
 lib/trade-engine/advanced-config.ts
 lib/trade-engine/balanced-config-selection.ts
 lib/trade-engine/closed-position-aggregation.ts
