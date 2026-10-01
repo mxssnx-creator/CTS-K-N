@@ -1,4 +1,4 @@
-import { runCronTimeBoxed } from "@/lib/cron-time-box"
+import { MAINTENANCE_MAX_WAIT_MS, runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { getAllConnections, getRedisClient, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
@@ -100,7 +100,7 @@ async function sweep(): Promise<HistoricTestSweepSummary> {
 }
 
 export async function GET(request: Request) {
-  return runCronTimeBoxed("historic-test", request, () => handle(request))
+  return runCronTimeBoxed("historic-test", request, () => handle(request), { maxWaitMs: MAINTENANCE_MAX_WAIT_MS })
 }
 
 async function handle(request: Request): Promise<Response> {

@@ -1,4 +1,4 @@
-import { runCronTimeBoxed } from "@/lib/cron-time-box"
+import { MAINTENANCE_MAX_WAIT_MS, runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 import { getAllConnections, getRedisClient, initRedis } from "@/lib/redis-db"
@@ -36,7 +36,7 @@ const DEFAULT_CONNECTIONS = ["bingx-x01", "bingx-x02"] as const
 
 /** Settle closed rows whose accounting was left unresolved, from their own closing order. */
 export async function GET(request: Request) {
-  return runCronTimeBoxed("close-accounting", request, () => handle(request))
+  return runCronTimeBoxed("close-accounting", request, () => handle(request), { maxWaitMs: MAINTENANCE_MAX_WAIT_MS })
 }
 
 async function handle(request: Request): Promise<Response> {
