@@ -394,6 +394,7 @@ __tests__/unit/requested-regressions.test.ts
 __tests__/unit/reset-db-preserves-foreign-keys.test.ts
 __tests__/unit/results-history-api.test.ts
 __tests__/unit/results-ledger.test.ts
+__tests__/unit/results-skip-set.test.ts
 __tests__/unit/resume-stalled-system-close.test.ts
 __tests__/unit/retention-policy.test.ts
 __tests__/unit/rollback-orphan-diagnostics.test.ts
@@ -1601,6 +1602,7 @@ lib/redis-service.ts
 lib/request-sequence.ts
 lib/results/ledger.ts
 lib/results/response.ts
+lib/results/skip-set.ts
 lib/risk-manager.ts
 lib/route-presentation.ts
 lib/runtime-boot-id.ts

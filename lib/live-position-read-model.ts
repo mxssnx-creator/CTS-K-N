@@ -1,3 +1,4 @@
+import { readLedgerSkipSet, withoutKnownNonResults } from "@/lib/results/skip-set"
 import {
   getRedisClient,
   initRedis,
@@ -267,7 +268,11 @@ async function readPositionIndex(
   const ids = await client
     .lrange(indexKey, 0, normalizedLimit - 1)
     .catch(() => [])
-  const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
+  // Rows the results ledger has classified as final non-results (simulated, never traded, foreign) are not
+  // loaded: on X02 they were almost every row of the newest 1,000 closed and 2,000 open ids, read again
+  // every few seconds (4,300 rows per second, the app at 100 % CPU).
+  const skip = await readLedgerSkipSet(client, connectionId).catch(() => null)
+  const uniqueIds = withoutKnownNonResults(Array.from(new Set(ids.filter(Boolean))), skip)
   if (uniqueIds.length === 0) return []
 
   const positions: LivePositionReadModel[] = []

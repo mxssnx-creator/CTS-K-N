@@ -22,6 +22,7 @@
  * The ledger is built from the durable rows, incrementally and idempotently, and
  * stores only compact entries of filled real rows (X02: 1,287, X01: 313).
  */
+import { clearLedgerSkipSetCache, ledgerSkipSetKey } from "@/lib/results/skip-set"
 import { getLivePositionSource, isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
 import type { LivePositionLifetimeLane, LivePositionLifetimeSummary } from "@/lib/live-position-lifetime-summary"
@@ -34,7 +35,7 @@ const TERMINAL = new Set(["closed", "rejected", "cancelled", "canceled", "error"
 export const ledgerEntriesKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:entries`
 export const ledgerIdsKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:ids`
 export const ledgerOpenKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:open`
-export const ledgerSkipKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:skip`
+export const ledgerSkipKey = (c: string) => ledgerSkipSetKey(c)
 export const ledgerFunnelKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:funnel`
 export const ledgerMetaKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:meta`
 const ledgerLockKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:lock`
@@ -214,6 +215,7 @@ export async function advanceResultsLedger(
     }).catch(() => 0)
     return done({ keys: keys.length, scanned, added, refreshed, remaining, complete: remaining === 0 })
   } finally {
+    clearLedgerSkipSetCache(connectionId) // readers skip rows the pass has just classified as final non-results
     await client.del(ledgerLockKey(connectionId)).catch(() => 0)
   }
 }
