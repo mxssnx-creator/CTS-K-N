@@ -107,16 +107,13 @@ async function lookup(connector: any, symbol: string, id: string, now: number): 
   return "unknown"
 }
 
-/**
- * The live subset of our own control orders, in the shape of an open-orders list, or null when any id could not be resolved.
- */
-export async function readOwnControlOrdersById(
+/** The live subset of the given control order refs, looked up one by one; null when any id could not be resolved. */
+export async function readControlOrdersByRefs(
   connector: any,
-  rows: ReadonlyArray<Record<string, any>>,
+  refs: ReadonlyArray<{ symbol: string; id: string }>,
   now: number = Date.now(),
 ): Promise<Record<string, any>[] | null> {
   if (!connector || typeof connector.getOrderDetails !== "function") return null
-  const refs = ownControlOrderRefs(rows)
   const live: Record<string, any>[] = []
   for (let i = 0; i < refs.length; i += LOOKUP_CONCURRENCY) {
     const results = await Promise.all(refs.slice(i, i + LOOKUP_CONCURRENCY).map((ref) => lookup(connector, ref.symbol, ref.id, now)))
@@ -126,4 +123,42 @@ export async function readOwnControlOrdersById(
     }
   }
   return live
+}
+
+/**
+ * The live subset of our own control orders, in the shape of an open-orders list, or null when any id could not be resolved.
+ */
+export async function readOwnControlOrdersById(
+  connector: any,
+  rows: ReadonlyArray<Record<string, any>>,
+  now: number = Date.now(),
+): Promise<Record<string, any>[] | null> {
+  return readControlOrdersByRefs(connector, ownControlOrderRefs(rows), now)
+}
+
+/**
+ * A VALID open-order list that lacks one of our own control order ids is not yet a verdict.
+ *
+ * X02, 2026-10-01: the gold row had its stop loss, take profit and security stop `armed` (0.0024, armed at 19:17:08)
+ * and the venue answered getOrderDetails with status NEW for both orders, yet the protection audit reported
+ * owned_row_stop_loss_not_authoritatively_open / owned_slot_controls_incomplete every minute and re-armed a 24 h halt.
+ * Whatever made the list miss them (a cache, a page limit, a symbol format), "not in the list" must be confirmed on the
+ * single-order endpoint before it counts as missing. Ids the venue confirms alive are returned as list entries; ids it
+ * says do not exist, or that cannot be resolved, change nothing (the list verdict stands).
+ */
+export async function confirmMissingControlOrders(
+  connector: any,
+  rows: ReadonlyArray<Record<string, any>>,
+  liveIdentifiers: ReadonlySet<string>,
+  now: number = Date.now(),
+): Promise<Record<string, any>[]> {
+  const missing = ownControlOrderRefs(rows).filter((ref) => !liveIdentifiers.has(ref.id))
+  if (missing.length === 0) return []
+  const found: Record<string, any>[] = []
+  // one by one: a "not found" answer feeds the connector's missing-order brake, and a brake answer means "unknown"
+  for (const ref of missing) {
+    const confirmed = await readControlOrdersByRefs(connector, [ref], now)
+    if (confirmed) found.push(...confirmed)
+  }
+  return found
 }
