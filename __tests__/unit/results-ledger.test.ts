@@ -172,3 +172,26 @@ describe("the lifetime summary shape the existing routes read", () => {
     expect(cron).toContain("advanceResultsLedger(client, id, { budgetMs: 6_000 })")
   })
 })
+
+describe("ready means the first complete pass has run", () => {
+  test("new rows after a complete pass are a lag, not a fall back to incomplete (the flip-flop of 2026-10-01)", async () => {
+    const rows: Record<string, any> = { a: real(), b: real() }
+    const redis = fakeRedis(rows)
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    expect(((await readResultLedger(redis, CONN))!.meta)).toMatchObject({ complete: true, remaining: 0 })
+    for (let i = 0; i < 40; i++) redis.hashes.set(`live_positions:${CONN}:n${i}`, Object.fromEntries(Object.entries(real()).map(([k, v]) => [k, String(v)])))
+    await advanceResultsLedger(redis, CONN, { maxRows: 5, chunk: 5 }); clearResultLedgerCache()
+    const meta = (await readResultLedger(redis, CONN))!.meta
+    expect(meta.remaining).toBeGreaterThan(0)
+    expect(meta.complete).toBe(true) // still ready: the answer is at most a few rows behind
+    const life = lifetimeSummaryFromLedger((await readResultLedger(redis, CONN))!)
+    expect(life.coverage.complete).toBe(true)
+  })
+  test("a ledger that never completed a pass is not ready", async () => {
+    const rows: Record<string, any> = {}
+    for (let i = 0; i < 30; i++) rows[`r${i}`] = real()
+    const redis = fakeRedis(rows)
+    await advanceResultsLedger(redis, CONN, { maxRows: 10, chunk: 10 }); clearResultLedgerCache()
+    expect(((await readResultLedger(redis, CONN))!.meta.complete)).toBe(false)
+  })
+})

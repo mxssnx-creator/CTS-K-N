@@ -255,7 +255,10 @@ export async function readResultLedger(client: any, connectionId: string): Promi
     connectionId,
     entries,
     funnel,
-    meta: { updatedAt: num(metaRaw.updatedAt), keys: num(metaRaw.keys), remaining: num(metaRaw.remaining), complete: metaRaw.complete === "1" },
+    // Ready = the first complete pass has run. After that, new rows only cause a small lag (`remaining`):
+    // the previous rule (complete only while nothing is left) flipped to "incomplete" whenever a row
+    // appeared, and every reader fell back to the old, wrong figures until the next pass finished.
+    meta: { updatedAt: num(metaRaw.updatedAt), keys: num(metaRaw.keys), remaining: num(metaRaw.remaining), complete: metaRaw.complete === "1" || num(metaRaw.lastCompletePassAt) > 0 },
   }
   cache.set(connectionId, { at: Date.now(), value })
   return value

@@ -46,6 +46,7 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   cooldownBlocksWarn: 50,
   // Results ledger not advanced for this long (the close-accounting background run moves it every minute).
   ledgerStaleMin: 10,
+  ledgerLagInfo: 1000,
   // Eligible candidates but nothing opened for this long; dispatches blocked before the venue.
   noOpeningWarnMin: 60,
   blockedWarn: 100,
@@ -204,6 +205,8 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
     if (diffs.length > 0) add(`results_inconsistent_${conn}`, "CRIT", `${conn}: the results answer differs from the ledger (${diffs.join(", ")})`)
     if (c.ledgerAgeMin !== null && c.ledgerAgeMin > t.ledgerStaleMin && c.keys > 0) add(`ledger_stale_${conn}`, "WARN", `${conn}: results ledger not advanced for ${c.ledgerAgeMin} min`, c.ledgerAgeMin)
     if (c.complete === false && c.ledgerAgeMin !== null && c.ledgerAgeMin <= t.ledgerStaleMin && c.remaining > 0) add(`ledger_building_${conn}`, "INFO", `${conn}: results ledger still building (${c.remaining} rows left)`)
+    // Built, but behind: new rows wait for the next passes (the app is CPU-bound). Informational, never a fallback.
+    else if (c.complete === true && c.remaining > t.ledgerLagInfo) add(`ledger_lag_${conn}`, "INFO", `${conn}: results ledger ${c.remaining} rows behind`, c.remaining)
   }
 
   // ── openings: rows with executed quantity, counted in Redis ─────────
@@ -376,7 +379,7 @@ function collectResultsCheck(now) {
       const body = JSON.parse(execFileSync("curl", ["-s", "-m", "20", `${APP_URL}/api/results/book?connection_id=${conn}&window=all`], { encoding: "utf8", timeout: 25_000 }))
       if (body?.book) api = { closed: body.book.closed, settled: body.book.settled, wins: body.book.wins, losses: body.book.losses, net: Math.round(body.book.net * 1e8) / 1e8 }
     } catch { api = null }
-    out[conn] = { api, ledger, ledgerAgeMin: Math.round((now - num(metaMap.updatedAt)) / 60000), keys: num(metaMap.keys), complete: metaMap.complete === "1", remaining: num(metaMap.remaining) }
+    out[conn] = { api, ledger, ledgerAgeMin: Math.round((now - num(metaMap.updatedAt)) / 60000), keys: num(metaMap.keys), complete: metaMap.complete === "1" || num(metaMap.lastCompletePassAt) > 0, remaining: num(metaMap.remaining) }
   }
   return out
 }

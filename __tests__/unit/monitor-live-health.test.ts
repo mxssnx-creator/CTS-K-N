@@ -261,4 +261,11 @@ describe("the live health verdict", () => {
     expect(src).toContain("`results:ledger:v2:${conn}:entries`")
     expect(src).toContain("source: \"ledger\"")
   })
+  test("a built ledger that is far behind is noted, never reported as building", () => {
+    const base = { api: { closed: 1, settled: 1, wins: 1, losses: 0, net: 1 }, ledger: { closed: 1, settled: 1, wins: 1, losses: 0, net: 1 }, ledgerAgeMin: 1, keys: 19398, complete: true, remaining: 3000 }
+    const s: any = healthy(); s.resultsCheck = { "bingx-x01": base }
+    const r = evaluate(s)
+    expect(ids(r, "INFO")).toContain("ledger_lag_bingx-x01")
+    expect(ids(r)).not.toContain("ledger_building_bingx-x01")
+  })
 })

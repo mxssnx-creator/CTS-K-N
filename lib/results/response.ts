@@ -48,7 +48,7 @@ export function buildResultsBookResponse(
     ready: ledger.meta.complete,
     window,
     definition: DEFINITION,
-    coverage: { complete: ledger.meta.complete, entries: ledger.entries.length, updatedAt: ledger.meta.updatedAt, keys: ledger.meta.keys, remaining: ledger.meta.remaining },
+    coverage: { complete: ledger.meta.complete, entries: ledger.entries.length, updatedAt: ledger.meta.updatedAt, keys: ledger.meta.keys, remaining: ledger.meta.remaining, lag: ledger.meta.remaining },
     book: computeResultBook(inWindow),
     windows,
     groups: group ? groupResultBooks(inWindow, GROUPS[group]) : null,
