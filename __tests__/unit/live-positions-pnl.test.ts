@@ -114,7 +114,8 @@ describe("live positions PnL enrichment", () => {
       },
     ])
 
-    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01"))
+    // These fixtures are simulated rows; the projection under test needs them delivered.
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01&includeSimulated=1"))
     const body = await response.json()
     const row = body.positions[0]
 
@@ -150,7 +151,7 @@ describe("live positions PnL enrichment", () => {
       },
     ])
 
-    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01"))
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01&includeSimulated=1"))
     const body = await response.json()
 
     expect(body.positions[0]).toMatchObject({
@@ -334,5 +335,20 @@ describe("live positions PnL enrichment", () => {
       if (previousRedisUrl === undefined) delete process.env.REDIS_URL
       else process.env.REDIS_URL = previousRedisUrl
     }
+  })
+
+  test("simulated rows are not delivered unless asked for, and the counts still say how many exist", async () => {
+    mockGetLivePositions.mockResolvedValue([
+      { id: "pos-sim", status: "simulated", direction: "long", symbol: "BTCUSDT", averageExecutionPrice: 100, executedQuantity: 1, exchangeData: { markPrice: 101, source: "simulation" }, createdAt: 1 },
+    ])
+    const plain = await (await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01"))).json()
+    expect(plain.positions).toEqual([])
+    expect(plain.simulatedPositions).toEqual([])
+    expect(plain.simulatedBook.open).toEqual([]); expect(plain.simulatedBook.closed).toEqual([])
+    expect(plain.counts.simulated).toBe(1)
+    const asked = await (await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01&includeSimulated=1"))).json()
+    expect(asked.positions).toHaveLength(1); expect(asked.simulatedPositions).toHaveLength(1)
+    const bySource = await (await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x01&source=simulated"))).json()
+    expect(bySource.positions).toHaveLength(1)
   })
 })

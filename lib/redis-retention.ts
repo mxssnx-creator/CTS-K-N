@@ -17,6 +17,11 @@ import {
 export const VOLUME_DETAIL_RETENTION_SECONDS = 30 * 24 * 60 * 60
 export const LIVE_TERMINAL_RETENTION_SECONDS = 30 * 24 * 60 * 60
 export const LIVE_FAILURE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+// Simulated (paper) rows are not results. A connection that runs in paper mode writes about 30 of them a
+// minute (X02: 10,491 in 24 days; the second X01 connection: 3,200 in two hours); kept for 30 days like a real
+// trade they made up most of the Redis keyspace and every full read of a connection's rows. The results
+// ledger has counted them in its funnel long before this.
+export const LIVE_SIMULATED_RETENTION_SECONDS = 2 * 24 * 60 * 60
 export const DIRECT_ORDER_CONTROL_RETENTION_SECONDS = 30 * 24 * 60 * 60
 /** Completed Direct-Trade statistics are a rebuildable read model. */
 export const DIRECT_STATISTICS_RETENTION_SECONDS = 30 * 24 * 60 * 60
@@ -562,6 +567,11 @@ async function repairLiveClosedIndex(
   }
 }
 
+export function isSimulatedRetentionRow(executionMode: unknown, orderId: unknown): boolean {
+  const mode = String(executionMode ?? "").trim().toLowerCase()
+  return ["simulation", "simulated", "paper"].includes(mode) || String(orderId ?? "").trim().toLowerCase().startsWith("sim-")
+}
+
 async function repairLiveHash(
   client: RedisClientLike,
   key: string,
@@ -577,6 +587,21 @@ async function repairLiveHash(
     return
   }
   if (classification !== "terminal") return
+  if (apply && typeof client.hget === "function") {
+    const [executionMode, orderId] = await Promise.all([
+      client.hget(key, "executionMode").catch(() => null),
+      client.hget(key, "orderId").catch(() => null),
+    ])
+    if (isSimulatedRetentionRow(executionMode, orderId)) {
+      // Shorter than a real trade's frist, and an existing longer one is cut back, not only a missing one filled in.
+      const ttl = await client.ttl(key)
+      if (ttl === -2) return
+      if (ttl < 0 || ttl > LIVE_SIMULATED_RETENTION_SECONDS) {
+        if (await client.expire(key, LIVE_SIMULATED_RETENTION_SECONDS)) report.terminalRowsBounded++
+      }
+      return
+    }
+  }
   if (apply && ["rejected", "error"].includes(String(status)) && typeof client.eval === "function") {
     const row = await client.hgetall(key)
     if (isRetirableUnsubmittedFailure(row)) {

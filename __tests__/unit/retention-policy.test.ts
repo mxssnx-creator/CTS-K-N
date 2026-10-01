@@ -233,4 +233,27 @@ describe("redis retention policy", () => {
     await expect(redis.exists(orphanKey)).resolves.toBe(0)
     await expect(redis.exists(activeKey)).resolves.toBe(1)
   })
+
+  it("gives finalized simulated rows a short retention and cuts back a longer one (paper rows were 30 days like real trades)", async () => {
+    const { LIVE_SIMULATED_RETENTION_SECONDS, isSimulatedRetentionRow } = await import("@/lib/redis-retention")
+    expect(isSimulatedRetentionRow("simulation", "")).toBe(true)
+    expect(isSimulatedRetentionRow("live", "sim-77")).toBe(true)
+    expect(isSimulatedRetentionRow("live", "2104954417031892992")).toBe(false)
+    const redis = new InlineLocalRedis()
+    const simNone = "live_positions:retention-sim:sim-none"
+    const simLong = "live_positions:retention-sim:sim-long"
+    const realClosed = "live_positions:retention-sim:real-closed"
+    const simOpen = "live_positions:retention-sim:sim-open"
+    await redis.hset(simNone, { id: "a", status: "closed", executionMode: "simulation" })
+    await redis.hset(simLong, { id: "b", status: "closed", executionMode: "simulation", orderId: "sim-1" })
+    await redis.expire(simLong, 30 * 24 * 60 * 60)
+    await redis.hset(realClosed, { id: "c", status: "closed", executionMode: "live", orderId: "2104954417031892992" })
+    await redis.hset(simOpen, { id: "d", status: "open", executionMode: "simulation" })
+    await repairRedisRetentionAll(redis, { pageSize: 250, maxPages: 100 })
+    const ttlNone = await redis.ttl(simNone), ttlLong = await redis.ttl(simLong)
+    expect(ttlNone).toBeGreaterThan(0); expect(ttlNone).toBeLessThanOrEqual(LIVE_SIMULATED_RETENTION_SECONDS)
+    expect(ttlLong).toBeGreaterThan(0); expect(ttlLong).toBeLessThanOrEqual(LIVE_SIMULATED_RETENTION_SECONDS)
+    await expect(redis.ttl(realClosed)).resolves.toBeGreaterThan(LIVE_SIMULATED_RETENTION_SECONDS)
+    await expect(redis.ttl(simOpen)).resolves.toBe(-1) // an open row is never given a frist
+  })
 })

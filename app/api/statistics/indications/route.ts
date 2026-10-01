@@ -1,3 +1,4 @@
+import { pruneInactiveSymbolRows } from "@/lib/statistics-symbol-rows"
 import { countSignalPositionOrders, isSystemOwnSignalRow, summarizeSignalCounts } from "@/lib/signal-position-policy"
 import { NextResponse } from "next/server"
 import {
@@ -180,6 +181,9 @@ export async function GET(request: Request) {
       : null
     const requestedSymbol = normalizeSymbol(searchParams.get("symbol"))
     const requestedGroup = String(searchParams.get("group") || "").trim().toLowerCase()
+    // Rows of symbols without a trade, an open position or a switch are left out (73 MB -> the active rows);
+    // includeInactive=1 returns every candidate symbol as before.
+    const includeInactive = searchParams.get("includeInactive") === "1"
     const [connections, signalSettings] = await Promise.all([
       getAllConnections(),
       loadSignalIndicationSettings(),
@@ -287,7 +291,7 @@ export async function GET(request: Request) {
       const source = sourceById.get(descriptor.id)!
       const sourceTrades = signalTrades.filter((trade) => trade.sourceIds.includes(descriptor.id))
       const supportedSymbols = candidateSymbols.filter((symbol) => signalSourceSupportsSymbol(source, symbol))
-      const symbols = sortSymbolsBestFirst(Array.from(new Set([
+      const symbols = pruneInactiveSymbolRows(sortSymbolsBestFirst(Array.from(new Set([
         ...supportedSymbols,
         ...sourceTrades.map((trade) => trade.symbol),
       ])).map((symbol) => {
@@ -312,7 +316,7 @@ export async function GET(request: Request) {
           ).length,
           windows: buildSignalAnalyticsWindows(trades, now),
         }
-      }))
+      })), includeInactive)
       return {
         ...descriptor,
         enabled: signalSettings.sources[descriptor.id]?.enabled !== false,
@@ -362,7 +366,7 @@ export async function GET(request: Request) {
     ])).map((type) => {
       const rows = filteredRows.filter((row) => row.type === type)
       const trades = rows.map((row) => row.trade)
-      const symbols = sortSymbolsBestFirst(Array.from(new Set([
+      const symbols = pruneInactiveSymbolRows(sortSymbolsBestFirst(Array.from(new Set([
         ...candidateSymbols,
         ...trades.map((trade) => trade.symbol),
       ])).map((symbol) => ({
@@ -377,7 +381,7 @@ export async function GET(request: Request) {
           trades.filter((trade) => trade.symbol === symbol),
           now,
         ),
-      })))
+      }))), includeInactive)
       return {
         type,
         closedPositions: trades.length,

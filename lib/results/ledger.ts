@@ -171,6 +171,15 @@ export async function advanceResultsLedger(
       client.smembers(ledgerOpenKey(connectionId)).catch(() => []),
     ])
     const known = new Set<string>([...(idList || []), ...(skipList || [])].map(String))
+    // Skip entries of rows that no longer exist (retention removed them) are dropped, so the set cannot grow
+    // without bound. The funnel counters keep what they counted. Entries of FILLED rows stay: the ledger is the
+    // history once the row itself has expired.
+    const liveIds = new Set<string>(keys.map((k) => k.slice(prefix.length)))
+    let pruned = 0
+    for (const id of skipList || []) {
+      if (pruned >= 500) break
+      if (!liveIds.has(String(id))) { await client.srem(ledgerSkipKey(connectionId), String(id)); known.delete(String(id)); pruned++ }
+    }
     const refresh = new Set<string>((openList || []).map(String))
     const live = new Set<string>(keys.map((k) => k.slice(prefix.length)))
     // Rows to look at: executed rows that are not final yet, and every row never seen.

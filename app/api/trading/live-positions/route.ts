@@ -443,6 +443,10 @@ async function buildLivePositionsResponse(request: Request) {
       ),
     }
 
+    // Simulated (paper) rows are not results and are not shown: on X02 they were sent THREE times (positions,
+    // simulatedPositions, simulatedBook.open/closed, 3.5 MB each) next to 10 real positions: 10.3 MB.
+    // They stay out unless asked for (includeSimulated=1) or requested as the source (source=simulated).
+    const includeSimulated = searchParams.get("includeSimulated") === "1" || sourceFilter === "simulated"
     const positionViews = all.map(toLivePositionView)
     const viewsById = new Map(positionViews.map((position) => [String(position.id), position]))
     const viewFor = (position: any) => viewsById.get(String(position.id)) || toLivePositionView(position)
@@ -462,15 +466,15 @@ async function buildLivePositionsResponse(request: Request) {
     return NextResponse.json({
       connectionId,
       sourceFilter,
-      positions: filtered.map(viewFor),
+      positions: (includeSimulated ? filtered : filtered.filter((p) => p.dataSource !== "simulated")).map(viewFor),
       realPositions: realPositions.map(viewFor),
-      simulatedPositions: simulatedPositions.map(viewFor),
+      simulatedPositions: includeSimulated ? simulatedPositions.map(viewFor) : [],
       // Independent simulated book: counters and lists come from one
       // classifier so the UI can never show "0 open" beside open rows.
       simulatedBook: {
         stats: simulatedBookForDisplay(computePositionBookStats(simulatedPositions)),
-        open: simulatedPositions.filter((p) => positionBookRowState(p) === "open").map(viewFor),
-        closed: simulatedPositions.filter((p) => positionBookRowState(p) === "closed").map(viewFor),
+        open: includeSimulated ? simulatedPositions.filter((p) => positionBookRowState(p) === "open").map(viewFor) : [],
+        closed: includeSimulated ? simulatedPositions.filter((p) => positionBookRowState(p) === "closed").map(viewFor) : [],
       },
       counts: {
         total: all.length,

@@ -194,4 +194,17 @@ describe("ready means the first complete pass has run", () => {
     await advanceResultsLedger(redis, CONN, { maxRows: 10, chunk: 10 }); clearResultLedgerCache()
     expect(((await readResultLedger(redis, CONN))!.meta.complete)).toBe(false)
   })
+
+  test("skip entries of rows that expired are dropped; entries of filled rows stay", async () => {
+    const redis = fakeRedis({ a: real(), s1: simulated(), s2: simulated() })
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    expect(redis.sets.get(`results:ledger:v2:${CONN}:skip`)!.size).toBe(2)
+    redis.hashes.delete(`live_positions:${CONN}:s1`)   // retention removed it
+    redis.hashes.delete(`live_positions:${CONN}:a`)    // a filled row expired too
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    expect([...redis.sets.get(`results:ledger:v2:${CONN}:skip`)!]).toEqual(["s2"])
+    const ledger = (await readResultLedger(redis, CONN))!
+    expect(ledger.entries).toHaveLength(1)           // the result of the expired filled row is kept
+    expect(ledger.funnel.simulated).toBe(2)          // the funnel keeps what it counted
+  })
 })
