@@ -27,7 +27,8 @@ import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
 import type { LivePositionLifetimeLane, LivePositionLifetimeSummary } from "@/lib/live-position-lifetime-summary"
 import { LIVE_POSITION_LIFETIME_SUMMARY_VERSION } from "@/lib/live-position-lifetime-summary"
 
-export const RESULTS_LEDGER_VERSION = 1
+// v2: exit price, order ids, set key; fees are `tradingFees` alone (it already holds entry + close).
+export const RESULTS_LEDGER_VERSION = 2
 const TERMINAL = new Set(["closed", "rejected", "cancelled", "canceled", "error", "failed"])
 
 export const ledgerEntriesKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:entries`
@@ -62,6 +63,10 @@ export interface LedgerEntry {
   variant: string
   intent: string
   slip: number | null
+  exit: number
+  oid: string
+  coid: string
+  setKey: string
 }
 
 export type RowClass =
@@ -108,7 +113,8 @@ export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry
     sl: num(row.assignedStopLoss) || num(row.stopLoss),
     tp: num(row.assignedTakeProfit) || num(row.takeProfit),
     pnl: settledPnl === undefined ? null : settledPnl,
-    fees: num(row.tradingFees) + num(row.entryTradingFee),
+    // tradingFees is the total (X02: 0.005 = entry 0.0025 + close 0.0025); entryTradingFee is only its entry part.
+    fees: num(row.tradingFees) || num(row.entryTradingFee),
     settled: settledPnl !== undefined,
     pnlSource: text(row.realizedPnlSource),
     reason: text(row.closeReason),
@@ -117,6 +123,10 @@ export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry
     variant: text(row.setVariant),
     intent: text(row.executionIntent),
     slip,
+    exit: num(row.closePrice) || num(row.averageClosePrice) || num(row.exitPrice),
+    oid: text(row.orderId),
+    coid: text(row.closeOrderId),
+    setKey: text(row.parentSetKey || row.setKey),
   }
 }
 
@@ -383,4 +393,82 @@ export function lifetimeSummaryFromLedger(ledger: ResultLedger): LivePositionLif
       complete: ledger.meta.complete,
     },
   }
+}
+
+// ───────────────────────────── trade history from the ledger ─────────────────────────────
+export interface LedgerHistoryRow {
+  id: string
+  symbol: string
+  direction: "long" | "short"
+  entryPrice: number
+  exitPrice: number
+  quantity: number
+  volumeUsd: number
+  grossPnl: number
+  fees: number
+  realizedPnl: number
+  pnlPct: number
+  openedAt: number
+  closedAt: number
+  holdMinutes: number
+  source: "local"
+  attribution: "cts"
+  environment: "exchange"
+  executionMode: "live"
+  executionIntent?: "main" | "preset" | "signal"
+  orderId?: string
+  closeOrderId?: string
+  positionId: string
+  setKey?: string
+  setVariant?: string
+  indicationType?: string
+  leverage?: number
+  closeReason?: string
+  accountingPending?: boolean
+}
+
+/** A ledger entry as a row of the trade history table. pnlPct is the pnl in percent of the notional. */
+export function ledgerEntryToHistoryRow(e: LedgerEntry): LedgerHistoryRow {
+  const pnl = e.pnl ?? 0
+  const intent = e.intent === "main" || e.intent === "preset" || e.intent === "signal" ? e.intent : undefined
+  return {
+    id: e.id,
+    symbol: e.sym,
+    direction: e.dir === "short" ? "short" : "long",
+    entryPrice: e.entry,
+    exitPrice: e.exit,
+    quantity: e.qty,
+    volumeUsd: e.notional,
+    grossPnl: pnl + e.fees,
+    fees: e.fees,
+    realizedPnl: pnl,
+    pnlPct: e.notional > 0 ? (pnl / e.notional) * 100 : 0,
+    openedAt: e.opened,
+    closedAt: e.closed,
+    holdMinutes: e.closed > 0 && e.opened > 0 ? Math.max(0, (e.closed - e.opened) / 60_000) : 0,
+    source: "local",
+    attribution: "cts",
+    environment: "exchange",
+    executionMode: "live",
+    ...(intent ? { executionIntent: intent } : {}),
+    ...(e.oid ? { orderId: e.oid } : {}),
+    ...(e.coid ? { closeOrderId: e.coid } : {}),
+    positionId: e.id,
+    ...(e.setKey ? { setKey: e.setKey } : {}),
+    ...(e.variant ? { setVariant: e.variant } : {}),
+    ...(e.type ? { indicationType: e.type } : {}),
+    ...(e.lev ? { leverage: e.lev } : {}),
+    ...(e.reason ? { closeReason: e.reason } : {}),
+    ...(e.settled ? {} : { accountingPending: true }),
+  }
+}
+
+/**
+ * The complete trade history of a connection: every closed filled real row, newest first. Settled rows
+ * enter the summary; rows whose accounting is pending are listed, marked, and never counted.
+ */
+export function tradeHistoryFromLedger(ledger: ResultLedger): { rows: LedgerHistoryRow[]; settled: LedgerHistoryRow[]; pending: number } {
+  const closed = ledger.entries.filter((e) => e.status === "closed").sort((a, b) => b.closed - a.closed)
+  const rows = closed.map(ledgerEntryToHistoryRow)
+  return { rows, settled: rows.filter((r) => !r.accountingPending), pending: rows.length - rows.filter((r) => !r.accountingPending).length }
 }

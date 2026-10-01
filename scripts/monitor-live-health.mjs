@@ -44,6 +44,8 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   slotHaltsWarn: 5,
   slotHaltsCrit: 15,
   cooldownBlocksWarn: 50,
+  // Results ledger not advanced for this long (the close-accounting background run moves it every minute).
+  ledgerStaleMin: 10,
   // Eligible candidates but nothing opened for this long; dispatches blocked before the venue.
   noOpeningWarnMin: 60,
   blockedWarn: 100,
@@ -191,6 +193,19 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
     if (g && g.zeroCeiling > 0) add(`balance_exhausted_${conn}`, "CRIT", `${conn}: live exposure ceiling is 0.00 USD (${g.zeroCeiling} dispatches refused) — the account has no usable balance and every entry is refused before the venue; it has to be funded`, g.zeroCeiling)
   }
 
+  // ── results: the shown figures against the data they are meant to be computed from ─────
+  // Two days of different "positions" for one connection (16 / 98 / 111 / 305 / 1135 across routes, X02: 2
+  // against 1,287 filled rows) went unnoticed because nothing compared the answer with the rows.
+  for (const [conn, c] of Object.entries(snap.resultsCheck || {})) {
+    if (c.api === null) { add(`results_api_${conn}`, "WARN", `${conn}: /api/results/book did not answer`); continue }
+    const diffs = []
+    for (const k of ["closed", "settled", "wins", "losses"]) if (c.api[k] !== c.ledger[k]) diffs.push(`${k} ${c.api[k]} vs ${c.ledger[k]}`)
+    if (Math.abs((c.api.net ?? 0) - (c.ledger.net ?? 0)) > 1e-6) diffs.push(`net ${c.api.net} vs ${c.ledger.net}`)
+    if (diffs.length > 0) add(`results_inconsistent_${conn}`, "CRIT", `${conn}: the results answer differs from the ledger (${diffs.join(", ")})`)
+    if (c.ledgerAgeMin !== null && c.ledgerAgeMin > t.ledgerStaleMin && c.keys > 0) add(`ledger_stale_${conn}`, "WARN", `${conn}: results ledger not advanced for ${c.ledgerAgeMin} min`, c.ledgerAgeMin)
+    if (c.complete === false && c.ledgerAgeMin !== null && c.ledgerAgeMin <= t.ledgerStaleMin && c.remaining > 0) add(`ledger_building_${conn}`, "INFO", `${conn}: results ledger still building (${c.remaining} rows left)`)
+  }
+
   // ── openings: rows with executed quantity, counted in Redis ─────────
   // The journal is not a reliable source for this: journald rate-limits the app
   // (849 lines dropped in one hour on 2026-09-29) and "[LiveOrder] [POST]: 0"
@@ -333,10 +348,60 @@ function statsOf(rows) {
   return { closed: rows.length, settled, wins, losses, net: Math.round((gp - gl) * 1e4) / 1e4, pf: gl > 0 ? gp / gl : gp > 0 ? null : null, winRate: wins + losses > 0 ? wins / (wins + losses) : null, reasons }
 }
 
+function ledgerEntries(conn) {
+  const flat = lines(redis(["hgetall", `results:ledger:v2:${conn}:entries`]))
+  const entries = []
+  for (let i = 1; i < flat.length; i += 2) { try { entries.push(JSON.parse(flat[i])) } catch { /* damaged entry */ } }
+  return entries
+}
+
+function ledgerBook(entries) {
+  const closed = entries.filter((e) => e.status === "closed")
+  const settled = closed.filter((e) => e.settled && e.pnl !== null)
+  let net = 0, wins = 0, losses = 0
+  for (const e of settled) { net += e.pnl; if (e.pnl > 0) wins++; else if (e.pnl < 0) losses++ }
+  return { closed: closed.length, settled: settled.length, wins, losses, net: Math.round(net * 1e8) / 1e8 }
+}
+
+function collectResultsCheck(now) {
+  const out = {}
+  for (const conn of CONNECTIONS) {
+    const meta = lines(redis(["hgetall", `results:ledger:v2:${conn}:meta`]))
+    const metaMap = {}
+    for (let i = 0; i + 1 < meta.length; i += 2) metaMap[meta[i]] = meta[i + 1]
+    if (!metaMap.updatedAt) continue
+    const ledger = ledgerBook(ledgerEntries(conn))
+    let api = null
+    try {
+      const body = JSON.parse(execFileSync("curl", ["-s", "-m", "20", `${APP_URL}/api/results/book?connection_id=${conn}&window=all`], { encoding: "utf8", timeout: 25_000 }))
+      if (body?.book) api = { closed: body.book.closed, settled: body.book.settled, wins: body.book.wins, losses: body.book.losses, net: Math.round(body.book.net * 1e8) / 1e8 }
+    } catch { api = null }
+    out[conn] = { api, ledger, ledgerAgeMin: Math.round((now - num(metaMap.updatedAt)) / 60000), keys: num(metaMap.keys), complete: metaMap.complete === "1", remaining: num(metaMap.remaining) }
+  }
+  return out
+}
+
 function collectResults(now) {
+  // Prefer the results ledger (filled real rows, complete, updated when the accounting settles);
+  // the row scan below is the fallback for a connection that has none yet.
+  const fromLedger = {}
+  for (const conn of CONNECTIONS) {
+    const entries = ledgerEntries(conn)
+    if (entries.length === 0) continue
+    const closed = entries.filter((e) => e.status === "closed")
+    const rows = closed.map((e) => ({ closedAt: e.closed, pnl: e.pnl ?? 0, reason: e.reason, createdAt: e.opened, settled: e.settled }))
+    const within = (ms) => rows.filter((r) => r.closedAt >= now - ms)
+    const lastClosed = rows.reduce((m, r) => Math.max(m, r.closedAt), 0)
+    fromLedger[conn] = { window6h: statsOf(within(6 * 3600e3)), window24h: statsOf(within(24 * 3600e3)), lastClosedAgoMin: lastClosed > 0 ? Math.round((now - lastClosed) / 60000) : null, source: "ledger" }
+  }
+  const scanned = collectResultsFromRows(now, CONNECTIONS.filter((c) => !fromLedger[c]))
+  return { ...scanned, ...fromLedger }
+}
+
+function collectResultsFromRows(now, connections) {
   const fields = ["status", "executedQuantity", "closedAt", "realizedPnL", "closeReason", "createdAt", "realizedPnlComplete", "system_tracking_id"]
   const results = {}
-  for (const conn of CONNECTIONS) {
+  for (const conn of connections) {
     const ids = lines(redis(["lrange", `live:positions:${conn}:closed`, "0", "299"]))
     const out = batch(ids.map((id) => `HMGET live_positions:${conn}:${id} ${fields.join(" ")}`))
     const rows = []
@@ -496,6 +561,7 @@ export function collectSnapshot() {
     openings: safe("openings", () => collectOpenings(now, Object.entries(connections).filter(([, c]) => c.live === "1").map(([id]) => id)), {}),
     gate: safe("gate", () => collectDispatchGate(now, Object.entries(connections).filter(([, c]) => c.live === "1").map(([id]) => id)), {}),
     results: safe("results", () => collectResults(now), {}),
+    resultsCheck: safe("resultsCheck", () => collectResultsCheck(now), {}),
     audit: safe("audit", () => collectAudit(now), {}),
     entries: safe("entries", collectEntries),
     ticks: safe("ticks", collectTicks),

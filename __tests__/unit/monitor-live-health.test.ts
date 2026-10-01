@@ -235,4 +235,30 @@ describe("the live health verdict", () => {
     expect(src).toContain("exposure ceiling 0(?:\\.0+)? USD")
     expect(src.indexOf("g.zeroCeiling += num(row.count)")).toBeLessThan(src.indexOf('.replace(/[0-9]+(\\.[0-9]+)? USD/g, "N USD")'))
   })
+  test("the shown results must equal the ledger: a different count or net is critical (X02: 2 shown of 1,287)", () => {
+    const ok = { api: { closed: 1276, settled: 890, wins: 165, losses: 718, net: -360.5448 }, ledger: { closed: 1276, settled: 890, wins: 165, losses: 718, net: -360.5448 }, ledgerAgeMin: 1, keys: 19398, complete: true, remaining: 0 }
+    const s: any = healthy(); s.resultsCheck = { "bingx-x01": ok }
+    expect(ids(evaluate(s))).toEqual([])
+    s.resultsCheck["bingx-x01"] = { ...ok, api: { ...ok.api, closed: 2, settled: 1 } }
+    const r = evaluate(s)
+    expect(ids(r, "CRIT")).toContain("results_inconsistent_bingx-x01")
+    expect(r.checks.find((c: any) => c.id === "results_inconsistent_bingx-x01").message).toContain("closed 2 vs 1276")
+    s.resultsCheck["bingx-x01"] = { ...ok, api: { ...ok.api, net: -1.1313 } }
+    expect(ids(evaluate(s), "CRIT")).toContain("results_inconsistent_bingx-x01")
+  })
+  test("a silent API, a stale ledger and a ledger that is still building", () => {
+    const base = { api: { closed: 1, settled: 1, wins: 1, losses: 0, net: 1 }, ledger: { closed: 1, settled: 1, wins: 1, losses: 0, net: 1 }, ledgerAgeMin: 1, keys: 100, complete: true, remaining: 0 }
+    const s: any = healthy()
+    s.resultsCheck = { "bingx-x01": { ...base, api: null } }
+    expect(ids(evaluate(s), "WARN")).toContain("results_api_bingx-x01")
+    s.resultsCheck = { "bingx-x01": { ...base, ledgerAgeMin: 25 } }
+    expect(ids(evaluate(s), "WARN")).toContain("ledger_stale_bingx-x01")
+    s.resultsCheck = { "bingx-x01": { ...base, complete: false, remaining: 4000 } }
+    expect(ids(evaluate(s), "INFO")).toContain("ledger_building_bingx-x01")
+  })
+  test("the collector reads results from the ledger first", () => {
+    const src = readFileSync(script, "utf8")
+    expect(src).toContain("`results:ledger:v2:${conn}:entries`")
+    expect(src).toContain("source: \"ledger\"")
+  })
 })

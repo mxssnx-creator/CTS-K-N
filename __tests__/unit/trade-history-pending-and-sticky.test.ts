@@ -9,7 +9,10 @@ describe("own trades with unresolved accounting are listed, never counted", () =
     expect(route).toContain("accountingPending: true")
   })
   test("summary and analytics use resolved own rows only", () => {
-    expect(route).toContain("const resolvedOwnRows = rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)")
+    // The own, settled rows feed summary and analytics: from the results ledger when it is complete, from the
+    // attributed rows otherwise. Pending rows are listed and never counted in either branch.
+    expect(route).toContain("rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)")
+    expect(route).toContain("? ledgerHistory.settled")
     expect(route).toContain("summarizeTradeHistory(resolvedOwnRows)")
     expect(route).toContain("for (const row of resolvedOwnRows.filter((row) => row.environment === mode))")
   })

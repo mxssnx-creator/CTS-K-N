@@ -64,7 +64,10 @@ describe("trade history attribution on a shared exchange account", () => {
     expect(route).toContain("unattributedExchange: {")
     // Summary counts attributed rows only — and, since unresolved own trades
     // are now listed, only those whose close accounting is resolved.
-    expect(route).toContain("const resolvedOwnRows = rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)")
+    // The own, settled rows feed summary and analytics: from the results ledger when it is complete, from the
+    // attributed rows otherwise. Pending rows are listed and never counted in either branch.
+    expect(route).toContain("rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)")
+    expect(route).toContain("? ledgerHistory.settled")
     expect(route).toContain("summarizeTradeHistory(resolvedOwnRows)")
     const page = readFileSync(resolve(process.cwd(), "app/statistics/page.tsx"), "utf8")
     expect(page).toContain("if (tuple[2] === UNATTRIBUTED_EXCHANGE_STRATEGY) continue")

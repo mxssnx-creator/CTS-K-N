@@ -378,6 +378,7 @@ unit	__tests__/unit/release-entry-lock-on-early-exit.test.ts
 unit	__tests__/unit/request-sequence.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
 unit	__tests__/unit/reset-db-preserves-foreign-keys.test.ts
+unit	__tests__/unit/results-history-api.test.ts
 unit	__tests__/unit/results-ledger.test.ts
 unit	__tests__/unit/resume-stalled-system-close.test.ts
 unit	__tests__/unit/retention-policy.test.ts

@@ -122,7 +122,7 @@ describe("the ledger is built from the rows, incrementally and idempotently", ()
     const refreshed = await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
     expect(refreshed.refreshed).toBe(1)
     expect(computeResultBook((await readResultLedger(redis, CONN))!.entries)).toMatchObject({ settled: 1, accountingPending: 0, losses: 1 })
-    expect(redis.sets.get(`results:ledger:v1:${CONN}:open`)!.size).toBe(0) // final now: no longer re-read
+    expect(redis.sets.get(`results:ledger:v2:${CONN}:open`)!.size).toBe(0) // final now: no longer re-read
   })
   test("the pass is bounded: it reports what remains and the next pass finishes", async () => {
     const rows: Record<string, any> = {}
@@ -137,7 +137,7 @@ describe("the ledger is built from the rows, incrementally and idempotently", ()
   })
   test("one pass at a time per connection", async () => {
     const redis = fakeRedis({ a: real() })
-    redis.kv.set(`results:ledger:v1:${CONN}:lock`, "1")
+    redis.kv.set(`results:ledger:v2:${CONN}:lock`, "1")
     expect(await advanceResultsLedger(redis, CONN)).toMatchObject({ skipped: "another pass is running", scanned: 0 })
   })
   test("a connection without rows is complete and empty", async () => {
