@@ -258,7 +258,7 @@ describe("the live health verdict", () => {
   })
   test("the collector reads results from the ledger first", () => {
     const src = readFileSync(script, "utf8")
-    expect(src).toContain("`results:ledger:v2:${conn}:entries`")
+    expect(src).toContain("`results:ledger:v3:${conn}:entries`")
     expect(src).toContain("source: \"ledger\"")
   })
   test("a built ledger that is far behind is noted, never reported as building", () => {

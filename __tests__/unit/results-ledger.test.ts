@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import {
   advanceResultsLedger, classifyRow, clearResultLedgerCache, computeResultBook, groupResultBooks,
-  ledgerEntriesKey, ledgerSkipKey, lifetimeSummaryFromLedger, readResultLedger, toLedgerEntry,
+  ledgerEntriesKey, ledgerSkipKey, lifetimeSummaryFromLedger, readResultLedger, RESULTS_LEDGER_VERSION, toLedgerEntry,
 } from "@/lib/results/ledger"
 import { simulatedBookForDisplay, emptyPositionBookStats } from "@/lib/position-book-stats"
 
@@ -122,7 +122,7 @@ describe("the ledger is built from the rows, incrementally and idempotently", ()
     const refreshed = await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
     expect(refreshed.refreshed).toBe(1)
     expect(computeResultBook((await readResultLedger(redis, CONN))!.entries)).toMatchObject({ settled: 1, accountingPending: 0, losses: 1 })
-    expect(redis.sets.get(`results:ledger:v2:${CONN}:open`)!.size).toBe(0) // final now: no longer re-read
+    expect(redis.sets.get(`results:ledger:v3:${CONN}:open`)!.size).toBe(0) // final now: no longer re-read
   })
   test("the pass is bounded: it reports what remains and the next pass finishes", async () => {
     const rows: Record<string, any> = {}
@@ -137,7 +137,7 @@ describe("the ledger is built from the rows, incrementally and idempotently", ()
   })
   test("one pass at a time per connection", async () => {
     const redis = fakeRedis({ a: real() })
-    redis.kv.set(`results:ledger:v2:${CONN}:lock`, "1")
+    redis.kv.set(`results:ledger:v3:${CONN}:lock`, "1")
     expect(await advanceResultsLedger(redis, CONN)).toMatchObject({ skipped: "another pass is running", scanned: 0 })
   })
   test("a connection without rows is complete and empty", async () => {
@@ -198,13 +198,48 @@ describe("ready means the first complete pass has run", () => {
   test("skip entries of rows that expired are dropped; entries of filled rows stay", async () => {
     const redis = fakeRedis({ a: real(), s1: simulated(), s2: simulated() })
     await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
-    expect(redis.sets.get(`results:ledger:v2:${CONN}:skip`)!.size).toBe(2)
+    expect(redis.sets.get(`results:ledger:v3:${CONN}:skip`)!.size).toBe(2)
     redis.hashes.delete(`live_positions:${CONN}:s1`)   // retention removed it
     redis.hashes.delete(`live_positions:${CONN}:a`)    // a filled row expired too
     await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
-    expect([...redis.sets.get(`results:ledger:v2:${CONN}:skip`)!]).toEqual(["s2"])
+    expect([...redis.sets.get(`results:ledger:v3:${CONN}:skip`)!]).toEqual(["s2"])
     const ledger = (await readResultLedger(redis, CONN))!
     expect(ledger.entries).toHaveLength(1)           // the result of the expired filled row is kept
     expect(ledger.funnel.simulated).toBe(2)          // the funnel keeps what it counted
+  })
+})
+
+describe("the ledger keys move together with the version", () => {
+  test("the skip set the read model uses is the one the ledger writes (both carry the ledger version)", () => {
+    expect(ledgerSkipKey("bingx-x02")).toBe(`results:ledger:v${RESULTS_LEDGER_VERSION}:bingx-x02:skip`)
+    expect(ledgerEntriesKey("bingx-x02")).toBe(`results:ledger:v${RESULTS_LEDGER_VERSION}:bingx-x02:entries`)
+    expect(RESULTS_LEDGER_VERSION).toBe(3)
+  })
+})
+
+describe("a phantom row is not a trade (11 on X02 and X01, 2026-10-01)", () => {
+  const phantom = (over: Record<string, any> = {}) => real({ status: "cancelled", executedQuantity: "0", totalExecutedQuantity: "2795", statusReason: "phantom_row_no_entry_order", closeReason: "", realizedPnL: "", realizedPnlComplete: "", ...over })
+  test("cancelled without its own fill is never traded, with its reason, even though a quantity is confirmed from totalExecutedQuantity", () => {
+    expect(classifyRow(phantom(), CONN)).toEqual({ kind: "never_traded", reason: "cancelled/phantom_row_no_entry_order" })
+    expect(classifyRow(phantom({ status: "rejected", statusReason: "min notional" }), CONN)).toEqual({ kind: "never_traded", reason: "rejected/min notional" })
+  })
+  test("a cancelled row WITH its own fill (the rest of an order was cancelled) is a trade, and every terminal row is closed", () => {
+    const partial = real({ status: "cancelled", executedQuantity: "4", closedQuantity: "4" })
+    expect(classifyRow(partial, CONN)).toEqual({ kind: "executed" })
+    expect(toLedgerEntry("p", partial).status).toBe("closed")
+    expect(toLedgerEntry("o", real({ status: "open", closedAt: "", realizedPnL: "", realizedPnlComplete: "" })).status).toBe("open")
+  })
+  test("a row kept as executed that classifies differently on the next pass is removed from the ledger and counted in the funnel", async () => {
+    const redis: any = fakeRedis({ a: real({ status: "open", closedAt: "", realizedPnL: "", realizedPnlComplete: "" }) })
+    redis.hdel = async (k: string, f: string) => { const h = redis.hashes.get(k); if (h && f in h) { delete h[f]; return 1 } return 0 }
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    expect((await readResultLedger(redis, CONN))!.entries).toHaveLength(1)
+    redis.hashes.set(`live_positions:${CONN}:a`, Object.fromEntries(Object.entries(phantom()).map(([k, v]) => [k, String(v)])))
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    const ledger = (await readResultLedger(redis, CONN))!
+    expect(ledger.entries).toHaveLength(0)
+    expect(ledger.funnel["never:cancelled/phantom_row_no_entry_order"]).toBe(1)
+    expect(redis.sets.get(`results:ledger:v3:${CONN}:ids`)!.size).toBe(0)
+    expect(redis.sets.get(`results:ledger:v3:${CONN}:open`)!.size).toBe(0)
   })
 })

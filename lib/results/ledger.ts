@@ -29,7 +29,9 @@ import type { LivePositionLifetimeLane, LivePositionLifetimeSummary } from "@/li
 import { LIVE_POSITION_LIFETIME_SUMMARY_VERSION } from "@/lib/live-position-lifetime-summary"
 
 // v2: exit price, order ids, set key; fees are `tradingFees` alone (it already holds entry + close).
-export const RESULTS_LEDGER_VERSION = 2
+// v3: a cancelled / rejected / failed row counts as a trade only with its OWN executedQuantity > 0 (11 phantom rows of
+//     X02 and X01 were counted, see classifyRow), and every terminal row is "closed", not "open".
+export const RESULTS_LEDGER_VERSION = 3
 const TERMINAL = new Set(["closed", "rejected", "cancelled", "canceled", "error", "failed"])
 
 export const ledgerEntriesKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:entries`
@@ -84,8 +86,14 @@ export function classifyRow(row: Record<string, any>, connectionId: string): Row
   const tracking = text(row.system_tracking_id)
   if (tracking && !tracking.startsWith(`sys-${connectionId}-`)) return { kind: "foreign" }
   if (getLivePositionSource(row) === "simulated") return { kind: "simulated" }
-  if (isExecutedRealExchangePosition(row)) return { kind: "executed" }
   const status = text(row.status).toLowerCase()
+  // isExecutedRealExchangePosition confirms a quantity from totalExecutedQuantity / fills too. A row that was
+  // cancelled, rejected or failed without an executedQuantity of its own is a phantom (X02: status=cancelled,
+  // statusReason=phantom_row_no_entry_order, executedQuantity=0, totalExecutedQuantity=2795 from the slot
+  // accumulation): it never traded and must not be a result.
+  const ownFill = num(row.executedQuantity) > 0
+  const terminalWithoutOwnFill = TERMINAL.has(status) && status !== "closed" && !ownFill
+  if (!terminalWithoutOwnFill && isExecutedRealExchangePosition(row)) return { kind: "executed" }
   if (TERMINAL.has(status)) {
     const reason = text(row.closeReason || row.statusReason).slice(0, 48) || "-"
     return { kind: "never_traded", reason: `${status}/${reason}` }
@@ -96,7 +104,7 @@ export function classifyRow(row: Record<string, any>, connectionId: string): Row
 export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry {
   const qty = num(row.executedQuantity)
   const entry = num(row.averageExecutionPrice) || num(row.entryPrice)
-  const status = text(row.status).toLowerCase() === "closed" ? "closed" : "open"
+  const status = TERMINAL.has(text(row.status).toLowerCase()) ? "closed" : "open"
   const settledPnl = status === "closed" ? resolveSettledRealizedPnl(row) : undefined
   const direction = text(row.direction || row.side).toLowerCase()
   const slip = row.closeSlippagePct === undefined || row.closeSlippagePct === "" ? null : num(row.closeSlippagePct)
@@ -206,6 +214,12 @@ export async function advanceResultsLedger(
         } else if (klass.kind === "pending") {
           // not final: looked at again next pass
         } else {
+          if (refresh.has(id)) {
+            // it was kept as an executed row and no longer is one: take it out of the ledger
+            await client.hdel(ledgerEntriesKey(connectionId), id)
+            await client.srem(ledgerIdsKey(connectionId), id)
+            await client.srem(ledgerOpenKey(connectionId), id)
+          }
           const isNew = await client.sadd(ledgerSkipKey(connectionId), id)
           if (Number(isNew) > 0) {
             const field = klass.kind === "never_traded" ? `never:${klass.reason}` : klass.kind
