@@ -1,3 +1,4 @@
+import { describeLiveSyncPhase } from "@/lib/trade-engine/live-sync-phase"
 import { MIN_VOLUME_FACTOR } from "@/lib/constants"
 import {
   RealtimeRotationTracker,
@@ -4420,7 +4421,13 @@ export class TradeEngineManager {
               syncWithExchange(this.connectionId, connector),
               `LivePositions ${this.connectionId} syncWithExchange`,
               CYCLE_DEADLINE_MS,
-            )
+            ).catch((syncDeadlineError: unknown) => {
+              // Say where the run was: the connector call in flight, or "after" it when the run is in our own code.
+              if (syncDeadlineError instanceof Error && /cycle deadline/.test(syncDeadlineError.message)) {
+                syncDeadlineError.message = `${syncDeadlineError.message} [${describeLiveSyncPhase(this.connectionId)}]`
+              }
+              throw syncDeadlineError
+            })
           }
         } catch (syncErr) {
           console.warn(
