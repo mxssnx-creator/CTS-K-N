@@ -49,6 +49,7 @@ regression	scripts/regression/live-stage-simulated-protection.test.ts
 unit	__tests__/unit/active-outbreak-indication.test.ts
 unit	__tests__/unit/active-outbreak-strategy-protection.test.ts
 unit	__tests__/unit/admin-auth.test.ts
+unit	__tests__/unit/admission-cooldown.test.ts
 unit	__tests__/unit/advanced-config-exhaustive.test.ts
 unit	__tests__/unit/aggregate-protection-coordination.test.ts
 unit	__tests__/unit/api-stats-fetcher.test.ts
