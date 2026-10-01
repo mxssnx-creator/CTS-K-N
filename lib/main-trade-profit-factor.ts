@@ -303,3 +303,39 @@ export function resolveCoherentStageThresholds(raw: {
   }
   return out
 }
+
+/**
+ * The stage profit factor settings, under every name they are stored.
+ */
+export const STAGE_PROFIT_FACTOR_SETTING_KEYS = [
+  "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
+  "base_min_profit_factor", "main_min_profit_factor", "real_min_profit_factor", "live_min_profit_factor",
+] as const
+
+/**
+ * A stage profit factor above MAIN_TRADE_PF_RATIO_MAX is not a stricter setting, it is a mistake: reading clamps it
+ * (X02 held baseProfitFactor = 7, which became 2.3), and the coherence rule then lifts EVERY later stage to the
+ * clamped value, so Main, Real and Live needed PF >= 2.3 although they were set to 1.02. No Base set (PF 0.06 to
+ * 1.52) passed for two days and the connection did not trade.
+ *
+ * Saving now stores what reading would use, so the stored value is the effective one and the settings page shows it.
+ * Returns the patch with the values clamped and the list of what was changed, so a caller can tell the operator.
+ */
+export function clampStageProfitFactorPatch<T extends Record<string, unknown>>(patch: T): {
+  patch: T
+  clamped: Array<{ key: string; requested: number; stored: number }>
+} {
+  const clamped: Array<{ key: string; requested: number; stored: number }> = []
+  if (!patch || typeof patch !== "object") return { patch, clamped }
+  const out: Record<string, unknown> = { ...patch }
+  for (const key of STAGE_PROFIT_FACTOR_SETTING_KEYS) {
+    if (!(key in out)) continue
+    const raw = out[key]
+    const requested = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() !== "" ? Number(raw) : NaN
+    if (Number.isFinite(requested) && requested > MAIN_TRADE_PF_RATIO_MAX) {
+      out[key] = MAIN_TRADE_PF_RATIO_MAX
+      clamped.push({ key, requested, stored: MAIN_TRADE_PF_RATIO_MAX })
+    }
+  }
+  return { patch: out as T, clamped }
+}
