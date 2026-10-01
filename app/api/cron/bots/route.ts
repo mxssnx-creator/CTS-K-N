@@ -1,4 +1,4 @@
-import { runCronTimeBoxed } from "@/lib/cron-time-box"
+import { MAINTENANCE_MAX_WAIT_MS, runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
 import { getAllConnections, initRedis } from "@/lib/redis-db"
@@ -22,7 +22,7 @@ const lastReports = new Map<string, BotTickReport & { at: number }>()
  * connection:type lock in runBotTick keeps ticks from overlapping.
  */
 export async function GET(request: Request) {
-  return runCronTimeBoxed("bots", request, () => handle(request))
+  return runCronTimeBoxed("bots", request, () => handle(request), { maxWaitMs: MAINTENANCE_MAX_WAIT_MS })
 }
 
 async function handle(request: Request): Promise<Response> {

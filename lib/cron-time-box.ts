@@ -20,6 +20,8 @@
 import { NextResponse } from "next/server"
 
 export const CRON_TIME_BUDGET_DEFAULT_MS = 600
+/** How long a maintenance route waits when the caller asks it to wait (?wait=1). */
+export const MAINTENANCE_MAX_WAIT_MS = 15_000
 /** A run that has been in flight this long is presumed hung; a new one may start. */
 export const CRON_RUN_STALE_MS = 5 * 60_000
 
@@ -80,7 +82,7 @@ export async function runCronTimeBoxed(
   name: string,
   request: Request,
   work: () => Promise<Response>,
-  options: { budgetMs?: number } = {},
+  options: { budgetMs?: number; maxWaitMs?: number } = {},
 ): Promise<Response> {
   const waitForCompletion = new URL(request.url).searchParams.get("wait") === "1"
   let run = inflight.get(name)
@@ -110,6 +112,22 @@ export async function runCronTimeBoxed(
   }
 
   if (waitForCompletion) {
+    // Continuity routes wait for the whole run: the installer's check needs finished work and fresh continuity.
+    // MAINTENANCE routes (accounting, replay, optimisation) bound the wait with maxWaitMs and then answer
+    // "pending": deploy #530 failed all four --once attempts because close-accounting, with the results ledger
+    // and two connections, needed more than the 58 s a tick may take, although nothing it does is needed to
+    // verify a deployment.
+    if (options.maxWaitMs !== undefined) {
+      let waitTimer: ReturnType<typeof setTimeout> | undefined
+      const limit = new Promise<"timeout">((resolve) => { waitTimer = setTimeout(() => resolve("timeout"), options.maxWaitMs); waitTimer.unref?.() })
+      try {
+        const outcome = await Promise.race([run.promise, limit])
+        if (outcome === "timeout") return pendingResponse(name, run, false)
+        return outcome.bodyUsed ? NextResponse.json({ success: true, name, note: "completed by an earlier request" }) : outcome
+      } finally {
+        if (waitTimer) clearTimeout(waitTimer)
+      }
+    }
     const response = await run.promise
     return response.bodyUsed ? NextResponse.json({ success: true, name, note: "completed by an earlier request" }) : response
   }

@@ -71,6 +71,29 @@ describe("a cron route answers within its budget and runs its work once", () => 
     expect(await res.json()).toEqual({ success: true, finished: true })
   })
 
+  test("a MAINTENANCE route waits at most maxWaitMs in wait mode and then answers pending, so a long accounting run cannot fail a deploy check", async () => {
+    let finished = false
+    const work = async () => { await sleep(400); finished = true; return ok({ finished: true }) }
+    const started = Date.now()
+    const res = await runCronTimeBoxed("maint", req("?wait=1"), work, { budgetMs: 20, maxWaitMs: 80 })
+    expect(Date.now() - started).toBeLessThan(300)
+    expect(res.status).toBe(202)
+    expect(await res.json()).toMatchObject({ success: true, pending: true, name: "maint" })
+    expect(finished).toBe(false)
+    await sleep(450)
+    expect(finished).toBe(true) // the run was not cancelled
+  })
+  test("maxWaitMs does not shorten a run that finishes in time, and a CONTINUITY route (no maxWaitMs) still waits for everything", async () => {
+    const quick = await runCronTimeBoxed("maint-quick", req("?wait=1"), async () => { await sleep(30); return ok({ finished: true }) }, { budgetMs: 10, maxWaitMs: 500 })
+    expect(quick.status).toBe(200); expect(await quick.json()).toEqual({ success: true, finished: true })
+    const slow = await runCronTimeBoxed("continuity", req("?wait=1"), async () => { await sleep(200); return ok({ finished: true }) }, { budgetMs: 10 })
+    expect(slow.status).toBe(200); expect(await slow.json()).toEqual({ success: true, finished: true })
+  })
+  test("only the four maintenance routes are bounded; the continuity routes the installer relies on are not", () => {
+    const read = (n: string) => readFileSync(resolve(process.cwd(), `app/api/cron/${n}/route.ts`), "utf8")
+    for (const name of ["close-accounting", "historic-test", "signal-source-optimization", "bots"]) expect(read(name)).toContain("{ maxWaitMs: MAINTENANCE_MAX_WAIT_MS }")
+    for (const name of ["server-continuity", "sync-live-positions", "direct-trade-continuity"]) expect(read(name)).not.toContain("maxWaitMs")
+  })
   test("a run presumed hung does not block the route forever", async () => {
     let starts = 0
     const hung = () => { starts++; return new Promise<Response>(() => undefined) }
@@ -104,8 +127,8 @@ describe("wiring", () => {
   test.each(["server-continuity", "sync-live-positions", "direct-trade-continuity", "historic-test", "bots", "close-accounting", "signal-source-optimization"])(
     "the %s route answers through the time box", (name) => {
       const route = read(`app/api/cron/${name}/route.ts`)
-      expect(route).toContain('import { runCronTimeBoxed } from "@/lib/cron-time-box"')
-      expect(route).toContain(`return runCronTimeBoxed("${name}", request, () => handle(request))`)
+      expect(route).toMatch(/import \{ (MAINTENANCE_MAX_WAIT_MS, )?runCronTimeBoxed \} from "@\/lib\/cron-time-box"/)
+      expect(route).toMatch(new RegExp(`return runCronTimeBoxed\\("${name}", request, \\(\\) => handle\\(request\\)(, \\{ maxWaitMs: MAINTENANCE_MAX_WAIT_MS \\})?\\)`))
       // sync-live-positions never had a POST; the others answer both methods the same way.
       if (name !== "sync-live-positions") expect(route).toMatch(/export const POST = GET|export async function POST/)
     })
