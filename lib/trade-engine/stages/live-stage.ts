@@ -1,3 +1,4 @@
+import { markLiveSyncPhase, trackLiveSyncConnector } from "@/lib/trade-engine/live-sync-phase"
 import { effectiveLeverageCap, maxLeverageForStop } from "@/lib/liquidation-safe-leverage"
 import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
@@ -20829,6 +20830,9 @@ export async function processSimulatedPositions(
  * Called periodically by the engine monitoring loop.
  */
 export async function syncWithExchange(connectionId: string, exchangeConnector: any): Promise<void> {
+  // Each exchange call records its method and start, so a 90 s deadline can say where the run was.
+  markLiveSyncPhase(connectionId, "start")
+  exchangeConnector = trackLiveSyncConnector(connectionId, exchangeConnector)
   await initRedis()
   const client = getRedisClient()
   const syncStartMs = Date.now()

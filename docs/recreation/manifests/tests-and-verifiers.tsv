@@ -267,6 +267,7 @@ unit	__tests__/unit/live-stage-control-barrier.test.ts
 unit	__tests__/unit/live-stage-halt-shortcircuit.test.ts
 unit	__tests__/unit/live-stage-position-cost-coordinate.test.ts
 unit	__tests__/unit/live-stage-redis-position-lock.test.ts
+unit	__tests__/unit/live-sync-phase.test.ts
 unit	__tests__/unit/live-trade-block-clearance.test.ts
 unit	__tests__/unit/live-trading-analytics.test.ts
 unit	__tests__/unit/live-trading-dashboard-contract.test.ts

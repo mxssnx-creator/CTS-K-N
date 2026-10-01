@@ -281,6 +281,7 @@ __tests__/unit/live-stage-control-barrier.test.ts
 __tests__/unit/live-stage-halt-shortcircuit.test.ts
 __tests__/unit/live-stage-position-cost-coordinate.test.ts
 __tests__/unit/live-stage-redis-position-lock.test.ts
+__tests__/unit/live-sync-phase.test.ts
 __tests__/unit/live-trade-block-clearance.test.ts
 __tests__/unit/live-trading-analytics.test.ts
 __tests__/unit/live-trading-dashboard-contract.test.ts
@@ -1700,6 +1701,7 @@ lib/trade-engine/engine-manager.ts
 lib/trade-engine/historic-replay-policy.ts
 lib/trade-engine/index.ts
 lib/trade-engine/indication-processor-fixed.ts
+lib/trade-engine/live-sync-phase.ts
 lib/trade-engine/market-data-cache.ts
 lib/trade-engine/progression-lock.ts
 lib/trade-engine/progression-writes.ts
