@@ -1,3 +1,4 @@
+import { clampStageProfitFactorPatch, MAIN_TRADE_PF_RATIO_MAX } from "@/lib/main-trade-profit-factor"
 import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 import { type NextRequest, NextResponse } from "next/server"
 import { SystemLogger } from "@/lib/system-logger"
@@ -695,7 +696,13 @@ export async function PUT(
   try {
     const { id } = await params
     const body = await request.json()
-    const incomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
+    const rawIncomingSettings = body.settings && typeof body.settings === "object" ? body.settings : {}
+    // A stage profit factor above the maximum is stored as the maximum (see clampStageProfitFactorPatch).
+    const profitFactorGuard = clampStageProfitFactorPatch(rawIncomingSettings as Record<string, unknown>)
+    const incomingSettings = profitFactorGuard.patch as typeof rawIncomingSettings
+    if (profitFactorGuard.clamped.length > 0) {
+      console.warn(`[v0] [Settings] ${id}: stage profit factor above ${MAIN_TRADE_PF_RATIO_MAX} stored as the maximum: ${profitFactorGuard.clamped.map((c) => `${c.key} ${c.requested}->${c.stored}`).join(", ")}`)
+    }
     const maintenance = getRuntimeMaintenanceState()
     if (maintenance.active && requestsRuntimeEnable(body, incomingSettings)) {
       return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
@@ -851,7 +858,8 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params
-    const requestSettings = await request.json() as Record<string, any>
+    const requestSettingsRaw = await request.json() as Record<string, any>
+    const requestSettings = clampStageProfitFactorPatch(requestSettingsRaw).patch
     const maintenance = getRuntimeMaintenanceState()
     if (maintenance.active && requestsRuntimeEnable(requestSettings)) {
       return NextResponse.json(runtimeMaintenanceJson(maintenance), { status: 503 })
