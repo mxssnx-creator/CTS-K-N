@@ -1,3 +1,4 @@
+import { readResultLedger, tradeHistoryFromLedger } from "@/lib/results/ledger"
 import { NextResponse, type NextRequest } from "next/server"
 import { createHash } from "node:crypto"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
@@ -690,9 +691,22 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       .filter((row) => row.accountingQuality !== "exchange_required" || isAttributedTradeHistoryRow(row))
       .map((row) => (row.accountingQuality === "exchange_required" ? { ...row, accountingPending: true } : row))
     const foreignExcluded = scope === "all" ? 0 : mergedAll.filter((row) => !isAttributedTradeHistoryRow(row)).length
-    const rows = (scope === "all" ? mergedAll : mergedAll.filter(isAttributedTradeHistoryRow)).slice(0, limit)
-    const resolvedOwnRows = rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)
-    const summary = { ...summarizeTradeHistory(resolvedOwnRows), accountingPending: rows.filter((row) => (row as any).accountingPending).length }
+    // The complete history of the connection's OWN filled real positions comes from the results ledger
+    // (lib/results/ledger.ts), not from the newest rows of a capped index and a 73 h archive: on X02 the
+    // route listed 2 trades of 1,287, and its summary only ever covered the returned window. Without a
+    // complete ledger, or for the simulated or all-actors view, the previous sources stay.
+    const resultLedger = mode === "exchange" && scope !== "all" ? await readResultLedger(client, connectionId).catch(() => null) : null
+    const ledgerHistory = resultLedger && resultLedger.meta.complete ? tradeHistoryFromLedger(resultLedger) : null
+    const historyRows: any[] = ledgerHistory
+      ? ledgerHistory.rows
+      : (scope === "all" ? mergedAll : mergedAll.filter(isAttributedTradeHistoryRow))
+    const rows = (ledgerHistory ? historyRows.slice(offset, offset + limit) : historyRows.slice(0, limit)) as any[]
+    const resolvedOwnRows = (ledgerHistory
+      ? ledgerHistory.settled
+      : rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)) as any[]
+    const summary = ledgerHistory
+      ? { ...summarizeTradeHistory(ledgerHistory.settled as any), accountingPending: ledgerHistory.pending }
+      : { ...summarizeTradeHistory(resolvedOwnRows), accountingPending: rows.filter((row) => (row as any).accountingPending).length }
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the
     // complete PF 4/12/48h, PF last 12/25/75 and DDT 3d windows.
@@ -720,11 +734,12 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       analytics,
       paging: {
         returned: rows.length,
-        offset: localPage.offset,
-        nextOffset: localPage.nextOffset,
+        offset: ledgerHistory ? offset : localPage.offset,
+        nextOffset: ledgerHistory ? (offset + rows.length < ledgerHistory.rows.length ? offset + rows.length : null) : localPage.nextOffset,
         pageSize: limit,
-        totalIndexed: localPage.totalIndexed,
-        hasMore: localPage.hasMore,
+        totalIndexed: ledgerHistory ? ledgerHistory.rows.length : localPage.totalIndexed,
+        hasMore: ledgerHistory ? offset + rows.length < ledgerHistory.rows.length : localPage.hasMore,
+        historySource: ledgerHistory ? "results-ledger" : "position-index",
         durableUnlimited: true,
         maximum: MAX_TRADE_HISTORY_PAGE_SIZE,
         visibleWindow: 50,

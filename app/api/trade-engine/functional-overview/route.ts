@@ -1,3 +1,4 @@
+import { computeResultBook, readResultLedger } from "@/lib/results/ledger"
 import { NextResponse } from "next/server"
 import {
   getAllConnections,
@@ -126,6 +127,10 @@ export async function GET() {
           connection as Record<string, unknown>,
           progression as Record<string, unknown>,
         )
+        const ledger = await readResultLedger(client, connectionId).catch(() => null)
+        const executedLive = ledger && ledger.meta.complete
+          ? (() => { const book = computeResultBook(ledger.entries); return { open: book.open, closed: book.closed } })()
+          : null
         return {
           progression: progression as Record<string, string>,
           stages: {
@@ -141,8 +146,10 @@ export async function GET() {
             live: aggregateFunctionalOverviewStage(live as Record<string, string>, { activeSymbols }),
           },
           pseudoOpen: finite(pseudoOpen),
-          liveOpen: finite(liveOpen),
-          liveClosed: finite(liveClosed),
+          // Executed real positions only (results ledger). The index sizes this used to show also hold
+          // simulated and never-traded rows: X02 reported 1,484 "live open" with 11 open real positions.
+          liveOpen: executedLive ? executedLive.open : finite(liveOpen),
+          liveClosed: executedLive ? executedLive.closed : finite(liveClosed),
           prehistoricSymbols: finite(prehistoricSymbols),
         }
       },
@@ -209,10 +216,13 @@ export async function GET() {
         avgProfitFactorReal: averagePf("real"),
         avgProfitFactorLive: averagePf("live"),
       },
+      // The profit factors above are the QUALIFICATION of Sets (pseudo positions of the stages), not results:
+      // results are computed from executed orders (positions.scope, /api/results/book).
+      qualification: { profitFactors: ["avgProfitFactorBase", "avgProfitFactorMain", "avgProfitFactorReal", "avgProfitFactorLive"], isResult: false },
       positions: {
         currentLiveOpen: totalLiveOpen,
         retainedLiveClosed: totalLiveClosed,
-        scope: "canonical-current-and-retained-ledgers",
+        scope: "executed-real-orders",
       },
       prehistoricData: {
         symbolsProcessed: prehistoricSymbolsProcessed,
