@@ -326,6 +326,7 @@ __tests__/unit/overall-stats-relevant-connections.test.ts
 __tests__/unit/overview-data-correctness.test.ts
 __tests__/unit/overview-poller.test.ts
 __tests__/unit/owned-only-protection-book.test.ts
+__tests__/unit/payload-reduction.test.ts
 __tests__/unit/performance-profiler.test.ts
 __tests__/unit/persistent-paths.test.ts
 __tests__/unit/pf-coordinate-and-block-volume-contract.test.ts
@@ -1648,6 +1649,7 @@ lib/startup-coordinator.ts
 lib/startup-diagnostics.ts
 lib/startup-validation.ts
 lib/statistics-overview-current-counts.ts
+lib/statistics-symbol-rows.ts
 lib/statistics-tracker.ts
 lib/step-based-indicators.ts
 lib/stoploss-ratio-range.ts
