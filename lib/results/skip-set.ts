@@ -10,7 +10,8 @@
  *
  * Kept free of imports so the read model can use it without a cycle.
  */
-export const ledgerSkipSetKey = (connectionId: string): string => `results:ledger:v2:${connectionId}:skip`
+// Must equal `results:ledger:v${RESULTS_LEDGER_VERSION}:<connection>:skip` of lib/results/ledger.ts (a test keeps them together).
+export const ledgerSkipSetKey = (connectionId: string): string => `results:ledger:v3:${connectionId}:skip`
 
 const CACHE_MS = 20_000
 const cache = new Map<string, { at: number; ids: ReadonlySet<string> }>()

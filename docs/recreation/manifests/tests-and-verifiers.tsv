@@ -313,6 +313,7 @@ unit	__tests__/unit/overall-mode-fixes.test.ts
 unit	__tests__/unit/overall-stats-relevant-connections.test.ts
 unit	__tests__/unit/overview-data-correctness.test.ts
 unit	__tests__/unit/overview-poller.test.ts
+unit	__tests__/unit/own-protection-orders.test.ts
 unit	__tests__/unit/owned-only-protection-book.test.ts
 unit	__tests__/unit/payload-reduction.test.ts
 unit	__tests__/unit/performance-profiler.test.ts

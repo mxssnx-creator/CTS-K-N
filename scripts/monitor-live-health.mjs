@@ -352,7 +352,7 @@ function statsOf(rows) {
 }
 
 function ledgerEntries(conn) {
-  const flat = lines(redis(["hgetall", `results:ledger:v2:${conn}:entries`]))
+  const flat = lines(redis(["hgetall", `results:ledger:v3:${conn}:entries`]))
   const entries = []
   for (let i = 1; i < flat.length; i += 2) { try { entries.push(JSON.parse(flat[i])) } catch { /* damaged entry */ } }
   return entries
@@ -369,7 +369,7 @@ function ledgerBook(entries) {
 function collectResultsCheck(now) {
   const out = {}
   for (const conn of CONNECTIONS) {
-    const meta = lines(redis(["hgetall", `results:ledger:v2:${conn}:meta`]))
+    const meta = lines(redis(["hgetall", `results:ledger:v3:${conn}:meta`]))
     const metaMap = {}
     for (let i = 0; i + 1 < meta.length; i += 2) metaMap[meta[i]] = meta[i + 1]
     if (!metaMap.updatedAt) continue

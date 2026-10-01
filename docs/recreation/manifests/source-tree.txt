@@ -327,6 +327,7 @@ __tests__/unit/overall-mode-fixes.test.ts
 __tests__/unit/overall-stats-relevant-connections.test.ts
 __tests__/unit/overview-data-correctness.test.ts
 __tests__/unit/overview-poller.test.ts
+__tests__/unit/own-protection-orders.test.ts
 __tests__/unit/owned-only-protection-book.test.ts
 __tests__/unit/payload-reduction.test.ts
 __tests__/unit/performance-profiler.test.ts
@@ -1705,6 +1706,7 @@ lib/trade-engine/index.ts
 lib/trade-engine/indication-processor-fixed.ts
 lib/trade-engine/live-sync-phase.ts
 lib/trade-engine/market-data-cache.ts
+lib/trade-engine/own-protection-orders.ts
 lib/trade-engine/progression-lock.ts
 lib/trade-engine/progression-writes.ts
 lib/trade-engine/pseudo-position-manager.ts

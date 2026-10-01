@@ -9,7 +9,7 @@ beforeEach(() => clearLedgerSkipSetCache())
 describe("rows that can never be a result are not loaded (the app at 100 % CPU, 4,300 rows per second)", () => {
   test("the ledger and the read model use one key", () => {
     expect(ledgerSkipKey("bingx-x02")).toBe(ledgerSkipSetKey("bingx-x02"))
-    expect(ledgerSkipSetKey("bingx-x02")).toBe("results:ledger:v2:bingx-x02:skip")
+    expect(ledgerSkipSetKey("bingx-x02")).toBe("results:ledger:v3:bingx-x02:skip")
   })
   test("known non-results are dropped from the ids, everything else is kept in order; no set means nothing is skipped", () => {
     const skip = new Set(["sim1", "nt1"])

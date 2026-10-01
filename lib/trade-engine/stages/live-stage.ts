@@ -1,3 +1,4 @@
+import { ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
   ADMISSION_COOLDOWN_FALLBACK_MS, ADMISSION_COOLDOWN_MAX_MS, ADMISSION_COOLDOWN_MIN_MS, deferredAdmissionResult,
   isRateLimitedSnapshotError, parseRetryAfterMs, readAdmissionCooldownUntil, setAdmissionCooldown,
@@ -12576,6 +12577,31 @@ async function acquireEntryProtectionAdmissionLease(
  * and the venue position quantity is fully explained by exact CTS ownership.
  * Foreign orders are never adopted or cancelled.
  */
+/**
+ * The open orders for the protection audit. When the venue refuses the LIST because of a rate limit, our own control
+ * order ids are checked one by one instead (lib/trade-engine/own-protection-orders.ts): the audit only asks whether
+ * each id is alive. Any other failure, an id that cannot be resolved, or a mainnet account (unless switched on) keeps
+ * the previous behaviour: the error propagates and the entry or the halt recheck waits.
+ */
+async function readProtectionOrdersOrOwnFallback(
+  connectionId: string,
+  connector: any,
+  positions: any[],
+): Promise<Record<string, any>[]> {
+  try {
+    return await readAuthoritativeProtectionOrders(connector)
+  } catch (error) {
+    if (!(error instanceof AuthoritativeSnapshotUnavailableError) || !error.rateLimited) throw error
+    if (!ownProtectionFallbackEnabled(connector)) throw error
+    const own = await readOwnControlOrdersById(connector, positions).catch(() => null)
+    if (!own) throw error
+    console.warn(
+      `${LOG_PREFIX} ${connectionId}: open-order list rate limited; ${own.length} own control order(s) verified by id instead`,
+    )
+    return own
+  }
+}
+
 async function auditEntryProtectionBeforeVenueMutation(input: {
   connectionId: string
   candidateId?: string
@@ -12585,12 +12611,12 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
   connector: any
   requireCapacity?: boolean
 }): Promise<EntryProtectionAdmissionDecision> {
-  const [positions, venuePositions, openOrders, protectionPolicy] = await Promise.all([
+  const [positions, venuePositions, protectionPolicy] = await Promise.all([
     getLivePositions(input.connectionId),
     readAuthoritativeProtectionPositions(input.connector),
-    readAuthoritativeProtectionOrders(input.connector),
     getCachedProtectionPolicy(input.connectionId),
   ])
+  const openOrders = await readProtectionOrdersOrOwnFallback(input.connectionId, input.connector, positions as any[])
   // Adopt protection orders that landed on the venue although their placement
   // timed out: matched by the row's own pre-submitted clientOrderId only.
   for (const adoption of findPreparedProtectionAdoptions(positions as any[], openOrders as any[])) {
