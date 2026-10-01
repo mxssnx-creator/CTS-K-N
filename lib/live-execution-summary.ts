@@ -1,3 +1,4 @@
+import { simulatedBookForDisplay } from "@/lib/position-book-stats"
 import {
   getClosedLivePositionReadModels,
   getOpenLivePositionReadModels,
@@ -320,7 +321,7 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     all,
     books: {
       real: computePositionBookStats(lanes.real as Array<Record<string, any>>),
-      simulated: computePositionBookStats(lanes.simulated as Array<Record<string, any>>),
+      simulated: simulatedBookForDisplay(computePositionBookStats(lanes.simulated as Array<Record<string, any>>)),
       unknown: computePositionBookStats(lanes.unknown as Array<Record<string, any>>),
     },
     exchange,
