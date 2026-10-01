@@ -47,12 +47,13 @@ async function handle(request: Request): Promise<Response> {
   const { exchangeConnectorFactory } = await import("@/lib/exchange-connectors/factory")
   const requested = new URL(request.url).searchParams.get("connectionId")
   const connectionIds: readonly string[] = requested ? [requested] : DEFAULT_CONNECTIONS
+  // The results ledger (lib/results/ledger.ts) moves forward FIRST in the background run: it picks up new rows
+  // and refreshes the ones whose accounting was still pending. Behind the settle loops it never got to run
+  // (scanned 0 on both connections, the settle part alone took 28 s and 42 s). A connection without rows is skipped.
+  const ledgerRuns = await advanceLedgers(client, requested)
   const started = Date.now()
   const results: Array<Record<string, any>> = []
   for (const connectionId of connectionIds) results.push(await settleConnection(client, exchangeConnectorFactory, connectionId, started))
-  // The results ledger (lib/results/ledger.ts) moves forward in the same background run: it picks up new rows
-  // and refreshes the ones whose accounting was still pending. A connection without rows is skipped.
-  const ledgerRuns = await advanceLedgers(client, requested)
   if (results.length === 1) return NextResponse.json({ ...results[0], ledger: ledgerRuns }, { status: results[0].error ? 503 : 200 })
   return NextResponse.json({ ok: results.every((r) => r.ok !== false), connections: results, ledger: ledgerRuns })
 }

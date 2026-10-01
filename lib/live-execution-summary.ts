@@ -98,7 +98,8 @@ type CachedSummary = {
   value: LiveExecutionSummary
 }
 
-const SUMMARY_FRESH_MS = 3_000
+// Ten seconds: every dashboard poll and every overview rebuilt it every three (see lib/results/skip-set.ts).
+const SUMMARY_FRESH_MS = 10_000
 const summaryCache = new Map<string, CachedSummary>()
 const summaryInFlight = new Map<string, Promise<LiveExecutionSummary>>()
 
