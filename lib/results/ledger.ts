@@ -1,0 +1,386 @@
+/**
+ * Results ledger: the one place where "what did this connection earn" is decided.
+ *
+ * A RESULT is a position of this system that reached the venue and was filled:
+ * source real (not simulated), executedQuantity > 0, own tracking id. Everything
+ * else is NOT a result and never enters PnL, profit factor, win rate or a trade
+ * count: simulated rows (paper), rows that never traded (rejected, error, closed
+ * with no fill, "placement_stuck_no_venue_handle"), rows of another system on the
+ * shared account. They are counted in the FUNNEL, separately.
+ *
+ * Why a ledger of its own (measured 2026-10-01):
+ *  - routes read the 1,000 newest closed ids and a 73 h archive: X02 showed 2
+ *    positions and 0 trades while it has 1,287 filled real rows, because its newest
+ *    5,000 closed ids are simulated and never-traded rows; X01 lost everything older
+ *    than three days;
+ *  - the lifetime summary records a position when it CLOSES and never updates it when
+ *    the accounting settles later (X02: settled 253 / pending 1,027 against 915 / 361
+ *    in the rows; X01: realized -0.55 against -1.13) and re-records the same rows
+ *    endlessly (1,189,421 prunes);
+ *  - summing every row mixed in 10,491 simulated rows: net -14.5 billion.
+ *
+ * The ledger is built from the durable rows, incrementally and idempotently, and
+ * stores only compact entries of filled real rows (X02: 1,287, X01: 313).
+ */
+import { getLivePositionSource, isExecutedRealExchangePosition } from "@/lib/live-position-source"
+import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
+import type { LivePositionLifetimeLane, LivePositionLifetimeSummary } from "@/lib/live-position-lifetime-summary"
+import { LIVE_POSITION_LIFETIME_SUMMARY_VERSION } from "@/lib/live-position-lifetime-summary"
+
+export const RESULTS_LEDGER_VERSION = 1
+const TERMINAL = new Set(["closed", "rejected", "cancelled", "canceled", "error", "failed"])
+
+export const ledgerEntriesKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:entries`
+export const ledgerIdsKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:ids`
+export const ledgerOpenKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:open`
+export const ledgerSkipKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:skip`
+export const ledgerFunnelKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:funnel`
+export const ledgerMetaKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:meta`
+const ledgerLockKey = (c: string) => `results:ledger:v${RESULTS_LEDGER_VERSION}:${c}:lock`
+
+export interface LedgerEntry {
+  id: string
+  sym: string
+  dir: "long" | "short" | ""
+  opened: number
+  closed: number
+  status: "open" | "closed"
+  qty: number
+  entry: number
+  notional: number
+  lev: number
+  sl: number
+  tp: number
+  /** Settled realized pnl; null while the accounting is pending. */
+  pnl: number | null
+  fees: number
+  settled: boolean
+  pnlSource: string
+  reason: string
+  type: string
+  lane: string
+  variant: string
+  intent: string
+  slip: number | null
+}
+
+export type RowClass =
+  | { kind: "executed" }
+  | { kind: "simulated" }
+  | { kind: "foreign" }
+  | { kind: "never_traded"; reason: string }
+  | { kind: "pending" }
+
+const num = (v: unknown): number => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
+const text = (v: unknown): string => String(v ?? "").trim()
+
+export function classifyRow(row: Record<string, any>, connectionId: string): RowClass {
+  const tracking = text(row.system_tracking_id)
+  if (tracking && !tracking.startsWith(`sys-${connectionId}-`)) return { kind: "foreign" }
+  if (getLivePositionSource(row) === "simulated") return { kind: "simulated" }
+  if (isExecutedRealExchangePosition(row)) return { kind: "executed" }
+  const status = text(row.status).toLowerCase()
+  if (TERMINAL.has(status)) {
+    const reason = text(row.closeReason || row.statusReason).slice(0, 48) || "-"
+    return { kind: "never_traded", reason: `${status}/${reason}` }
+  }
+  return { kind: "pending" }
+}
+
+export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry {
+  const qty = num(row.executedQuantity)
+  const entry = num(row.averageExecutionPrice) || num(row.entryPrice)
+  const status = text(row.status).toLowerCase() === "closed" ? "closed" : "open"
+  const settledPnl = status === "closed" ? resolveSettledRealizedPnl(row) : undefined
+  const direction = text(row.direction || row.side).toLowerCase()
+  const slip = row.closeSlippagePct === undefined || row.closeSlippagePct === "" ? null : num(row.closeSlippagePct)
+  return {
+    id,
+    sym: text(row.symbol).toUpperCase(),
+    dir: direction === "long" || direction === "short" ? direction : "",
+    opened: num(row.createdAt) || num(row.openedAt),
+    closed: num(row.closedAt),
+    status,
+    qty,
+    entry,
+    notional: qty * entry,
+    lev: num(row.leverage),
+    sl: num(row.assignedStopLoss) || num(row.stopLoss),
+    tp: num(row.assignedTakeProfit) || num(row.takeProfit),
+    pnl: settledPnl === undefined ? null : settledPnl,
+    fees: num(row.tradingFees) + num(row.entryTradingFee),
+    settled: settledPnl !== undefined,
+    pnlSource: text(row.realizedPnlSource),
+    reason: text(row.closeReason),
+    type: text(row.indicationType),
+    lane: text(row.executionLane),
+    variant: text(row.setVariant),
+    intent: text(row.executionIntent),
+    slip,
+  }
+}
+
+// ───────────────────────────── incremental builder ─────────────────────────────
+export interface LedgerAdvance {
+  connectionId: string
+  keys: number
+  scanned: number
+  added: number
+  refreshed: number
+  remaining: number
+  complete: boolean
+  skipped?: string
+  durationMs: number
+}
+
+export async function advanceResultsLedger(
+  client: any,
+  connectionId: string,
+  options: { budgetMs?: number; maxRows?: number; chunk?: number } = {},
+): Promise<LedgerAdvance> {
+  const started = Date.now()
+  const budgetMs = options.budgetMs ?? 8_000
+  const maxRows = options.maxRows ?? 3_000
+  const chunk = Math.max(1, options.chunk ?? 60)
+  const base: LedgerAdvance = { connectionId, keys: 0, scanned: 0, added: 0, refreshed: 0, remaining: 0, complete: false, durationMs: 0 }
+  const done = (patch: Partial<LedgerAdvance>): LedgerAdvance => ({ ...base, ...patch, durationMs: Date.now() - started })
+
+  const locked = await client.set(ledgerLockKey(connectionId), String(started), { NX: true, EX: 55 }).catch(() => null)
+  if (!locked) return done({ skipped: "another pass is running" })
+  try {
+    const prefix = `live_positions:${connectionId}:`
+    const keys: string[] = ((await client.keys(`${prefix}*`).catch(() => [])) || []).map(String)
+    if (keys.length === 0) {
+      await client.hset(ledgerMetaKey(connectionId), { updatedAt: String(Date.now()), keys: "0", complete: "1" }).catch(() => 0)
+      return done({ complete: true })
+    }
+    const [idList, skipList, openList] = await Promise.all([
+      client.smembers(ledgerIdsKey(connectionId)).catch(() => []),
+      client.smembers(ledgerSkipKey(connectionId)).catch(() => []),
+      client.smembers(ledgerOpenKey(connectionId)).catch(() => []),
+    ])
+    const known = new Set<string>([...(idList || []), ...(skipList || [])].map(String))
+    const refresh = new Set<string>((openList || []).map(String))
+    const live = new Set<string>(keys.map((k) => k.slice(prefix.length)))
+    // Rows to look at: executed rows that are not final yet, and every row never seen.
+    const todo: string[] = []
+    for (const id of refresh) if (live.has(id)) todo.push(id)
+    for (const id of live) if (!known.has(id) && !refresh.has(id)) todo.push(id)
+    let scanned = 0, added = 0, refreshed = 0
+    for (let i = 0; i < todo.length && scanned < maxRows && Date.now() - started < budgetMs; i += chunk) {
+      const slice = todo.slice(i, i + chunk)
+      const rows = await Promise.all(slice.map((id) => client.hgetall(`${prefix}${id}`).catch(() => null)))
+      for (let j = 0; j < slice.length; j++) {
+        const id = slice[j]
+        const row = rows[j]
+        scanned++
+        if (!row || !row.status) continue
+        const klass = classifyRow(row, connectionId)
+        if (klass.kind === "executed") {
+          const entry = toLedgerEntry(id, row)
+          await client.hset(ledgerEntriesKey(connectionId), { [id]: JSON.stringify(entry) })
+          if (refresh.has(id)) refreshed++
+          else { await client.sadd(ledgerIdsKey(connectionId), id); added++ }
+          if (entry.status === "closed" && entry.settled) await client.srem(ledgerOpenKey(connectionId), id)
+          else await client.sadd(ledgerOpenKey(connectionId), id)
+        } else if (klass.kind === "pending") {
+          // not final: looked at again next pass
+        } else {
+          const isNew = await client.sadd(ledgerSkipKey(connectionId), id)
+          if (Number(isNew) > 0) {
+            const field = klass.kind === "never_traded" ? `never:${klass.reason}` : klass.kind
+            await client.hincrby(ledgerFunnelKey(connectionId), field, 1)
+          }
+        }
+      }
+    }
+    const remaining = Math.max(0, todo.length - scanned)
+    await client.hset(ledgerMetaKey(connectionId), {
+      updatedAt: String(Date.now()),
+      keys: String(keys.length),
+      remaining: String(remaining),
+      complete: remaining === 0 ? "1" : "0",
+      ...(remaining === 0 ? { lastCompletePassAt: String(Date.now()) } : {}),
+    }).catch(() => 0)
+    return done({ keys: keys.length, scanned, added, refreshed, remaining, complete: remaining === 0 })
+  } finally {
+    await client.del(ledgerLockKey(connectionId)).catch(() => 0)
+  }
+}
+
+// ──────────────────────────────── reading ────────────────────────────────
+export interface ResultLedger {
+  connectionId: string
+  entries: LedgerEntry[]
+  funnel: Record<string, number>
+  meta: { updatedAt: number; keys: number; remaining: number; complete: boolean }
+}
+
+const cache = new Map<string, { at: number; value: ResultLedger }>()
+const CACHE_MS = 10_000
+
+export function clearResultLedgerCache(connectionId?: string): void {
+  if (connectionId) cache.delete(connectionId)
+  else cache.clear()
+}
+
+export async function readResultLedger(client: any, connectionId: string): Promise<ResultLedger | null> {
+  const hit = cache.get(connectionId)
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.value
+  const [raw, funnelRaw, metaRaw] = await Promise.all([
+    client.hgetall(ledgerEntriesKey(connectionId)).catch(() => ({})),
+    client.hgetall(ledgerFunnelKey(connectionId)).catch(() => ({})),
+    client.hgetall(ledgerMetaKey(connectionId)).catch(() => ({})),
+  ])
+  if (!metaRaw || Object.keys(metaRaw).length === 0) return null
+  const entries: LedgerEntry[] = []
+  for (const value of Object.values(raw || {})) {
+    try { entries.push(JSON.parse(String(value))) } catch { /* a damaged entry is rebuilt by the next pass */ }
+  }
+  const funnel: Record<string, number> = {}
+  for (const [field, count] of Object.entries(funnelRaw || {})) funnel[field] = num(count)
+  const value: ResultLedger = {
+    connectionId,
+    entries,
+    funnel,
+    meta: { updatedAt: num(metaRaw.updatedAt), keys: num(metaRaw.keys), remaining: num(metaRaw.remaining), complete: metaRaw.complete === "1" },
+  }
+  cache.set(connectionId, { at: Date.now(), value })
+  return value
+}
+
+// ───────────────────────────────── the book ─────────────────────────────────
+export interface ResultBook {
+  executed: number
+  open: number
+  closed: number
+  settled: number
+  accountingPending: number
+  wins: number
+  losses: number
+  flat: number
+  grossProfit: number
+  grossLoss: number
+  net: number
+  fees: number
+  profitFactor: number | null
+  winRate: number | null
+  avgWin: number | null
+  avgLoss: number | null
+  largestWin: number | null
+  largestLoss: number | null
+  expectancy: number | null
+  volumeUsd: number
+  long: { trades: number; net: number }
+  short: { trades: number; net: number }
+  under60s: number
+  under5m: number
+}
+
+export function computeResultBook(entries: readonly LedgerEntry[], window: { since?: number; until?: number } = {}): ResultBook {
+  const inWindow = (e: LedgerEntry) => {
+    if (window.since === undefined && window.until === undefined) return true
+    const at = e.status === "closed" ? e.closed : e.opened
+    return (window.since === undefined || at >= window.since) && (window.until === undefined || at <= window.until)
+  }
+  const rows = entries.filter(inWindow)
+  const closed = rows.filter((e) => e.status === "closed")
+  const settled = closed.filter((e) => e.settled && e.pnl !== null)
+  let gp = 0, gl = 0, wins = 0, losses = 0, flat = 0, net = 0, fees = 0
+  let best: number | null = null, worst: number | null = null
+  const longB = { trades: 0, net: 0 }, shortB = { trades: 0, net: 0 }
+  let u60 = 0, u5 = 0
+  for (const e of settled) {
+    const p = e.pnl as number
+    net += p; fees += e.fees
+    if (p > 0) { wins++; gp += p } else if (p < 0) { losses++; gl -= p } else flat++
+    best = best === null ? p : Math.max(best, p)
+    worst = worst === null ? p : Math.min(worst, p)
+    const bucket = e.dir === "short" ? shortB : longB
+    bucket.trades++; bucket.net += p
+    if (e.closed > 0 && e.opened > 0) { const d = e.closed - e.opened; if (d < 60_000) u60++; if (d < 300_000) u5++ }
+  }
+  const decisive = wins + losses
+  return {
+    executed: rows.length,
+    open: rows.length - closed.length,
+    closed: closed.length,
+    settled: settled.length,
+    accountingPending: closed.length - settled.length,
+    wins, losses, flat,
+    grossProfit: gp, grossLoss: gl, net, fees,
+    profitFactor: gl > 0 ? gp / gl : null,
+    winRate: decisive > 0 ? (wins / decisive) * 100 : null,
+    avgWin: wins > 0 ? gp / wins : null,
+    avgLoss: losses > 0 ? -(gl / losses) : null,
+    largestWin: best !== null && best > 0 ? best : null,
+    largestLoss: worst !== null && worst < 0 ? worst : null,
+    expectancy: settled.length > 0 ? net / settled.length : null,
+    volumeUsd: closed.reduce((s, e) => s + e.notional, 0),
+    long: longB, short: shortB, under60s: u60, under5m: u5,
+  }
+}
+
+/** Book per group (type, lane, variant, symbol ...) for the live-against-simulation evaluation. */
+export function groupResultBooks(entries: readonly LedgerEntry[], key: (e: LedgerEntry) => string): Record<string, ResultBook> {
+  const groups = new Map<string, LedgerEntry[]>()
+  for (const e of entries) { const k = key(e) || "-"; (groups.get(k) || groups.set(k, []).get(k)!).push(e) }
+  return Object.fromEntries([...groups].map(([k, v]) => [k, computeResultBook(v)]))
+}
+
+// ───────────────────── adapter: the existing lifetime summary shape ─────────────────────
+function emptyLane(): LivePositionLifetimeLane {
+  return {
+    terminalRows: 0, executedRows: 0, closedTrades: 0, settledClosedTrades: 0, accountingPending: 0,
+    rejectedRows: 0, errorRows: 0, cancelledRows: 0, realizedPnl: 0, grossProfit: 0, grossLoss: 0,
+    wins: 0, losses: 0, breakEven: 0, lifetimeVolumeUsd: 0, realizedRoiTotal: 0, realizedRoiCount: 0,
+    longTrades: 0, shortTrades: 0, longRealizedPnl: 0, shortRealizedPnl: 0, under60Seconds: 0, under5Minutes: 0,
+    closeOrderIdPresent: 0, closeOrderIdMissing: 0, entryAccountingComplete: 0, entryAccountingPending: 0,
+  }
+}
+
+export function lifetimeSummaryFromLedger(ledger: ResultLedger): LivePositionLifetimeSummary {
+  const book = computeResultBook(ledger.entries)
+  const funnelBy = (status: string) => Object.entries(ledger.funnel).filter(([k]) => k.startsWith(`never:${status}/`)).reduce((s, [, c]) => s + c, 0)
+  const neverTraded = Object.entries(ledger.funnel).filter(([k]) => k.startsWith("never:")).reduce((s, [, c]) => s + c, 0)
+  const real = emptyLane()
+  real.executedRows = book.executed
+  real.closedTrades = book.closed
+  real.settledClosedTrades = book.settled
+  real.accountingPending = book.accountingPending
+  real.terminalRows = book.closed + neverTraded
+  real.rejectedRows = funnelBy("rejected")
+  real.errorRows = funnelBy("error") + funnelBy("failed")
+  real.cancelledRows = funnelBy("cancelled") + funnelBy("canceled")
+  real.realizedPnl = book.net
+  real.grossProfit = book.grossProfit
+  real.grossLoss = book.grossLoss
+  real.wins = book.wins; real.losses = book.losses; real.breakEven = book.flat
+  real.lifetimeVolumeUsd = book.volumeUsd
+  real.longTrades = book.long.trades; real.shortTrades = book.short.trades
+  real.longRealizedPnl = book.long.net; real.shortRealizedPnl = book.short.net
+  real.under60Seconds = book.under60s; real.under5Minutes = book.under5m
+  // Simulated rows are counted, never valued: their pnl is not a result of this system.
+  const simulated = emptyLane()
+  simulated.executedRows = ledger.funnel.simulated || 0
+  const all = emptyLane()
+  for (const key of Object.keys(all) as Array<keyof LivePositionLifetimeLane>) all[key] = real[key] + simulated[key]
+  const now = Date.now()
+  return {
+    schemaVersion: LIVE_POSITION_LIFETIME_SUMMARY_VERSION,
+    connectionId: ledger.connectionId,
+    generatedAt: now,
+    updatedAt: ledger.meta.updatedAt,
+    lanes: { all, real, simulated, unknown: emptyLane() },
+    coverage: {
+      terminalIndexRows: ledger.meta.keys,
+      uniqueTerminalIndexRows: ledger.meta.keys,
+      indexedContributions: ledger.entries.length,
+      prunedContributions: 0,
+      contributionWindowLimit: Math.max(10_000, ledger.entries.length),
+      ignoredHistoricReplays: 0,
+      missingPositionSnapshots: 0,
+      complete: ledger.meta.complete,
+    },
+  }
+}

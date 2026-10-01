@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from "react"
 import { useEffect, useState } from "react"
 import { FlaskConical } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -120,7 +121,15 @@ function BucketTable({ title, buckets }: { title: string; buckets: PositionBookS
  * Clearly labelled simulated section. Simulated figures are never mixed into
  * the exchange/real cards; this panel is the only place they are shown.
  */
-export function SimulatedBookCard({
+/**
+ * Simulated (paper) results are not shown: they are calculations, not executed orders.
+ * The API delivers the simulated book without valuation by default; this keeps the cards
+ * from rendering an empty "Simulated" panel on the dashboard, statistics, tracking,
+ * live-trading and analysis pages.
+ */
+export const SIMULATED_RESULTS_VISIBLE = false
+
+function SimulatedBookCardInner({
   book,
   open,
   closed,
@@ -207,7 +216,7 @@ export function useSimulatedBook(connectionId: string | null | undefined, refres
   return listing
 }
 
-export function ConnectionSimulatedBook({ connectionId, testIdPrefix = "sim" }: { connectionId: string; testIdPrefix?: string }) {
+function ConnectionSimulatedBookInner({ connectionId, testIdPrefix = "sim" }: { connectionId: string; testIdPrefix?: string }) {
   const listing = useSimulatedBook(connectionId)
   return (
     <SimulatedBookCard
@@ -217,4 +226,14 @@ export function ConnectionSimulatedBook({ connectionId, testIdPrefix = "sim" }: 
       testIdPrefix={testIdPrefix}
     />
   )
+}
+
+export function SimulatedBookCard(props: React.ComponentProps<typeof SimulatedBookCardInner>) {
+  if (!SIMULATED_RESULTS_VISIBLE) return null
+  return <SimulatedBookCardInner {...props} />
+}
+
+export function ConnectionSimulatedBook(props: { connectionId: string; testIdPrefix?: string }) {
+  if (!SIMULATED_RESULTS_VISIBLE) return null
+  return <ConnectionSimulatedBookInner {...props} />
 }

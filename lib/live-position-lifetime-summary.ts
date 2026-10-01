@@ -455,7 +455,17 @@ export async function getLivePositionLifetimeSummary(
   connectionId: string,
 ): Promise<LivePositionLifetimeSummary> {
   await initRedis()
-  return readLivePositionLifetimeSummary(getRedisClient(), connectionId)
+  const client = getRedisClient()
+  // The results ledger (lib/results/ledger.ts) is the source of truth once its pass is complete:
+  // this summary records a position when it closes and never updates it when the accounting
+  // settles later, and it re-records the same rows endlessly. The ledger is loaded dynamically
+  // because it imports this module's types.
+  try {
+    const { readResultLedger, lifetimeSummaryFromLedger } = await import("@/lib/results/ledger")
+    const ledger = await readResultLedger(client, connectionId)
+    if (ledger && ledger.meta.complete) return lifetimeSummaryFromLedger(ledger)
+  } catch { /* fall back to the recorded summary */ }
+  return readLivePositionLifetimeSummary(client, connectionId)
 }
 
 export function lifetimeLaneDerived(lane: LivePositionLifetimeLane): {

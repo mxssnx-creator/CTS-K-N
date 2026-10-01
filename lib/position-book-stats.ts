@@ -325,3 +325,31 @@ export function mergePositionBookStats(
   out.avgLoss = out.losses > 0 ? round(-out.grossLoss / out.losses) : 0
   return out
 }
+
+/**
+ * Simulated (paper) rows are not results of the system: their pnl is a calculation,
+ * not an executed order. On X02 their sum was -14.5 billion (10,491 rows, no regard for
+ * the balance), and it reached the dashboard, the statistics page and every overview
+ * as if it were a result. By default the simulated book is delivered WITHOUT valuation:
+ * the activity counts stay, every money and ratio field is zero. CTS_SIMULATED_BOOK_VALUATION=1
+ * restores the full book (diagnosis only).
+ */
+export function simulatedBookValuationEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.CTS_SIMULATED_BOOK_VALUATION === "1"
+}
+
+export function withoutBookValuation(book: PositionBookStats): PositionBookStats {
+  return {
+    ...emptyPositionBookStats(),
+    total: book.total,
+    open: book.open,
+    closed: book.closed,
+    settledClosed: 0,
+    accountingPending: 0,
+    openSymbols: book.openSymbols,
+  }
+}
+
+export function simulatedBookForDisplay(book: PositionBookStats, env: Record<string, string | undefined> = process.env): PositionBookStats {
+  return simulatedBookValuationEnabled(env) ? book : withoutBookValuation(book)
+}

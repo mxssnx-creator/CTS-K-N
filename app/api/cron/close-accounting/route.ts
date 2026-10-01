@@ -1,11 +1,12 @@
 import { runCronTimeBoxed } from "@/lib/cron-time-box"
 import { NextResponse } from "next/server"
 import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth"
-import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { getAllConnections, getRedisClient, initRedis } from "@/lib/redis-db"
 import { applyCloseSettlement, closeOrderCandidates, needsDeferredCloseAccounting } from "@/lib/close-accounting-backfill"
 import { isManualCloseAtPrice, matchVenuePositionClose, normalizeVenuePositionHistory, venueCloseSettlement } from "@/lib/venue-position-close"
 import { MANUAL_CLOSE_SUPPRESS_SECONDS, manualCloseKeyOf } from "@/lib/trade-engine/stages/live-stage"
 import { withTimeout } from "@/lib/async-safety"
+import { advanceResultsLedger, ledgerMetaKey } from "@/lib/results/ledger"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 55
@@ -49,8 +50,29 @@ async function handle(request: Request): Promise<Response> {
   const started = Date.now()
   const results: Array<Record<string, any>> = []
   for (const connectionId of connectionIds) results.push(await settleConnection(client, exchangeConnectorFactory, connectionId, started))
-  if (results.length === 1) return NextResponse.json(results[0], { status: results[0].error ? 503 : 200 })
-  return NextResponse.json({ ok: results.every((r) => r.ok !== false), connections: results })
+  // The results ledger (lib/results/ledger.ts) moves forward in the same background run: it picks up new rows
+  // and refreshes the ones whose accounting was still pending. A connection without rows is skipped.
+  const ledgerRuns = await advanceLedgers(client, requested)
+  if (results.length === 1) return NextResponse.json({ ...results[0], ledger: ledgerRuns }, { status: results[0].error ? 503 : 200 })
+  return NextResponse.json({ ok: results.every((r) => r.ok !== false), connections: results, ledger: ledgerRuns })
+}
+
+async function advanceLedgers(client: any, requested: string | null): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = []
+  try {
+    const ids = requested
+      ? [requested]
+      : [...new Set(((await getAllConnections().catch(() => [])) as any[]).map((c) => String(c?.id || "")).filter(Boolean))]
+    for (const id of ids) {
+      const hasRows = Number(await client.llen(`live:positions:${id}:closed`).catch(() => 0)) > 0
+        || Object.keys((await client.hgetall(ledgerMetaKey(id)).catch(() => ({}))) || {}).length > 0
+      if (!hasRows) continue
+      out.push({ ...(await advanceResultsLedger(client, id, { budgetMs: 6_000 }).catch((error: unknown) => ({ connectionId: id, error: error instanceof Error ? error.message : String(error) }))) })
+    }
+  } catch (error) {
+    out.push({ error: error instanceof Error ? error.message : String(error) })
+  }
+  return out
 }
 
 async function settleConnection(client: any, exchangeConnectorFactory: any, connectionId: string, started: number): Promise<Record<string, any>> {

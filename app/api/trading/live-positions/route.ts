@@ -18,7 +18,7 @@ import {
 } from "@/lib/live-position-pnl"
 import { serveSerializedResponseSWR } from "@/lib/serialized-response-swr"
 import { getLivePositionSource, type LivePositionSource } from "@/lib/live-position-source"
-import { computePositionBookStats, positionBookRowState } from "@/lib/position-book-stats"
+import { computePositionBookStats, positionBookRowState, simulatedBookForDisplay } from "@/lib/position-book-stats"
 import {
   lifetimeLaneDerived,
   readLivePositionLifetimeSummary,
@@ -468,7 +468,7 @@ async function buildLivePositionsResponse(request: Request) {
       // Independent simulated book: counters and lists come from one
       // classifier so the UI can never show "0 open" beside open rows.
       simulatedBook: {
-        stats: computePositionBookStats(simulatedPositions),
+        stats: simulatedBookForDisplay(computePositionBookStats(simulatedPositions)),
         open: simulatedPositions.filter((p) => positionBookRowState(p) === "open").map(viewFor),
         closed: simulatedPositions.filter((p) => positionBookRowState(p) === "closed").map(viewFor),
       },
@@ -512,7 +512,7 @@ async function buildLivePositionsResponse(request: Request) {
         // Independent ledger books (PF, drawdown, per symbol/strategy/hour).
         books: {
           real: computePositionBookStats(realPositions),
-          simulated: computePositionBookStats(simulatedPositions),
+          simulated: simulatedBookForDisplay(computePositionBookStats(simulatedPositions)),
         },
       },
       partialLegacyScan,
