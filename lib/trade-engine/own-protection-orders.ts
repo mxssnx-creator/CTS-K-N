@@ -162,3 +162,47 @@ export async function confirmMissingControlOrders(
   }
   return found
 }
+
+/**
+ * The live order id set for the aggregate protection book, built from our own control ids when the open-order list is
+ * unavailable because of a rate limit.
+ *
+ * X02, 2026-10-02: an accumulation on BTCUSDT long asked for an aggregate hand-off (aggregateProtectionMutationRequestedAt
+ * 11:36:49). The first pass cancels the members' row controls and records `settled` only when the open-order LIST confirms
+ * that they are gone; the list was in BingX's 100410 disabled period, so the pass never settled, the hand-off stayed "in
+ * flight", the finaliser deferred the slot on every sync and nothing re-armed it: no stop loss, no take profit, and a
+ * connection-wide entry halt for as long as it lasted. The book now gets the same answer per id: an own control order that
+ * the venue reports alive is in the set, every other one is gone.
+ *
+ * Returns null (callers keep their previous behaviour) unless the fallback is enabled for the account, the list failed for
+ * a rate limit, every id resolves, and no row has a protection submission whose venue id is not known yet (those could only
+ * be found by the list; treating them as gone could submit a second control).
+ */
+export async function ownLookupLiveOrderIdSet(
+  connector: any,
+  rows: ReadonlyArray<Record<string, any>>,
+  now: number = Date.now(),
+): Promise<(Set<string> & { observedOrdersById?: Map<string, any>; observedOrderCount?: number; ownLookupOnly?: true }) | null> {
+  if (!ownProtectionFallbackEnabled(connector)) return null
+  const status = typeof connector?.getLastOpenOrdersSnapshotStatus === "function" ? connector.getLastOpenOrdersSnapshotStatus() : null
+  if (!status || status.ok === true || !isRateLimitedSnapshotError(status.error)) return null
+  const pendingSubmission = rows.some((row) => {
+    const pending = row?.pendingProtectionOrders
+    return pending && typeof pending === "object" && Object.values(pending as Record<string, any>).some((entry) => text(entry?.clientOrderId) !== "")
+  })
+  if (pendingSubmission) return null
+  const live = await readOwnControlOrdersById(connector, rows, now)
+  if (!live) return null
+  const set = new Set<string>() as Set<string> & { observedOrdersById?: Map<string, any>; observedOrderCount?: number; ownLookupOnly?: true }
+  set.observedOrdersById = new Map()
+  for (const order of live) {
+    for (const identifier of [text(order.orderId), text(order.clientOrderId)]) {
+      if (!identifier) continue
+      set.add(identifier)
+      set.observedOrdersById.set(identifier, order)
+    }
+  }
+  set.observedOrderCount = live.length
+  set.ownLookupOnly = true
+  return set
+}
