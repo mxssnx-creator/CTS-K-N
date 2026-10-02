@@ -278,4 +278,8 @@ describe("the live health verdict", () => {
     s.aggregateStuck = { "bingx-x01": [{ id: "b", symbol: "ZECUSDT", ageMin: 2 }] }
     expect(evaluate(s).checks.find((x: any) => x.id === "aggregate_stuck_bingx-x01")).toBeUndefined()
   })
+  test("the hand-off check reads only rows that are still open (closed unsettled rows stay in the ledger's open set)", () => {
+    const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "scripts/monitor-live-health.mjs"), "utf8")
+    expect(src).toContain('if (!status || ["closed", "cancelled", "canceled", "rejected", "error", "failed", "expired"].includes(status)) continue')
+  })
 })

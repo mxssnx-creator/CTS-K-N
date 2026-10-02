@@ -381,7 +381,11 @@ function collectAggregateStuck(now) {
   for (const conn of CONNECTIONS) {
     const ids = lines(redis(["smembers", `results:ledger:v3:${conn}:open`]))
     const stuck = []
-    for (const id of ids.slice(0, 200)) {
+    for (const id of ids.slice(0, 500)) {
+      // The ledger's open set also keeps CLOSED rows until their accounting settles (X02: 412 of them). A hand-off marker on
+      // a closed row blocks nothing; only rows that are still open count.
+      const status = String(redis(["hget", `live_positions:${conn}:${id}`, "status"]) || "").trim().toLowerCase()
+      if (!status || ["closed", "cancelled", "canceled", "rejected", "error", "failed", "expired"].includes(status)) continue
       const at = num(redis(["hget", `live_positions:${conn}:${id}`, "aggregateProtectionMutationRequestedAt"]))
       if (at > 0) stuck.push({ id: id.slice(-28), symbol: String(redis(["hget", `live_positions:${conn}:${id}`, "symbol"])).trim(), ageMin: Math.round((now - at) / 60000) })
     }
