@@ -268,4 +268,14 @@ describe("the live health verdict", () => {
     expect(ids(r, "INFO")).toContain("ledger_lag_bingx-x01")
     expect(ids(r)).not.toContain("ledger_building_bingx-x01")
   })
+  test("an aggregate hand-off unsettled for 10 minutes is critical; a fresh one is not", () => {
+    const s: any = healthy()
+    s.aggregateStuck = { "bingx-x01": [{ id: "a", symbol: "BTCUSDT", ageMin: 18 }, { id: "b", symbol: "ZECUSDT", ageMin: 2 }] }
+    const r = evaluate(s)
+    const c = r.checks.find((x: any) => x.id === "aggregate_stuck_bingx-x01")
+    expect(c.level).toBe("CRIT")
+    expect(c.message).toContain("BTCUSDT"); expect(c.message).not.toContain("ZECUSDT"); expect(c.message).toContain("18 min")
+    s.aggregateStuck = { "bingx-x01": [{ id: "b", symbol: "ZECUSDT", ageMin: 2 }] }
+    expect(evaluate(s).checks.find((x: any) => x.id === "aggregate_stuck_bingx-x01")).toBeUndefined()
+  })
 })

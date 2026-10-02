@@ -46,6 +46,8 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   cooldownBlocksWarn: 50,
   // Results ledger not advanced for this long (the close-accounting background run moves it every minute).
   ledgerStaleMin: 10,
+  // An aggregate protection hand-off (accumulation / reduction) normally settles within a minute or two.
+  aggregateStuckMin: 10,
   ledgerLagInfo: 1000,
   // Eligible candidates but nothing opened for this long; dispatches blocked before the venue.
   noOpeningWarnMin: 60,
@@ -181,6 +183,12 @@ export function evaluateHealth(snap, prev = null, t = DEFAULT_THRESHOLDS) {
     } else if (g.freshSymbols > 0 && g.candidates > 0) {
       add(`dispatch_gate_${conn}`, "OK", `${conn}: ${g.eligible} of ${g.candidates} live candidates eligible, ${g.selected} selected`)
     }
+  }
+
+  // ── aggregate protection hand-offs that do not settle ───────────────
+  for (const [conn, rows] of Object.entries(snap.aggregateStuck || {})) {
+    const old = (rows || []).filter((r) => r.ageMin >= t.aggregateStuckMin)
+    if (old.length > 0) add(`aggregate_stuck_${conn}`, "CRIT", `${conn}: ${old.length} aggregate protection hand-off(s) unsettled for up to ${Math.max(...old.map((r) => r.ageMin))} min (${old.slice(0, 3).map((r) => r.symbol).join(", ")}): the slot is unprotected and entries are halted`, old.length)
   }
 
   // ── account without balance ─────────────────────────────────────────
@@ -364,6 +372,22 @@ function ledgerBook(entries) {
   let net = 0, wins = 0, losses = 0
   for (const e of settled) { net += e.pnl; if (e.pnl > 0) wins++; else if (e.pnl < 0) losses++ }
   return { closed: closed.length, settled: settled.length, wins, losses, net: Math.round(net * 1e8) / 1e8 }
+}
+
+// Open rows whose aggregate protection hand-off has been "in flight" for long: the slot is unprotected and every entry of the
+// connection is halted until it settles (X02, 2026-10-02: BTCUSDT long, 18 min and counting, no stop loss / take profit).
+function collectAggregateStuck(now) {
+  const out = {}
+  for (const conn of CONNECTIONS) {
+    const ids = lines(redis(["smembers", `results:ledger:v3:${conn}:open`]))
+    const stuck = []
+    for (const id of ids.slice(0, 200)) {
+      const at = num(redis(["hget", `live_positions:${conn}:${id}`, "aggregateProtectionMutationRequestedAt"]))
+      if (at > 0) stuck.push({ id: id.slice(-28), symbol: String(redis(["hget", `live_positions:${conn}:${id}`, "symbol"])).trim(), ageMin: Math.round((now - at) / 60000) })
+    }
+    out[conn] = stuck
+  }
+  return out
 }
 
 function collectResultsCheck(now) {
@@ -565,6 +589,7 @@ export function collectSnapshot() {
     gate: safe("gate", () => collectDispatchGate(now, Object.entries(connections).filter(([, c]) => c.live === "1").map(([id]) => id)), {}),
     results: safe("results", () => collectResults(now), {}),
     resultsCheck: safe("resultsCheck", () => collectResultsCheck(now), {}),
+    aggregateStuck: safe("aggregateStuck", () => collectAggregateStuck(now), {}),
     audit: safe("audit", () => collectAudit(now), {}),
     entries: safe("entries", collectEntries),
     ticks: safe("ticks", collectTicks),

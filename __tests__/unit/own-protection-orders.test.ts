@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
-import { clearOwnProtectionOrderCache, confirmMissingControlOrders, ownControlOrderRefs, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
+import { clearOwnProtectionOrderCache, confirmMissingControlOrders, ownControlOrderRefs, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 
 const NOW = 1_790_880_000_000
 const row = (over: Record<string, any> = {}) => ({ id: "r1", symbol: "NCCOGOLD2USDUSDT", status: "open", executedQuantity: 0.0024, stopLossOrderId: "SL1", takeProfitOrderId: "TP1", ...over })
@@ -110,5 +110,41 @@ describe("a valid list that lacks our control ids is confirmed per id before it 
     const stage = readFileSync(resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
     expect(stage).toContain("const confirmed = await confirmMissingControlOrders(connector, positions, known).catch(() => [] as Record<string, any>[])")
     expect(stage).toContain("return [...list, ...confirmed]")
+  })
+})
+
+describe("the aggregate protection book gets a live order id set from our own ids when the list is rate limited", () => {
+  const banned = (answers: Record<string, any>, testnet = true, error = "100410:code:100410:The endpoint trigger frequency limit rule is currently in the disabled period") => ({
+    ...connector(answers, testnet), getLastOpenOrdersSnapshotStatus: () => ({ ok: false, error }),
+  })
+  test("X02 BTCUSDT long, 2026-10-02: the hand-off can settle: alive ids are in the set, cancelled ones are not", async () => {
+    const c = banned({ SL1: order("CANCELED"), TP1: order("NEW") })
+    const set = await ownLookupLiveOrderIdSet(c, [row({ symbol: "BTCUSDT" })], NOW)
+    expect(set).not.toBeNull()
+    expect(set!.has("x")).toBe(true) // the TP the venue reports NEW (its orderId in the fake is "x")
+    expect(set!.observedOrderCount).toBe(1)
+    expect(set!.ownLookupOnly).toBe(true)
+  })
+  test("no set when the list did not fail for a rate limit, when it is fine, or on mainnet by default", async () => {
+    expect(await ownLookupLiveOrderIdSet(banned({ SL1: order("NEW"), TP1: order("NEW") }, true, "socket hang up"), [row()], NOW)).toBeNull()
+    expect(await ownLookupLiveOrderIdSet({ ...connector({}), getLastOpenOrdersSnapshotStatus: () => ({ ok: true }) }, [row()], NOW)).toBeNull()
+    expect(await ownLookupLiveOrderIdSet(banned({ SL1: order("NEW"), TP1: order("NEW") }, false), [row()], NOW)).toBeNull()
+    expect(await ownLookupLiveOrderIdSet({ credentials: { isTestnet: true } }, [row()], NOW)).toBeNull()
+  })
+  test("no set while a protection submission is pending (only the list could find it; guessing could place a second control)", async () => {
+    const c = banned({ SL1: order("NEW"), TP1: order("NEW") })
+    expect(await ownLookupLiveOrderIdSet(c, [row({ pendingProtectionOrders: { stopLoss: { clientOrderId: "cts-sl-1" } } })], NOW)).toBeNull()
+    expect(await ownLookupLiveOrderIdSet(c, [row({ pendingProtectionOrders: { stopLoss: { clientOrderId: "" } } })], NOW)).not.toBeNull()
+  })
+  test("no set when an id cannot be resolved", async () => {
+    const c = banned({ SL1: order("NEW"), TP1: { success: false, error: "BingX order lookup cooldown active after missing-order pressure" } })
+    expect(await ownLookupLiveOrderIdSet(c, [row()], NOW)).toBeNull()
+  })
+  test("the book uses it only when its caller had no list", () => {
+    const stage = readFileSync(resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
+    const start = stage.indexOf("async function reconcileAggregateProtectionBook(")
+    const head = stage.slice(start, start + 1800)
+    expect(head).toContain("if (liveOrderIds === null) {")
+    expect(head).toContain("const own = await ownLookupLiveOrderIdSet(connector, positions).catch(() => null)")
   })
 })

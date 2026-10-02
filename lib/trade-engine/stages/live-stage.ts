@@ -1,4 +1,4 @@
-import { confirmMissingControlOrders, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
+import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
   ADMISSION_COOLDOWN_FALLBACK_MS, ADMISSION_COOLDOWN_MAX_MS, ADMISSION_COOLDOWN_MIN_MS, deferredAdmissionResult,
   isRateLimitedSnapshotError, parseRetryAfterMs, readAdmissionCooldownUntil, setAdmissionCooldown,
@@ -11349,6 +11349,15 @@ async function reconcileAggregateProtectionBook(
     closedMemberIds: new Set<string>(),
   }
   if (!connector) return result
+  if (liveOrderIds === null) {
+    // The open-order list is unavailable. For a rate limit, our own control ids are checked one by one instead; without
+    // this, an aggregate hand-off can never be confirmed as settled and the slot stays unprotected and halted.
+    const own = await ownLookupLiveOrderIdSet(connector, positions).catch(() => null)
+    if (own) {
+      liveOrderIds = own
+      console.warn(`${LOG_PREFIX} ${connectionId}: aggregate protection uses ${own.size} own control id(s) verified by id (open-order list rate limited)`)
+    }
+  }
 
   const policy = await getCachedProtectionPolicy(connectionId)
   const overall = policy.overallControlOrdersOnly && !policy.systemCloseOnly
