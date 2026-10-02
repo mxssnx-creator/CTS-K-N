@@ -119,7 +119,8 @@ export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry
     entry,
     notional: qty * entry,
     lev: num(row.leverage),
-    sl: num(row.assignedStopLoss) || num(row.stopLoss),
+    // the stop in percent (stopLoss); assignedStopLoss carries the Set's configuration unit (40, 50, 10, ...)
+    sl: num(row.stopLoss) > 0 && num(row.stopLoss) <= 25 ? num(row.stopLoss) : num(row.assignedStopLoss),
     tp: num(row.assignedTakeProfit) || num(row.takeProfit),
     pnl: settledPnl === undefined ? null : settledPnl,
     // tradingFees is the total (X02: 0.005 = entry 0.0025 + close 0.0025); entryTradingFee is only its entry part.

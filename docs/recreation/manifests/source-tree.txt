@@ -249,6 +249,7 @@ __tests__/unit/inline-local-redis.test.ts
 __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/leverage-tier-retry.test.ts
+__tests__/unit/leverage-units-and-liquidation-floor.test.ts
 __tests__/unit/liquidation-safe-leverage.test.ts
 __tests__/unit/live-bracket-geometry.test.ts
 __tests__/unit/live-config-performance.test.ts

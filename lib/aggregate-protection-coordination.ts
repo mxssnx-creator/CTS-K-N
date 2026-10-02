@@ -117,8 +117,18 @@ function securityStopForRows(
 
   const priceTick = Math.max(...ticks)
   const securityStopGap = Math.max(priceTick * 2, maximumStopRange * 0.1)
+  // A liquidation price on the wrong side of the entry is not a liquidation floor. X02, 2026-10-02: VST reported
+  // 39622.9 for a gold LONG entered at 4209.06 (cross margin with another system's short on the same symbol). Used as the
+  // floor it pushed the security stop above the stop loss, the price became 0, the plan "invalid", and the gold slot was
+  // halted again on every check. Long: only prices below the entry count; short: only prices above it.
   const liquidationPrices = rows
-    .map((row) => finitePositive(row.liquidationPrice))
+    .map((row) => {
+      const liquidation = finitePositive(row.liquidationPrice)
+      const entry = finitePositive(row.entryPrice)
+      if (!(liquidation > 0)) return 0
+      if (entry > 0 && (direction === "long" ? liquidation >= entry : liquidation <= entry)) return 0
+      return liquidation
+    })
     .filter((value) => value > 0)
 
   if (direction === "long") {
