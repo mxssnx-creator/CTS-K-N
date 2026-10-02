@@ -12796,8 +12796,21 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
 
   const connectionLevelViolation = Boolean(audit.connectionLevelViolation)
     || (violations.length - outerViolationsStart) > attributedOuterViolations
+  // Violations that all belong to OTHER slots do not make THIS candidate unsafe: its own slot is clean and nothing is
+  // connection-wide. X02, 2026-10-02: 1513 candidates selected in an hour, 5 placed; after the fix in the halt wrapper
+  // still 422 selected, 0 placed in 8 minutes, because the entry path calls this audit directly. A candidate on an
+  // offending slot, and every connection-level violation, still block.
+  const candidateSlotKey = aggregateProtectionSlot(
+    input.symbol,
+    (String(input.direction || "").toLowerCase() === "short" ? "short" : "long") as ProtectionSlotDirection,
+  )
+  const onlyOtherSlots = violations.length > 0
+    && !connectionLevelViolation
+    && offendingSlots.size > 0
+    && !offendingSlots.has(candidateSlotKey)
   return {
-    safe: violations.length === 0,
+    safe: violations.length === 0 || onlyOtherSlots,
+    ...(onlyOtherSlots ? { scopedToOtherSlots: [...offendingSlots] } : {}),
     violations: [...new Set(violations)],
     orphanDetails,
     offendingSlots: [...offendingSlots],
@@ -12890,6 +12903,13 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
 
   const haltKey = entryProtectionHaltKeyOf(input.connectionId)
   if (decision.safe) {
+    for (const slotKey of ((decision as any).scopedToOtherSlots || []) as string[]) {
+      await client.setex(
+        entryProtectionSlotHaltKeyOf(input.connectionId, slotKey),
+        GENUINE_ENTRY_HALT_TTL_SECONDS,
+        JSON.stringify({ at: Date.now(), reason: input.reason, transient: false, slot: slotKey, violations: decision.violations.slice(0, 24) }),
+      ).catch(() => {})
+    }
     await client.del(haltKey).catch(() => 0)
     const dir = String(input.direction || "").toLowerCase() === "short" ? "short" : "long"
     await client.del(entryProtectionSlotHaltKeyOf(input.connectionId, aggregateProtectionSlot(input.symbol, dir as ProtectionSlotDirection))).catch(() => 0)

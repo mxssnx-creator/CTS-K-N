@@ -52,7 +52,8 @@ describe("a transient decision never shortens a genuine halt", () => {
 
   test("an existing halt is read before a transient one would be written", () => {
     const read = body.indexOf("await client.get(haltKey)")
-    const write = body.indexOf("await client.setex(")
+    // the CONNECTION halt write (slot halts of other slots may be written earlier, they are not this halt)
+    const write = body.indexOf("await client.setex(\n      haltKey,")
     expect(read).toBeGreaterThan(0)
     expect(read).toBeLessThan(write)
   })
