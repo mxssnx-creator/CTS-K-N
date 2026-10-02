@@ -185,33 +185,38 @@ export function auditLiveEntryProtectionAdmission(input: {
   }
   const executed = executedAll.filter((row) => !closedOnVenue(row))
 
-  if (owned.some((row) => PENDING_ENTRY_STATUSES.has(text(row.status).toLowerCase()))) {
-    violations.push("owned_entry_confirmation_pending")
+  // Pending entries, closes and quantity / control hand-offs concern the physical position of THEIR slot: a candidate on
+  // that slot waits, every other slot keeps trading. They used to be unattributed, i.e. connection-level, and halted
+  // every symbol (X02, 2026-10-02, after the per-slot admission fix: 168 placed and 947 refused in 6 minutes, most with
+  // owned_quantity_mutation_pending from accumulations on other slots).
+  const slotOfRow = (row: Record<string, any>): string => aggregateProtectionSlot(
+    row.symbol,
+    text(row.direction).toLowerCase() === "short" ? "short" : "long",
+  )
+  const pendingBarrier = (code: string, rows: Record<string, any>[]): void => {
+    if (rows.length === 0) return
+    violations.push(code)
+    for (const row of rows) offendingSlots.add(slotOfRow(row))
+    attributedViolations += 1
   }
-  if (owned.some((row) => text(row.status).toLowerCase().startsWith("closing"))) {
-    violations.push("owned_quantity_mutation_pending")
-  }
+  pendingBarrier("owned_entry_confirmation_pending", owned.filter((row) => PENDING_ENTRY_STATUSES.has(text(row.status).toLowerCase())))
+  pendingBarrier("owned_quantity_mutation_pending", owned.filter((row) => text(row.status).toLowerCase().startsWith("closing")))
   // The row whose own mutation is driving this audit does not wait for itself.
   // The barrier exists so OTHER entries wait while a mutation is in flight;
   // counting the mutating row's own marker made every overall-mode
   // accumulation halt itself (`owned_quantity_mutation_pending`) at the very
   // step that sets the marker. The mutating row stays in `owned`, so its
   // protection is still fully verified — only its own marker is not a barrier.
+  // A row can retain status=open while a durable add/reduce/control-order transition is in flight: status alone is not
+  // a sufficient barrier for its slot.
   const mutatingRowId = text(input.mutatingRowId)
-  if (owned.some((row) => (!mutatingRowId || text(row.id) !== mutatingRowId) && Boolean(
+  pendingBarrier("owned_quantity_mutation_pending", owned.filter((row) => (!mutatingRowId || text(row.id) !== mutatingRowId) && Boolean(
     row.pendingSystemAction
     || row.pendingQuantityMutation
     || row.pendingReduction
     || row.pendingAccumulation
     || finite(row.aggregateProtectionMutationRequestedAt) > 0,
-  ))) {
-    // A row can retain status=open while a durable add/reduce/control-order
-    // transition is in flight. Status alone therefore is not a sufficient
-    // admission barrier: another entry must wait until the exact venue
-    // quantity and all replacement controls are authoritative again.
-    violations.push("owned_quantity_mutation_pending")
-  }
-
+  )))
   for (const row of executed) {
     const violationsBeforeRow = violations.length
     if (input.overallControlOrdersOnly !== undefined &&

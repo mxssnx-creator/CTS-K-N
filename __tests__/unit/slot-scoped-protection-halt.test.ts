@@ -19,11 +19,12 @@ describe("a protection violation is attributed to the slot that caused it", () =
     expect(r.offendingSlots).toEqual(["WLDUSDT|long"])
     expect(r.connectionLevelViolation).toBe(false)
   })
-  test("a pending mutation marker cannot be tied to a slot: the whole connection halts (fail-safe)", () => {
+  test("a pending mutation marker belongs to the slot of its row (2026-10-02: it halted every symbol before)", () => {
     const pending = own("p", { symbol: "WLDUSDT", direction: "long", executedQuantity: 10, stopLossOrderId: "S1", takeProfitOrderId: "T1", pendingSystemAction: { kind: "close" } })
     const r = audit([pending], [{ symbol: "WLDUSDT", positionSide: "LONG", positionAmt: "10" }], ["S1", "T1"])
     expect(r.violations).toContain("owned_quantity_mutation_pending")
-    expect(r.connectionLevelViolation).toBe(true)
+    expect(r.connectionLevelViolation).toBe(false)
+    expect(r.offendingSlots.length).toBeGreaterThan(0)
   })
   test("a clean book has no offending slot", () => {
     const r = audit([], [], [])

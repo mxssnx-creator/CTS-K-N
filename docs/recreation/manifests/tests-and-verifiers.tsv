@@ -319,6 +319,7 @@ unit	__tests__/unit/overview-poller.test.ts
 unit	__tests__/unit/own-protection-orders.test.ts
 unit	__tests__/unit/owned-only-protection-book.test.ts
 unit	__tests__/unit/payload-reduction.test.ts
+unit	__tests__/unit/pending-barrier-slot-scope.test.ts
 unit	__tests__/unit/performance-profiler.test.ts
 unit	__tests__/unit/persistent-paths.test.ts
 unit	__tests__/unit/pf-coordinate-and-block-volume-contract.test.ts

@@ -333,6 +333,7 @@ __tests__/unit/overview-poller.test.ts
 __tests__/unit/own-protection-orders.test.ts
 __tests__/unit/owned-only-protection-book.test.ts
 __tests__/unit/payload-reduction.test.ts
+__tests__/unit/pending-barrier-slot-scope.test.ts
 __tests__/unit/performance-profiler.test.ts
 __tests__/unit/persistent-paths.test.ts
 __tests__/unit/pf-coordinate-and-block-volume-contract.test.ts
