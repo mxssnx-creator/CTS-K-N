@@ -15,8 +15,20 @@
 
 export type HistoricReplayMode = "realtime-bridge" | "exact"
 
-export function resolveHistoricReplayMode(value = process.env.PREHISTORIC_REPLAY_MODE): HistoricReplayMode {
-  return String(value || "").trim().toLowerCase() === "exact" ? "exact" : "realtime-bridge"
+/**
+ * PREHISTORIC_EXACT_CONNECTIONS (comma list) runs the exact replay for those connections only, so a simulation connection can
+ * evaluate every configuration over its whole prehistoric range while a live connection keeps the realtime bridge
+ * (operator request 2026-10-02: "always calc all config possibilities" with prehistoric calcs). PREHISTORIC_REPLAY_MODE=exact
+ * still switches every connection.
+ */
+export function resolveHistoricReplayMode(
+  value = process.env.PREHISTORIC_REPLAY_MODE,
+  connectionId?: string,
+  exactConnections: string | undefined = process.env.PREHISTORIC_EXACT_CONNECTIONS,
+): HistoricReplayMode {
+  if (String(value || "").trim().toLowerCase() === "exact") return "exact"
+  if (connectionId && String(exactConnections || "").split(",").map((id) => id.trim()).filter(Boolean).includes(connectionId)) return "exact"
+  return "realtime-bridge"
 }
 export function historicReplayNeedsRealtimeWarmup(mode: HistoricReplayMode): boolean {
   return mode !== "exact"

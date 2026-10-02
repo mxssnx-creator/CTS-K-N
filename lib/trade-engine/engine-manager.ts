@@ -2897,7 +2897,7 @@ export class TradeEngineManager {
       // the already-armed Realtime progression own the current state. Exact
       // replay is retained only when an operator explicitly provisions and
       // capacity-tests an isolated worker.
-      const replayMode = resolveHistoricReplayMode()
+      const replayMode = resolveHistoricReplayMode(undefined, this.connectionId)
       const replayCheckpointTs = replayMode === "exact" ? prehistoricEnd.getTime() : Date.now()
       const replayBootstrapBridgeMs = Math.max(0, replayCheckpointTs - prehistoricEnd.getTime())
       await Promise.all(
@@ -4771,7 +4771,7 @@ export class TradeEngineManager {
     if (!this.isRunning || this.prehistoricTimer || this.prehistoricBootstrapInFlight) return
 
     const startedAt = Date.now()
-    const replayMode = resolveHistoricReplayMode()
+    const replayMode = resolveHistoricReplayMode(undefined, this.connectionId)
     const requiresRealtimeWarmup = historicReplayNeedsRealtimeWarmup(replayMode)
     let warmupWarningEmitted = false
     const fallbackAfterMs = Math.max(
@@ -4835,7 +4835,7 @@ export class TradeEngineManager {
     let cycleCount = 0
     let firstPassDone = false
     const connId = this.connectionId
-    const replayMode = resolveHistoricReplayMode()
+    const replayMode = resolveHistoricReplayMode(undefined, this.connectionId)
     // The normal realtime bridge only advances one durable market-data
     // watermark. It never executes the Base→Main→Real graph, so making it
     // own the canonical CPU admission while Redis serves that watermark can
