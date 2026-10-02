@@ -243,3 +243,24 @@ describe("a phantom row is not a trade (11 on X02 and X01, 2026-10-01)", () => {
     expect(redis.sets.get(`results:ledger:v3:${CONN}:open`)!.size).toBe(0)
   })
 })
+
+describe("an open row without a fill of its own is not an open trade (X02 SOMIUSDT, 2026-10-02)", () => {
+  test("pending, not executed; once filled it counts", () => {
+    const rolledBack = real({ status: "open", executedQuantity: "0", totalExecutedQuantity: "175.686", closedAt: "", realizedPnL: "", realizedPnlComplete: "" })
+    expect(classifyRow(rolledBack, CONN)).toEqual({ kind: "pending" })
+    expect(classifyRow({ ...rolledBack, executedQuantity: "175.686" }, CONN)).toEqual({ kind: "executed" })
+  })
+  test("an entry kept as open is taken out when the row turns out to have no fill", async () => {
+    const redis: any = fakeRedis({ a: real({ status: "open", closedAt: "", realizedPnL: "", realizedPnlComplete: "" }) })
+    redis.hdel = async (k: string, f: string) => { const h = redis.hashes.get(k); if (h && f in h) { delete h[f]; return 1 } return 0 }
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    expect((await readResultLedger(redis, CONN))!.entries).toHaveLength(1)
+    redis.hashes.get(`live_positions:${CONN}:a`).executedQuantity = "0"
+    await advanceResultsLedger(redis, CONN); clearResultLedgerCache()
+    expect((await readResultLedger(redis, CONN))!.entries).toHaveLength(0)
+  })
+  test("the open-positions list of the statistics page skips such rows too", () => {
+    const route = readFileSync(resolve(process.cwd(), "app/api/data/positions/route.ts"), "utf8")
+    expect(route).toContain("if (!(Number(parsed.executedQuantity) > 0 || Number(parsed.filledQuantity) > 0)) continue")
+  })
+})

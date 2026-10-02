@@ -182,6 +182,9 @@ async function getLivePositions(connectionId: string): Promise<Position[]> {
       for (let index = 0; index < batch.length; index++) {
         const parsed = hydrateLivePositionReadModel(jsonValues[index], hashes[index]) as Record<string, any> | null
         if (!parsed || !isLiveOpenStatus(parsed.status)) continue
+        // An open row without a fill of its own (a rolled-back entry, a slot member whose quantity moved) is not an open
+        // position: the venue and the results ledger do not count it, so this list does not either.
+        if (!(Number(parsed.executedQuantity) > 0 || Number(parsed.filledQuantity) > 0)) continue
         const normalized = normaliseLivePosition({ ...parsed, id: parsed.id || batch[index] })
         if (normalized) positions.push(normalized)
       }

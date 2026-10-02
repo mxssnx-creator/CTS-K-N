@@ -91,8 +91,12 @@ export function classifyRow(row: Record<string, any>, connectionId: string): Row
   // cancelled, rejected or failed without an executedQuantity of its own is a phantom (X02: status=cancelled,
   // statusReason=phantom_row_no_entry_order, executedQuantity=0, totalExecutedQuantity=2795 from the slot
   // accumulation): it never traded and must not be a result.
-  const ownFill = num(row.executedQuantity) > 0
+  const ownFill = num(row.executedQuantity) > 0 || num(row.filledQuantity) > 0
   const terminalWithoutOwnFill = TERMINAL.has(status) && status !== "closed" && !ownFill
+  // A row that is still "open" without a fill of its own is not an open trade either (X02, 2026-10-02: a rolled-back
+  // SOMIUSDT short, status open, executedQuantity 0, counted as the fourth open position against three on the venue).
+  // It stays pending: once it closes or fills, the next pass decides.
+  if (!TERMINAL.has(status) && !ownFill) return { kind: "pending" }
   if (!terminalWithoutOwnFill && isExecutedRealExchangePosition(row)) return { kind: "executed" }
   if (TERMINAL.has(status)) {
     const reason = text(row.closeReason || row.statusReason).slice(0, 48) || "-"
@@ -213,7 +217,12 @@ export async function advanceResultsLedger(
           if (entry.status === "closed" && entry.settled) await client.srem(ledgerOpenKey(connectionId), id)
           else await client.sadd(ledgerOpenKey(connectionId), id)
         } else if (klass.kind === "pending") {
-          // not final: looked at again next pass
+          // not final: looked at again next pass; if it was kept as an executed row, it is not one now
+          if (refresh.has(id)) {
+            await client.hdel(ledgerEntriesKey(connectionId), id)
+            await client.srem(ledgerIdsKey(connectionId), id)
+            await client.srem(ledgerOpenKey(connectionId), id)
+          }
         } else {
           if (refresh.has(id)) {
             // it was kept as an executed row and no longer is one: take it out of the ledger
