@@ -439,6 +439,7 @@ __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-positions-orders.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-source-validation.test.ts
+__tests__/unit/signal-statistics-quorum.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/simulated-stats-routes.test.ts
 __tests__/unit/site-logs-key.test.ts
