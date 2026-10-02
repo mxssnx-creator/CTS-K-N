@@ -411,6 +411,8 @@ export async function GET(
           // PF / DDT / stage thresholds
           "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor",
           "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
+          // DDR ceilings (lib/drawdown-ratio.ts); they were dropped here, so the default always applied
+          "maxDrawdownRatio", "maxDrawdownRatioMain", "maxDrawdownRatioReal", "maxDrawdownRatioLive",
           "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
         ].includes(k)) {
           const n = Number(v)

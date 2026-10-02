@@ -211,6 +211,10 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "maxDrawdownTimeMainHours",
   "maxDrawdownTimeRealHours",
   "maxDrawdownTimeLiveHours",
+  "maxDrawdownRatio",
+  "maxDrawdownRatioMain",
+  "maxDrawdownRatioReal",
+  "maxDrawdownRatioLive",
 ])
 
 const LIVE_ORDER_SETTING_FIELDS = new Set([

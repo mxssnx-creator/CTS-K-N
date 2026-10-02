@@ -12924,6 +12924,8 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
     }
     const scopedSlots = decision.offendingSlots || []
     if (!transientOnly && !decision.connectionLevelViolation && scopedSlots.length > 0) {
+      const candidateDirection = String(input.direction || "").toLowerCase() === "short" ? "short" : "long"
+      const candidateSlot = aggregateProtectionSlot(input.symbol, candidateDirection as ProtectionSlotDirection)
       // Every violation is tied to a slot: halt only those slots, and leave the
       // rest of the connection trading.
       for (const slotKey of scopedSlots) {
@@ -12936,6 +12938,12 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
       // No connection-level violation remains: a connection halt left from an
       // earlier audit is replaced by these slot halts.
       await client.del(haltKey).catch(() => 0)
+      // Every violation belongs to OTHER slots: they are halted above, and this candidate's own slot is clean. X02,
+      // 2026-10-02: 1513 candidates selected in one hour, 5 placed: one slot's own orphaned controls made the decision
+      // "unsafe" for every symbol (safe was violations.length === 0), although the halts were already slot-scoped.
+      if (!scopedSlots.includes(candidateSlot)) {
+        return { ...decision, safe: true, scopedToOtherSlots: scopedSlots } as typeof decision
+      }
       return decision
     }
     await client.setex(
