@@ -4,7 +4,7 @@ import {
   isRateLimitedSnapshotError, parseRetryAfterMs, readAdmissionCooldownUntil, setAdmissionCooldown,
 } from "@/lib/trade-engine/admission-cooldown"
 import { markLiveSyncPhase, trackLiveSyncConnector } from "@/lib/trade-engine/live-sync-phase"
-import { effectiveLeverageCap, maxLeverageForStop } from "@/lib/liquidation-safe-leverage"
+import { effectiveLeverageCap, maxLeverageForStop, stopLossPercentForLeverage } from "@/lib/liquidation-safe-leverage"
 import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
@@ -14984,7 +14984,12 @@ export async function executeLivePosition(
       const connectionCap = Math.floor(Number((connRecord as any)?.max_leverage || 0))
       // The stop must be reached before the exchange liquidates the position: at 500x
       // (0.20 %) and 300x (0.33 %) a 0.5 % stop never acts (lib/liquidation-safe-leverage.ts).
-      const stopLossForLeverage = Number((livePosition as any).assignedStopLoss ?? realPosition.stopLoss ?? 0)
+      const stopLossForLeverage = stopLossPercentForLeverage({
+        entryPrice: (livePosition as any).entryPrice ?? (realPosition as any).entryPrice,
+        stopLossPrice: (livePosition as any).stopLossPrice,
+        stopLoss: (livePosition as any).stopLoss,
+        assignedStopLoss: (livePosition as any).assignedStopLoss ?? realPosition.stopLoss,
+      })
       const leverageCapForEntry = effectiveLeverageCap(connectionCap, stopLossForLeverage)
       ;(livePosition as any).leverageStopCap = maxLeverageForStop(stopLossForLeverage) || undefined
       livePosition.leverage = leverageCapForEntry > 0 ? Math.max(1, Math.min(venueMax, leverageCapForEntry)) : venueMax

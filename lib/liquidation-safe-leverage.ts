@@ -36,3 +36,32 @@ export function effectiveLeverageCap(connectionCap: number, stopLossPct: number,
   const caps = [Math.floor(Number(connectionCap) || 0), maxLeverageForStop(stopLossPct, factor)].filter((c) => c > 0)
   return caps.length > 0 ? Math.min(...caps) : 0
 }
+
+/** Largest value read as a percent; anything above is a configuration unit (PositionCost multiples), not a percent. */
+export const STOP_LOSS_PERCENT_CEILING = 25
+
+/**
+ * The stop distance in percent of the entry for the leverage cap.
+ *
+ * #527 read `assignedStopLoss ?? stopLoss`. assignedStopLoss carries the Set's configuration value (X02: 40, 50, 10), not a
+ * percent: 40 became "40 %" and the cap 1x. In 48 h on X02, 37 trades ran at 1x, 6 at 2x, 8 at 5x, and the venue
+ * leverage of the symbol was set down with them on an account shared with another system. Order of trust: the distance
+ * between entry and stop price; then stopLoss, then assignedStopLoss, each only if it is a plausible percent (0..25].
+ */
+export function stopLossPercentForLeverage(input: {
+  entryPrice?: unknown
+  stopLossPrice?: unknown
+  stopLoss?: unknown
+  assignedStopLoss?: unknown
+}): number {
+  const entry = Number(input.entryPrice), stopPrice = Number(input.stopLossPrice)
+  if (Number.isFinite(entry) && entry > 0 && Number.isFinite(stopPrice) && stopPrice > 0) {
+    const pct = (Math.abs(entry - stopPrice) / entry) * 100
+    if (pct > 0 && pct <= STOP_LOSS_PERCENT_CEILING) return pct
+  }
+  for (const candidate of [input.stopLoss, input.assignedStopLoss]) {
+    const value = Number(candidate)
+    if (Number.isFinite(value) && value > 0 && value <= STOP_LOSS_PERCENT_CEILING) return value
+  }
+  return 0
+}
