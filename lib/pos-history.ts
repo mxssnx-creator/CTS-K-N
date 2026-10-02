@@ -45,6 +45,7 @@
  * read by other modules); writers there can decommission incrementally.
  */
 
+import { drawdownRatioNewestFirst } from "@/lib/drawdown-ratio"
 import { getRedisClient } from "@/lib/redis-db"
 import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import {
@@ -138,6 +139,8 @@ export interface PosWindowStats {
   averagePnlPct: number
   /** Mean drawdown minutes per position over the window. */
   avgDDT: number
+  /** DDR: deepest fall of the cumulative results divided by their gross profit (lib/drawdown-ratio.ts). */
+  drawdownRatio: number
   /** count >= requested threshold. */
   hasSignal: boolean
   /** Cost-adjusted realised PnLs, newest first, for Previous/Last axes. */
@@ -156,6 +159,7 @@ const EMPTY_WINDOW: PosWindowStats = {
   positionCostRatioCount: 0,
   averagePnlPct: 0,
   avgDDT: 0,
+  drawdownRatio: 0,
   hasSignal: false,
   recentPnls: [],
   recentPnlPcts: [],
@@ -709,6 +713,7 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
     positionCostRatioCount: ratioCount,
     averagePnlPct,
     avgDDT: ddtCount > 0 ? ddtSum / ddtCount : 0,
+    drawdownRatio: drawdownRatioNewestFirst(recentPnls),
     hasSignal: n >= winN,
     recentPnls,
     recentPnlPcts,

@@ -1,3 +1,4 @@
+import { DDR_DEFAULT_MAX, drawdownRatioNewestFirst, maxDrawdownRatioSetting, passesDrawdownRatio } from "@/lib/drawdown-ratio"
 import {
   BLOCK_SHARED_RELATIONS_DEFAULT,
   BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
@@ -672,6 +673,8 @@ async function expireStrategyProgression(client: any, connectionId: string, seco
 
 export interface EvaluationMetrics {
   maxDrawdownTime: number
+  /** DDR ceiling (lib/drawdown-ratio.ts); 0 switches the gate off. */
+  maxDrawdownRatio?: number
   minProfitFactor: number
   confidence: number
   description: string
@@ -712,6 +715,8 @@ export interface StrategySet {
   avgProfitFactor: number
   avgConfidence: number
   avgDrawdownTime: number
+  /** DDR of the evaluated window (lib/drawdown-ratio.ts). */
+  avgDrawdownRatio?: number
   // Base: qualifying config entries (max 250). Axis projection: confirmed
   // closed entries plus currently-active, ledger-backed entries for that side.
   entryCount: number
@@ -1782,7 +1787,7 @@ export function compareStrategySetsBestFirst(
 export function selectLiveSetsWithActivePriority(
   realSets: StrategySet[],
   activeSetKeys: ReadonlySet<string>,
-  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
+  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime" | "maxDrawdownRatio">,
   _legacyMaximum?: number,
 ): { selected: StrategySet[]; active: StrategySet[] } {
   const active: StrategySet[] = []
@@ -1827,7 +1832,7 @@ export function materializeContinuousStageRows(
     lookback: number
     /** Optional exact windows for additional strategy families at this row. */
     lookbackByVariant?: Partial<Record<"default" | "trailing" | "block", number>>
-    metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">
+    metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime" | "maxDrawdownRatio">
     activeSetKeys?: ReadonlySet<string>
     /**
      * Batched exact position-result windows.  Callers build this once per
@@ -1881,6 +1886,7 @@ export function materializeContinuousStageRows(
     let sampleCount = 0
     let profitFactor = Number(source.avgProfitFactor) || 0
     let drawdownTime = Number(source.avgDrawdownTime) || 0
+    let drawdownRatioValue = Number((source as any).avgDrawdownRatio) || 0
     let entries = fallbackEntries.length > 0 ? fallbackEntries : allEntries
 
     if (exactWindow) {
@@ -1893,6 +1899,7 @@ export function materializeContinuousStageRows(
         ? exactWindow.positionCostRatio
         : exactWindow.profitFactor
       drawdownTime = exactWindow.avgDDT
+      drawdownRatioValue = exactWindow.drawdownRatio ?? 0
       entries = []
     } else {
       // Bootstrap / backwards-compatible fallback: a Base-derived `prevPos`
@@ -1910,6 +1917,7 @@ export function materializeContinuousStageRows(
         sampleCount = count
         profitFactor = ratioSum / count
         drawdownTime = Number(prev?.avgDDT) || drawdownTime
+        drawdownRatioValue = drawdownRatioNewestFirst(pnls.slice(0, count))
         entries = []
       } else {
         const finiteEntries = fallbackEntries
@@ -1955,7 +1963,8 @@ export function materializeContinuousStageRows(
     )
     const passes = sourceIsActive || (
       profitFactor >= options.metrics.minProfitFactor &&
-      drawdownTime <= options.metrics.maxDrawdownTime
+      drawdownTime <= options.metrics.maxDrawdownTime &&
+      passesDrawdownRatio(drawdownRatioValue, Number(options.metrics.maxDrawdownRatio ?? 0))
     )
     if (!passes) {
       rejected++
@@ -1972,6 +1981,7 @@ export function materializeContinuousStageRows(
       rowEvaluationWindow: rowEntryCount,
       avgProfitFactor: profitFactor,
       avgDrawdownTime: drawdownTime,
+      avgDrawdownRatio: drawdownRatioValue,
       entryCount: rowEntryCount,
       entries,
       status: options.stage === "real" ? "valid_real" : source.status,
@@ -1996,7 +2006,7 @@ export function materializeContinuousStageRows(
 export function applyExactBlockRowWindows(
   rows: readonly StrategySet[],
   windows: ReadonlyMap<string, PosWindowStats>,
-  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
+  metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime" | "maxDrawdownRatio">,
   activeSetKeys?: ReadonlySet<string>,
 ): StrategySet[] {
   const evaluated: StrategySet[] = []
@@ -2016,6 +2026,7 @@ export function applyExactBlockRowWindows(
       ? window.positionCostRatio
       : window.profitFactor
     const drawdownTime = window.avgDDT
+    const drawdownRatioValue = window.drawdownRatio ?? 0
     const minimumProfitFactor = Math.max(
       metrics.minProfitFactor,
       Number.isFinite(Number(row.blockMinimumProfitFactor))
@@ -2024,7 +2035,8 @@ export function applyExactBlockRowWindows(
     )
     if (!isActive && (
       profitFactor < minimumProfitFactor ||
-      drawdownTime > metrics.maxDrawdownTime
+      drawdownTime > metrics.maxDrawdownTime ||
+      !passesDrawdownRatio(drawdownRatioValue, Number(metrics.maxDrawdownRatio ?? 0))
     )) {
       continue
     }
@@ -2035,6 +2047,7 @@ export function applyExactBlockRowWindows(
       entryCount: window.count,
       avgProfitFactor: profitFactor,
       avgDrawdownTime: drawdownTime,
+      avgDrawdownRatio: drawdownRatioValue,
       blockObservedProfitFactor: profitFactor,
       blockProfitFactorSampleCount: window.count,
       blockProfitFactorWindow: window.count,
@@ -3297,24 +3310,28 @@ export class StrategyCoordinator {
   private METRICS: Record<string, EvaluationMetrics> = {
     base: {
       maxDrawdownTime: 999999,
+      maxDrawdownRatio: 0,    // Base stays open, like its DDT
       minProfitFactor: MAIN_TRADE_STAGE_PF_DEFAULTS.base,
       confidence: 0.3,        // advisory only
       description: "One Set per (indication_type × direction) — all qualifying",
     },
     main: {
       maxDrawdownTime: 240,   // 4 hours — operator spec default, tunable
+      maxDrawdownRatio: DDR_DEFAULT_MAX,
       minProfitFactor: MAIN_TRADE_STAGE_PF_DEFAULTS.main,
       confidence: 0.5,        // advisory only
       description: "Sets promoted from BASE with profitFactor >= main-threshold + DDT <= maxDrawdownTime, gated by minPositions",
     },
     real: {
       maxDrawdownTime: 240,   // 4 hours — operator spec default, tunable
+      maxDrawdownRatio: DDR_DEFAULT_MAX,
       minProfitFactor: MAIN_TRADE_STAGE_PF_DEFAULTS.real,
       confidence: 0.65,       // advisory only
       description: "Sets promoted from MAIN with profitFactor >= real-threshold + DDT <= maxDrawdownTime, gated by minPositions",
     },
     live: {
       maxDrawdownTime: 240,   // 4 hours — operator spec default, tunable
+      maxDrawdownRatio: DDR_DEFAULT_MAX,
       minProfitFactor: MAIN_TRADE_STAGE_PF_DEFAULTS.live,
       confidence: 0.65,       // advisory only
       description: "Every REAL row that passes the Live PF/DDT gate is ready for direct mirroring",
@@ -3426,6 +3443,12 @@ export class StrategyCoordinator {
       this.METRICS.main.maxDrawdownTime = mainDdtMin
       this.METRICS.real.maxDrawdownTime = realDdtMin
       this.METRICS.live.maxDrawdownTime = liveDdtMin
+      // ── Per-stage max drawdown ratio (DDR gate) ─────────────────────────
+      // maxDrawdownRatio applies to Main/Real/Live; a per-stage value overrides it. 0 switches the gate off.
+      const ddrAll = maxDrawdownRatioSetting((s as any).maxDrawdownRatio ?? (s as any).max_drawdown_ratio)
+      this.METRICS.main.maxDrawdownRatio = maxDrawdownRatioSetting((s as any).maxDrawdownRatioMain, ddrAll)
+      this.METRICS.real.maxDrawdownRatio = maxDrawdownRatioSetting((s as any).maxDrawdownRatioReal, ddrAll)
+      this.METRICS.live.maxDrawdownRatio = maxDrawdownRatioSetting((s as any).maxDrawdownRatioLive, ddrAll)
 
       // ── Per-stage eval position-count thresholds (CRITICAL wiring fix) ──
       // `mainEvalPosCount` / `realEvalPosCount` are the minimum entryCount a
@@ -9068,7 +9091,7 @@ export class StrategyCoordinator {
   private async buildRowLiveBlockOverlays(
     symbol: string,
     rowLiveSets: readonly StrategySet[],
-    metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime">,
+    metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime" | "maxDrawdownRatio">,
   ): Promise<StrategySet[]> {
     if (!this._coordinationSettings.variants.block || !this._coordinationSettings.blockRowLiveEnabled) {
       return []

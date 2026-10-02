@@ -181,6 +181,7 @@ __tests__/unit/directional-evaluation.test.ts
 __tests__/unit/dispatch-blocked-reasons-visible.test.ts
 __tests__/unit/dispatch-suppression-reasons.test.ts
 __tests__/unit/distributed-engine-runtime.test.ts
+__tests__/unit/drawdown-ratio-and-replay.test.ts
 __tests__/unit/dynamic-venue-max-leverage.test.ts
 __tests__/unit/empty-book-own-fingerprint.test.ts
 __tests__/unit/engine-event-bus-regression.test.ts
@@ -439,6 +440,7 @@ __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-positions-orders.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-source-validation.test.ts
+__tests__/unit/signal-statistics-quorum.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/simulated-stats-routes.test.ts
 __tests__/unit/site-logs-key.test.ts
@@ -1405,6 +1407,7 @@ lib/direct-trade-processor-lease.ts
 lib/direct-trade-settings-sync.ts
 lib/directional-evaluation.ts
 lib/distributed-engine-runtime.ts
+lib/drawdown-ratio.ts
 lib/engine-error-handler.ts
 lib/engine-event-bus.ts
 lib/engine-heartbeat.ts

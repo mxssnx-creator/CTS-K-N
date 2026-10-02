@@ -565,7 +565,7 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main"
                 "Exact source × symbol × direction × config",
               ],
               ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "35 crypto feeds + 1 InstaForex Charts feed; only compatible sources run"],
-              ["Source quorum", `${payload.signal.settings.minimumSourceSignals} crypto · ${payload.signal.settings.minimumSourceSignalsForex ?? 1} Forex`, "Independent quorum by asset class"],
+              ["Source quorum", `${payload.signal.settings.minimumSourceSignals ?? "–"} crypto · ${payload.signal.settings.minimumSourceSignalsForex ?? "–"} Forex`, "Independent quorum by asset class"],
               [
                 "Positions / Orders",
                 `${payload.signal.counts?.openPositions ?? 0}/${payload.signal.settings.maxPositionsTotal} · ${payload.signal.counts?.openOrders ?? 0}/${Number(payload.signal.settings.maxOrders) > 0 ? payload.signal.settings.maxOrders : "∞"}`,

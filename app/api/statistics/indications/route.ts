@@ -439,6 +439,10 @@ export async function GET(request: Request) {
           directExecutionEnabled: signalSettings.directExecutionEnabled,
           requestIntervalSeconds: signalSettings.requestIntervalSeconds,
           maxSourcesPerCycle: signalSettings.maxSourcesPerCycle,
+          // The signal statistics page shows "Source quorum <crypto> crypto · <forex> Forex"; without these the crypto value
+          // rendered as "undefined".
+          minimumSourceSignals: signalSettings.minimumSourceSignals,
+          minimumSourceSignalsForex: signalSettings.minimumSourceSignalsForex,
           maxPositionsTotal: signalSettings.maxPositionsTotal,
           maxOrdersPerSymbol: signalSettings.maxOrdersPerSymbol,
           maxOrders: signalSettings.maxOrders,
