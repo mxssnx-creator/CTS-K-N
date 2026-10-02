@@ -10,6 +10,7 @@ export const progressionFingerprintFields = [
   "force_symbols", "symbols", "active_symbols",
   "baseProfitFactor", "mainProfitFactor", "realProfitFactor", "liveProfitFactor", "profitFactorMin",
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
+  "maxDrawdownRatio", "maxDrawdownRatioMain", "maxDrawdownRatioReal", "maxDrawdownRatioLive",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "normalEnabled", "blockOnlyEnabled", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
   "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",

@@ -64,6 +64,7 @@ __tests__/unit/active-outbreak-indication.test.ts
 __tests__/unit/active-outbreak-strategy-protection.test.ts
 __tests__/unit/admin-auth.test.ts
 __tests__/unit/admission-cooldown.test.ts
+__tests__/unit/admission-scope-and-ddr-settings.test.ts
 __tests__/unit/advanced-config-exhaustive.test.ts
 __tests__/unit/aggregate-protection-coordination.test.ts
 __tests__/unit/api-stats-fetcher.test.ts
