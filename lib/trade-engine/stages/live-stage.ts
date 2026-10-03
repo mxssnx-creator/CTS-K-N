@@ -7719,9 +7719,16 @@ async function ownSiblingSlotQuantity(position: LivePosition): Promise<number> {
  * baseline, or recorded as applied). Used as the exact own-order explanation
  * for a venue quantity increase so foreign quantity is never absorbed.
  */
+/** Row statuses with an entry order that can still fill on the venue. */
+const ENTRY_ORDER_WORKING_STATUSES: ReadonlySet<string> = new Set([
+  "pending", "placed", "submitted", "new", "partially_filled", "working", "accepted",
+])
 function pendingAccumulationUnfilledQuantity(position: LivePosition, executedBefore: number): number {
   const pending = position.pendingAccumulation
   if (!pending) return 0
+  // Only an accumulation the venue accepted can explain a venue increase: without its order id it may have been refused or
+  // never sent, and its requested quantity would absorb another system's fill instead.
+  if (!String((pending as any).orderId || "").trim()) return 0
   const requested = Math.max(0, Number(pending.requestedQuantity || 0))
   const baseline = Number(pending.positionQuantityBefore)
   const filledAboveBaseline = Number.isFinite(baseline) ? Math.max(0, executedBefore - baseline) : 0
@@ -7754,8 +7761,14 @@ async function reconcileAuthoritativeExchangeQuantity(
   // explains it: the unfilled rest of the entry or a pending accumulation.
   // Anything above that is not provably ours and is never absorbed — a later
   // reduce-only close or protection sized from it would touch foreign quantity.
+  // The remaining entry quantity explains a venue increase only while an entry order is still working. Once the entry is
+  // filled or capped, "remaining" is requested quantity that never went to the venue: X02, 2026-10-03, NEARUSDT short, own
+  // fill 3 NEAR, the entry capped by the exposure ceiling, and a foreign system's resting limit orders (client prefix cbx02,
+  // not this connection's knpu/ktpu) filled 3535 and later 7853 NEAR on the same slot; the remainder "explained" them, the
+  // row was set to 3537 / 7856, and its own stop loss bought back 3537 foreign NEAR for -279 VST.
+  const entryStillWorking = ENTRY_ORDER_WORKING_STATUSES.has(String(position.status || "").toLowerCase())
   const attributableIncrease =
-    Math.max(0, Number(position.remainingQuantity || 0)) +
+    (entryStillWorking ? Math.max(0, Number(position.remainingQuantity || 0)) : 0) +
     pendingAccumulationUnfilledQuantity(position, before)
   const attributableCeiling = before + attributableIncrease
   const exchangeQuantity = Math.min(
