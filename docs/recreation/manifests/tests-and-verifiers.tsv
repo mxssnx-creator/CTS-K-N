@@ -443,6 +443,7 @@ unit	__tests__/unit/special-vst-validator-contract.test.ts
 unit	__tests__/unit/stable-baseline-2026-09-19.test.ts
 unit	__tests__/unit/stage-profit-factor-save.test.ts
 unit	__tests__/unit/stage-row-snapshot.test.ts
+unit	__tests__/unit/stale-control-sweep.test.ts
 unit	__tests__/unit/startup-coordinator-cleanup.test.ts
 unit	__tests__/unit/startup-global-liveness.test.ts
 unit	__tests__/unit/startup-validation-runtime-health.test.ts
