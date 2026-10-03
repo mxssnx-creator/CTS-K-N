@@ -10248,10 +10248,17 @@ export class StrategyCoordinator {
                 }
                 else if (outcome === "rejected") rejected++
                 else errored++
-                console.warn(
-                  `[v0] [StrategyFlow] ${symbol} per-set live execution error:`,
-                  errorMessage,
-                )
+                // Expected lifecycle states are not errors in the journal: a Block Count waiting out its pause after a positive
+                // result is the design (BLOCK_STRATEGY_SYSTEM.md), not a failure.
+                const expectedLifecycle = /Block Count is paused/i.test(errorMessage)
+                if (expectedLifecycle) {
+                  console.log(`[v0] [StrategyFlow] ${symbol} per-set live execution deferred: ${errorMessage}`)
+                } else {
+                  console.warn(
+                    `[v0] [StrategyFlow] ${symbol} per-set live execution error:`,
+                    errorMessage,
+                  )
+                }
               }
             }
 

@@ -43,6 +43,7 @@ export function buildResultsBookResponse(
   const windows: Record<string, ResultBook> = {}
   for (const [name, ms] of Object.entries(RESULT_WINDOWS)) windows[name] = computeResultBook(ledger.entries, ms === undefined ? {} : { since: now - ms })
   const neverTraded = Object.entries(ledger.funnel).filter(([k]) => k.startsWith("never:")).reduce((s, [, c]) => s + c, 0)
+  const unsettled = unsettledBreakdown(inWindow)
   return {
     success: true,
     ready: ledger.meta.complete,
@@ -50,6 +51,10 @@ export function buildResultsBookResponse(
     definition: DEFINITION,
     coverage: { complete: ledger.meta.complete, entries: ledger.entries.length, updatedAt: ledger.meta.updatedAt, keys: ledger.meta.keys, remaining: ledger.meta.remaining, lag: ledger.meta.remaining },
     book: computeResultBook(inWindow),
+    // Closed results without a settled value, by reason. On a shared account another system can close the whole venue
+    // position (exchange_externally_closed) or the position is simply gone at reconciliation (exchange_reconciliation): there
+    // is no own exit fill to settle from, so PF and net are computed over the settled subset and this says how many are missing.
+    unsettled,
     windows,
     groups: group ? groupResultBooks(inWindow, GROUPS[group]) : null,
     funnel: {
@@ -63,3 +68,16 @@ export function buildResultsBookResponse(
 }
 
 const DEFINITION = "A result is a filled, real, own position (executedQuantity > 0, own tracking id, not simulated). Simulated rows, rows that never traded and rows of other systems are counted in the funnel and never in PnL, profit factor, win rate or trade counts. Settled = the realized pnl is final; closed rows without it are accounting pending and not valued."
+
+/** Closed entries without a settled value, total and by close reason (X02, 2026-10-03: 442 of 1429, 192 closed externally). */
+export function unsettledBreakdown(entries: readonly LedgerEntry[]): { total: number; byReason: Record<string, number> } {
+  const byReason: Record<string, number> = {}
+  let total = 0
+  for (const e of entries) {
+    if (e.status !== "closed" || e.settled) continue
+    total++
+    const reason = (e.reason || "").trim() || "no_value"
+    byReason[reason] = (byReason[reason] || 0) + 1
+  }
+  return { total, byReason }
+}
