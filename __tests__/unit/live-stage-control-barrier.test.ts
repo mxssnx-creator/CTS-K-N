@@ -1577,12 +1577,20 @@ describe("cumulative reduction settlement accounting", () => {
 describe("pending accumulation attributable ceiling", () => {
   test("only the unfilled remainder of an accumulation explains a venue increase", () => {
     const fn = __liveStageTest.pendingAccumulationUnfilledQuantity
-    const base = { pendingAccumulation: { clientOrderId: "a", setKey: "s", requestedQuantity: 0.5, positionQuantityBefore: 1, submittedAt: 1 } }
+    const base = { pendingAccumulation: { clientOrderId: "a", orderId: "venue-1", setKey: "s", requestedQuantity: 0.5, positionQuantityBefore: 1, submittedAt: 1 } }
     expect(fn(base as any, 1)).toBeCloseTo(0.5)
     // 0.3 of the 0.5 already in executed quantity: only 0.2 may still arrive.
     expect(fn(base as any, 1.3)).toBeCloseTo(0.2)
     expect(fn({ pendingAccumulation: { ...base.pendingAccumulation, appliedFilledQuantity: 0.4 } } as any, 1)).toBeCloseTo(0.1)
     expect(fn(base as any, 2)).toBe(0)
     expect(fn({} as any, 1)).toBe(0)
+    // not accepted by the venue (no order id): it cannot explain anything (X02 NEAR: foreign fills were absorbed)
+    expect(fn({ pendingAccumulation: { ...base.pendingAccumulation, orderId: "" } } as any, 1)).toBe(0)
+  })
+  test("a filled or capped entry's remaining quantity no longer explains a venue increase", () => {
+    const src = require("node:fs").readFileSync(require("node:path").resolve(process.cwd(), "lib/trade-engine/stages/live-stage.ts"), "utf8")
+    expect(src).toContain("const entryStillWorking = ENTRY_ORDER_WORKING_STATUSES.has(String(position.status || \"\").toLowerCase())")
+    expect(src).toContain("(entryStillWorking ? Math.max(0, Number(position.remainingQuantity || 0)) : 0) +")
+    expect(src).toMatch(/ENTRY_ORDER_WORKING_STATUSES: ReadonlySet<string> = new Set\(\[\n\s+"pending", "placed", "submitted", "new", "partially_filled"/)
   })
 })
