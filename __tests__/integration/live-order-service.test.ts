@@ -195,7 +195,7 @@ describe("live-order-service integration accounting", () => {
     expect(connector.placeOrder).toHaveBeenCalledTimes(1)
   })
 
-  test("a slot whose venue position exceeds the system's own quantity takes no entry (shared account)", async () => {
+  test("foreign quantity on the slot is ignored: only the own share occupies the ceiling (shared account)", async () => {
     const { resolveLiveOrderExposureCeiling } = await import("@/lib/live-order-service")
     const priorConfirmation = process.env.BINGX_VST_SOAK_CONFIRM
     process.env.BINGX_VST_SOAK_CONFIRM = "I understand Prod-VST places authenticated orders with virtual funds"
@@ -215,10 +215,9 @@ describe("live-order-service integration accounting", () => {
       // without the own quantity: the whole venue position (150 USD) occupies the 150 USD ceiling: refused as before
       await expect(resolveLiveOrderExposureCeiling(input(), { exchange: "bingx", is_testnet: "1" }, connector, "BTCUSDT", 100))
         .rejects.toThrow("is already occupied")
-      // with it: the slot holds another system's quantity: refused with that reason (the reconciliation would otherwise
-      // assign the foreign excess to the new own row, X02 NEAR short -279 VST)
+      // with it: foreign quantity is ignored, only the own 0.25 (25 USD) counts, 125 USD remain
       await expect(resolveLiveOrderExposureCeiling(input(0.25), { exchange: "bingx", is_testnet: "1" }, connector, "BTCUSDT", 100))
-        .rejects.toThrow("the rest belongs to another system on the account")
+        .resolves.toEqual({ maxNotionalUsd: 125, currentNotionalUsd: 25 })
       // an own quantity equal to the venue position changes nothing
       await expect(resolveLiveOrderExposureCeiling(input(1.5), { exchange: "bingx", is_testnet: "1" }, connector, "BTCUSDT", 100))
         .rejects.toThrow("is already occupied")
