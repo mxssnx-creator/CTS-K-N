@@ -12,6 +12,10 @@ describe("a hand-off in progress is a short slot hold, not a 24 h halt (X02: 20 
     // the spellings of the 18 halts left after #548
     expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_row_stop_loss_not_authoritatively_open", "owned_slot_row_take_profit_not_authoritatively_open", "owned_slot_orphan_controls_present"])).toBe(true)
     expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_shared_control_owner_mismatch", "owned_slot_row_stop_loss_id_missing", "owned_slot_row_take_profit_id_missing"])).toBe(true)
+    // and with the security stop moving (the 15 halts after #549)
+    expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_shared_stopLoss_missing", "owned_slot_security_owner_count_mismatch", "owned_slot_security_stop_not_authoritatively_open", "owned_shared_control_owner_mismatch"])).toBe(true)
+    // a venue cardinality disagreement is not a hand-off
+    expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_venue_cardinality_mismatch"])).toBe(false)
   })
   test("without a pending marker, or with anything outside a hand-off, it stays genuine", () => {
     expect(isHandoffInProgressOnly(["owned_shared_stopLoss_missing"])).toBe(false)
