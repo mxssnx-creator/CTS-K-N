@@ -12536,7 +12536,20 @@ export async function sweepEmptySlotProtectionHalts(
 async function isEntrySlotProtectionHalted(client: any, connectionId: string, symbol: string, direction: string): Promise<boolean> {
   const dir = String(direction || "").toLowerCase() === "short" ? "short" : "long"
   const key = entryProtectionSlotHaltKeyOf(connectionId, aggregateProtectionSlot(symbol, dir as ProtectionSlotDirection))
-  return Boolean(await client.get(key).catch(() => null))
+  const raw = await client.get(key).catch(() => null)
+  if (!raw) return false
+  // A halt that only recorded a hand-off in progress expires like a transient one, so the next attempt re-audits the slot
+  // (halts written before this rule carry a 24 h TTL; they heal here instead of waiting out the day).
+  try {
+    const halt = JSON.parse(String(raw))
+    if (isHandoffInProgressOnly(halt?.violations) && Date.now() - Number(halt?.at || 0) >= TRANSIENT_ENTRY_HALT_TTL_SECONDS * 1000) {
+      await client.del(key).catch(() => 0)
+      return false
+    }
+  } catch {
+    // unparseable halts stay genuine
+  }
+  return true
 }
 
 /**
@@ -12841,6 +12854,33 @@ async function auditEntryProtectionBeforeVenueMutation(input: {
 const TRANSIENT_PROTECTION_VIOLATIONS: ReadonlySet<string> = new Set([
   "authoritative_protection_snapshot_unavailable",
 ])
+/** A hand-off on the slot is in flight: an accumulation / reduction / entry confirmation that has not settled yet. */
+const HANDOFF_PENDING_VIOLATIONS: ReadonlySet<string> = new Set([
+  "owned_quantity_mutation_pending",
+  "owned_entry_confirmation_pending",
+])
+/**
+ * True when the violations describe a hand-off IN PROGRESS and nothing else: a pending marker plus the control-order gaps a
+ * hand-off necessarily has until the shared controls are re-armed for the new quantity (shared / slot / row control missing or
+ * sized for the old quantity, scope transition). Orphaned controls, venue/system quantity disagreements of the position
+ * itself and every other violation are not part of a hand-off and keep the 24 h hold.
+ *
+ * X02, 2026-10-03: 20 slot halts, every one set at pre_accumulation_admission with exactly this picture (mutation pending,
+ * shared SL/TP missing or sized for the old quantity, security stop incomplete). They held for 24 h although the hand-off
+ * settles within a minute or two, and nothing re-audits a halted slot because entries are refused before the audit runs:
+ * every slot that ever accumulated was closed to new entries for a day (142 refusals in 15 minutes).
+ */
+function isHandoffInProgressOnly(violations: readonly string[] | undefined): boolean {
+  const list = (violations || []).map(String)
+  if (!list.some((violation) => HANDOFF_PENDING_VIOLATIONS.has(violation))) return false
+  return list.every((violation) =>
+    HANDOFF_PENDING_VIOLATIONS.has(violation)
+    || violation === "owned_control_scope_transition_pending"
+    || violation === "owned_slot_controls_incomplete"
+    || /^owned_shared_(stopLoss|takeProfit)_(missing|quantity_mismatch|not_authoritatively_open)$/.test(violation)
+    || /^owned_slot_security_(stop_incomplete|quantity_mismatch)$/.test(violation)
+    || /^owned_row_(stop_loss|take_profit)_(missing|quantity_mismatch|not_authoritatively_open)$/.test(violation))
+}
 /** Long enough to skip the failing cycle, short enough to re-audit on the next. */
 const TRANSIENT_ENTRY_HALT_TTL_SECONDS = 90
 /** Re-reads of the venue book after a confirmed fill that does not show yet. */
@@ -12912,7 +12952,7 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
     for (const slotKey of ((decision as any).scopedToOtherSlots || []) as string[]) {
       await client.setex(
         entryProtectionSlotHaltKeyOf(input.connectionId, slotKey),
-        GENUINE_ENTRY_HALT_TTL_SECONDS,
+        isHandoffInProgressOnly(decision.violations) ? TRANSIENT_ENTRY_HALT_TTL_SECONDS : GENUINE_ENTRY_HALT_TTL_SECONDS,
         JSON.stringify({ at: Date.now(), reason: input.reason, transient: false, slot: slotKey, violations: decision.violations.slice(0, 24) }),
       ).catch(() => {})
     }
@@ -12931,6 +12971,9 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
     // full hold.
     const transientOnly = decision.violations.length > 0
       && decision.violations.every((violation) => TRANSIENT_PROTECTION_VIOLATIONS.has(violation))
+    // A hand-off in progress stays slot-scoped (no connection halt) and gets the short hold, so the next attempt re-audits.
+    const handoffOnly = isHandoffInProgressOnly(decision.violations)
+    const slotHaltTtlSeconds = handoffOnly ? TRANSIENT_ENTRY_HALT_TTL_SECONDS : GENUINE_ENTRY_HALT_TTL_SECONDS
     // A transient decision must never DOWNGRADE a genuine halt already in
     // place. A read failure proves nothing about exposure, so it cannot be a
     // reason to shorten a hold that a proven condition set — e.g. a rollback
@@ -12957,8 +13000,8 @@ async function verifyConnectionProtectionAndPersistHalt(input: {
       for (const slotKey of scopedSlots) {
         await client.setex(
           entryProtectionSlotHaltKeyOf(input.connectionId, slotKey),
-          GENUINE_ENTRY_HALT_TTL_SECONDS,
-          JSON.stringify({ at: Date.now(), reason: input.reason, transient: false, slot: slotKey, violations: decision.violations.slice(0, 24) }),
+          slotHaltTtlSeconds,
+          JSON.stringify({ at: Date.now(), reason: input.reason, transient: handoffOnly, slot: slotKey, violations: decision.violations.slice(0, 24) }),
         ).catch(() => {})
       }
       // No connection-level violation remains: a connection halt left from an
@@ -23081,6 +23124,8 @@ export async function syncLiveFromPseudo(
 }
 
 export const __liveStageTest = {
+  isHandoffInProgressOnly,
+  isEntrySlotProtectionHalted,
   liveExecutionSlot,
   isActiveLiveSlotStatus,
   resolveConfirmedStrategyVariant,
