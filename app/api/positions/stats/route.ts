@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server"
-import { getAllConnections, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
+import { getAllConnections, getRedisClient, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
+import { readResultLedger } from "@/lib/results/ledger"
+import { unsettledBreakdown } from "@/lib/results/response"
 import { getLiveExecutionSummary, type LiveExecutionSummary } from "@/lib/live-execution-summary"
 import { mergePositionBookStats } from "@/lib/position-book-stats"
 
@@ -73,6 +75,17 @@ export async function GET(request: NextRequest) {
     const visibleClosedPositions = openOnly ? 0 : closedPositions
     const visibleSettledClosedPositions = openOnly ? 0 : settledClosedPositions
     const visibleAccountingPending = openOnly ? 0 : accountingPending
+    // Why the pending ones have no value (closed by another system on the shared account, gone at reconciliation, no
+    // value stored): read from the results ledger when one connection is asked for.
+    let accountingPendingByReason: Record<string, number> | null = null
+    if (requestedConnectionId && !openOnly) {
+      try {
+        const ledger = await readResultLedger(getRedisClient(), requestedConnectionId)
+        if (ledger && ledger.meta.complete) accountingPendingByReason = unsettledBreakdown(ledger.entries).byReason
+      } catch {
+        accountingPendingByReason = null // the count above stands; only the reasons are unavailable
+      }
+    }
     const visibleWins = openOnly ? 0 : wins
     const visibleLosses = openOnly ? 0 : losses
     const visibleBreakEven = openOnly ? 0 : breakEven
@@ -115,6 +128,7 @@ export async function GET(request: NextRequest) {
         closed_positions: visibleClosedPositions,
         settled_closed_positions: visibleSettledClosedPositions,
         accounting_pending: visibleAccountingPending,
+        accounting_pending_by_reason: accountingPendingByReason,
         accounting_complete: accountingComplete,
         total_pnl: visibleRealizedPnl + visibleUnrealizedPnl,
         realized_pnl: visibleRealizedPnl,

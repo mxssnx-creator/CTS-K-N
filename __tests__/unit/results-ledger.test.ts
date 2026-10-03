@@ -264,3 +264,21 @@ describe("an open row without a fill of its own is not an open trade (X02 SOMIUS
     expect(route).toContain("if (!(Number(parsed.executedQuantity) > 0 || Number(parsed.filledQuantity) > 0)) continue")
   })
 })
+
+describe("closed results without a settled value are reported with their reasons (shared account closes)", () => {
+  test("the breakdown counts closed unsettled entries by close reason", () => {
+    const { unsettledBreakdown } = require("@/lib/results/response")
+    const e = (over: any) => ({ id: "x", sym: "A", dir: "long", opened: 1, closed: 2, status: "closed", qty: 1, entry: 1, notional: 1, lev: 1, sl: 0, tp: 0, pnl: null, fees: 0, settled: false, pnlSource: "", reason: "", type: "", lane: "", variant: "", intent: "", slip: null, exit: 0, oid: "", ...over })
+    const out = unsettledBreakdown([
+      e({ reason: "exchange_externally_closed" }), e({ reason: "exchange_externally_closed" }), e({ reason: "exchange_reconciliation" }),
+      e({ reason: "" }), e({ settled: true, pnl: 1, reason: "tp_hit" }), e({ status: "open" }),
+    ])
+    expect(out).toEqual({ total: 4, byReason: { exchange_externally_closed: 2, exchange_reconciliation: 1, no_value: 1 } })
+  })
+  test("the results answer and the trade history summary carry it", () => {
+    const resp = readFileSync(resolve(process.cwd(), "lib/results/response.ts"), "utf8")
+    expect(resp).toContain("const unsettled = unsettledBreakdown(inWindow)")
+    const route = readFileSync(resolve(process.cwd(), "app/api/trading/trade-history/route.ts"), "utf8")
+    expect(route).toContain("accountingPendingByReason: unsettledBreakdown(resultLedger!.entries).byReason,")
+  })
+})

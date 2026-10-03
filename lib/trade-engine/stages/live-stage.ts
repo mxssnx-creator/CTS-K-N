@@ -6169,6 +6169,7 @@ async function accumulateIntoLivePosition(
             lotSize: existing.lotSize,
             quoteToUsdRate: existing.quoteToUsdRate,
             positionCostPercentOverride: existing.positionCostPct,
+            ownSlotQuantity: await ownSlotQuantityIncluding(existing),
             maxExecutionNotionalUsd,
             source: existing.executionIntent === "direct"
               ? "direct-trade"
@@ -6370,6 +6371,7 @@ async function accumulateIntoLivePosition(
             lotSize: existing.lotSize,
             quoteToUsdRate: existing.quoteToUsdRate,
             positionCostPercentOverride: existing.positionCostPct,
+            ownSlotQuantity: await ownSlotQuantityIncluding(existing),
             maxExecutionNotionalUsd,
             source: existing.executionIntent === "direct"
               ? "direct-trade"
@@ -7688,6 +7690,10 @@ function reconcileExchangeQuantityLedger(
   return true
 }
 
+/** Executed quantity this system holds on the row's physical slot, the row itself included (exposure ceiling input). */
+async function ownSlotQuantityIncluding(position: LivePosition): Promise<number> {
+  return Math.max(0, Number(position.executedQuantity || 0)) + (await ownSiblingSlotQuantity(position))
+}
 /** Executed quantity held by the OTHER active own rows on this row's physical slot. */
 async function ownSiblingSlotQuantity(position: LivePosition): Promise<number> {
   const connectionId = String(position.connectionId || "")
@@ -15702,6 +15708,7 @@ export async function executeLivePosition(
             lotSize: livePosition.lotSize,
             quoteToUsdRate: livePosition.quoteToUsdRate,
             positionCostPercentOverride: livePosition.positionCostPct,
+            ownSlotQuantity: await ownSlotQuantityIncluding(livePosition),
             maxExecutionNotionalUsd,
             source: executionIntent === "direct"
               ? "direct-trade"
@@ -15939,6 +15946,7 @@ export async function executeLivePosition(
             lotSize: livePosition.lotSize,
             quoteToUsdRate: livePosition.quoteToUsdRate,
             positionCostPercentOverride: livePosition.positionCostPct,
+            ownSlotQuantity: await ownSlotQuantityIncluding(livePosition),
             maxExecutionNotionalUsd,
             source: executionIntent === "direct"
               ? "direct-trade"

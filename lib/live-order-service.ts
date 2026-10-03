@@ -65,6 +65,11 @@ export type LiveOrderMarginType = "cross" | "isolated"
 export type LiveOrderAccountingClass = "entry" | "control"
 
 export interface PlaceLiveOrderInput {
+  /**
+   * Executed quantity the system itself holds on this symbol and direction (own rows). On a shared account the venue
+   * position can be larger: the excess belongs to another system and does not occupy this connection's exposure ceiling.
+   */
+  ownSlotQuantity?: number
   connectionId: string
   symbol: string
   side: string
@@ -893,6 +898,7 @@ export async function resolveLiveOrderExposureCeiling(
     )
   }
   let currentNotionalUsd = 0
+  let currentQuantityTotal = 0
   let positions: any[] = []
   try {
     const direction = input.positionDirection
@@ -911,6 +917,7 @@ export async function resolveLiveOrderExposureCeiling(
     const currentPrice = orderPriceFromPosition(position, marketPrice)
     const positionNotionalUsd = orderNotionalUsd(input, connection, symbol, currentQuantity, currentPrice)
     currentNotionalUsd += positionNotionalUsd
+    currentQuantityTotal += currentQuantity
     if (!(positionNotionalUsd > 0)) {
       throw Object.assign(
         new Error("Live entry refused: existing venue position cannot be valued in USD"),
@@ -919,6 +926,14 @@ export async function resolveLiveOrderExposureCeiling(
     }
   }
 
+  // A venue position larger than what this system holds on the slot carries another system's quantity (shared account:
+  // X02, 2026-10-03, WLD short 70k notional of a stopped system against a ceiling of a few hundred USD, 184 refusals in
+  // 15 minutes). Only the own share occupies the ceiling; the excess is valued and ignored.
+  const ownQuantity = Number(input.ownSlotQuantity)
+  if (Number.isFinite(ownQuantity) && ownQuantity >= 0 && currentQuantityTotal > ownQuantity * (1 + 1e-6) + 1e-12) {
+    const ownShare = currentQuantityTotal > 0 ? ownQuantity / currentQuantityTotal : 0
+    currentNotionalUsd = currentNotionalUsd * ownShare
+  }
   const remaining = totalCeiling - currentNotionalUsd
   if (!(remaining > 0)) {
     throw Object.assign(

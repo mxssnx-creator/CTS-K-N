@@ -195,6 +195,37 @@ describe("live-order-service integration accounting", () => {
     expect(connector.placeOrder).toHaveBeenCalledTimes(1)
   })
 
+  test("a venue position larger than the system's own share occupies the ceiling only with that share (shared account)", async () => {
+    const { resolveLiveOrderExposureCeiling } = await import("@/lib/live-order-service")
+    const priorConfirmation = process.env.BINGX_VST_SOAK_CONFIRM
+    process.env.BINGX_VST_SOAK_CONFIRM = "I understand Prod-VST places authenticated orders with virtual funds"
+    const connector = {
+      getBalance: jest.fn(async () => ({ success: true, balance: 10_000, equity: 10_000 })),
+      getEnvironmentInfo: jest.fn(() => ({ environment: "prod-vst", baseUrl: "https://open-api-vst.bingx.com", isDemo: true, usesVirtualFunds: true })),
+      // 1.5 BTC on the venue (150 USD, the whole ceiling); this system holds 0.25 of it, the rest belongs to a stopped
+      // system on the same account
+      getPositions: jest.fn(async () => [{ symbol: "BTC-USDT", positionSide: "LONG", positionAmt: "1.5", entryPrice: "100" }]),
+      getLastPositionsSnapshotStatus: jest.fn(() => ({ ok: true, at: Date.now() })),
+    }
+    const input = (ownSlotQuantity?: number) => ({
+      connectionId: "bingx-vst-soak-shared", symbol: "BTCUSDT", side: "long" as const, positionDirection: "long" as const, quantity: 1, connector,
+      connection: { exchange: "bingx", is_testnet: "1" }, maxExecutionNotionalUsd: 150, safetyPayload: { confirmLiveOrderPlacement: true }, ownSlotQuantity,
+    })
+    try {
+      // without the own quantity: the whole venue position (150 USD) occupies the 150 USD ceiling: refused as before
+      await expect(resolveLiveOrderExposureCeiling(input(), { exchange: "bingx", is_testnet: "1" }, connector, "BTCUSDT", 100))
+        .rejects.toThrow("is already occupied")
+      // with it: only the own 0.25 (25 USD) counts, 125 USD remain
+      await expect(resolveLiveOrderExposureCeiling(input(0.25), { exchange: "bingx", is_testnet: "1" }, connector, "BTCUSDT", 100))
+        .resolves.toEqual({ maxNotionalUsd: 125, currentNotionalUsd: 25 })
+      // an own quantity equal to the venue position changes nothing
+      await expect(resolveLiveOrderExposureCeiling(input(1.5), { exchange: "bingx", is_testnet: "1" }, connector, "BTCUSDT", 100))
+        .rejects.toThrow("is already occupied")
+    } finally {
+      if (priorConfirmation === undefined) delete process.env.BINGX_VST_SOAK_CONFIRM
+      else process.env.BINGX_VST_SOAK_CONFIRM = priorConfirmation
+    }
+  })
   test("aggregates every authoritative venue row before applying the remaining exposure ceiling", async () => {
     const { resolveLiveOrderExposureCeiling } = await import("@/lib/live-order-service")
     const priorConfirmation = process.env.BINGX_VST_SOAK_CONFIRM

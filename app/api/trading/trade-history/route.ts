@@ -1,4 +1,5 @@
 import { readResultLedger, tradeHistoryFromLedger } from "@/lib/results/ledger"
+import { unsettledBreakdown } from "@/lib/results/response"
 import { NextResponse, type NextRequest } from "next/server"
 import { createHash } from "node:crypto"
 import { exchangeConnectorFactory } from "@/lib/exchange-connectors/factory"
@@ -705,7 +706,12 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
       ? ledgerHistory.settled
       : rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)) as any[]
     const summary = ledgerHistory
-      ? { ...summarizeTradeHistory(ledgerHistory.settled as any), accountingPending: ledgerHistory.pending }
+      ? {
+          ...summarizeTradeHistory(ledgerHistory.settled as any),
+          accountingPending: ledgerHistory.pending,
+          // why the pending ones have no value (closed by another system, gone at reconciliation, no value stored)
+          accountingPendingByReason: unsettledBreakdown(resultLedger!.entries).byReason,
+        }
       : { ...summarizeTradeHistory(resolvedOwnRows), accountingPending: rows.filter((row) => (row as any).accountingPending).length }
     // Table paging and analytics are deliberately independent. The durable
     // close index has no row ceiling; the compact time index supplies the

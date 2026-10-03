@@ -118,6 +118,16 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
   const recentWinRate = stats.last_50_win_rate ?? stats.last_25_win_rate
   const settledClosed = stats.settled_closed_positions ?? stats.closed_positions
   const accountingPending = stats.accounting_pending ?? 0
+  const pendingByReason: Record<string, number> = (stats as any).accounting_pending_by_reason || {}
+  const pendingReasonLabel: Record<string, string> = {
+    exchange_externally_closed: "closed by another system",
+    exchange_reconciliation: "gone at reconciliation",
+    no_value: "no value stored",
+  }
+  const pendingBreakdown = Object.entries(pendingByReason)
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, count]) => `${count} ${pendingReasonLabel[reason] || reason}`)
+    .join(", ")
   const profitFactor = stats.profit_factor
   const profitFactorInfinite = stats.profit_factor_infinite === true
 
@@ -155,7 +165,7 @@ export function PnLDashboard({ connectionId }: { connectionId?: string | null })
             {profitFactorInfinite ? "∞" : profitFactor === null ? "—" : profitFactor.toFixed(2)}
           </p>
           <p className="text-xs text-muted-foreground">
-            Settled wins/losses only; {accountingPending} awaiting venue accounting.
+            Settled wins/losses only; {accountingPending} without a settled value{pendingBreakdown ? ` (${pendingBreakdown})` : ""}.
           </p>
         </div>
 
