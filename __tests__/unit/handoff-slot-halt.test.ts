@@ -9,10 +9,13 @@ describe("a hand-off in progress is a short slot hold, not a 24 h halt (X02: 20 
     expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_shared_stopLoss_missing", "owned_shared_stopLoss_quantity_mismatch"])).toBe(true)
     expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_security_stop_incomplete", "owned_slot_security_quantity_mismatch"])).toBe(true)
     expect(isHandoffInProgressOnly(["owned_entry_confirmation_pending", "owned_control_scope_transition_pending", "owned_slot_controls_incomplete"])).toBe(true)
+    // the spellings of the 18 halts left after #548
+    expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_row_stop_loss_not_authoritatively_open", "owned_slot_row_take_profit_not_authoritatively_open", "owned_slot_orphan_controls_present"])).toBe(true)
+    expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_shared_control_owner_mismatch", "owned_slot_row_stop_loss_id_missing", "owned_slot_row_take_profit_id_missing"])).toBe(true)
   })
   test("without a pending marker, or with anything outside a hand-off, it stays genuine", () => {
     expect(isHandoffInProgressOnly(["owned_shared_stopLoss_missing"])).toBe(false)
-    expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_orphan_controls_present"])).toBe(false)
+    expect(isHandoffInProgressOnly(["owned_slot_orphan_controls_present"])).toBe(false) // no marker: a real orphan
     expect(isHandoffInProgressOnly(["owned_quantity_mutation_pending", "owned_slot_security_quantity_mismatch", "venue_quantity_exceeds_system"])).toBe(false)
     expect(isHandoffInProgressOnly([])).toBe(false)
     expect(isHandoffInProgressOnly(undefined)).toBe(false)

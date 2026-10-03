@@ -12862,8 +12862,9 @@ const HANDOFF_PENDING_VIOLATIONS: ReadonlySet<string> = new Set([
 /**
  * True when the violations describe a hand-off IN PROGRESS and nothing else: a pending marker plus the control-order gaps a
  * hand-off necessarily has until the shared controls are re-armed for the new quantity (shared / slot / row control missing or
- * sized for the old quantity, scope transition). Orphaned controls, venue/system quantity disagreements of the position
- * itself and every other violation are not part of a hand-off and keep the 24 h hold.
+ * sized for the old quantity, scope transition, control owner moving, the previous controls showing as orphans until their
+ * cancellation is confirmed). Without a pending marker none of these is a hand-off; venue/system quantity disagreements of
+ * the position itself and every other violation keep the 24 h hold.
  *
  * X02, 2026-10-03: 20 slot halts, every one set at pre_accumulation_admission with exactly this picture (mutation pending,
  * shared SL/TP missing or sized for the old quantity, security stop incomplete). They held for 24 h although the hand-off
@@ -12879,7 +12880,13 @@ function isHandoffInProgressOnly(violations: readonly string[] | undefined): boo
     || violation === "owned_slot_controls_incomplete"
     || /^owned_shared_(stopLoss|takeProfit)_(missing|quantity_mismatch|not_authoritatively_open)$/.test(violation)
     || /^owned_slot_security_(stop_incomplete|quantity_mismatch)$/.test(violation)
-    || /^owned_row_(stop_loss|take_profit)_(missing|quantity_mismatch|not_authoritatively_open)$/.test(violation))
+    || /^owned_row_(stop_loss|take_profit)_(missing|quantity_mismatch|not_authoritatively_open)$/.test(violation)
+    // the slot-level spellings the audit actually writes (X02, 2026-10-03: all 18 remaining halts):
+    // row control ids are cleared and the shared controls belong to another member until the hand-off re-arms them,
+    // and the previous controls show as orphans until their cancellation is confirmed
+    || /^owned_slot_row_(stop_loss|take_profit)_(missing|id_missing|quantity_mismatch|not_authoritatively_open)$/.test(violation)
+    || violation === "owned_slot_shared_control_owner_mismatch"
+    || violation === "owned_slot_orphan_controls_present")
 }
 /** Long enough to skip the failing cycle, short enough to re-audit on the next. */
 const TRANSIENT_ENTRY_HALT_TTL_SECONDS = 90
