@@ -82,7 +82,8 @@ export class IndicationStateManager {
     try {
       const settings = (await getSettings(`connection_settings:${this.connectionId}`)) || {}
       const max = (settings as any).maxStopLossRatio ?? (settings as any).max_stoploss_ratio ?? DEFAULT_MAX_STOP_LOSS_RATIO
-      return buildStopLossRatios(max)
+      const min = (settings as any).minStopLossRatio ?? (settings as any).min_stoploss_ratio
+      return buildStopLossRatios(max, min)
     } catch {
       return buildStopLossRatios(DEFAULT_MAX_STOP_LOSS_RATIO)
     }

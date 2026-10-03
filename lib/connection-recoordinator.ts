@@ -198,6 +198,7 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "minimalStepCount",
   "minStep",
   "maxStopLossRatio",
+  "minStopLossRatio",
   "max_stoploss_ratio",
   "stageMinPosCountBase",
   "stageMinPosCountMain",

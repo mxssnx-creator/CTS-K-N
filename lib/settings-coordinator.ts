@@ -50,7 +50,7 @@ const PROGRESSION_RESTART_FIELDS = [
   "blockVolumeRatio", "blockProfitFactorRatio", "blockIncrementSteps", "blockMaxStack", "blockPauseCountRatio", "blockActiveRealEnabled", "blockActiveLiveEnabled", "blockRowLiveEnabled", "blockRowLiveVolumeRatio", "blockRowLiveProfitFactorRatio", "blockRowLiveIncrementSteps", "blockRowLiveMaxStack", "blockRowLivePauseCountRatio", "blockRowRealEvalPosCount",
   "dcaMaxSteps", "dcaStepVolumeMultipliers", "dcaStepDistancesPct",
   "dcaTakeProfitMode", "dcaBreakevenProfitPct", "dcaCooldownSeconds", "dcaMaxPositionVolumeRatio",
-  "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
+  "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "minStopLossRatio", "min_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
   "control_orders", "control_orders_enabled", "controlOrdersEnabled",
   "defaultCoordinationEnabled", "defaultCoordinationRanges",

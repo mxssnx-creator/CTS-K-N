@@ -3323,7 +3323,7 @@ describe("requested regression guardrails", () => {
     expect(slRange).toContain("STOP_LOSS_RATIO_MIN = 0.25")
     expect(slRange).toContain("STOP_LOSS_RATIO_MAX = 2.5")
     expect(slRange).toContain("STOP_LOSS_RATIO_STEP = 0.25")
-    expect(basePseudo).toContain("if (Number(config.slRatio) > maxStopLossRatio)")
+    expect(basePseudo).toContain("if (Number(config.slRatio) > maxStopLossRatio || Number(config.slRatio) < minStopLossRatio - 1e-9) return null")
     expect(indicationState).toContain("const slRatios = await this.getStopLossRatios()")
     expect(calculator).toContain("Math.floor((2.5 - 0.25) / 0.25) + 1")
   })

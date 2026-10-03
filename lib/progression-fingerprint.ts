@@ -19,7 +19,7 @@ export const progressionFingerprintFields = [
   "blockVolumeRatio", "blockProfitFactorRatio", "blockIncrementSteps", "blockMaxStack", "blockPauseCountRatio",
   "blockRowLiveEnabled", "blockRowLiveVolumeRatio", "blockRowLiveProfitFactorRatio", "blockRowLiveIncrementSteps", "blockRowLiveMaxStack", "blockRowLivePauseCountRatio",
   "blockRowRealEvalPosCount",
-  "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio",
+  "minimal_step_count", "minimalStepCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "minStopLossRatio", "min_stoploss_ratio",
   "prevPosWindow", "prevPosMinCount", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
   "live_volume_factor", "preset_volume_factor", "signal_volume_factor",
   "volume_factor_live", "volume_factor_preset", "volume_factor_signal",
