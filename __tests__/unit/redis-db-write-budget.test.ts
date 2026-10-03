@@ -57,6 +57,9 @@ describe("redis-db write budget enforcement", () => {
   })
 
   it("skips optional indication snapshots instead of throwing", async () => {
+    // Both writes must fall into the same one-second window: a real clock crossing a second boundary between them let the
+    // second write through (flaked once in the server's deploy gate, 2026-10-03).
+    const clock = jest.spyOn(Date, "now").mockReturnValue(1_791_000_000_500)
     const redisDb = await loadRedisDb()
     const client = redisDb.getRedisClient()
     await client.hset("settings:system", { databaseLimitPerSecond: "1", databaseLimitPerMinute: "10" })
@@ -65,18 +68,24 @@ describe("redis-db write budget enforcement", () => {
     await expect(redisDb.saveIndication({ id: "optional-2" })).resolves.toBeUndefined()
     await expect(client.exists("indication:optional-1")).resolves.toBe(1)
     await expect(client.exists("indication:optional-2")).resolves.toBe(0)
+    clock.mockRestore()
   })
 
   it("checks per-minute caps as well as per-second caps", async () => {
+    // same reason, for the minute window: the two writes are one second apart inside one minute
+    let now = 1_791_000_030_000
+    const clock = jest.spyOn(Date, "now").mockImplementation(() => now)
     const redisDb = await loadRedisDb()
     const client = redisDb.getRedisClient()
     await client.hset("settings:system", { databaseLimitPerSecond: "100", databaseLimitPerMinute: "1" })
 
     await expect(redisDb.saveStrategy({ id: "minute-1" })).resolves.toBeUndefined()
+    now += 1_000
     await expect(redisDb.saveStrategy({ id: "minute-2" })).rejects.toMatchObject({
       name: "DatabaseWriteRateLimitError",
       operationName: "saveStrategy",
       scope: "minute",
     })
+    clock.mockRestore()
   })
 })
