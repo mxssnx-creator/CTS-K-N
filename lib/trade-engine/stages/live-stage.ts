@@ -12886,6 +12886,10 @@ function isHandoffInProgressOnly(violations: readonly string[] | undefined): boo
     // and the previous controls show as orphans until their cancellation is confirmed
     || /^owned_slot_row_(stop_loss|take_profit)_(missing|id_missing|quantity_mismatch|not_authoritatively_open)$/.test(violation)
     || violation === "owned_slot_shared_control_owner_mismatch"
+    || violation === "owned_shared_control_owner_mismatch"
+    // the security stop is replaced with the shared controls: its owner count and id move too (all 15 halts after #549)
+    || violation === "owned_slot_security_owner_count_mismatch"
+    || violation === "owned_slot_security_stop_not_authoritatively_open"
     || violation === "owned_slot_orphan_controls_present")
 }
 /** Long enough to skip the failing cycle, short enough to re-audit on the next. */

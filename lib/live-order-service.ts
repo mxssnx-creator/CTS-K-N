@@ -926,13 +926,20 @@ export async function resolveLiveOrderExposureCeiling(
     }
   }
 
-  // A venue position larger than what this system holds on the slot carries another system's quantity (shared account:
-  // X02, 2026-10-03, WLD short 70k notional of a stopped system against a ceiling of a few hundred USD, 184 refusals in
-  // 15 minutes). Only the own share occupies the ceiling; the excess is valued and ignored.
+  // A venue position larger than what this system holds on the slot carries another system's quantity (shared account).
+  // #547 let only the own share occupy the ceiling, which opened these slots to entries, and the venue reconciliation then
+  // assigned the foreign excess to the new own row: X02, 2026-10-03, NEARUSDT short, 3537 NEAR (16.6k USDT) on a row
+  // without any own entry order, closed by the system for -279 VST. A slot that holds another system's quantity takes no
+  // entry until it is clean; the ceiling keeps counting the whole position as before #547.
   const ownQuantity = Number(input.ownSlotQuantity)
   if (Number.isFinite(ownQuantity) && ownQuantity >= 0 && currentQuantityTotal > ownQuantity * (1 + 1e-6) + 1e-12) {
-    const ownShare = currentQuantityTotal > 0 ? ownQuantity / currentQuantityTotal : 0
-    currentNotionalUsd = currentNotionalUsd * ownShare
+    throw Object.assign(
+      new Error(
+        "Live entry refused: the venue slot holds " + currentQuantityTotal + " of which this system owns " + ownQuantity
+        + "; the rest belongs to another system on the account",
+      ),
+      { statusCode: 409, mode: "live_slot_foreign_quantity" },
+    )
   }
   const remaining = totalCeiling - currentNotionalUsd
   if (!(remaining > 0)) {
