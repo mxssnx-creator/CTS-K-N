@@ -146,6 +146,23 @@ describe("resolved unconfirmed entry holds are released", () => {
     expect(await sweepResolvedUnconfirmedEntryHolds(client, conn, [], NOW)).toEqual([])
     expect(client.store.size).toBe(2)
   })
+  test("an occupied slot whose rows are all fully protected releases its hold; any gap keeps it (X02: 9 holds, 21-23 h)", async () => {
+    const client = holds({
+      "SOLUSDT:short": { reason: "entry_protection_rollback_unconfirmed", ageMin: 120 },
+      "UNIUSDT:short": { reason: "entry_protection_rollback_unconfirmed", ageMin: 120 },
+      "KITEUSDT:short": { reason: "entry_protection_rollback_unconfirmed", ageMin: 120 },
+      "BCHUSDT:short": { reason: "entry_protection_rollback_unconfirmed", ageMin: 5 },
+    })
+    const protectedRow = { symbol: "SOLUSDT", direction: "short", executedQuantity: 0.05, status: "open", stopLossOrderId: "sl", takeProfitOrderId: "tp" }
+    const released = await sweepResolvedUnconfirmedEntryHolds(client, conn, [
+      protectedRow,
+      { ...protectedRow, symbol: "UNIUSDT", takeProfitOrderId: "" },                                   // TP missing
+      { ...protectedRow, symbol: "KITEUSDT", aggregateProtectionMutationRequestedAt: NOW - 60_000 },   // hand-off pending
+      { ...protectedRow, symbol: "BCHUSDT" },                                                         // too young
+    ], NOW)
+    expect(released).toEqual(["SOLUSDT|short"])
+    expect([...client.store.keys()].sort()).toEqual([holdKey("BCHUSDT:short"), holdKey("KITEUSDT:short"), holdKey("UNIUSDT:short")].sort())
+  })
   test("only this connection's holds, and unreadable records are left alone", async () => {
     const client = holds({ "AUSDT:long": { reason: "entry_fill_unconfirmed", ageMin: 600 } })
     client.store.set("live:entry-rollback-cooldown:bingx-x02:BUSDT:long", JSON.stringify({ at: NOW - 600 * 60_000, reason: "entry_fill_unconfirmed" }))

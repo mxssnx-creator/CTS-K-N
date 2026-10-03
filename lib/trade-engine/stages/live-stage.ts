@@ -1,3 +1,4 @@
+import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
 import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
   ADMISSION_COOLDOWN_FALLBACK_MS, ADMISSION_COOLDOWN_MAX_MS, ADMISSION_COOLDOWN_MIN_MS, deferredAdmissionResult,
@@ -12492,6 +12493,27 @@ export const UNCONFIRMED_HOLD_REASONS: ReadonlySet<string> = new Set([
   "entry_protection_rollback_unconfirmed",
   "entry_fill_unconfirmed",
 ])
+/**
+ * Every non-terminal row with quantity on the slot has its stop loss and take profit ids, nothing pending (no protection
+ * submission, quantity mutation or aggregate hand-off), and no recorded protection gap. Conservative: any doubt keeps the hold.
+ */
+export function slotRowsFullyProtected(rows: ReadonlyArray<Record<string, any>>, slotKey: string): boolean {
+  const members = (rows || []).filter((row) => {
+    if (!(Number(row?.executedQuantity || 0) > 0)) return false
+    if (SLOT_HALT_TERMINAL_STATUSES.has(String(row?.status || "").toLowerCase())) return false
+    const direction = resolveLivePositionDirection(row as any)
+    return Boolean(direction) && `${normalizeProtectionSlotSymbol(row.symbol)}|${direction}` === slotKey
+  })
+  if (members.length === 0) return true
+  return members.every((row) => {
+    if (!String(row?.stopLossOrderId || "").trim() || !String(row?.takeProfitOrderId || "").trim()) return false
+    if (row?.pendingSystemAction || row?.pendingQuantityMutation || row?.pendingReduction || row?.pendingAccumulation) return false
+    if (Number(row?.aggregateProtectionMutationRequestedAt || 0) > 0) return false
+    const pending = row?.pendingProtectionOrders
+    if (pending && typeof pending === "object" && Object.keys(pending).length > 0) return false
+    return true
+  })
+}
 export async function sweepResolvedUnconfirmedEntryHolds(
   client: any,
   connectionId: string,
@@ -12512,7 +12534,11 @@ export async function sweepResolvedUnconfirmedEntryHolds(
     try { record = JSON.parse(String(await client.get(key))) } catch { record = null }
     if (!record || !UNCONFIRMED_HOLD_REASONS.has(String(record.reason || ""))) continue
     if (now - Number(record.at || 0) < ENTRY_ROLLBACK_COOLDOWN_SECONDS * 1000) continue
-    if (occupied.has(`${normalizeProtectionSlotSymbol(symbol)}|${direction}`)) continue
+    const slotKey = `${normalizeProtectionSlotSymbol(symbol)}|${direction}`
+    // An occupied slot whose rows are all fully protected has nothing left to reconcile either: the rollback or fill is
+    // settled and what remains carries its own stop loss and take profit. X02, 2026-10-03: 9 of these holds (21-23 h left)
+    // sat on slots holding one protected own row each, so every re-qualifying entry on them was refused for a day.
+    if (occupied.has(slotKey) && !slotRowsFullyProtected(rows, slotKey)) continue
     await client.del(key).catch(() => 0)
     cleared.push(`${symbol.toUpperCase()}|${direction}`)
   }
@@ -21357,6 +21383,14 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
         const clearedHolds = await sweepResolvedUnconfirmedEntryHolds(client, connectionId, allOpenRaw as any[]).catch(() => [] as string[])
         if (clearedHolds.length > 0) {
           console.log(`${LOG_PREFIX} released ${clearedHolds.length} resolved unconfirmed entry hold(s) for ${connectionId}: ${clearedHolds.slice(0, 8).join(", ")}${clearedHolds.length > 8 ? " …" : ""}`)
+        }
+      }
+      // Own protection orders no open row carries any more (left behind by hand-offs) are cancelled every 5 minutes.
+      const staleGate = await client.set(`live:stale-control-sweep:${connectionId}`, String(Date.now()), { NX: true, EX: STALE_CONTROL_SWEEP_SECONDS }).catch(() => null)
+      if (staleGate && exchangeConnector) {
+        const swept = await sweepStaleOwnControlOrders(exchangeConnector, connectionId, allOpenRaw as any[]).catch(() => null)
+        if (swept && (swept.cancelled.length > 0 || swept.failed > 0)) {
+          console.log(`${LOG_PREFIX} cancelled ${swept.cancelled.length} stale own control order(s) for ${connectionId}${swept.failed ? ` (${swept.failed} failed)` : ""}: ${swept.cancelled.slice(0, 8).join(", ")}`)
         }
       }
     }
