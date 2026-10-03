@@ -396,7 +396,7 @@ export async function GET(
         if ([
           "symbol_count", "symbolCount", "leveragePercentage",
           "prevPosMinCount", "prevPosWindow", "mainEvalPosCount",
-          "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
+          "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount", "minStopLossRatio", "minStep", "maxStopLossRatio", "max_stoploss_ratio", "trailingMinStep",
           // Volume / live trading factors
           "live_volume_factor", "volume_factor_live", "preset_volume_factor",
           "signal_volume_factor", "volume_factor_signal",
@@ -453,6 +453,7 @@ export async function GET(
     const settings: Record<string, any> = normalizeUnlimitedPipeline({
       minStep: DEFAULT_BASE_MIN_STEP,
       maxStopLossRatio: 2.5,
+      minStopLossRatio: 0.25,
       trailingMinStep: DEFAULT_TRAILING_MIN_STEP,
       ...jsonSettings,
       ...hashSettings,
@@ -1163,7 +1164,7 @@ export async function PATCH(
     const flatKnobs: Record<string, string> = {}
     const knobKeys = [
       "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
-      "minStep", "maxStopLossRatio", "trailingMinStep", "posCountsVolumeRatio",
+      "minStep", "maxStopLossRatio", "minStopLossRatio", "trailingMinStep", "posCountsVolumeRatio",
       "strategyBlockMaterializationBatchSize",
     ] as const
     for (const k of knobKeys) {

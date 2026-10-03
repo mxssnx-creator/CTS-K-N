@@ -18,7 +18,7 @@ import type { PerformanceThresholds } from "./types"
 import { logProgressionEvent } from "./engine-progression-logs"
 import {
   DEFAULT_MAX_STOP_LOSS_RATIO,
-  normalizeMaxStopLossRatio,
+  normalizeMaxStopLossRatio, normalizeMinStopLossRatio, DEFAULT_MIN_STOP_LOSS_RATIO,
 } from "@/lib/stoploss-ratio-range"
 
 export type BaseIndicationType =
@@ -194,12 +194,13 @@ export class BasePseudoPositionManager {
   private async getOrCreateLegacyBasePositions(
     configs: BasePositionConfig[],
     maxStopLossRatio: number,
+    minStopLossRatio: number = DEFAULT_MIN_STOP_LOSS_RATIO,
   ): Promise<Array<string | null>> {
     const records = await this.readLegacyRecords()
     const now = new Date().toISOString()
     let changed = false
     const results = configs.map((config) => {
-      if (Number(config.slRatio) > maxStopLossRatio) return null
+      if (Number(config.slRatio) > maxStopLossRatio || Number(config.slRatio) < minStopLossRatio - 1e-9) return null
       const configKey = this.generateConfigKey(config)
       let record = records.find((candidate) => candidate.config_key === configKey)
       if (!record) {
@@ -263,6 +264,14 @@ export class BasePseudoPositionManager {
     return this.migrationReady
   }
 
+  private async getMinStopLossRatio(): Promise<number> {
+    try {
+      const settings = (await getSettings(`connection_settings:${this.connectionId}`)) || {}
+      return normalizeMinStopLossRatio((settings as any).minStopLossRatio ?? (settings as any).min_stoploss_ratio)
+    } catch {
+      return DEFAULT_MIN_STOP_LOSS_RATIO
+    }
+  }
   private async getMaxStopLossRatio(): Promise<number> {
     try {
       const settings = (await getSettings(`connection_settings:${this.connectionId}`)) || {}
@@ -331,9 +340,10 @@ export class BasePseudoPositionManager {
       try {
         await this.ensureMigrated()
         const maxStopLossRatio = await this.getMaxStopLossRatio()
+        const minStopLossRatio = await this.getMinStopLossRatio()
         const client = getRedisClient()
         if (!this.supportsHashRegistry(client)) {
-          return this.getOrCreateLegacyBasePositions(configs, maxStopLossRatio)
+          return this.getOrCreateLegacyBasePositions(configs, maxStopLossRatio, minStopLossRatio)
         }
         const configKeys = configs.map((config) => this.generateConfigKey(config))
         const read = client.multi()
@@ -344,7 +354,7 @@ export class BasePseudoPositionManager {
         const created: BasePositionRecord[] = []
 
         const results = configs.map((config, index) => {
-          if (Number(config.slRatio) > maxStopLossRatio) return null
+          if (Number(config.slRatio) > maxStopLossRatio || Number(config.slRatio) < minStopLossRatio - 1e-9) return null
           const configKey = configKeys[index]
           let record = parseRecord(unwrapPipelineValue(rawRows?.[index]))
           if (!record) {
