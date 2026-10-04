@@ -329,6 +329,7 @@ unit	__tests__/unit/pf-coordinate-and-block-volume-contract.test.ts
 unit	__tests__/unit/pipeline-cycle-outcome.test.ts
 unit	__tests__/unit/pnl-stats-real-window.test.ts
 unit	__tests__/unit/pnl-stats-route.test.ts
+unit	__tests__/unit/portfolio-risk-budget.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
 unit	__tests__/unit/position-book-stats.test.ts

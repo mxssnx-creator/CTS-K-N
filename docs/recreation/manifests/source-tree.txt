@@ -343,6 +343,7 @@ __tests__/unit/pf-coordinate-and-block-volume-contract.test.ts
 __tests__/unit/pipeline-cycle-outcome.test.ts
 __tests__/unit/pnl-stats-real-window.test.ts
 __tests__/unit/pnl-stats-route.test.ts
+__tests__/unit/portfolio-risk-budget.test.ts
 __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
 __tests__/unit/position-book-stats.test.ts
@@ -1553,6 +1554,7 @@ lib/performance-dashboard.ts
 lib/performance-profiler.ts
 lib/persistent-paths.ts
 lib/portfolio-analytics.ts
+lib/portfolio-risk-budget.ts
 lib/pos-count-live-target.ts
 lib/pos-count-volume-ratio.ts
 lib/pos-history.ts
