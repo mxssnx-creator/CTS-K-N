@@ -12505,14 +12505,25 @@ export function slotRowsFullyProtected(rows: ReadonlyArray<Record<string, any>>,
     return Boolean(direction) && `${normalizeProtectionSlotSymbol(row.symbol)}|${direction}` === slotKey
   })
   if (members.length === 0) return true
-  return members.every((row) => {
-    if (!String(row?.stopLossOrderId || "").trim() || !String(row?.takeProfitOrderId || "").trim()) return false
+  // Nothing may be pending on any member.
+  for (const row of members) {
     if (row?.pendingSystemAction || row?.pendingQuantityMutation || row?.pendingReduction || row?.pendingAccumulation) return false
     if (Number(row?.aggregateProtectionMutationRequestedAt || 0) > 0) return false
     const pending = row?.pendingProtectionOrders
     if (pending && typeof pending === "object" && Object.keys(pending).length > 0) return false
-    return true
-  })
+  }
+  // Shared protection: only the leading row carries the stop loss / take profit, armed for the whole slot; the other
+  // members have no ids of their own (X02, 2026-10-04: every held slot had one such member, so a per-row rule never
+  // released any of them). The slot is protected when the armed stop-loss and take-profit quantities of the rows that
+  // carry them cover the slot's whole quantity.
+  const slotQuantity = members.reduce((sum, row) => sum + Number(row.executedQuantity || 0), 0)
+  const armed = (leg: "stopLoss" | "takeProfit") => members.reduce((sum, row) => {
+    if (!String(row?.[`${leg}OrderId`] || "").trim()) return sum
+    const quantity = Number(row?.[`${leg}ArmedQuantity`] ?? row?.protectionArmedQuantity ?? row?.executedQuantity ?? 0)
+    return sum + (Number.isFinite(quantity) ? quantity : 0)
+  }, 0)
+  const tolerance = slotQuantity * 1e-6 + 1e-12
+  return armed("stopLoss") + tolerance >= slotQuantity && armed("takeProfit") + tolerance >= slotQuantity
 }
 export async function sweepResolvedUnconfirmedEntryHolds(
   client: any,

@@ -163,6 +163,20 @@ describe("resolved unconfirmed entry holds are released", () => {
     expect(released).toEqual(["SOLUSDT|short"])
     expect([...client.store.keys()].sort()).toEqual([holdKey("BCHUSDT:short"), holdKey("KITEUSDT:short"), holdKey("UNIUSDT:short")].sort())
   })
+  test("shared protection: a member without ids is covered by the leader's armed quantity (X02: every held slot)", async () => {
+    const client = holds({
+      "XRPUSDT:short": { reason: "entry_protection_rollback_unconfirmed", ageMin: 120 },
+      "AVAXUSDT:short": { reason: "entry_protection_rollback_unconfirmed", ageMin: 120 },
+    })
+    const leader = { symbol: "XRPUSDT", direction: "short", executedQuantity: 5, status: "open", stopLossOrderId: "sl", takeProfitOrderId: "tp", stopLossArmedQuantity: 8, takeProfitArmedQuantity: 8 }
+    const member = { symbol: "XRPUSDT", direction: "short", executedQuantity: 3, status: "open" }
+    const released = await sweepResolvedUnconfirmedEntryHolds(client, conn, [
+      leader, member,
+      // AVAX: the leader's controls cover only its own 5 of 8: not protected, the hold stays
+      { ...leader, symbol: "AVAXUSDT", stopLossArmedQuantity: 5, takeProfitArmedQuantity: 5 }, { ...member, symbol: "AVAXUSDT" },
+    ], NOW)
+    expect(released).toEqual(["XRPUSDT|short"])
+  })
   test("only this connection's holds, and unreadable records are left alone", async () => {
     const client = holds({ "AUSDT:long": { reason: "entry_fill_unconfirmed", ageMin: 600 } })
     client.store.set("live:entry-rollback-cooldown:bingx-x02:BUSDT:long", JSON.stringify({ at: NOW - 600 * 60_000, reason: "entry_fill_unconfirmed" }))
