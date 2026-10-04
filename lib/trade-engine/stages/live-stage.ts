@@ -1,3 +1,4 @@
+import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
 import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
@@ -15364,6 +15365,36 @@ export async function executeLivePosition(
       }
       computedVolume = cappedQuantity
       volumeNote = ` [hard-cap: ${cappedNotional.toFixed(2)} USD]`
+    }
+    // Account-wide stop-loss risk budget (lib/portfolio-risk-budget.ts): the possible stop losses of all open own positions
+    // plus this entry stay within a share of the balance, so a high volume factor cannot put the whole account at risk.
+    if (liveReadiness.canPlaceRealOrders) {
+      const budgetPercent = riskBudgetPercentSetting(
+        await (getRedisClient() as any).hget(`connection_settings:${connectionId}`, "portfolioRiskBudgetPercent").catch(() => null),
+      )
+      const balanceUsd = Number((volumeResult as any)?.balance ?? (volumeResult as any)?.accountBalance ?? (volumeResult as any)?.availableBalance ?? 0)
+      if (budgetPercent > 0 && balanceUsd > 0) {
+        const openRows = await getLivePositions(connectionId).catch(() => [] as LivePosition[])
+        const openRiskUsd = openStopRiskUsd(openRows as any[])
+        const stopPercent = rowStopPercent({ ...(livePosition as any), entryPrice: currentPrice })
+        const allowedNotional = maxNewNotionalForRiskBudget({ balanceUsd, budgetPercent, openRiskUsd, stopPercent })
+        const notional = positionNotionalUsd(livePosition, computedVolume, currentPrice)
+        if (notional > allowedNotional + 1e-8) {
+          const unitNotional = positionNotionalUsd(livePosition, 1, currentPrice)
+          const budgetQuantity = unitNotional > 0 && Number.isFinite(allowedNotional) ? roundQuantityDown(allowedNotional / unitNotional, liveInstrumentRules) : 0
+          if (!(budgetQuantity > 0) || budgetQuantity < liveInstrumentRules.minQuantity) {
+            livePosition.status = "error"
+            livePosition.statusReason = `Live entry refused: account stop-loss risk budget ${budgetPercent}% of ${balanceUsd.toFixed(2)} USD is used (open stop risk ${openRiskUsd.toFixed(2)} USD)`
+            pushStep(livePosition, "risk_budget", false, livePosition.statusReason)
+            await savePosition(livePosition)
+            await recordExecutionPreflightFailure()
+            if (liveOrderLockToken) await releaseLock(connectionId, realPosition.symbol, realPosition.direction + _lockDirSuffix, liveOrderLockToken).catch(() => {})
+            return livePosition
+          }
+          computedVolume = budgetQuantity
+          volumeNote += ` [risk-budget: ${positionNotionalUsd(livePosition, budgetQuantity, currentPrice).toFixed(2)} USD, open stop risk ${openRiskUsd.toFixed(2)} of ${(balanceUsd * budgetPercent / 100).toFixed(2)} USD]`
+        }
+      }
     }
 
     // Every entry retry is a new venue submission. Keep minimum-order and
