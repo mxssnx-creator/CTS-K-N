@@ -53,6 +53,7 @@ unit	__tests__/unit/admission-cooldown.test.ts
 unit	__tests__/unit/admission-scope-and-ddr-settings.test.ts
 unit	__tests__/unit/advanced-config-exhaustive.test.ts
 unit	__tests__/unit/aggregate-protection-coordination.test.ts
+unit	__tests__/unit/aggregate-sibling-close-grace.test.ts
 unit	__tests__/unit/api-stats-fetcher.test.ts
 unit	__tests__/unit/auth-runtime-secret.test.ts
 unit	__tests__/unit/authoritative-snapshot-cache.test.ts

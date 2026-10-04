@@ -17886,6 +17886,8 @@ async function settleControlOrdersBeforeSystemClose(
  * every logical SL/TP active system-side, and suppresses aggregate re-arming
  * until the requesting worker has had a chance to finish.
  */
+/** How long a settled hand-off waits for siblings' controls before the requester's own close proceeds. */
+const AGGREGATE_SIBLING_CONTROL_GRACE_MS = 2 * 60_000
 async function requestAggregateProtectionSlotMutation(
   connector: any,
   position: LivePosition,
@@ -17959,9 +17961,29 @@ async function requestAggregateProtectionSlotMutation(
     position.aggregateProtectionMutationSettledAt = activeRequester.aggregateProtectionMutationSettledAt
     position.aggregateProtectionMutationReason = activeRequester.aggregateProtectionMutationReason || reason
     queueAggregateProtectionFinalization(position.connectionId, slot)
+    // The requester's own controls are settled, but a sibling kept its own controls (it was never part of the settle pass,
+    // or re-armed itself). Waiting for the whole slot to be control-free then never ends: X02, 2026-10-04, UNIUSDT short,
+    // a system close (max_hold_time_exceeded) with its stop loss, take profit and security stop already cancelled, settled
+    // for 8 minutes and still "aggregate CTS controls are settling" - unprotected and never closed, because the sibling
+    // row (1 UNI) kept its armed controls. After a grace period the close proceeds for the requester's own quantity (a
+    // reduce-only order of exactly that quantity); the finaliser re-arms the remaining members as before.
+    const settledAt = Number(activeRequester.aggregateProtectionMutationSettledAt || 0)
+    const requesterControlsPresent = related.some((candidate) =>
+      candidate.id === position.id && (
+        Boolean(candidate.stopLossOrderId)
+        || Boolean(candidate.takeProfitOrderId)
+        || Boolean(candidate.securityStopOrderId)
+        || Boolean(candidate.pendingProtectionOrders?.stopLoss?.clientOrderId)
+        || Boolean(candidate.pendingProtectionOrders?.takeProfit?.clientOrderId)
+        || Boolean(candidate.pendingProtectionOrders?.securityStop?.clientOrderId)
+      ))
+    const siblingControlsOnly = aggregateControlsPresent
+      && !requesterControlsPresent
+      && settledAt > 0
+      && Date.now() - settledAt >= AGGREGATE_SIBLING_CONTROL_GRACE_MS
     if (
-      !aggregateControlsPresent
-      && Number(activeRequester.aggregateProtectionMutationSettledAt || 0) > 0
+      (!aggregateControlsPresent || siblingControlsOnly)
+      && settledAt > 0
     ) {
       // Adopt the authoritative post-settlement control snapshot before the
       // caller creates its durable quantity action.
