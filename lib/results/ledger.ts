@@ -329,6 +329,12 @@ export interface ResultBook {
   short: { trades: number; net: number }
   under60s: number
   under5m: number
+  /**
+   * Settled results per UTC clock hour of their close: how many hours had
+   * closes, how many of them ended net positive / negative, the positive
+   * share in percent and the settled closes per active hour.
+   */
+  hours: { active: number; profitable: number; losing: number; profitableShare: number | null; closesPerActiveHour: number | null }
 }
 
 export function computeResultBook(entries: readonly LedgerEntry[], window: { since?: number; until?: number } = {}): ResultBook {
@@ -344,9 +350,14 @@ export function computeResultBook(entries: readonly LedgerEntry[], window: { sin
   let best: number | null = null, worst: number | null = null
   const longB = { trades: 0, net: 0 }, shortB = { trades: 0, net: 0 }
   let u60 = 0, u5 = 0
+  const netByHour = new Map<number, number>()
   for (const e of settled) {
     const p = e.pnl as number
     net += p; fees += e.fees
+    if (e.closed > 0) {
+      const hour = Math.floor(e.closed / 3_600_000)
+      netByHour.set(hour, (netByHour.get(hour) || 0) + p)
+    }
     if (p > 0) { wins++; gp += p } else if (p < 0) { losses++; gl -= p } else flat++
     best = best === null ? p : Math.max(best, p)
     worst = worst === null ? p : Math.min(worst, p)
@@ -355,6 +366,8 @@ export function computeResultBook(entries: readonly LedgerEntry[], window: { sin
     if (e.closed > 0 && e.opened > 0) { const d = e.closed - e.opened; if (d < 60_000) u60++; if (d < 300_000) u5++ }
   }
   const decisive = wins + losses
+  const hourlyNets = [...netByHour.values()]
+  const profitableHours = hourlyNets.filter((value) => value > 0).length
   return {
     executed: rows.length,
     open: rows.length - closed.length,
@@ -372,6 +385,13 @@ export function computeResultBook(entries: readonly LedgerEntry[], window: { sin
     expectancy: settled.length > 0 ? net / settled.length : null,
     volumeUsd: closed.reduce((s, e) => s + e.notional, 0),
     long: longB, short: shortB, under60s: u60, under5m: u5,
+    hours: {
+      active: hourlyNets.length,
+      profitable: profitableHours,
+      losing: hourlyNets.filter((value) => value < 0).length,
+      profitableShare: hourlyNets.length > 0 ? (profitableHours / hourlyNets.length) * 100 : null,
+      closesPerActiveHour: hourlyNets.length > 0 ? settled.filter((e) => e.closed > 0).length / hourlyNets.length : null,
+    },
   }
 }
 

@@ -112,3 +112,23 @@ describe("real results per strategy Set", () => {
     expect(Object.keys(byBase)).toEqual(["BTCUSDT:direction:long"])
   })
 })
+
+describe("profitable hours", () => {
+  test("settled results are bucketed by the UTC hour of their close", async () => {
+    const { computeResultBook } = await import("@/lib/results/ledger")
+    const hour = 3_600_000
+    const entry = (id: string, pnl: number | null, closed: number) => ({
+      id, sym: "BTCUSDT", dir: "long", opened: closed - 60_000, closed, status: "closed", qty: 1, entry: 100,
+      notional: 100, lev: 1, sl: 0.6, tp: 1, pnl, fees: 0, settled: pnl !== null, pnlSource: "", reason: "",
+      type: "", lane: "", variant: "", intent: "main", slip: null, exit: 0, oid: id, coid: "", setKey: "",
+    })
+    const book = computeResultBook([
+      entry("a", 1, 10 * hour + 5), entry("b", -0.4, 10 * hour + 50), // hour 10: +0.6
+      entry("c", -1, 11 * hour + 1),                                    // hour 11: -1
+      entry("d", 0.2, 13 * hour + 9), entry("e", 0.3, 13 * hour + 99),  // hour 13: +0.5
+      entry("pending", null, 14 * hour),                               // unsettled: no hour
+    ] as any)
+    expect(book.hours).toEqual({ active: 3, profitable: 2, losing: 1, profitableShare: (2 / 3) * 100, closesPerActiveHour: 5 / 3 })
+    expect(computeResultBook([]).hours).toEqual({ active: 0, profitable: 0, losing: 0, profitableShare: null, closesPerActiveHour: null })
+  })
+})
