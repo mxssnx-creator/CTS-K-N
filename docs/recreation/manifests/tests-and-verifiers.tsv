@@ -79,6 +79,7 @@ unit	__tests__/unit/bingx-vst-read-pacer.test.ts
 unit	__tests__/unit/bingx-vst-runtime-routing.test.ts
 unit	__tests__/unit/bingx-vst-soak-audit.test.ts
 unit	__tests__/unit/bingx-vst-soak-plan.test.ts
+unit	__tests__/unit/bingx-x02-vst-baseline.test.ts
 unit	__tests__/unit/block-additive-lifecycle.test.ts
 unit	__tests__/unit/block-adjust-semantics.test.ts
 unit	__tests__/unit/block-count-state.test.ts
@@ -322,6 +323,7 @@ unit	__tests__/unit/navigation-contract.test.ts
 unit	__tests__/unit/no-fixed-sleeps-regression.test.ts
 unit	__tests__/unit/no-foreign-quantity-adoption.test.ts
 unit	__tests__/unit/normal-trailing-switch-matrix.test.ts
+unit	__tests__/unit/observation-report.test.ts
 unit	__tests__/unit/operator-defaults-20260929.test.ts
 unit	__tests__/unit/orchestrated-verifier-safety.test.ts
 unit	__tests__/unit/order-quantity.test.ts
@@ -358,6 +360,7 @@ unit	__tests__/unit/post-entry-audit-retry.test.ts
 unit	__tests__/unit/post-fill-snapshot-refresh.test.ts
 unit	__tests__/unit/prehistoric-bootstrap-handoff.test.ts
 unit	__tests__/unit/prehistoric-progress-tracker.test.ts
+unit	__tests__/unit/prehistoric-range-backfill.test.ts
 unit	__tests__/unit/prehistoric-runtime-stability.test.ts
 unit	__tests__/unit/preset-config-display-contract.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
@@ -383,6 +386,7 @@ unit	__tests__/unit/protection-ids-lost-update.test.ts
 unit	__tests__/unit/protection-slot-order-audit.test.ts
 unit	__tests__/unit/pseudo-position-close-idempotency.test.ts
 unit	__tests__/unit/pseudo-position-semantics.test.ts
+unit	__tests__/unit/public-market-data-connector.test.ts
 unit	__tests__/unit/pull-agent-install-script.test.ts
 unit	__tests__/unit/quickstart-bootstrap-state.test.ts
 unit	__tests__/unit/quickstart-change-detection.test.ts
