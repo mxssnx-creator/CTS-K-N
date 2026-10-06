@@ -94,9 +94,39 @@ export async function GET() {
     // Apply cache fix to all indication processors
     patchIndicationProcessorCaches(coordinator)
 
-    // Read global engine state once — operator intent lives here.
-    const engineHash: Record<string, string> =
-      (await client.hgetall("trade_engine:global").catch(() => null) as Record<string, string> | null) ?? {}
+    // Read global engine state once — operator intent lives here. A failed
+    // read is not an operator Stop: turning it into an empty hash read as
+    // intent "stopped", and the reconciliation below then stopped every
+    // running engine from a mere status poll. Report degraded instead.
+    let engineHashReadError = null as string | null
+    const engineHash: Record<string, string> = await client.hgetall("trade_engine:global").then(
+      (hash: Record<string, string> | null) => hash ?? {},
+      (error: unknown) => {
+        engineHashReadError = error instanceof Error ? error.message : String(error)
+        return {}
+      },
+    )
+    if (engineHashReadError !== null) {
+      const localEngineCount = coordinator?.getActiveEngineCount() || 0
+      return NextResponse.json(
+        {
+          success: false,
+          degraded: true,
+          degradedReason: `Operator intent (trade_engine:global) unreadable: ${engineHashReadError}`,
+          // Only this process's own runtime is known; nothing was reconciled.
+          running: localEngineCount > 0,
+          paused: false,
+          status: "degraded",
+          actualStatus: "degraded",
+          operatorIntent: "unknown",
+          workerAttached: localEngineCount > 0,
+          activeEngineCount: localEngineCount,
+          connections: [],
+          summary: { total: 0, running: 0, stopped: 0, totalTrades: 0, totalPositions: 0, errors: 1 },
+        },
+        { status: 503 },
+      )
+    }
 
     const operatorIntent = engineHash.operator_intent || engineHash.desired_status || engineHash.status || "stopped"
     const globalCoordinatorIntent = engineHash.desired_status || engineHash.status || operatorIntent
