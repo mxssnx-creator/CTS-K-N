@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { CheckCircle, AlertCircle, XCircle, Activity, RefreshCw, Play, Square, Clock, BarChart3 } from "lucide-react"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 interface EngineStatus {
   connectionId: string
@@ -41,8 +42,11 @@ interface ComponentHealth {
   status: "healthy" | "degraded" | "unhealthy"
   lastCycleDuration: number
   errorCount: number
-  successRate: number
+  /** null until the first pipeline cycle has been recorded. */
+  successRate: number | null
 }
+
+const STATUS_FETCH_CONCURRENCY = 4
 
 export function TradeEngineStatus() {
   const [enginesStatus, setEnginesStatus] = useState<EngineStatus[]>([])
@@ -71,51 +75,33 @@ export function TradeEngineStatus() {
           totalConnections: globalData.connections?.length || 0,
         })
 
-        // Get individual engine statuses
-        const engines: EngineStatus[] = []
-        for (const conn of globalData.connections || []) {
-          const connResponse = await fetch(`/api/trade-engine/${conn.id}/status`)
-          if (connResponse.ok) {
-            const connData = await connResponse.json()
-            engines.push({
-              connectionId: conn.id,
-              connectionName: conn.name,
-              status: connData.status || "idle",
-              health: connData.health || {
-                overall: "healthy",
-                components: {
-                  indications: {
-                    status: "healthy",
-                    lastCycleDuration: 0,
-                    errorCount: 0,
-                    successRate: 100,
-                  },
-                  strategies: {
-                    status: "healthy",
-                    lastCycleDuration: 0,
-                    errorCount: 0,
-                    successRate: 100,
-                  },
-                  realtime: {
-                    status: "healthy",
-                    lastCycleDuration: 0,
-                    errorCount: 0,
-                    successRate: 100,
-                  },
-                },
-              },
-              metrics: {
-                indicationCycleCount: connData.indication_cycle_count || 0,
-                strategyCycleCount: connData.strategy_cycle_count || 0,
-                realtimeCycleCount: connData.realtime_cycle_count || 0,
-                indicationAvgDuration: connData.indication_avg_duration_ms || 0,
-                strategyAvgDuration: connData.strategy_avg_duration_ms || 0,
-                realtimeAvgDuration: connData.realtime_avg_duration_ms || 0,
-              },
-            })
+        // Get individual engine statuses — a small bounded pool instead of
+        // one connection after another, so N engines cost ~N/4 round trips.
+        const connections: Array<{ id: string; name?: string }> = globalData.connections || []
+        const results = await mapWithConcurrency(connections, STATUS_FETCH_CONCURRENCY, async (conn) => {
+          const connResponse = await fetch(`/api/trade-engine/${encodeURIComponent(conn.id)}/status`).catch(() => null)
+          if (!connResponse?.ok) return null
+          const connData = await connResponse.json().catch(() => null)
+          // Without a health block the status read failed; skip the engine
+          // instead of rendering an invented "healthy 100 %".
+          if (!connData?.health) return null
+          const engine: EngineStatus = {
+            connectionId: conn.id,
+            connectionName: conn.name || connData.connectionName || conn.id,
+            status: connData.status || "idle",
+            health: connData.health,
+            metrics: {
+              indicationCycleCount: Number(connData.indication_cycle_count) || 0,
+              strategyCycleCount: Number(connData.strategy_cycle_count) || 0,
+              realtimeCycleCount: Number(connData.realtime_cycle_count) || 0,
+              indicationAvgDuration: Number(connData.indication_avg_duration_ms) || 0,
+              strategyAvgDuration: Number(connData.strategy_avg_duration_ms) || 0,
+              realtimeAvgDuration: Number(connData.realtime_avg_duration_ms) || 0,
+            },
           }
-        }
-        setEnginesStatus(engines)
+          return engine
+        })
+        setEnginesStatus(results.filter((engine): engine is EngineStatus => engine !== null))
       }
     } catch (error) {
       console.error("[v0] Failed to load trade engine status:", error)
@@ -125,12 +111,15 @@ export function TradeEngineStatus() {
     }
   }
 
+  // Per-engine Start re-enables exactly this connection through the same
+  // guarded toggle the dashboard uses. The global /start route ignores a
+  // connection id, so it could not restart an engine stopped below.
   const startEngine = async (connectionId: string) => {
     try {
-      const response = await fetch("/api/trade-engine/start", {
+      const response = await fetch(`/api/settings/connections/${encodeURIComponent(connectionId)}/toggle-dashboard`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ connectionId }),
+        body: JSON.stringify({ is_enabled_dashboard: true }),
       })
 
       if (response.ok) {
@@ -141,10 +130,14 @@ export function TradeEngineStatus() {
     }
   }
 
+  // There is no /api/trade-engine/<id>/stop route; the stop route takes the
+  // connection id in its body (without one it stops every engine).
   const stopEngine = async (connectionId: string) => {
     try {
-      const response = await fetch(`/api/trade-engine/${connectionId}/stop`, {
+      const response = await fetch("/api/trade-engine/stop", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ connectionId }),
       })
 
       if (response.ok) {
@@ -298,10 +291,13 @@ export function TradeEngineStatus() {
                 {Object.entries(engine.health.components).map(([name, component]) => (
                   <div key={name} className="flex items-center justify-between text-sm">
                     <span className="capitalize">{name}</span>
-                    <div className="flex items-center gap-2">
-                      <Progress value={component.successRate} className="w-24 h-2" />
+                    <div
+                      className="flex items-center gap-2"
+                      title={component.successRate === null ? "No pipeline cycle recorded yet" : "Shared pipeline cycle success rate"}
+                    >
+                      <Progress value={component.successRate ?? 0} className="w-24 h-2" />
                       <span className={`text-xs font-medium ${getHealthColor(component.status)}`}>
-                        {component.successRate.toFixed(0)}%
+                        {component.successRate === null ? "—" : `${component.successRate.toFixed(0)}%`}
                       </span>
                     </div>
                   </div>
