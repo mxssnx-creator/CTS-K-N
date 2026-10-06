@@ -1,0 +1,80 @@
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+/**
+ * scripts/build-observation-report.mjs turns an observation directory into
+ * report.html + summary.json. The figures it publishes (PF, drawdown,
+ * profitable hours, acceptance criteria) must be exact.
+ */
+describe("observation report", () => {
+  const HOUR = 3_600_000
+  const base = Date.UTC(2026, 9, 6, 10)
+  let dir = ""
+  let out = ""
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "obs-in-"))
+    out = mkdtempSync(join(tmpdir(), "obs-out-"))
+    const at = (ms: number) => new Date(base + ms).toISOString()
+    writeFileSync(join(dir, "run.json"), JSON.stringify({ connectionId: "bingx-x02", symbols: ["BTCUSDT", "ETHUSDT"], prehistoricHours: 24, startedAt: at(0) }))
+    writeFileSync(join(dir, "events.jsonl"), [
+      { at: at(0), type: "quickstart" },
+      { at: at(60_000), type: "prehistoric_complete", afterMs: 60_000, prehistoric: { complete: true, processed: 2, total: 2, profitFactor: 1.4, profitFactorCount: 30 } },
+    ].map((line) => JSON.stringify(line)).join("\n"))
+    const stage = (n: number) => ({ evaluated: n, passed: 1 })
+    const sample = (ms: number, realtimeMs: number, rssMb: number) => ({
+      at: at(ms), elapsedMs: ms, realtimeMs, rssMb, redis: { keys: 100, usedMb: 20 }, engineRunning: true,
+      http: { stats: { status: 200, ms: 300 }, overview: { status: 200, ms: 100 }, status: { status: 200, ms: 50 } },
+      stats: { stages: { base: stage(5), main: stage(4), real: stage(3), live: stage(2) }, open: { pseudo: 3, live: 1 } },
+    })
+    writeFileSync(join(dir, "samples.jsonl"), [sample(30_000, 0, 900), sample(90_000, 30_000, 1000), sample(150_000, 90_000, 1100)].map((line) => JSON.stringify(line)).join("\n"))
+    const trade = (id: string, symbol: string, pnl: number, closedMs: number, setKey: string) => ({
+      id, symbol, direction: "long", realizedPnl: pnl, grossPnl: pnl + 0.01, fees: 0.01,
+      openedAt: base + closedMs - 120_000, closedAt: base + closedMs, setKey,
+    })
+    writeFileSync(join(dir, "simulated-trades.json"), JSON.stringify([
+      trade("a", "BTCUSDT", 2, 5 * 60_000, "BTCUSDT:direction:long#block:2"),
+      trade("b", "BTCUSDT", -1, 10 * 60_000, "BTCUSDT:direction:long"),     // hour 10: +1
+      trade("c", "ETHUSDT", -3, HOUR + 60_000, "ETHUSDT:move:long"),        // hour 11: -3 (drawdown 4 from peak 2)
+      trade("d", "ETHUSDT", 1.5, 2 * HOUR + 60_000, "ETHUSDT:move:long#dca"), // hour 12: +1.5
+      { id: "open", symbol: "BTCUSDT", realizedPnl: null, closedAt: 0 },
+    ]))
+    writeFileSync(join(dir, "summary.json"), JSON.stringify({ realtimeObservedMs: 90_000 }))
+    writeFileSync(join(dir, "coverage-final.json"), JSON.stringify({ errors: 0, warnings: 1, findings: [{ severity: "warn", area: "x", message: "slow" }] }))
+    execFileSync(process.execPath, ["scripts/build-observation-report.mjs", dir, out, "--title", "Fixture run"], { cwd: process.cwd() })
+  })
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(out, { recursive: true, force: true })
+  })
+
+  test("paper figures are computed from closed trades only", () => {
+    const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"))
+    expect(summary.paper).toMatchObject({ trades: 4, wins: 2, losses: 2, activeHours: 3, profitableHours: 2 })
+    expect(summary.paper.net).toBeCloseTo(-0.5, 10)
+    expect(summary.paper.profitFactor).toBeCloseTo(3.5 / 4, 10)
+    expect(summary.paper.maxDrawdown).toBeCloseTo(4, 10)
+    expect(summary.paper.fees).toBeCloseTo(0.04, 10)
+    expect(summary.bySymbol.map((row: any) => [row.key, row.trades])).toEqual([["BTCUSDT", 2], ["ETHUSDT", 2]])
+    expect(summary.byType.map((row: any) => row.key).sort()).toEqual(["direction", "move"])
+  })
+
+  test("acceptance criteria pass for a healthy run", () => {
+    const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"))
+    expect(summary.criteria.filter((criterion: any) => !criterion.pass)).toEqual([])
+    expect(summary.passed).toBe(true)
+    expect(summary.rssGrowthMb).toBe(100)
+  })
+
+  test("the report is self-contained HTML with the verdict and checksums", () => {
+    const html = readFileSync(join(out, "report.html"), "utf8")
+    expect(html).toContain("PASS: 8/8 acceptance criteria met.")
+    expect(html).toContain("<svg")
+    expect(html).not.toMatch(/<script[^>]+src=/)
+    const sums = readFileSync(join(out, "SHA256SUMS"), "utf8")
+    expect(sums).toMatch(/^[0-9a-f]{64} {2}report\.html$/m)
+  })
+})
