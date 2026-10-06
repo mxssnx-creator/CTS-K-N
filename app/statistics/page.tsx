@@ -581,8 +581,9 @@ export default function StatisticsPage() {
                 // snake_case TradingPosition the AnalyticsEngine consumes.
                 const id = String(p.id || `${payload.id}:open:${p.symbol || "unknown"}`)
                 // Simulated rows have their own independent book (see the
-                // Simulated card); they never enter real statistics.
-                if (seen.has(id) || p.status === "closed" || p.simulated === true) continue
+                // Simulated card); they never enter real statistics. Strategy
+                // pseudo positions are paper evaluations, not open positions.
+                if (seen.has(id) || p.status === "closed" || p.simulated === true || p.source === "pseudo") continue
                 seen.add(id)
                 const entryPrice = Number(p.entryPrice) || 0
                 const currentPrice = Number(p.currentPrice) || 0
