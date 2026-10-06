@@ -7,7 +7,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Slider } from "@/components/ui/slider"
-import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { X, Save } from "lucide-react"
@@ -56,10 +55,9 @@ export function SettingsEditorDialog({
         </DialogHeader>
 
         <Tabs value={activeSection} onValueChange={setActiveSection} className="w-full">
-          <TabsList className="grid grid-cols-4 w-full bg-muted/50 p-1">
+          <TabsList className="grid grid-cols-3 w-full bg-muted/50 p-1">
             <TabsTrigger value="core">Core</TabsTrigger>
             <TabsTrigger value="data">Data</TabsTrigger>
-            <TabsTrigger value="engine">Engine</TabsTrigger>
             <TabsTrigger value="system">System</TabsTrigger>
           </TabsList>
 
@@ -86,24 +84,6 @@ export function SettingsEditorDialog({
                   <p className="text-xs text-muted-foreground">
                     Time between main engine execution cycles (100ms - 5s)
                   </p>
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-muted/50 rounded">
-                  <Label htmlFor="autostart">Auto-Start Trade Engines</Label>
-                  <Switch
-                    id="autostart"
-                    checked={settings.autoStartTradeEngines !== false}
-                    onCheckedChange={(checked) => onSettingChange("autoStartTradeEngines", checked)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-muted/50 rounded">
-                  <Label htmlFor="debug">Debug Logging</Label>
-                  <Switch
-                    id="debug"
-                    checked={settings.debugLogging !== false}
-                    onCheckedChange={(checked) => onSettingChange("debugLogging", checked)}
-                  />
                 </div>
               </CardContent>
             </Card>
@@ -144,69 +124,6 @@ export function SettingsEditorDialog({
                     placeholder="BTCUSDT"
                   />
                 </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="data-fetch">Data Fetch Interval (ms)</Label>
-                  <Slider
-                    min={1000}
-                    max={60000}
-                    step={1000}
-                    value={[settings.dataFetchIntervalMs || 5000]}
-                    onValueChange={([value]) => onSettingChange("dataFetchIntervalMs", value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    How often to fetch new market data (1s - 60s)
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Engine Settings */}
-          <TabsContent value="engine" className="space-y-6 mt-6">
-            <Card className="settings-card border-2">
-              <CardHeader>
-                <CardTitle className="text-lg">Trade Engine Configuration</CardTitle>
-                <CardDescription>Individual trade engine parameters</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Trade Engine Cycle Time (ms)</Label>
-                    <span className="text-sm font-medium">{settings.tradeEngineCycleMs || 500}ms</span>
-                  </div>
-                  <Slider
-                    min={100}
-                    max={3000}
-                    step={100}
-                    value={[settings.tradeEngineCycleMs || 500]}
-                    onValueChange={([value]) => onSettingChange("tradeEngineCycleMs", value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Time between trade evaluation cycles per engine
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="max-retries">Max Retries</Label>
-                  <Input
-                    id="max-retries"
-                    type="number"
-                    value={settings.maxRetries || 3}
-                    onChange={(e) => onSettingChange("maxRetries", parseInt(e.target.value))}
-                    min={1}
-                    max={10}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-muted/50 rounded">
-                  <Label htmlFor="live-trading">Enable Live Trading</Label>
-                  <Switch
-                    id="live-trading"
-                    checked={settings.enableLiveTrading !== false}
-                    onCheckedChange={(checked) => onSettingChange("enableLiveTrading", checked)}
-                  />
-                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -239,39 +156,6 @@ export function SettingsEditorDialog({
                       <SelectItem value="auto">Auto</SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="language">Language</Label>
-                  <Select value={settings.language || "en"} onValueChange={(value) => onSettingChange("language", value)}>
-                    <SelectTrigger id="language">
-                      <SelectValue placeholder="Select language" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="en">English</SelectItem>
-                      <SelectItem value="es">Spanish</SelectItem>
-                      <SelectItem value="fr">French</SelectItem>
-                      <SelectItem value="zh">Chinese</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-muted/50 rounded">
-                  <Label htmlFor="notifications">Enable Notifications</Label>
-                  <Switch
-                    id="notifications"
-                    checked={settings.enableNotifications !== false}
-                    onCheckedChange={(checked) => onSettingChange("enableNotifications", checked)}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-muted/50 rounded">
-                  <Label htmlFor="auto-save">Auto-Save</Label>
-                  <Switch
-                    id="auto-save"
-                    checked={settings.autoSaveSettings !== false}
-                    onCheckedChange={(checked) => onSettingChange("autoSaveSettings", checked)}
-                  />
                 </div>
               </CardContent>
             </Card>
