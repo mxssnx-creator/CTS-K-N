@@ -39,7 +39,7 @@ const __DBGC = (message: string): void => {
     console.warn(`[v0] [HistoricTiming] ${message}`)
   }
 }
-import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
+import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeSecondsFromMinuteBars } from "@/lib/market-data-loader"
 import {
   clearHistoricCalculationState,
   clearHistoricAggregateMarkers,
@@ -306,6 +306,20 @@ function historicAggregateMarkerMember(configId: string, scope: string): string 
     ? normalizedScope.slice(separator + 1)
     : normalizedScope
   return JSON.stringify([String(configId || ""), symbol])
+}
+
+/** A gap under two minutes at the range start is candle alignment, not missing data. */
+const PREHISTORIC_RANGE_BACKFILL_TOLERANCE_MS = 120_000
+
+function earliestCandleTimestamp(candles: readonly any[]): number {
+  let earliest = Number.POSITIVE_INFINITY
+  for (const candle of candles) {
+    const timestamp = typeof candle?.timestamp === "number"
+      ? candle.timestamp
+      : new Date(candle?.timestamp || candle?.time).getTime()
+    if (Number.isFinite(timestamp) && timestamp < earliest) earliest = timestamp
+  }
+  return earliest
 }
 
 export interface ProcessingResult {
@@ -613,6 +627,8 @@ export class ConfigSetProcessor {
     let errors = 0
     let totalIntervalsProcessed = 0
     let missingIntervalsLoaded = 0
+    // Latest first-candle time over all symbols: the range every symbol covers.
+    let latestCoverageStartMs = 0
 
     const tConfigsStart = Date.now()
     const [allIndicationConfigs, allStrategyConfigs] = await Promise.all([
@@ -906,6 +922,24 @@ export class ConfigSetProcessor {
           if (chunkCandles.length > candles.length) candles = chunkCandles
         }
 
+        // The stored history covers the stage window (about 120 minutes of
+        // seconds). A longer prehistoric range is completed from the venue's
+        // real one-minute bars resolved to seconds, so a 24 h range is
+        // evaluated over 24 h of data instead of the newest two hours.
+        if (marketType !== "forex") {
+          const rangeStartMs = effectiveStart.getTime()
+          const earliestMs = earliestCandleTimestamp(candles)
+          const gapEndMs = Math.min(Number.isFinite(earliestMs) ? earliestMs : effectiveEnd.getTime(), effectiveEnd.getTime())
+          if (gapEndMs - rangeStartMs > PREHISTORIC_RANGE_BACKFILL_TOLERANCE_MS) {
+            const older = await loadRangeSecondsFromMinuteBars(symbol, {
+              connectionId: this.connectionId,
+              startMs: rangeStartMs,
+              endMs: gapEndMs,
+            })
+            if (older.length > 0) candles = [...older, ...candles]
+          }
+        }
+
         // ── Fallback read switched from `:1m` → `:1s` (spec §7.3) ───
         //
         // The market-data loader was migrated to 1-second timeframe so
@@ -924,6 +958,10 @@ export class ConfigSetProcessor {
         }
         await assertCurrentSelection()
         __DBGC(`PS_sym_candles ${symbol} ${candles.length}`)
+        if (candles.length > 0) {
+          const coveredFromMs = earliestCandleTimestamp(candles)
+          if (Number.isFinite(coveredFromMs)) latestCoverageStartMs = Math.max(latestCoverageStartMs, coveredFromMs)
+        }
 
         if (candles.length === 0) {
           console.log(`[v0] [ConfigSetProcessor] ⚠ no candles for ${symbol} — skipping`)
@@ -1667,6 +1705,14 @@ export class ConfigSetProcessor {
         last_run_candles: String(candlesProcessed),
         last_run_indication_results: String(totalIndicationResults),
         last_run_strategy_positions: String(totalStrategyPositions),
+        // Data actually available for the range: hours from the latest
+        // per-symbol first candle to the range end (a data gap shows here).
+        ...(latestCoverageStartMs > 0 ? {
+          data_covered_from: new Date(Math.max(latestCoverageStartMs, effectiveStart.getTime())).toISOString(),
+          data_coverage_hours: String(Math.round(
+            (effectiveEnd.getTime() - Math.max(latestCoverageStartMs, effectiveStart.getTime())) / 36_000,
+          ) / 100),
+        } : {}),
       })
       await client.expire(`prehistoric:${this.connectionId}`, 86400)
     } catch (err) {

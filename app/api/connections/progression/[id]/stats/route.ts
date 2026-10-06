@@ -4579,6 +4579,11 @@ export async function GET(
         // processor, one frame per timeframe tick across the range).
         framesProcessed:        n(prehistoricMeta.intervalsProcessed),
         framesMissingLoaded:    n(prehistoricMeta.missingIntervalsLoaded),
+        // Hours of market data every symbol had for the range (null before
+        // the first completed run). Less than the range is a data gap.
+        rangeHours:             n(prehistoricHash.range_hours) || null,
+        dataCoverageHours:      prehistoricHash.data_coverage_hours ? n(prehistoricHash.data_coverage_hours) : null,
+        dataCoveredFrom:        prehistoricHash.data_covered_from || null,
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
         configWork: {
           completed: n(prehistoricMeta.configWorkUnitsCompleted),

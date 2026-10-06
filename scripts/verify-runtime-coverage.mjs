@@ -119,10 +119,13 @@ async function main() {
 
   // Stages: every stage of the basket must have evaluated something once the
   // historic phase is through; a 0 there is a processing gap, not a result.
+  // Only a stage whose basket snapshot covers every symbol is judged, so a
+  // stage that has not reported yet is not mistaken for one that evaluated 0.
   if (overview && REQUIRE_STAGES) {
     for (const stage of ["base", "main", "real", "live"]) {
-      const evaluated = num(pick(overview, `stages.${stage}.evaluated`, `${stage}.evaluated`, `stageCounts.${stage}.evaluated`))
-      if (Number.isFinite(evaluated) && evaluated <= 0) add("error", "functional-overview", `${stage} stage evaluated 0 Sets`)
+      const evaluated = num(pick(overview, `strategiesEvaluatedByStage.${stage}`, `stages.${stage}.evaluated`))
+      const snapshotComplete = pick(overview, `stageSnapshots.${stage}.complete`) === true
+      if (snapshotComplete && Number.isFinite(evaluated) && evaluated <= 0) add("error", "functional-overview", `${stage} stage evaluated 0 Sets`)
     }
   }
 
