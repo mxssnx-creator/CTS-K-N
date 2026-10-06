@@ -2192,7 +2192,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 108")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 109")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -4074,7 +4074,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 108")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 109")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")

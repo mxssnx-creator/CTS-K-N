@@ -1,6 +1,7 @@
 "use client"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Slider } from "@/components/ui/slider"
@@ -16,6 +17,19 @@ import { PRESET_INDICATOR_TYPES } from "@/lib/preset-optimizer"
 import { calculateBlockVolumeMultiplier } from "@/lib/block-count-state"
 import { parseStoredBoolean } from "@/lib/trailing-settings"
 import { liveConfigLossPolicy } from "@/lib/live-config-loss-policy"
+import {
+  DEFAULT_MIN_STOP_LOSS_PCT,
+  DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
+  PROTECTION_FLOOR_MAX_PCT,
+  PROTECTION_FLOOR_MIN_PCT,
+  normalizeProtectionFloorPct,
+} from "@/lib/protection-floors"
+import {
+  DEFAULT_LIVE_OUTCOME_MIN_CLOSES,
+  LIVE_OUTCOME_MIN_CLOSES_MAX,
+  LIVE_OUTCOME_MIN_CLOSES_MIN,
+  normalizeLiveOutcomeMinCloses,
+} from "@/lib/live-outcome-settings"
 import {
   MAIN_TRADE_BASE_PF_RATIO_MIN,
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
@@ -75,9 +89,12 @@ function PresetOptimizerSlider({
 export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps) {
   const [strategySubTab, setStrategySubTab] = useState("main")
   const [strategyMainSubTab, setStrategyMainSubTab] = useState("base")
-  const blockAdjustmentEnabled = parseStoredBoolean(settings.blockAdjustment, true)
+  // The engine reads variantBlockEnabled / variantDcaEnabled (strategy-coordinator);
+  // blockAdjustment / dcaAdjustment are legacy mirrors kept in step for older readers.
+  const blockAdjustmentEnabled = parseStoredBoolean(settings.variantBlockEnabled ?? settings.blockAdjustment, true)
   const axisEnabled = parseStoredBoolean(settings.axisEnabled, true)
-  const dcaAdjustmentEnabled = parseStoredBoolean(settings.dcaAdjustment, true)
+  // DCA is off unless enabled, exactly as the engine defaults it.
+  const dcaAdjustmentEnabled = parseStoredBoolean(settings.variantDcaEnabled ?? settings.dcaAdjustment, false)
   const dcaVolumes: number[] = Array.isArray(settings.dcaStepVolumeMultipliers)
     ? settings.dcaStepVolumeMultipliers
     : DEFAULT_DCA_PROFILE.stepVolumeMultipliers
@@ -97,9 +114,11 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
     current[index] = value
     handleSettingChange(key, current)
   }
-  const updatePresetBlockSetting = (presetKey: string, runtimeKey: string, value: number | boolean) => {
+  // Preset Block settings are the Preset engine's own (lib/preset-store.ts reads
+  // preset* first). Mirroring them into the Main runtime keys made every Preset
+  // edit change the Main engine's Block behaviour as well.
+  const updatePresetBlockSetting = (presetKey: string, value: number | boolean) => {
     handleSettingChange(presetKey, value)
-    handleSettingChange(runtimeKey, value)
   }
   const presetBlockEnabled = settings.presetBlockEnabled !== false
   const presetBlockVolumeRatio = Number(settings.presetBlockVolumeRatio ?? settings.blockVolumeRatio ?? 1)
@@ -129,6 +148,45 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
             value={[liveConfigLossPolicy(settings).window]}
             onValueChange={([window]) => handleSettingChange("liveConfigLossWindow", window)} />
           <p className="text-xs text-muted-foreground">Waits for the full window. A negative sum blocks new entries and additions for the exact Set. Existing protection and closing continue. Deactivated Sets remain listed in Statistics; changing the window does not clear their deactivation.</p>
+          <Separator />
+          <Label htmlFor="live-outcome-min-closes">
+            Judge a Set on exchange results from real close no. {normalizeLiveOutcomeMinCloses(settings.liveOutcomeMinCloses)} (default {DEFAULT_LIVE_OUTCOME_MIN_CLOSES})
+          </Label>
+          <Slider id="live-outcome-min-closes" aria-label="Real closes before a Set is judged on exchange results"
+            min={LIVE_OUTCOME_MIN_CLOSES_MIN} max={LIVE_OUTCOME_MIN_CLOSES_MAX} step={1}
+            value={[normalizeLiveOutcomeMinCloses(settings.liveOutcomeMinCloses)]}
+            onValueChange={([count]) => handleSettingChange("liveOutcomeMinCloses", count)} />
+          <p className="text-xs text-muted-foreground">While a connection trades live, every stage (Base, Main, Real, Block, Live) evaluates a Set with at least this many settled real closes on those exchange results only: venue fills, fees and PnL. Pseudo and paper results never enter that window. A Set with fewer real closes is still qualified by its simulated history, so new Sets can reach their first trade.</p>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Protection floors</CardTitle>
+          <CardDescription>Minimum distances for every Main, Preset, Signal and Direct stop. Tighter stops and trailing distances are raised to the floor; wider ones stay unchanged.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="min-stop-loss-pct">Minimum stop-loss (%)</Label>
+            <Input id="min-stop-loss-pct" type="number"
+              min={PROTECTION_FLOOR_MIN_PCT} max={PROTECTION_FLOOR_MAX_PCT} step={0.05}
+              value={settings.minStopLossPct ?? DEFAULT_MIN_STOP_LOSS_PCT}
+              onChange={(event) => handleSettingChange(
+                "minStopLossPct",
+                normalizeProtectionFloorPct(event.target.value, DEFAULT_MIN_STOP_LOSS_PCT),
+              )} />
+            <p className="text-xs text-muted-foreground">Default {DEFAULT_MIN_STOP_LOSS_PCT} %, range {PROTECTION_FLOOR_MIN_PCT}–{PROTECTION_FLOOR_MAX_PCT} %.</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="min-trailing-distance-pct">Minimum trailing-stop distance (%)</Label>
+            <Input id="min-trailing-distance-pct" type="number"
+              min={PROTECTION_FLOOR_MIN_PCT} max={PROTECTION_FLOOR_MAX_PCT} step={0.05}
+              value={settings.minTrailingStopDistancePct ?? DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT}
+              onChange={(event) => handleSettingChange(
+                "minTrailingStopDistancePct",
+                normalizeProtectionFloorPct(event.target.value, DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT),
+              )} />
+            <p className="text-xs text-muted-foreground">Default {DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT} %, range {PROTECTION_FLOOR_MIN_PCT}–{PROTECTION_FLOOR_MAX_PCT} %. The Signal lane keeps its own higher trailing floor.</p>
+          </div>
         </CardContent>
       </Card>
       <Tabs value={strategySubTab} onValueChange={setStrategySubTab}>
@@ -494,6 +552,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       <Switch
                         checked={blockAdjustmentEnabled}
                         onCheckedChange={(checked) => {
+                          handleSettingChange("variantBlockEnabled", checked)
                           handleSettingChange("blockAdjustment", checked)
                         }}
                       />
@@ -508,7 +567,10 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       </div>
                       <Switch
                         checked={dcaAdjustmentEnabled}
-                        onCheckedChange={(checked) => handleSettingChange("dcaAdjustment", checked)}
+                        onCheckedChange={(checked) => {
+                          handleSettingChange("variantDcaEnabled", checked)
+                          handleSettingChange("dcaAdjustment", checked)
+                        }}
                       />
                     </div>
                   </div>
@@ -779,9 +841,8 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                     <Switch
                       checked={presetBlockEnabled}
                       onCheckedChange={(checked) => {
-                        updatePresetBlockSetting("presetBlockEnabled", "variantBlockEnabled", checked)
+                        updatePresetBlockSetting("presetBlockEnabled", checked)
                         handleSettingChange("presetBlockStrategy", checked)
-                        handleSettingChange("blockAdjustment", checked)
                       }}
                     />
                   </div>
@@ -814,7 +875,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       min={0.25}
                       max={3}
                       step={0.05}
-                      onChange={(value) => updatePresetBlockSetting("presetBlockVolumeRatio", "blockVolumeRatio", value)}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockVolumeRatio", value)}
                     />
                     <PresetOptimizerSlider
                       label="ProfitFactor factor"
@@ -822,7 +883,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       min={0.2}
                       max={5}
                       step={0.1}
-                      onChange={(value) => updatePresetBlockSetting("presetBlockProfitFactorRatio", "blockProfitFactorRatio", value)}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockProfitFactorRatio", value)}
                     />
                     <PresetOptimizerSlider
                       label="Additive recovery steps"
@@ -830,7 +891,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       min={1}
                       max={2}
                       step={1}
-                      onChange={(value) => updatePresetBlockSetting("presetBlockIncrementSteps", "blockIncrementSteps", value)}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockIncrementSteps", value)}
                     />
                     <PresetOptimizerSlider
                       label="Independent Block counts"
@@ -838,7 +899,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       min={1}
                       max={6}
                       step={1}
-                      onChange={(value) => updatePresetBlockSetting("presetBlockMaxStack", "blockMaxStack", value)}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockMaxStack", value)}
                     />
                     <PresetOptimizerSlider
                       label="Post-profit pause ratio"
@@ -846,7 +907,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       min={1}
                       max={4}
                       step={0.5}
-                      onChange={(value) => updatePresetBlockSetting("presetBlockPauseCountRatio", "blockPauseCountRatio", value)}
+                      onChange={(value) => updatePresetBlockSetting("presetBlockPauseCountRatio", value)}
                     />
                   </div>
                   <div className="grid gap-3 md:grid-cols-2">
@@ -858,7 +919,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       <Switch
                         checked={Boolean(presetBlockActiveRealEnabled)}
                         disabled={!presetBlockEnabled}
-                        onCheckedChange={(checked) => updatePresetBlockSetting("presetBlockActiveRealEnabled", "blockActiveRealEnabled", checked)}
+                        onCheckedChange={(checked) => updatePresetBlockSetting("presetBlockActiveRealEnabled", checked)}
                       />
                     </div>
                     <div className="flex items-center justify-between rounded-lg border p-3">
@@ -869,7 +930,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
                       <Switch
                         checked={Boolean(presetBlockActiveLiveEnabled)}
                         disabled={!presetBlockEnabled}
-                        onCheckedChange={(checked) => updatePresetBlockSetting("presetBlockActiveLiveEnabled", "blockActiveLiveEnabled", checked)}
+                        onCheckedChange={(checked) => updatePresetBlockSetting("presetBlockActiveLiveEnabled", checked)}
                       />
                     </div>
                   </div>

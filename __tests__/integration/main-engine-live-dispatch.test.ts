@@ -765,11 +765,11 @@ describe("Main Trade Engine Real → Live dispatch", () => {
 
   test("preserves Signal source/risk lineage and arms correctly-sided SL/TP controls", async () => {
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
-    // Signal stops are floored at the operator minimum (0.5 %, #502): fixtures below it
+    // Signal stops are floored at the operator minimum (0.6 % since 2026-10-06; 0.5 % in #502): fixtures below it
     // cannot occur, so the lineage/protection assertions use the floor and its reward/risk.
     const signalRisk = {
-      stopLossPct: 0.5,
-      takeProfitPct: 1.05,
+      stopLossPct: 0.6,
+      takeProfitPct: 1.26,
       rewardRisk: 2.1,
       sourceIds: ["binance-usdm", "bybit-linear", "okx-swap"],
       agreement: 0.82,
@@ -799,10 +799,10 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       status: "open",
       indicationType: "signal",
       signalRisk,
-      stopLoss: 0.5,
-      takeProfit: 1.05,
-      assignedStopLoss: 0.5,
-      assignedTakeProfit: 1.05,
+      stopLoss: 0.6,
+      takeProfit: 1.26,
+      assignedStopLoss: 0.6,
+      assignedTakeProfit: 1.26,
     })
     expect(placeStopOrder).toHaveBeenCalledTimes(3)
     for (const call of placeStopOrder.mock.calls) {
@@ -817,8 +817,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     connection.live_trade_requested = "0"
     const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
     const signalRisk = {
-      stopLossPct: 0.5,
-      takeProfitPct: 1,
+      stopLossPct: 0.6,
+      takeProfitPct: 1.2,
       rewardRisk: 2,
       sourceIds: ["binance-usdm", "okx-swap"],
       agreement: 0.8,
@@ -867,7 +867,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(standard).toMatchObject({
       status: "simulated",
       executionLane: "default",
-      stopLoss: 0.5,
+      stopLoss: 0.6,
     })
     expect(trailing).toMatchObject({
       status: "simulated",
@@ -1076,8 +1076,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
         }]
       : [])
     const signalRisk = {
-      stopLossPct: 0.5,
-      takeProfitPct: 1,
+      stopLossPct: 0.6,
+      takeProfitPct: 1.2,
       rewardRisk: 2,
       sourceIds: ["binance-usdm", "okx-swap"],
       agreement: 0.9,
@@ -1344,9 +1344,9 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     } as any, recordingConnector)
 
     const signalRisk = {
-      stopLossPct: 0.5,
-      takeProfitPct: 0.9,
-      rewardRisk: 0.9 / 0.5,
+      stopLossPct: 0.6,
+      takeProfitPct: 1.08,
+      rewardRisk: 1.08 / 0.6,
       sourceIds: ["binance-usdm", "okx-swap"],
       agreement: 0.84,
       confidence: 0.87,
@@ -1386,8 +1386,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       id: parent.id,
       indicationType: "direction",
       executedQuantity: 0.02,
-      stopLoss: 0.5,
-      takeProfit: 0.9,
+      stopLoss: 0.6,
+      takeProfit: 1.08,
       signalRisk,
     })
     expect(accumulated.accumulatedSetKeys).toEqual(expect.arrayContaining([
@@ -1413,14 +1413,14 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       call[2] === 0.02 &&
       call[5]?.reduceOnly === true
     )).toBe(true)
-    expect(rearmed.find((call) => call[4] === "stop_loss")?.[3]).toBeCloseTo(99.5, 10)
-    expect(rearmed.find((call) => call[4] === "take_profit")?.[3]).toBeCloseTo(100.9, 10)
+    expect(rearmed.find((call) => call[4] === "stop_loss")?.[3]).toBeCloseTo(99.4, 10)
+    expect(rearmed.find((call) => call[4] === "take_profit")?.[3]).toBeCloseTo(101.08, 10)
     const securityRearmed = placeStopOrder.mock.calls
       .filter((call) => call[5]?.positionSide === "LONG")
       .filter((call) => call[5]?.clientOrderId?.includes("sec"))
       .at(-1)
     expect(securityRearmed?.[2]).toBeCloseTo(0.02, 10)
-    expect(securityRearmed?.[3]).toBeCloseTo(99.45, 10)
+    expect(securityRearmed?.[3]).toBeCloseTo(99.34, 10)
 
     // Reproduce a process restart where the legacy JSON mirror was not
     // available and only Redis' string-valued canonical hash survived.
@@ -1440,8 +1440,8 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       .find((position) => position.id === accumulated.id)
     expect(restored).toMatchObject({
       indicationType: "direction",
-      stopLoss: 0.5,
-      takeProfit: 0.9,
+      stopLoss: 0.6,
+      takeProfit: 1.08,
       signalRisk,
     })
     expect(restored?.blockLegs).toEqual([

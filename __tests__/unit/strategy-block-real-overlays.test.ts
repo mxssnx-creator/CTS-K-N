@@ -410,11 +410,13 @@ describe("Real-stage Block overlays", () => {
     expect(standard).toMatchObject({
       indicationType: "signal",
       direction: "long",
+      // The 0.6 % operator SL floor raises the configured 0.5 % stop; the
+      // target keeps the configured SL ratio 0.5 (1.0 -> 1.2).
       signalRisk: {
         sourceIds: signalRisk.sourceIds,
         configId: "tp1_00:slr0_50:standard",
-        takeProfitPct: 1,
-        stopLossPct: 0.5,
+        takeProfitPct: 1.2,
+        stopLossPct: 0.6,
       },
     })
     expect(standard?.trailingProfile).toBeUndefined()
@@ -424,8 +426,8 @@ describe("Real-stage Block overlays", () => {
       signalRisk: {
         sourceIds: signalRisk.sourceIds,
         configId: "tp1_00:slr0_50:trail0_80",
-        takeProfitPct: 1,
-        stopLossPct: 0.5,
+        takeProfitPct: 1.2,
+        stopLossPct: 0.6,
         trailing: true,
         trailingStopPct: 0.8,
       },
