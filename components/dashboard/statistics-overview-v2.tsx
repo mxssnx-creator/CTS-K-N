@@ -7,6 +7,7 @@ import { useExchange } from "@/lib/exchange-context"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
 import { mergeTradeHistoryRows } from "@/components/dashboard/trade-history-merge"
 import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
+import { RealResultsCard } from "@/components/dashboard/real-results-card"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
 import { normalizeTradeDirection } from "@/lib/trade-direction"
@@ -1815,6 +1816,13 @@ export function StatisticsOverviewV2() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ── REAL RESULTS (results ledger, settled exchange closes) ─────── */}
+        {connectionId && (
+          <div className="mt-3 pt-3 border-t border-border/40">
+            <RealResultsCard connectionId={connectionId} settlementAsset={stats.settlementAsset} />
           </div>
         )}
 

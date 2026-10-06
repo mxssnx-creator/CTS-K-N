@@ -150,3 +150,28 @@ describe("live position Set lineage", () => {
     expect(body.openPositions.live.resolution).toMatchObject({ lineage: 1, pseudo: 1, realFallback: 0, unresolved: 0 })
   })
 })
+
+describe("exchange-judged Sets per stage", () => {
+  test("each performance tier says how many Sets were judged on settled exchange results", async () => {
+    const id = "conn-a3"
+    hashes.clear(); strings.clear(); lists.clear(); sets.clear(); hdel.mockClear()
+    const published = String(Date.now() - 20_000)
+    hashes.set(`strategy_detail:${id}:real`, {
+      ...row("BTCUSDT", 60_000),
+      exchange_judged_sets: "4", exchange_pending_sets: "7", exchange_min_closes: "3", outcome_source_ts: published,
+    })
+    hashes.set(`strategy_detail:${id}:live`, {
+      exchange_judged_sets: "2", exchange_pending_sets: "1", exchange_min_closes: "3",
+      // Ten minutes old: the engine stopped judging live results.
+      outcome_source_ts: String(Date.now() - 10 * 60_000),
+      loss_gate_deactivated: "5",
+    })
+
+    const body = await stats(id)
+
+    expect(body.performanceTiers.real.outcomeSource).toMatchObject({ exchangeJudged: 4, exchangePending: 7, minCloses: 3, fresh: true })
+    expect(body.performanceTiers.live.outcomeSource).toMatchObject({ exchangeJudged: 2, fresh: false })
+    expect(body.performanceTiers.base.outcomeSource).toBeNull()
+    expect(body.performanceTiers.live.lossGateDeactivated).toBe(5)
+  })
+})

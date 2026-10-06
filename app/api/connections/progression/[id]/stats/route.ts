@@ -36,6 +36,7 @@ import { overlayVolatileProgressionStats } from "@/lib/progression-live-snapshot
 import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
+import { summarizeOutcomeSource } from "@/lib/outcome-source-summary"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
@@ -4043,6 +4044,22 @@ export async function GET(
         settledClosed:   liveClosedCount,
       },
     }
+    // Where each stage's Set results come from on a live connection: Sets
+    // judged only on settled exchange results vs. those still qualified by
+    // the general (paper/pseudo) ring. Null when the coordinator has not
+    // published it (paper mode, no real close yet).
+    const outcomeSourceNow = Date.now()
+    const outcomeSources = {
+      base: summarizeOutcomeSource(strategyDetailBaseHash, outcomeSourceNow),
+      main: summarizeOutcomeSource(strategyDetailMainHash, outcomeSourceNow),
+      real: summarizeOutcomeSource(strategyDetailRealHash, outcomeSourceNow),
+      live: summarizeOutcomeSource(strategyDetailLiveHash, outcomeSourceNow),
+    }
+    for (const stage of ["base", "main", "real", "live"] as const) {
+      ;(performanceTiers[stage] as Record<string, unknown>).outcomeSource = outcomeSources[stage]
+    }
+    ;(performanceTiers.live as Record<string, unknown>).lossGateDeactivated = n(strategyDetailLiveHash.loss_gate_deactivated)
+
     // Sharpe from live closed-archive returns
     if (liveClosedCount > 1) {
       const returns = closedPositionsForHistory.slice(0, 500)
@@ -5500,6 +5517,7 @@ export async function GET(
           totalRunning:    baseSpecPerf.aggregated.totalRunning,
           symbolCount:     baseSpecPerf.aggregated.symbolCount,
           isExecution:     false,
+          outcomeSource:   outcomeSources.base,
         },
         main: {
           avgProfitFactor: mainSpecPerf.aggregated.avgProfitFactor,
@@ -5514,6 +5532,7 @@ export async function GET(
           totalRunning:    mainSpecPerf.aggregated.totalRunning,
           symbolCount:     mainSpecPerf.aggregated.symbolCount,
           isExecution:     false,
+          outcomeSource:   outcomeSources.main,
         },
         real: {
           avgProfitFactor: realSpecPerf.aggregated.avgProfitFactor,
@@ -5528,6 +5547,7 @@ export async function GET(
           totalRunning:    realSpecPerf.aggregated.totalRunning,
           symbolCount:     realSpecPerf.aggregated.symbolCount,
           isExecution:     false,
+          outcomeSource:   outcomeSources.real,
         },
         live: {
           avgProfitFactor: liveProfitFactor,
@@ -5550,6 +5570,8 @@ export async function GET(
           isExecution:     true,
           fillRate:        ratioPercent(progHash.live_orders_filled_count, progHash.live_orders_placed_count),
           volumeUsdTotal:  Math.round(n(progHash.live_volume_usd_total) * 100) / 100,
+          outcomeSource:   outcomeSources.live,
+          lossGateDeactivated: n(strategyDetailLiveHash.loss_gate_deactivated),
         },
       },
 
