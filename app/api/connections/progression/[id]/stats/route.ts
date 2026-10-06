@@ -51,6 +51,7 @@ import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { resolveStageRowSnapshotFreshMs, sumFreshStageRowField, summarizeFreshStageEvaluation, summarizeStagePipelineCoverage } from "@/lib/stage-row-snapshot"
+import { collectPrunableStageRowFields } from "@/lib/functional-overview-stage-snapshot"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -1026,6 +1027,18 @@ function aggregateOrdersBySymbol(
     return merged ? merged as Record<string, any> : null
   }
 
+  /** Strategy Sets a live row executes, from its own lineage (as live-stage
+   *  records its entries): a combined pos-count order executes exactly its
+   *  member Sets, any other row its setKey plus accumulated members. */
+  function liveRowSetKeys(position: Record<string, any>): string[] {
+    const primary = String(position.setKey || "").trim()
+    const members = Array.isArray(position.accumulatedSetKeys)
+      ? position.accumulatedSetKeys.map((key: unknown) => String(key).trim()).filter(Boolean)
+      : []
+    const keys = position.combinedPosCounts && members.length > 0 ? members : [primary, ...members]
+    return [...new Set<string>(keys.filter(Boolean))]
+  }
+
   function effectiveRealizedPnl(pos: Record<string, any>): number {
     return resolveRealizedPnl(pos) ?? 0
   }
@@ -1620,6 +1633,9 @@ export async function GET(
       string,
       Array<{ setKey: string; count: number }>
     >()
+    // Open pseudo rows per Strategy Set (`strategy_set_key`), the namespace a
+    // live row's own lineage (`setKey`, `accumulatedSetKeys`) uses.
+    const pseudoStrategySetCounts = new Map<string, number>()
 
     try {
       const posIds = await scanRedisSetMembers(
@@ -1644,6 +1660,10 @@ export async function GET(
         // Skip anything that is not explicitly open.
         if (status !== "open") continue
         pseudoOpen++
+        const strategySetKey = String(hh.strategy_set_key || "").trim()
+        if (strategySetKey) {
+          pseudoStrategySetCounts.set(strategySetKey, (pseudoStrategySetCounts.get(strategySetKey) || 0) + 1)
+        }
 
         const setKey = String(hh.config_set_key || "").trim()
         if (setKey) {
@@ -1866,10 +1886,11 @@ export async function GET(
         updatedAt: number
       }>
       // `resolution` tells the UI exactly HOW the Set was identified:
-      //   • "pseudo"        — exact pseudo row exists for this symbol+dir
+      //   • "lineage"       — the row's own setKey / accumulatedSetKeys
+      //   • "pseudo"        — legacy row: pseudo row exists for this symbol+dir
       //   • "real-fallback" — no pseudo match; resolved via Real ledger
       //   • "unresolved"    — nothing upstream matched (stale or manual)
-      resolution: "pseudo" | "real-fallback" | "unresolved"
+      resolution: "lineage" | "pseudo" | "real-fallback" | "unresolved"
     }> = []
     try {
       const liveOpenIds = ((await client
@@ -1917,10 +1938,21 @@ export async function GET(
 
             const joinKey = `${sym}:${dir}`
             let setKeys: Array<{ setKey: string; count: number }> = []
-            let resolution: "pseudo" | "real-fallback" | "unresolved" = "unresolved"
+            let resolution: "lineage" | "pseudo" | "real-fallback" | "unresolved" = "unresolved"
 
+            // A live row records the Sets it executes. Matching symbol and
+            // direction against open pseudo rows attributed it to whichever
+            // Sets merely held that pair, so that join is kept only for
+            // legacy rows written before the row carried its lineage.
+            const lineageSetKeys = liveRowSetKeys(pos)
             const pseudoMatches = pseudoSymDirIdx.get(joinKey)
-            if (pseudoMatches && pseudoMatches.length > 0) {
+            if (lineageSetKeys.length > 0) {
+              setKeys = lineageSetKeys.map((setKey) => ({
+                setKey,
+                count: pseudoStrategySetCounts.get(setKey) ?? 0,
+              }))
+              resolution = "lineage"
+            } else if (pseudoMatches && pseudoMatches.length > 0) {
               // Rank by pseudo-position count (how many eval positions
               // the Set is holding) — count is the only meaningful
               // eval-stage metric, since USD notionals at this stage
@@ -2094,6 +2126,9 @@ export async function GET(
       : phaseCurrent === "live_trading"
         ? 0
         : pseudoOpen + realOpen
+    const liveResolvedViaLineage = livePositionSetRelations.filter(
+      (p) => p.resolution === "lineage",
+    ).length
     const liveResolvedViaPseudo = livePositionSetRelations.filter(
       (p) => p.resolution === "pseudo",
     ).length
@@ -3069,40 +3104,25 @@ export async function GET(
         // ── Cross-symbol aggregation from per-symbol `s:{symbol}:*` fields ─
         // Each `(symbol, cycle)` writes a `s:{symbol}:*` bundle. We sum
         // counters and weight-mean the averages across all FRESH symbols
-        // inside the basket-scaled freshness budget). Older symbols are queued
-        // for bounded HDEL pruning after twice that budget (minimum 30 min).
+        // inside the basket-scaled freshness budget). Only rows of symbols
+        // outside the active basket are queued for pruning, and only after
+        // the overview's 24 h retention.
         const FRESH_MS = stageRowSnapshotFreshMs
-        const PRUNE_MS = Math.max(30 * 60 * 1000, FRESH_MS * 2)
         const nowMs = Date.now()
         let symCreated = 0, symEntries = 0, symRunning = 0, symProgressing = 0
         let symEvaluated = 0
         let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
         let weightSum = 0, freshSymbols = 0
-        const staleFields: string[] = []
+        const staleFields = collectPrunableStageRowFields(dh, {
+          activeSymbols: activeStatsSymbolFilter,
+          now: nowMs,
+        })
         for (const k of Object.keys(dh)) {
           if (!k.startsWith("s:") || !k.endsWith(":ts")) continue
           // k shape: "s:{symbol}:ts" — extract symbol between first and last colon.
           const symbol = k.slice(2, -3)
           const ts = Number(dh[k] || "0") || 0
           const ageMs = nowMs - ts
-          if (ageMs > PRUNE_MS) {
-            // Collect every per-symbol field for HDEL. Cheap because
-            // these are stale samples already excluded from aggregation.
-            for (const f of [
-              "created", "entries", "running", "progressing", "passed", "evaluated",
-              "row_total", "row_valid", "row_overall", "row_active",
-              "row_active_exact", "row_mirrored", "row_total_open",
-              "row_valid_open", "row_overall_open",
-              "row_block_calculated_open",
-              "apf", "addt", "apps", "aper", "dispatch_selected",
-              "dispatch_suppressed", "qualified_before_materialization",
-              "materialization_ceiling", "materialization_truncated",
-              "materialization_active_preserved", "materialization_families_preserved", "ts",
-            ]) {
-              if (`s:${symbol}:${f}` in dh) staleFields.push(`s:${symbol}:${f}`)
-            }
-            continue
-          }
           if (ageMs > FRESH_MS || !(ts > 0) || !Number.isFinite(ts)) continue
           if (activeStatsSymbolFilter.size > 0 && !activeStatsSymbolFilter.has(symbol.toUpperCase())) continue
           freshSymbols += 1
@@ -3271,7 +3291,9 @@ export async function GET(
     )
 
     // ── Opportunistic stale per-symbol field pruning ─────────────────
-    // After aggregation, HDEL the per-symbol bundles older than 30 min.
+    // After aggregation, HDEL the bundles of symbols that left the basket
+    // more than 24 h ago (collectPrunableStageRowFields). Active-basket rows
+    // stay: the overview shows them for 24 h even while the engine pauses.
     // Done after the response is computed (and fire-and-forget) so it
     // never adds latency to /stats. Bounds hash size for long-running
     // connections that swap symbol baskets — without pruning the hash
@@ -5251,6 +5273,7 @@ export async function GET(
             openScanned:  liveOpenScanned,
             positions:    liveMirroring,
             resolution: {
+              lineage:      liveResolvedViaLineage,
               pseudo:       liveResolvedViaPseudo,
               realFallback: liveResolvedViaReal,
               unresolved:   liveUnresolvedCount,

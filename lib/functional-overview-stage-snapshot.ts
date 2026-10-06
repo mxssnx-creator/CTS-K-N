@@ -68,6 +68,40 @@ export function resolveOverviewActiveSymbols(
   return new Set()
 }
 
+/**
+ * Per-symbol stage-row fields a reader may delete. A symbol of the active
+ * basket is never pruned, and any other symbol only after the overview's
+ * retention: pruning after 30 minutes from a GET wiped rows the overview
+ * still showed whenever the engine paused or Historic ran long. All
+ * `s:<symbol>:*` fields of a pruned symbol go, not a fixed field list.
+ */
+export function collectPrunableStageRowFields(
+  raw: Record<string, string> | null | undefined,
+  options: { activeSymbols: ReadonlySet<string>; now?: number; maxRetainMs?: number },
+): string[] {
+  const now = options.now ?? Date.now()
+  const maxRetainMs = options.maxRetainMs ?? OVERVIEW_STAGE_ROW_MAX_RETAIN_MS
+  const fieldsBySymbol = new Map<string, string[]>()
+  for (const field of Object.keys(raw || {})) {
+    if (!field.startsWith("s:")) continue
+    const end = field.indexOf(":", 2)
+    if (end <= 2) continue
+    const symbol = field.slice(2, end)
+    const fields = fieldsBySymbol.get(symbol)
+    if (fields) fields.push(field)
+    else fieldsBySymbol.set(symbol, [field])
+  }
+  const prunable: string[] = []
+  for (const [symbol, fields] of fieldsBySymbol) {
+    if (options.activeSymbols.has(symbol.toUpperCase())) continue
+    const timestamp = Number(raw?.[`s:${symbol}:ts`])
+    // A row without a valid timestamp has an unknown age; the hash TTL bounds it.
+    if (!(timestamp > 0) || now - timestamp <= maxRetainMs) continue
+    prunable.push(...fields)
+  }
+  return prunable
+}
+
 export function emptyFunctionalOverviewStageSnapshot(): FunctionalOverviewStageSnapshot {
   return {
     created: 0,
