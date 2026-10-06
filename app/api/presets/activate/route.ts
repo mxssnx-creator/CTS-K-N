@@ -3,6 +3,7 @@ import { query } from "@/lib/db"
 import { getConnection, setSettings } from "@/lib/redis-db"
 import { getWebSocketManager } from "@/lib/websocket-server"
 import { SystemLogger } from "@/lib/system-logger"
+import { isTruthyFlag } from "@/lib/boolean-utils"
 import {
   PRESET_DEFAULT_INDICATION_RANGES,
   PRESET_DEFAULT_INDICATION_TYPES,
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
       indication_ranges: presetNumberList(preset.indication_ranges, PRESET_DEFAULT_INDICATION_RANGES),
       takeprofit_steps: preset.takeprofit_steps ? JSON.parse(preset.takeprofit_steps) : [...PRESET_DEFAULT_TAKE_PROFIT_STEPS],
       stoploss_ratios: preset.stoploss_ratios ? JSON.parse(preset.stoploss_ratios) : [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5],
-      trailing_enabled: preset.trailing_enabled === true,
+      trailing_enabled: isTruthyFlag(preset.trailing_enabled),
       trail_starts: preset.trail_starts ? JSON.parse(preset.trail_starts) : [0.3, 0.6, 1.0],
       trail_stops: preset.trail_stops ? JSON.parse(preset.trail_stops) : [0.1, 0.2, 0.3],
       strategy_types: presetStringList(preset.strategy_types, PRESET_DEFAULT_STRATEGY_TYPES),

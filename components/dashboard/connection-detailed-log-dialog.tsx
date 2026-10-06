@@ -23,7 +23,11 @@ import {
   LineChart
 } from "lucide-react"
 import type { ExchangeConnection } from "@/lib/types"
-import { firstFiniteMetric } from "@/lib/dashboard-metrics"
+import {
+  buildConnectionLogMetrics,
+  formatLogMetric,
+  type ConnectionLogMetrics,
+} from "./connection-log-metrics"
 
 interface LogEntry {
   id: number
@@ -34,34 +38,6 @@ interface LogEntry {
   data?: any
 }
 
-interface ConnectionMetrics {
-  cyclesCompleted: number
-  cycleSuccessRate: number
-  averageCycleTime: number
-  indicationsTotal: number
-  strategiesEvaluated: number
-  prehistoricCandles: number
-  symbolsLoaded: number
-  cpuUsage: number
-  memoryUsage: number
-  positionsGenerated: number
-  // ── Active-now snapshot (per cycle, NOT cumulative) ────────────
-  // Pulled from the same `/stats` `activeCounts` / `activeProgressing`
-  // blocks that drive `statistics-overview-v2`. Defaults to 0 when
-  // the engine hasn't yet emitted them so older deploys still
-  // render this dialog deterministically.
-  activeIndicationsTotal: number
-  activeStrategiesTotal:  number
-  // Per-type / per-stage breakdown for the dialog tooltip & Data tab.
-  activeIndDirection: number
-  activeIndMove:      number
-  activeIndActive:    number
-  activeIndOptimal:   number
-  activeStratBase:    number
-  activeStratMain:    number
-  activeStratReal:    number
-}
-
 interface ConnectionDetailedLogDialogProps {
   connection: ExchangeConnection
 }
@@ -70,9 +46,14 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
   const [open, setOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("overview")
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [metrics, setMetrics] = useState<ConnectionMetrics | null>(null)
+  const [metrics, setMetrics] = useState<ConnectionLogMetrics | null>(null)
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({})
   const [isLoading, setIsLoading] = useState(false)
+  const [timeline, setTimeline] = useState<{
+    historicPercent: number | null
+    indicationCycles: number | null
+    strategyCycles: number | null
+  }>({ historicPercent: null, indicationCycles: null, strategyCycles: null })
 
   const loadLogs = useCallback(async () => {
     if (!open) return
@@ -94,81 +75,15 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
       const metricsData = await metricsRes.json().catch(() => ({}))
       const statsData   = await statsRes.json().catch(()   => ({}))
 
-      // Active-now: prefer fast `activeCounts`, fall back to
-      // `activeProgressing.*.total.sets` for older API revs that emit
-      // only the per-name rollup. Non-finite values normalize to 0.
-      const ac = statsData?.activeCounts
-      const ap = statsData?.activeProgressing
-      const activeIndDirection = firstFiniteMetric(ac?.indications?.direction, ap?.indications?.direction?.sets)
-      const activeIndMove      = firstFiniteMetric(ac?.indications?.move, ap?.indications?.move?.sets)
-      const activeIndActive    = firstFiniteMetric(ac?.indications?.active, ap?.indications?.active?.sets)
-      const activeIndOptimal   = firstFiniteMetric(ac?.indications?.optimal, ap?.indications?.optimal?.sets)
-      const activeIndTotal     = firstFiniteMetric(
-        ac?.indications?.total,
-        ap?.indications?.total?.sets,
-        activeIndDirection + activeIndMove + activeIndActive + activeIndOptimal,
-      )
-      const activeStratBase    = firstFiniteMetric(ac?.strategies?.base, ap?.strategies?.base?.sets)
-      const activeStratMain    = firstFiniteMetric(ac?.strategies?.main, ap?.strategies?.main?.sets)
-      const activeStratReal    = firstFiniteMetric(ac?.strategies?.real, ap?.strategies?.real?.sets)
-      const activeStratTotal   = firstFiniteMetric(
-        ac?.strategies?.total,
-        ap?.strategies?.total?.sets,
-        activeStratReal,
-      )
-
-      setMetrics({
-        cyclesCompleted: firstFiniteMetric(
-          metricsData.state?.cyclesCompleted,
-          metricsData.progressionState?.cyclesCompleted,
-        ),
-        cycleSuccessRate: firstFiniteMetric(
-          metricsData.state?.cycleSuccessRate,
-          metricsData.progressionState?.cycleSuccessRate,
-        ),
-        averageCycleTime: firstFiniteMetric(
-          metricsData.metrics?.cycleTimeMs,
-          metricsData.progressionState?.cycleTimeMs,
-        ),
-        indicationsTotal: firstFiniteMetric(
-          metricsData.state?.indicationsCount,
-          metricsData.progressionState?.indicationsCount,
-          metricsData.metrics?.indicationsCount,
-          statsData?.realtime?.indicationsTotal,
-        ),
-        // Canonical "strategies evaluated" = Real-stage count only.
-        // Main contains related descendants of Base; Real is the canonical
-        // final evaluated output, so stage populations are not summed.
-        strategiesEvaluated: firstFiniteMetric(
-          metricsData.metrics?.totalStrategiesEvaluated,
-          metricsData.progressionState?.strategyEvaluatedReal,
-          statsData?.realtime?.strategiesTotal,
-        ),
-        prehistoricCandles: firstFiniteMetric(
-          metricsData.metrics?.prehistoricCandlesProcessed,
-          metricsData.progressionState?.prehistoricCandlesProcessed,
-        ),
-        symbolsLoaded: firstFiniteMetric(
-          metricsData.metrics?.prehistoricSymbolsProcessed,
-          metricsData.progressionState?.prehistoricSymbolsProcessedCount,
-        ),
-        cpuUsage: firstFiniteMetric(metricsData.monitoring?.cpu),
-        memoryUsage: firstFiniteMetric(metricsData.monitoring?.memory),
-        positionsGenerated: firstFiniteMetric(
-          metricsData.metrics?.intervalsProcessed,
-          metricsData.progressionState?.intervalsProcessed,
-        ),
-        activeIndicationsTotal: activeIndTotal,
-        activeStrategiesTotal:  activeStratTotal,
-        activeIndDirection,
-        activeIndMove,
-        activeIndActive,
-        activeIndOptimal,
-        activeStratBase,
-        activeStratMain,
-        activeStratReal,
+      setMetrics(buildConnectionLogMetrics(metricsData, statsData))
+      const percent = Number(metricsData?.progression?.prehistoricProgress?.percentComplete)
+      const indicationCycles = Number(metricsData?.metrics?.indicationCycleCount)
+      const strategyCycles = Number(metricsData?.metrics?.strategyCycleCount)
+      setTimeline({
+        historicPercent: Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.round(percent))) : null,
+        indicationCycles: Number.isFinite(indicationCycles) ? indicationCycles : null,
+        strategyCycles: Number.isFinite(strategyCycles) ? strategyCycles : null,
       })
-
       setLogs(logsData.logs?.slice(-200) || [])
     } catch (err) {
       console.warn("Failed to load connection logs:", err)
@@ -264,13 +179,14 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
               <Card className="p-3 space-y-1">
                 <div className="text-xs text-muted-foreground">Total Cycles</div>
-                <div className="text-xl font-bold text-foreground">{metrics?.cyclesCompleted || 0}</div>
-                <Progress value={Math.min(100, (metrics?.cyclesCompleted || 0) / 10)} className="h-1" />
+                <div className="text-xl font-bold text-foreground">{formatLogMetric(metrics?.cyclesCompleted)}</div>
               </Card>
               <Card className="p-3 space-y-1">
                 <div className="text-xs text-muted-foreground">Success Rate</div>
-                <div className="text-xl font-bold text-emerald-600">{metrics?.cycleSuccessRate?.toFixed(1) || 0}%</div>
-                <Progress value={metrics?.cycleSuccessRate || 0} className="h-1 bg-emerald-100" />
+                <div className="text-xl font-bold text-emerald-600">
+                  {metrics?.cycleSuccessRate == null ? "—" : `${metrics.cycleSuccessRate.toFixed(1)}%`}
+                </div>
+                <Progress value={metrics?.cycleSuccessRate ?? 0} className="h-1 bg-emerald-100" />
               </Card>
               {/*
                 Indications tile = active-now headline + cumulative
@@ -287,39 +203,42 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                   `M=${metrics?.activeIndMove || 0} ` +
                   `A=${metrics?.activeIndActive || 0} ` +
                   `O=${metrics?.activeIndOptimal || 0}\n` +
-                  `Cumulative since run start: ${metrics?.indicationsTotal || 0}`
+                  `Cumulative since run start: ${formatLogMetric(metrics?.indicationsTotal)}`
                 }
               >
                 <div className="text-xs text-muted-foreground">Indications (alive)</div>
                 <div className="text-xl font-bold text-violet-600 tabular-nums flex items-baseline gap-1">
                   {metrics?.activeIndicationsTotal || 0}
                   <span className="text-[10px] font-normal text-muted-foreground">
-                    / {metrics?.indicationsTotal || 0}
+                    / {formatLogMetric(metrics?.indicationsTotal)}
                   </span>
                 </div>
               </Card>
               <Card className="p-3 space-y-1">
-                <div className="text-xs text-muted-foreground">Avg Cycle Time</div>
-                <div className="text-xl font-bold text-purple-600">{metrics?.averageCycleTime || 0}ms</div>
+                <div className="text-xs text-muted-foreground">Last Cycle Time</div>
+                <div className="text-xl font-bold text-purple-600" title="Duration of the last sampled strategy cycle">
+                  {formatLogMetric(metrics?.lastCycleTimeMs, "ms")}
+                </div>
               </Card>
 
               <Card className="p-3 space-y-1">
                 <div className="text-xs text-muted-foreground">Prehistoric Candles</div>
-                <div className="text-lg font-bold text-foreground/80">{metrics?.prehistoricCandles?.toLocaleString() || 0}</div>
+                <div className="text-lg font-bold text-foreground/80">{formatLogMetric(metrics?.prehistoricCandles)}</div>
               </Card>
               <Card className="p-3 space-y-1">
                 <div className="text-xs text-muted-foreground">Symbols Loaded</div>
-                <div className="text-lg font-bold text-foreground/80">{metrics?.symbolsLoaded || 0}</div>
+                <div className="text-lg font-bold text-foreground/80">{formatLogMetric(metrics?.symbolsLoaded)}</div>
               </Card>
-              <Card className="p-3 space-y-1">
-                <div className="text-xs text-muted-foreground">CPU Usage</div>
-                <div className="text-lg font-bold text-foreground/80">{metrics?.cpuUsage || 0}%</div>
-                <Progress value={metrics?.cpuUsage || 0} className="h-1" />
+              {/* Process-wide figures: one Node process serves every connection. */}
+              <Card className="p-3 space-y-1" title="CPU of the app process that runs the engines of all connections">
+                <div className="text-xs text-muted-foreground">Process CPU</div>
+                <div className="text-lg font-bold text-foreground/80">{formatLogMetric(metrics?.processCpuPercent, "%")}</div>
+                <Progress value={metrics?.processCpuPercent ?? 0} className="h-1" />
               </Card>
-              <Card className="p-3 space-y-1">
-                <div className="text-xs text-muted-foreground">Memory Usage</div>
-                <div className="text-lg font-bold text-foreground/80">{metrics?.memoryUsage || 0}%</div>
-                <Progress value={metrics?.memoryUsage || 0} className="h-1" />
+              <Card className="p-3 space-y-1" title="Resident memory of the app process relative to its memory limit">
+                <div className="text-xs text-muted-foreground">Process Memory</div>
+                <div className="text-lg font-bold text-foreground/80">{formatLogMetric(metrics?.processMemoryPercent, "%")}</div>
+                <Progress value={metrics?.processMemoryPercent ?? 0} className="h-1" />
               </Card>
             </div>
 
@@ -385,8 +304,9 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
               <Card className="p-3 space-y-2">
                 <h5 className="text-xs font-semibold text-foreground/80">Prehistoric Data</h5>
                 <div className="text-xs space-y-1">
-                  <div className="flex justify-between"><span className="text-muted-foreground">Candles Processed</span><span>{metrics?.prehistoricCandles?.toLocaleString() || 0}</span></div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">Symbols Loaded</span><span>{metrics?.symbolsLoaded || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Candles Processed</span><span>{formatLogMetric(metrics?.prehistoricCandles)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Symbols Loaded</span><span>{formatLogMetric(metrics?.symbolsLoaded)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Intervals Processed</span><span>{formatLogMetric(metrics?.historicIntervals)}</span></div>
                 </div>
               </Card>
               {/*
@@ -400,7 +320,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
               <Card className="p-3 space-y-2">
                 <h5 className="text-xs font-semibold text-foreground/80">Indications</h5>
                 <div className="text-xs space-y-1">
-                  <div className="flex justify-between"><span className="text-muted-foreground">Total Generated</span><span className="tabular-nums">{metrics?.indicationsTotal || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Total Generated</span><span className="tabular-nums">{formatLogMetric(metrics?.indicationsTotal)}</span></div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Active Now</span>
                     <span className="tabular-nums font-semibold text-violet-700">
@@ -421,7 +341,7 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
               <Card className="p-3 space-y-2">
                 <h5 className="text-xs font-semibold text-foreground/80">Strategies</h5>
                 <div className="text-xs space-y-1">
-                  <div className="flex justify-between"><span className="text-muted-foreground">Evaluated</span><span className="tabular-nums">{metrics?.strategiesEvaluated || 0}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Evaluated (Real input)</span><span className="tabular-nums">{formatLogMetric(metrics?.strategiesEvaluated)}</span></div>
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Active Now</span>
                     <span className="tabular-nums font-semibold text-amber-700">
@@ -436,7 +356,6 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
                       {metrics?.activeStratReal || 0}
                     </span>
                   </div>
-                  <div className="flex justify-between"><span className="text-muted-foreground">Positions Generated</span><span className="tabular-nums">{metrics?.positionsGenerated || 0}</span></div>
                 </div>
               </Card>
             </div>
@@ -448,20 +367,21 @@ export function ConnectionDetailedLogDialog({ connection }: ConnectionDetailedLo
               </h4>
               <div className="space-y-2 text-xs">
                 <div className="space-y-1">
-                  <div className="flex justify-between"><span>Engine Initialization</span><Badge variant="default">Completed</Badge></div>
-                  <Progress value={100} className="h-1.5" />
+                  <div className="flex justify-between">
+                    <span>Prehistoric Loading</span>
+                    <Badge variant={timeline.historicPercent === 100 ? "default" : "outline"}>
+                      {timeline.historicPercent === null ? "—" : `${timeline.historicPercent}%`}
+                    </Badge>
+                  </div>
+                  <Progress value={timeline.historicPercent ?? 0} className="h-1.5" />
                 </div>
-                <div className="space-y-1">
-                  <div className="flex justify-between"><span>Prehistoric Loading</span><Badge variant="default">{metrics?.prehistoricCandles ? "Completed" : "Running"}</Badge></div>
-                  <Progress value={metrics?.prehistoricCandles ? 100 : 65} className="h-1.5" />
+                <div className="flex justify-between">
+                  <span>Indication cycles</span>
+                  <span className="tabular-nums">{formatLogMetric(timeline.indicationCycles)}</span>
                 </div>
-                <div className="space-y-1">
-                  <div className="flex justify-between"><span>Indications Engine</span><Badge variant="default">Active</Badge></div>
-                  <Progress value={85} className="h-1.5" />
-                </div>
-                <div className="space-y-1">
-                  <div className="flex justify-between"><span>Strategy Processing</span><Badge variant="default">Active</Badge></div>
-                  <Progress value={72} className="h-1.5" />
+                <div className="flex justify-between">
+                  <span>Strategy cycles</span>
+                  <span className="tabular-nums">{formatLogMetric(timeline.strategyCycles)}</span>
                 </div>
               </div>
             </Card>

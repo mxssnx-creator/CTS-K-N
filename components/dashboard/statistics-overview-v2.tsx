@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useExchange } from "@/lib/exchange-context"
 import { TradeHistoryTable, type TradeHistoryRow } from "@/components/dashboard/trade-history-table"
+import { mergeTradeHistoryRows } from "@/components/dashboard/trade-history-merge"
 import { PerformanceTiers } from "@/components/dashboard/performance-tiers"
 import { useDashboardEvents } from "@/lib/dashboard-events"
 import { resolveEffectiveSecurityStop } from "@/lib/security-stop-projection"
@@ -686,17 +687,6 @@ export function StatisticsOverviewV2() {
   const lastHistoryClosedCountRef = useRef(0)
   const completeHistoryLoadInFlightRef = useRef(false)
 
-  const mergeHistoryRows = useCallback((previous: TradeHistoryRow[], incoming: TradeHistoryRow[]) => {
-    const byId = new Map<string, TradeHistoryRow>()
-    for (const row of [...previous, ...incoming]) {
-      if (!row) continue
-      const key = row.closeOrderId ? `close:${row.closeOrderId}` : `id:${row.id}`
-      const current = byId.get(key)
-      if (!current || Number(row.closedAt) >= Number(current.closedAt)) byId.set(key, row)
-    }
-    return [...byId.values()].sort((left, right) => Number(right.closedAt) - Number(left.closedAt))
-  }, [])
-
   const loadTradeHistory = useCallback(async (force = false, complete = false) => {
     if (!connectionId) return
     // An incremental refresh must not supersede (and thereby discard) the
@@ -744,12 +734,12 @@ export function StatisticsOverviewV2() {
           )
           if (requestSequence !== historyFetchSeqRef.current) return
           for (const page of pages) {
-            if (Array.isArray(page?.rows)) collected = mergeHistoryRows(collected, page.rows)
+            if (Array.isArray(page?.rows)) collected = mergeTradeHistoryRows(collected, page.rows)
           }
         }
         setTradeHistoryRows(collected)
       } else {
-        setTradeHistoryRows((previous) => mergeHistoryRows(previous, collected))
+        setTradeHistoryRows((previous) => mergeTradeHistoryRows(previous, collected))
       }
       setTradeHistoryLoaded(true)
     } catch {
@@ -758,7 +748,7 @@ export function StatisticsOverviewV2() {
     } finally {
       if (complete && requestSequence === historyFetchSeqRef.current) completeHistoryLoadInFlightRef.current = false
     }
-  }, [connectionId, mergeHistoryRows, tradeHistoryMode])
+  }, [connectionId, tradeHistoryMode])
 
   useEffect(() => {
     setTradeHistoryRows([])

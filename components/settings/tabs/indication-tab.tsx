@@ -1054,21 +1054,6 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
               </div>
 
               <div className="space-y-2">
-                <Label>Async processing concurrency (1-100)</Label>
-                <Slider
-                  min={1}
-                  max={100}
-                  step={1}
-                  value={[settings.maxConcurrentIndications || 50]}
-                  onValueChange={([value]) => handleSettingChange("maxConcurrentIndications", value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Current: {settings.maxConcurrentIndications || 50} workers. All
-                  configurations remain queued and are processed.
-                </p>
-              </div>
-
-              <div className="space-y-2">
                 <Label>State Retention (hours) (1-168)</Label>
                 <Slider
                   min={1}

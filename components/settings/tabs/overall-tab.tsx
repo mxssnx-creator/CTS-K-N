@@ -472,69 +472,11 @@ export function OverallTab({
               <div className="space-y-4">
                 <h3 className="text-lg font-semibold">Symbol Configuration</h3>
                 <p className="text-sm text-muted-foreground">
-                  Configure symbol selection and ordering from exchanges
+                  The dynamic symbol order and count are configured per connection (connection settings
+                  dialog); the global basket is the main symbols list below.
                 </p>
 
                 <div className="grid md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <Label>Symbol Order Type</Label>
-                    <Select
-                      value={settings.symbolOrderType || "volatility_1h"}
-                      onValueChange={(value) => handleSettingChange("symbolOrderType", value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="volume24h">24h Volume (Highest First)</SelectItem>
-                        <SelectItem value="marketCap">Market Cap (Largest First)</SelectItem>
-                        <SelectItem value="priceChange24h">24h Price Change</SelectItem>
-                        <SelectItem value="volatility_1h">1h Volatility (Most Volatile)</SelectItem>
-                        <SelectItem value="volatility">24h Volatility</SelectItem>
-                        <SelectItem value="trades24h">24h Trades (Most Active)</SelectItem>
-                        <SelectItem value="alphabetical">Alphabetical (A-Z)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">Order symbols retrieved from exchange</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>Number of Symbols</Label>
-                      <span className="text-sm font-medium">{settings.numberOfSymbolsToSelect || 8}</span>
-                    </div>
-                    <Slider
-                      min={2}
-                      max={30}
-                      step={1}
-                      value={[settings.numberOfSymbolsToSelect || 8]}
-                      onValueChange={([value]) => handleSettingChange("numberOfSymbolsToSelect", value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Count of symbols to retrieve from exchange (2-30)
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Quote Asset</Label>
-                    <Select
-                      value={settings.quoteAsset || "USDT"}
-                      onValueChange={(value) => handleSettingChange("quoteAsset", value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="USDT">USDT</SelectItem>
-                        <SelectItem value="USDC">USDC</SelectItem>
-                        <SelectItem value="BUSD">BUSD</SelectItem>
-                        <SelectItem value="BTC">BTC</SelectItem>
-                        <SelectItem value="ETH">ETH</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">Quote currency for trading pairs</p>
-                  </div>
-
                   <div className="flex items-center justify-between p-3 border rounded-lg">
                     <div>
                       <Label>Use Main Symbols Only</Label>

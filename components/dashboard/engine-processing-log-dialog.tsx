@@ -10,6 +10,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Activity, BarChart2, Clock, Database, RefreshCw, StopCircle, Zap, Play } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
+import { gateInterval } from "@/lib/dashboard-poll-utils"
+
+const STATS_POLL_INTERVAL_MS = 5_000
 
 // ─── types ────────────────────────────────────────────────────────────────────
 
@@ -72,7 +75,7 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
   const [stats, setStats] = useState<ProcessingStats | null>(null)
   const [isPolling, setIsPolling] = useState(false)
   const [activeTab, setActiveTab] = useState("overview")
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const stopPollRef = useRef<(() => void) | null>(null)
   const logsEndRef = useRef<HTMLDivElement>(null)
   const inFlightRef = useRef(false)
   const connRef = useRef(activeConnectionId)
@@ -104,11 +107,6 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
         addLog("error", `Failed to fetch stats (HTTP ${statsRes.status})`)
         return
       }
-      const [monitorRes, connLogRes, engineRes] = await Promise.all([
-        fetch('/api/system/monitoring', { cache: 'no-store' }),
-        fetch(`/api/connections/progression/${activeConnectionId}/logs`, { cache: 'no-store' }),
-        fetch('/api/engine/verify', { cache: 'no-store' })
-      ])
 
       const s = await statsRes.json()
       // Drop responses for a connection the user already switched away from.
@@ -221,17 +219,17 @@ export function EngineProcessingLogDialog({ connectionId: propConnectionId }: { 
     if (!activeConnectionId) return
     setIsPolling(true)
     addLog("info", `Started monitoring: ${activeConnectionId}`)
-    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
+    stopPollRef.current?.()
     fetchStats()
-    pollIntervalRef.current = setInterval(fetchStats, 2000)
+    // Same cadence as the other stats panels; ticks are skipped while the tab
+    // is hidden and one catch-up read runs when it becomes visible again.
+    stopPollRef.current = gateInterval(() => void fetchStats(), STATS_POLL_INTERVAL_MS)
   }, [fetchStats, addLog, activeConnectionId])
 
   const stopPolling = useCallback(() => {
     setIsPolling(false)
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current)
-      pollIntervalRef.current = null
-    }
+    stopPollRef.current?.()
+    stopPollRef.current = null
     addLog("info", "Monitoring paused")
   }, [addLog])
 
