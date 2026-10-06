@@ -38,6 +38,7 @@ operator-tool	scripts/verify-recreation-manifests.mjs
 operator-tool	scripts/verify-redis-backup.mjs
 operator-tool	scripts/verify-redis-endpoint.mjs
 operator-tool	scripts/verify-redis-list-repack.mjs
+operator-tool	scripts/verify-runtime-coverage.mjs
 operator-tool	scripts/verify-signal-sources.ts
 operator-tool	scripts/verify-source-syntax.mjs
 operator-tool	scripts/verify-volatile-cleanup.mjs
@@ -242,6 +243,7 @@ unit	__tests__/unit/leverage-tier-retry.test.ts
 unit	__tests__/unit/leverage-units-and-liquidation-floor.test.ts
 unit	__tests__/unit/liquidation-safe-leverage.test.ts
 unit	__tests__/unit/live-bracket-geometry.test.ts
+unit	__tests__/unit/live-close-results-feedback.test.ts
 unit	__tests__/unit/live-config-performance.test.ts
 unit	__tests__/unit/live-counts-exclude-block.test.ts
 unit	__tests__/unit/live-dispatch-idle-reset.test.ts
@@ -268,6 +270,8 @@ unit	__tests__/unit/live-position-statistics.test.ts
 unit	__tests__/unit/live-position-stats-sources.test.ts
 unit	__tests__/unit/live-position-status.test.ts
 unit	__tests__/unit/live-positions-pnl.test.ts
+unit	__tests__/unit/live-results-adjustments.test.ts
+unit	__tests__/unit/live-set-outcomes.test.ts
 unit	__tests__/unit/live-slot-lookup-cache.test.ts
 unit	__tests__/unit/live-stage-control-barrier.test.ts
 unit	__tests__/unit/live-stage-halt-shortcircuit.test.ts
@@ -357,6 +361,7 @@ unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
 unit	__tests__/unit/protection-adopt-by-client-id.test.ts
+unit	__tests__/unit/protection-floor-migration.test.ts
 unit	__tests__/unit/protection-floors.test.ts
 unit	__tests__/unit/protection-ids-lost-update.test.ts
 unit	__tests__/unit/protection-slot-order-audit.test.ts

@@ -256,6 +256,7 @@ __tests__/unit/leverage-tier-retry.test.ts
 __tests__/unit/leverage-units-and-liquidation-floor.test.ts
 __tests__/unit/liquidation-safe-leverage.test.ts
 __tests__/unit/live-bracket-geometry.test.ts
+__tests__/unit/live-close-results-feedback.test.ts
 __tests__/unit/live-config-performance.test.ts
 __tests__/unit/live-counts-exclude-block.test.ts
 __tests__/unit/live-dispatch-idle-reset.test.ts
@@ -282,6 +283,8 @@ __tests__/unit/live-position-statistics.test.ts
 __tests__/unit/live-position-stats-sources.test.ts
 __tests__/unit/live-position-status.test.ts
 __tests__/unit/live-positions-pnl.test.ts
+__tests__/unit/live-results-adjustments.test.ts
+__tests__/unit/live-set-outcomes.test.ts
 __tests__/unit/live-slot-lookup-cache.test.ts
 __tests__/unit/live-stage-control-barrier.test.ts
 __tests__/unit/live-stage-halt-shortcircuit.test.ts
@@ -371,6 +374,7 @@ __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
 __tests__/unit/protection-adopt-by-client-id.test.ts
+__tests__/unit/protection-floor-migration.test.ts
 __tests__/unit/protection-floors.test.ts
 __tests__/unit/protection-ids-lost-update.test.ts
 __tests__/unit/protection-slot-order-audit.test.ts
@@ -1511,6 +1515,7 @@ lib/live-order-metrics-snapshot.ts
 lib/live-order-safety.ts
 lib/live-order-service.ts
 lib/live-order-smoke.ts
+lib/live-outcome-settings.ts
 lib/live-position-alt-index.ts
 lib/live-position-analytics-archive.ts
 lib/live-position-lifetime-summary.ts
@@ -1522,6 +1527,7 @@ lib/live-position-read-model.ts
 lib/live-position-source.ts
 lib/live-position-statistics.ts
 lib/live-position-status.ts
+lib/live-set-outcomes.ts
 lib/live-slot-lookup-cache.ts
 lib/live-trading-analytics.ts
 lib/load-test-framework.ts
@@ -1591,6 +1597,7 @@ lib/progression-limits-manager.ts
 lib/progression-live-snapshot.ts
 lib/progression-scope.ts
 lib/progression-state-manager.ts
+lib/protection-floor-migration.ts
 lib/protection-floors.ts
 lib/protection-slot-order-audit.ts
 lib/pseudo-position-costs.ts
@@ -1942,6 +1949,7 @@ scripts/verify-recreation-manifests.mjs
 scripts/verify-redis-backup.mjs
 scripts/verify-redis-endpoint.mjs
 scripts/verify-redis-list-repack.mjs
+scripts/verify-runtime-coverage.mjs
 scripts/verify-signal-sources.ts
 scripts/verify-source-syntax.mjs
 scripts/verify-stability.sh

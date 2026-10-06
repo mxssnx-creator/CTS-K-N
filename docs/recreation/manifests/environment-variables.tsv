@@ -14,7 +14,7 @@ AUDIT_HOURS	test-or-operator-tool	no	no	1	scripts/audit-live-results.ts
 AWS_LAMBDA_FUNCTION_NAME	platform-provided	no	no	2	lib/deployment-runtime.ts,lib/redis-persistence.ts
 BACKUP_PATH	application-runtime	no	yes	2	.env.example,lib/auto-backup.ts
 BASE_POSITION_SYMBOL_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
-BASE_URL	test-or-operator-tool	no	no	11	__tests__/unit/requested-regressions.test.ts,scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs,scripts/smoke-routes-test.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
+BASE_URL	test-or-operator-tool	no	no	12	__tests__/unit/requested-regressions.test.ts,scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs,scripts/smoke-routes-test.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs,scripts/verify-runtime-coverage.mjs
 BINGX_API_KEY	test-or-operator-tool	yes	yes	9	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/runtime-maintenance.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_API_SECRET	test-or-operator-tool	yes	yes	8	.env.example,__tests__/unit/bingx-vst-migration.test.ts,__tests__/unit/env-credential-loading.test.ts,__tests__/unit/main-live-trade-readiness.test.ts,__tests__/unit/x02-slot-protection-operator.test.ts,scripts/add-bingx-credentials.js,scripts/inject-bingx-creds.js,scripts/standalone-bingx-live-diagnostic.mjs
 BINGX_APIKEY	test-or-operator-tool	yes	no	1	scripts/standalone-bingx-live-diagnostic.mjs
@@ -67,8 +67,12 @@ CLOUDFLARE_WORKERS	application-runtime	no	no	1	lib/deployment-runtime.ts
 COMMON_INDICATION_BATCH_SIZE	application-runtime	no	no	1	lib/indication-sets-processor.ts
 COMMON_INDICATION_CALC_BATCH_SIZE	application-runtime	no	yes	3	.env.example,__tests__/unit/requested-regressions.test.ts,lib/indication-sets-processor.ts
 CONN_ID	test-or-operator-tool	no	no	3	scripts/bingx-comprehensive-test.mjs,scripts/diagnose-stats.mjs,scripts/init-engine-and-verify.mjs
+CONNECTION_ID	test-or-operator-tool	no	no	1	scripts/verify-runtime-coverage.mjs
 COREPACK_BIN	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
 COREPACK_HOME	test-or-operator-tool	no	no	1	scripts/build-next-with-trace-retry.mjs
+COVERAGE_REQUIRE_STAGES	test-or-operator-tool	no	no	1	scripts/verify-runtime-coverage.mjs
+COVERAGE_SLOW_MS	test-or-operator-tool	no	no	1	scripts/verify-runtime-coverage.mjs
+COVERAGE_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-runtime-coverage.mjs
 CRON_GENERATE_WORK_BUDGET_MS	application-runtime	no	no	1	app/api/cron/generate-indications/route.ts
 CRON_LIVE_DISPATCH	application-runtime	no	no	3	__tests__/unit/requested-regressions.test.ts,app/api/cron/generate-indications/route.ts,lib/trade-engine/shared-ind-strat-pipeline.ts
 CRON_PREHISTORIC_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-indications/route.ts
@@ -391,7 +395,7 @@ PATH	application-runtime	no	no	4	__tests__/unit/install-deployment-contract.test
 PIONEX_API_KEY	test-or-operator-tool	yes	yes	1	.env.example
 PIONEX_API_SECRET	test-or-operator-tool	yes	yes	1	.env.example
 POLL_MS	test-or-operator-tool	no	no	1	scripts/run-engine-probe.mjs
-PORT	application-runtime	no	no	19	app/api/settings/connections/route.ts,ops/server-access-dashboard/server/access-dashboard.mjs,scripts/direct-trade-processor.mjs,scripts/direct-trade-supervisor.mjs,scripts/kill-test-dev-port.mjs,scripts/logistics-test-suite.mjs,scripts/quickstart-live-trading.js,scripts/run-dev-preview-check.mjs,scripts/run-engine-probe.mjs,scripts/run-prod-preview-check.mjs,scripts/smoke-routes-test.mjs,scripts/start-development.mjs,scripts/start-production.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs
+PORT	application-runtime	no	no	20	app/api/settings/connections/route.ts,ops/server-access-dashboard/server/access-dashboard.mjs,scripts/direct-trade-processor.mjs,scripts/direct-trade-supervisor.mjs,scripts/kill-test-dev-port.mjs,scripts/logistics-test-suite.mjs,scripts/quickstart-live-trading.js,scripts/run-dev-preview-check.mjs,scripts/run-engine-probe.mjs,scripts/run-prod-preview-check.mjs,scripts/smoke-routes-test.mjs,scripts/start-development.mjs,scripts/start-production.mjs,scripts/test-progression-live.mjs,scripts/test-quickstart-3symbols.js,scripts/validate-comprehensive.mjs,scripts/verify-prod-preview.mjs,scripts/verify-prod-soak.mjs,scripts/verify-prod-ui-max.mjs,scripts/verify-runtime-coverage.mjs
 POSITION_FLOW_READ_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 PREHISTORIC_BOOTSTRAP_DEADLINE_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 PREHISTORIC_CALC_YIELD_EVERY	application-runtime	no	yes	3	.env.example,__tests__/unit/requested-regressions.test.ts,lib/trade-engine/config-set-processor.ts
