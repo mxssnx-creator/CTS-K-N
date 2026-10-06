@@ -102,6 +102,108 @@ import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings
 import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
 
+// Scalar fields: the scoped hash wins (identity, timestamps, rates, snapshots).
+const PROGRESSION_SCALAR_FIELDS = new Set([
+  "session_number", "epoch", "started_at", "ended_at",
+  "cycle_success_rate", "trade_success_rate", "cycle_time_ms",
+  "last_cycle_time", "last_update", "connection_id", "engine_type",
+  "engine_started", "prehistoric_phase_active", "prehistoric_symbols_processed",
+  "progress_settings_snapshot", "symbol_count", "active_symbols_hash",
+  "started_for_settings_version", "migrated_from_unscoped", "migrated_at",
+])
+// Session counters. Each runtime writer increments one of the two hashes
+// (engine-manager the scoped one, incrementCycle/recordTrade and the cron
+// owner the legacy one), so the two values are added.
+const PROGRESSION_ADDITIVE_FIELDS = new Set([
+  "cycles_completed", "successful_cycles", "failed_cycles",
+  "total_trades", "successful_trades", "total_profit",
+  "indications_direction_count", "indications_move_count",
+  "indications_active_count", "indications_active_advanced_count",
+  "indications_optimal_count", "indications_auto_count",
+  "indications_signal_count", "indications_trend_count",
+  "strategies_base_total", "strategies_main_total", "strategies_real_total",
+  "strategies_base_evaluated", "strategies_main_evaluated", "strategies_real_evaluated",
+  "indication_cycle_count", "indication_live_cycle_count",
+  "strategy_cycle_count", "strategy_live_cycle_count",
+  "realtime_cycle_count", "realtime_live_cycle_count",
+  "frames_processed", "intervals_processed",
+  "indications_count", "strategies_count",
+  "prehistoric_cycles_completed", "prehistoric_candles_processed",
+  "prehistoric_symbols_processed_count",
+])
+// Counters every writer mirrors into BOTH hashes (strategy-coordinator,
+// config-set-processor) or stores as an absolute value: both hashes hold the
+// same total, so adding them double-counted it. Take the larger one instead.
+const PROGRESSION_MIRRORED_FIELDS = new Set([
+  "strategies_base_total", "strategies_main_total", "strategies_real_total",
+  "strategies_base_evaluated", "strategies_main_evaluated", "strategies_real_evaluated",
+  "prehistoric_cycles_completed", "prehistoric_candles_processed",
+  "prehistoric_symbols_processed_count",
+])
+const PROGRESSION_LATEST_SNAPSHOT_FIELDS = new Set([
+  "cycle_success_rate",
+  "trade_success_rate",
+  "cycle_time_ms",
+  "last_cycle_time",
+  "last_update",
+])
+
+function progressionTimestamp(value: unknown): number {
+  const numeric = Number(value)
+  if (Number.isFinite(numeric) && numeric > 0) return numeric
+  const parsed = Date.parse(String(value || ""))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+/**
+ * Merge the engine-scoped progression hash with its legacy mirror. Strategy
+ * stages and the bounded owner still write the legacy key, so both must be
+ * read: session counters are summed, mirrored counters take the larger
+ * value, and the scoped key wins for scalar fields.
+ */
+export function mergeProgressionHashes(
+  scoped: Record<string, string>,
+  legacy: Record<string, string>,
+): Record<string, string> {
+  const merged: Record<string, string> = { ...legacy }
+  // A scoped hash seeded from the legacy one by migration already contains
+  // the legacy totals; adding them again would double every counter.
+  const seededFromLegacy = scoped.migrated_from_unscoped === "true"
+  for (const [k, v] of Object.entries(scoped)) {
+    if (PROGRESSION_ADDITIVE_FIELDS.has(k)) {
+      const a = parseFloat(legacy[k] || "0")
+      const b = parseFloat(v || "0")
+      merged[k] = seededFromLegacy || PROGRESSION_MIRRORED_FIELDS.has(k)
+        ? String(Math.max(a, b))
+        : String(a + b)
+    } else if (PROGRESSION_SCALAR_FIELDS.has(k)) {
+      merged[k] = v // scoped wins
+    } else {
+      merged[k] = v // default: scoped wins for unknown fields
+    }
+  }
+  // Scoped and legacy writers coexist during rolling deployments. The
+  // scoped hash remains authoritative for identity, while volatile
+  // cycle/rate snapshots must come from whichever writer published the
+  // newest `last_update`; otherwise a healthy worker can show a frozen
+  // 0% success rate indefinitely after migration.
+  const scopedUpdatedAt = Math.max(
+    progressionTimestamp(scoped.last_update),
+    progressionTimestamp(scoped.last_cycle_time),
+  )
+  const legacyUpdatedAt = Math.max(
+    progressionTimestamp(legacy.last_update),
+    progressionTimestamp(legacy.last_cycle_time),
+  )
+  const latestSnapshot = legacyUpdatedAt > scopedUpdatedAt ? legacy : scoped
+  const fallbackSnapshot = latestSnapshot === scoped ? legacy : scoped
+  for (const field of PROGRESSION_LATEST_SNAPSHOT_FIELDS) {
+    const value = latestSnapshot[field] ?? fallbackSnapshot[field]
+    if (value !== undefined) merged[field] = value
+  }
+  return merged
+}
+
 export interface ProgressionRecoordinationResult {
   changed: boolean
   reason?: string
@@ -242,99 +344,15 @@ export class ProgressionStateManager {
       let data: Record<string, string> = {}
       
       try {
-        // Read scoped key first, then fall back to / merge with the legacy key.
-        // Strategy stages (base/main/real/indication) still hincrby to the legacy
-        // key, so we must read both and merge them: additive numeric counters are
-        // summed when both keys are present; the scoped key wins for scalar fields.
+        // Read scoped key first, then merge with the legacy key: strategy
+        // stages and the bounded owner still write the legacy key.
         const [rawScoped, rawLegacy] = await Promise.all([
           client.hgetall(key).catch(() => null),
           client.hgetall(scope.legacyProgressionKey).catch(() => null),
         ])
         const scoped: Record<string, string> = (rawScoped && typeof rawScoped === 'object') ? rawScoped as Record<string, string> : {}
         const legacy: Record<string, string> = (rawLegacy && typeof rawLegacy === 'object') ? rawLegacy as Record<string, string> : {}
-
-        // Scalar fields: scoped overrides legacy (identity, timestamps, rates, snapshots)
-        const SCALAR_FIELDS = new Set([
-          "session_number", "epoch", "started_at", "ended_at",
-          "cycle_success_rate", "trade_success_rate", "cycle_time_ms",
-          "last_cycle_time", "last_update", "connection_id", "engine_type",
-          "engine_started", "prehistoric_phase_active", "prehistoric_symbols_processed",
-          "progress_settings_snapshot", "symbol_count", "active_symbols_hash",
-          "started_for_settings_version", "migrated_from_unscoped", "migrated_at",
-        ])
-        // Additive fields: sum both keys atomically
-        const ADDITIVE_FIELDS = new Set([
-          "cycles_completed", "successful_cycles", "failed_cycles",
-          "total_trades", "successful_trades", "total_profit",
-          "indications_direction_count", "indications_move_count",
-          "indications_active_count", "indications_active_advanced_count",
-          "indications_optimal_count", "indications_auto_count",
-          "indications_signal_count", "indications_trend_count",
-          "strategies_base_total", "strategies_main_total", "strategies_real_total",
-          "strategies_base_evaluated", "strategies_main_evaluated", "strategies_real_evaluated",
-          "indication_cycle_count", "indication_live_cycle_count",
-          "strategy_cycle_count", "strategy_live_cycle_count",
-          "realtime_cycle_count", "realtime_live_cycle_count",
-          "frames_processed", "intervals_processed",
-          "indications_count", "strategies_count",
-          "prehistoric_cycles_completed", "prehistoric_candles_processed",
-          "prehistoric_symbols_processed_count",
-        ])
-        const LATEST_SNAPSHOT_FIELDS = new Set([
-          "cycle_success_rate",
-          "trade_success_rate",
-          "cycle_time_ms",
-          "last_cycle_time",
-          "last_update",
-        ])
-
-        const timestamp = (value: unknown): number => {
-          const numeric = Number(value)
-          if (Number.isFinite(numeric) && numeric > 0) return numeric
-          const parsed = Date.parse(String(value || ""))
-          return Number.isFinite(parsed) ? parsed : 0
-        }
-
-        const merged: Record<string, string> = { ...legacy }
-        for (const [k, v] of Object.entries(scoped)) {
-          if (ADDITIVE_FIELDS.has(k)) {
-            const a = parseFloat(legacy[k] || "0")
-            const b = parseFloat(v || "0")
-            // Avoid double-counting: if legacy already includes what the scoped key has
-            // (i.e. the scoped key was seeded from legacy via migration), only take the max.
-            // If scoped > legacy the scoped key has independent increments; sum them.
-            // Use max when migrated_from_unscoped is set; otherwise sum.
-            if (scoped.migrated_from_unscoped === "true") {
-              merged[k] = String(Math.max(a, b))
-            } else {
-              merged[k] = String(a + b)
-            }
-          } else if (SCALAR_FIELDS.has(k)) {
-            merged[k] = v // scoped wins
-          } else {
-            merged[k] = v // default: scoped wins for unknown fields
-          }
-        }
-        // Scoped and legacy writers coexist during rolling deployments. The
-        // scoped hash remains authoritative for identity, while volatile
-        // cycle/rate snapshots must come from whichever writer published the
-        // newest `last_update`; otherwise a healthy worker can show a frozen
-        // 0% success rate indefinitely after migration.
-        const scopedUpdatedAt = Math.max(
-          timestamp(scoped.last_update),
-          timestamp(scoped.last_cycle_time),
-        )
-        const legacyUpdatedAt = Math.max(
-          timestamp(legacy.last_update),
-          timestamp(legacy.last_cycle_time),
-        )
-        const latestSnapshot = legacyUpdatedAt > scopedUpdatedAt ? legacy : scoped
-        const fallbackSnapshot = latestSnapshot === scoped ? legacy : scoped
-        for (const field of LATEST_SNAPSHOT_FIELDS) {
-          const value = latestSnapshot[field] ?? fallbackSnapshot[field]
-          if (value !== undefined) merged[field] = value
-        }
-        data = merged
+        data = mergeProgressionHashes(scoped, legacy)
       } catch (redisError) {
         console.warn(`[v0] Redis connection error reading scoped progression for ${connectionId}/${engineType}, using default state:`, redisError)
         return this.getDefaultState(connectionId)
@@ -417,6 +435,25 @@ export class ProgressionStateManager {
       console.error(`[v0] Failed to get progression state for ${connectionId}:`, error)
       return this.getDefaultState(connectionId)
     }
+  }
+
+  /**
+   * The raw progression fields under the same scoped/legacy merge as
+   * getProgressionState, for readers that need fields it does not parse.
+   */
+  static async getMergedProgressionHash(connectionId: string, engineType = "main"): Promise<Record<string, string>> {
+    await initRedis()
+    const client = getRedisClient()
+    if (!client) return {}
+    const scope = await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
+    const [scoped, legacy] = await Promise.all([
+      client.hgetall(scope.progressionKey).catch(() => null),
+      client.hgetall(scope.legacyProgressionKey).catch(() => null),
+    ])
+    return mergeProgressionHashes(
+      (scoped || {}) as Record<string, string>,
+      (legacy || {}) as Record<string, string>,
+    )
   }
 
   /**
@@ -908,7 +945,7 @@ export class ProgressionStateManager {
   /**
    * Reset progression state (useful for testing or manual reset)
    */
-  static async resetProgressionState(connectionId: string): Promise<void> {
+  static async resetProgressionState(connectionId: string, engineType = "main"): Promise<void> {
     try {
       if (!getRedisClient()) {
         await initRedis()
@@ -918,8 +955,10 @@ export class ProgressionStateManager {
         console.warn(`[v0] Redis client not available for resetProgressionState`)
         return
       }
-      const key = `progression:${connectionId}`
-      await client.del(key)
+      // Readers merge the scoped hash with the legacy one; deleting only the
+      // legacy key left every scoped counter in place after a reset.
+      const scope = buildProgressionScope(connectionId, engineType)
+      await client.del(scope.legacyProgressionKey, scope.progressionKey)
       emitCanonicalEvent({ type: "progression.stageChanged", connectionId, stage: "prehistoric", data: { action: "reset" } })
       console.log(`[v0] [Progression] State reset for ${connectionId}`)
     } catch (error) {
@@ -1040,10 +1079,10 @@ export class ProgressionStateManager {
         const snapshot = await client.hgetall(key).catch(() => existing)
         const oldEpoch = existing.epoch || String(newEpoch - 1)
         const historyKey = `${key}:history:${oldEpoch}`
+        // 7-day TTL — enough for a weekly review without bloating Redis.
+        const HISTORY_TTL_SEC = 7 * 24 * 3600
         if (snapshot && Object.keys(snapshot).length > 0) {
           // Pipeline: write history hash + set its TTL atomically.
-          // 7-day TTL — enough for a weekly review without bloating Redis.
-          const HISTORY_TTL_SEC = 7 * 24 * 3600
           // Pass as a plain object — avoids TS spread-tuple restriction
           // while remaining compatible with ioredis / upstash hset overloads.
           const snapshotRecord: Record<string, string> = {}
@@ -1052,6 +1091,22 @@ export class ProgressionStateManager {
           }
           await client.hset(historyKey, snapshotRecord)
           await client.expire(historyKey, HISTORY_TTL_SEC)
+        }
+
+        // ── Step 2b: the legacy mirror starts the session at zero too ──
+        // Readers add its counters to the scoped ones (getProgressionState).
+        // Left untouched, every restart re-added all previous sessions'
+        // totals. Archive it and reset only the counters: pending markers
+        // and other mirrored fields stay. It mirrors the main scope only.
+        if (scope.engineType === "main" && legacy && Object.keys(legacy).length > 0) {
+          const legacyHistoryKey = `${scope.legacyProgressionKey}:history:${oldEpoch}`
+          await client.hset(legacyHistoryKey, Object.fromEntries(
+            Object.entries(legacy).map(([k, v]) => [k, String(v)]),
+          ))
+          await client.expire(legacyHistoryKey, HISTORY_TTL_SEC)
+          await client.hset(scope.legacyProgressionKey, Object.fromEntries(
+            [...PROGRESSION_ADDITIVE_FIELDS, "cycle_success_rate", "trade_success_rate"].map((field) => [field, "0"]),
+          ))
         }
 
         // ── Step 3: derive session number ────────────────────────────
