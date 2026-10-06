@@ -175,3 +175,18 @@ describe("exchange-judged Sets per stage", () => {
     expect(body.performanceTiers.live.lossGateDeactivated).toBe(5)
   })
 })
+
+describe("Real-stage rows", () => {
+  test("open Real positions are read from the Real stage's own index set", async () => {
+    const id = "conn-real-index"
+    hashes.clear(); strings.clear(); lists.clear(); sets.clear(); hdel.mockClear()
+    sets.set(`real:positions:index:${id}`, ["r1", "r2", "r3"])
+    strings.set("real:position:r1", JSON.stringify({ id: "r1", symbol: "BTCUSDT", direction: "long", status: "open" }))
+    strings.set("real:position:r2", JSON.stringify({ id: "r2", symbol: "ETHUSDT", direction: "short", status: "open" }))
+    strings.set("real:position:r3", JSON.stringify({ id: "r3", symbol: "ETHUSDT", direction: "short", status: "closed" }))
+
+    const body = await stats(id)
+
+    expect(body.openPositions.real.open).toBe(2)
+  })
+})

@@ -36,6 +36,24 @@ import {
   type SystemDetailFigures,
 } from "./system-detail-data";
 
+// Tailwind only generates classes it finds as literal strings in the source,
+// so tile/heading tones are spelled out here instead of `bg-${color}-50`.
+const TONE_CLASSES: Record<string, { tile: string; text: string }> = {
+  slate: { tile: "bg-slate-50 dark:bg-slate-950/30", text: "text-slate-700 dark:text-slate-300" },
+  gray: { tile: "bg-gray-50 dark:bg-gray-950/30", text: "text-gray-700 dark:text-gray-300" },
+  blue: { tile: "bg-blue-50 dark:bg-blue-950/30", text: "text-blue-700 dark:text-blue-300" },
+  cyan: { tile: "bg-cyan-50 dark:bg-cyan-950/30", text: "text-cyan-700 dark:text-cyan-300" },
+  teal: { tile: "bg-teal-50 dark:bg-teal-950/30", text: "text-teal-700 dark:text-teal-300" },
+  emerald: { tile: "bg-emerald-50 dark:bg-emerald-950/30", text: "text-emerald-700 dark:text-emerald-300" },
+  green: { tile: "bg-green-50 dark:bg-green-950/30", text: "text-green-700 dark:text-green-300" },
+  amber: { tile: "bg-amber-50 dark:bg-amber-950/30", text: "text-amber-700 dark:text-amber-300" },
+  orange: { tile: "bg-orange-50 dark:bg-orange-950/30", text: "text-orange-700 dark:text-orange-300" },
+  red: { tile: "bg-red-50 dark:bg-red-950/30", text: "text-red-700 dark:text-red-300" },
+  purple: { tile: "bg-purple-50 dark:bg-purple-950/30", text: "text-purple-700 dark:text-purple-300" },
+}
+const toneClasses = (color: string | undefined) => TONE_CLASSES[color || "slate"] || TONE_CLASSES.slate
+
+
 interface SystemDetailData {
   engine: {
     running: boolean;
@@ -300,10 +318,10 @@ export function SystemDetailPanel() {
     missingReason?: string;
   }) => (
     <div
-      className={`bg-${color}-50 rounded p-1.5 text-center`}
+      className={`${toneClasses(color).tile} rounded p-1.5 text-center`}
       title={value === null || value === undefined ? missingReason : title}
     >
-      <div className={`text-${color}-700 font-bold text-sm`}>{value ?? "—"}</div>
+      <div className={`${toneClasses(color).text} font-bold text-sm`}>{value ?? "—"}</div>
       <div className="text-muted-foreground text-[9px] leading-tight">
         {label}
       </div>
@@ -322,7 +340,7 @@ export function SystemDetailPanel() {
     color: string;
   }) => (
     <div
-      className={`flex items-center gap-1.5 text-[11px] font-semibold text-${color}-700 uppercase tracking-wide`}
+      className={`flex items-center gap-1.5 text-[11px] font-semibold ${toneClasses(color).text} uppercase tracking-wide`}
     >
       {icon}
       {label}
@@ -784,7 +802,7 @@ export function SystemDetailPanel() {
                           )}
                           {icon}
                           <span
-                            className={`text-xs font-semibold capitalize text-${color}-700`}
+                            className={`text-xs font-semibold capitalize ${toneClasses(color).text}`}
                           >
                             {section}
                           </span>

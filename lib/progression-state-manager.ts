@@ -121,6 +121,7 @@ const PROGRESSION_ADDITIVE_FIELDS = new Set([
   "indications_active_count", "indications_active_advanced_count",
   "indications_optimal_count", "indications_auto_count",
   "indications_signal_count", "indications_trend_count",
+  "indications_common_count", "indications_special_count",
   "strategies_base_total", "strategies_main_total", "strategies_real_total",
   "strategies_base_evaluated", "strategies_main_evaluated", "strategies_real_evaluated",
   "indication_cycle_count", "indication_live_cycle_count",
@@ -292,6 +293,8 @@ export interface ProgressionState {
   indicationsAutoCount?: number
   indicationsSignalCount?: number
   indicationsTrendCount?: number
+  indicationsCommonCount?: number
+  indicationsSpecialCount?: number
   indicationsCount?: number
   
   // Strategy-set counters
@@ -407,6 +410,8 @@ export class ProgressionStateManager {
         indicationsAutoCount: parseInt(data.indications_auto_count || "0", 10),
         indicationsSignalCount: parseInt(data.indications_signal_count || "0", 10),
         indicationsTrendCount: parseInt(data.indications_trend_count || "0", 10),
+        indicationsCommonCount: parseInt(data.indications_common_count || "0", 10),
+        indicationsSpecialCount: parseInt(data.indications_special_count || "0", 10),
         strategiesBaseTotal: parseInt(data.strategies_base_total || "0", 10),
         strategiesMainTotal: parseInt(data.strategies_main_total || "0", 10),
         strategiesRealTotal: parseInt(data.strategies_real_total || "0", 10),
@@ -485,6 +490,8 @@ export class ProgressionStateManager {
       indicationsAutoCount: 0,
       indicationsSignalCount: 0,
       indicationsTrendCount: 0,
+      indicationsCommonCount: 0,
+      indicationsSpecialCount: 0,
       strategiesBaseTotal: 0,
       strategiesMainTotal: 0,
       strategiesRealTotal: 0,
@@ -1159,6 +1166,8 @@ export class ProgressionStateManager {
         indications_auto_count: "0",
         indications_signal_count: "0",
         indications_trend_count: "0",
+        indications_common_count: "0",
+        indications_special_count: "0",
         // Indication-Set aggregate counters — used by getIndicationTracking
         indications_count: "0",
         indication_sets_total: "0",

@@ -135,4 +135,12 @@ describe("System Detail Panel figures", () => {
     expect(panel).not.toContain("migrations: 0")
     expect(panel).not.toContain("main: statsData?.openPositions?.real?.open")
   })
+
+  test("tile and heading tones are literal Tailwind classes, never built from a color name", () => {
+    const panel = readFileSync(resolve(process.cwd(), "components/dashboard/system-detail-panel.tsx"), "utf8")
+    // Strip comments: the explanation may quote the old pattern.
+    const code = panel.replace(/\/\/.*$/gm, "")
+    expect(code).not.toMatch(/(bg|text|border)-\$\{/)
+    expect(panel).toContain('green: { tile: "bg-green-50 dark:bg-green-950/30"')
+  })
 })

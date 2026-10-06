@@ -1738,15 +1738,15 @@ export async function GET(
     >()
     const realBySymbolMap = new Map<string, { long: number; short: number }>()
     try {
-      // Use the connection-scoped position-id list instead of O(N) client.keys().
-      // `real:positions:{connectionId}` is maintained by the Real stage (lpush on
-      // creation) and gives us a connection-filtered set in O(1) per id.
+      // Use the connection-scoped position-id index instead of O(N) client.keys().
+      // The Real stage keeps `real:positions:index:{connectionId}` (a SET, see
+      // lib/trade-engine/stages/real-stage.ts); the `real:positions:{id}` list
+      // read here before was never written, so Real rows were never counted.
       // client.keys("real:position:*") was a blocking O(keyspace) scan that stalled
       // the event loop and scanned ALL connections' positions just to then discard
       // the ones belonging to other connections.
-      const realIds = ((await client
-        .lrange(`real:positions:${connectionId}`, 0, -1)
-        .catch(() => [])) || []) as string[]
+      const realIds = await scanRedisSetMembers(client, `real:positions:index:${connectionId}`, { count: 250 })
+        .catch(() => [] as string[])
       if (realIds.length > 0) {
         const raws = await mapInBatches(
           [...new Set(realIds)],

@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { toast } from "@/lib/simple-toast"
+import { publishAppSettingSaved, subscribeAppSettingSaved } from "@/lib/settings-sync-events"
 
 /**
  * Auto indication is evaluated inside the indication processor as a
@@ -42,6 +43,13 @@ export function AutoIndicationSettings() {
     void loadSettings()
   }, [loadSettings])
 
+  // The Indication tab saves the same flag with the page snapshot.
+  useEffect(() => subscribeAppSettingSaved(({ key, value }) => {
+    if (key !== "autoEnabled" || typeof value !== "boolean") return
+    setEnabled(value)
+    setSavedEnabled(value)
+  }), [])
+
   const saveSettings = async () => {
     if (enabled === null) return
     setSaving(true)
@@ -57,6 +65,7 @@ export function AutoIndicationSettings() {
       }
       setEnabled(data.settings.enabled)
       setSavedEnabled(data.settings.enabled)
+      publishAppSettingSaved("autoEnabled", data.settings.enabled)
       toast.success("Auto indication setting saved")
     } catch (error) {
       console.error("[v0] Failed to save Auto settings:", error)

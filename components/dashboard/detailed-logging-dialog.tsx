@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Dialog,
   DialogContent,
@@ -129,6 +129,8 @@ interface ProgressSummary {
   warnings: number
 }
 
+const DETAILED_LOGS_REFRESH_MS = 10_000
+
 export function DetailedLoggingDialog() {
   const { selectedConnectionId, selectedExchange } = useExchange()
   const [open, setOpen] = useState(false)
@@ -139,7 +141,14 @@ export function DetailedLoggingDialog() {
   const [filter, setFilter] = useState<string>("all")
   const [activeTab, setActiveTab] = useState<"logs" | "data">("logs")
 
+  const fetchInFlightRef = useRef(false)
+
   const fetchLogs = useCallback(async () => {
+    // One request at a time: the route reads several hashes per connection and
+    // can take longer than the refresh period under load.
+    if (fetchInFlightRef.current) return
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return
+    fetchInFlightRef.current = true
     setLoading(true)
     try {
       const params = new URLSearchParams()
@@ -155,15 +164,18 @@ export function DetailedLoggingDialog() {
     } catch {
       // non-critical
     } finally {
+      fetchInFlightRef.current = false
       setLoading(false)
     }
   }, [selectedConnectionId, selectedExchange])
 
-  // Auto-refresh every 3 seconds while the dialog is open so the data panel stays live.
+  // Auto-refresh every 10 seconds while the dialog is open and the tab is
+  // visible; the engine publishes these figures per cycle, so faster polling
+  // only adds load.
   useEffect(() => {
     if (!open) return
     fetchLogs()
-    const interval = setInterval(fetchLogs, 3000)
+    const interval = setInterval(fetchLogs, DETAILED_LOGS_REFRESH_MS)
     return () => clearInterval(interval)
   }, [open, fetchLogs])
 

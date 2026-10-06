@@ -46,6 +46,7 @@ import { SpecialTab } from "@/components/settings/tabs/special-tab"
 import { PageHeader } from "@/components/page-header"
 import { DEFAULT_SPECIAL_STRATEGY_SETTINGS } from "@/lib/special-strategy"
 import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
+import { publishAppSettingSaved, subscribeAppSettingSaved } from "@/lib/settings-sync-events"
 
 const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -1537,6 +1538,13 @@ export default function SettingsPage() {
     // Placeholder for loading preset connections if needed in the future
   }
 
+  // A control that saves on its own (Auto indication card) updates the page
+  // snapshot too, so a later whole-page save does not write the old value back.
+  useEffect(() => subscribeAppSettingSaved(({ key, value }) => {
+    if (key !== "autoEnabled" || typeof value !== "boolean") return
+    setSettings((current) => (current.autoEnabled === value ? current : { ...current, autoEnabled: value }))
+  }), [])
+
   useEffect(() => {
     // Load connections when the component mounts or when the 'exchange' tab is active
     if (activeTab === "exchange") {
@@ -1689,6 +1697,9 @@ export default function SettingsPage() {
       }
       if (settingsData.settings && typeof settingsData.settings === "object") {
         setSettings((current) => ({ ...current, ...settingsData.settings }))
+        if (typeof settingsData.settings.autoEnabled === "boolean") {
+          publishAppSettingSaved("autoEnabled", settingsData.settings.autoEnabled)
+        }
       }
 
       if (databaseSizesChanged) {
