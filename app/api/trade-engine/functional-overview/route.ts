@@ -129,7 +129,7 @@ export async function GET() {
         // The basket the engine trades: operator settings first, force_symbols
         // first. The raw connection hash can hold a stale selected_symbols
         // (production showed 9 while the engine ran 25), so it is only the
-        // fallback when no canonical selection is stored.
+        // fallback when the canonical selection cannot be read.
         const activeSymbols = symbolSelection && symbolSelection.symbols.length > 0
           ? new Set(symbolSelection.symbols.map((symbol) => symbol.toUpperCase()))
           : resolveOverviewActiveSymbols(

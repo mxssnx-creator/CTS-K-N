@@ -25,6 +25,7 @@ async function countOpenRows(
   }
   return open
 }
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
