@@ -52,13 +52,15 @@ function parseSymbolValue(value: unknown): Set<string> {
 }
 
 /** Resolve the first authoritative active-symbol basket without combining
- * legacy fallbacks that may contain symbols removed from the connection. */
+ * legacy fallbacks that may contain symbols removed from the connection.
+ * Field precedence follows the engine: an explicit force_symbols wins over a
+ * selected_symbols mirror that can be stale. */
 export function resolveOverviewActiveSymbols(
   ...sources: Array<Record<string, unknown> | null | undefined>
 ): Set<string> {
   for (const source of sources) {
     if (!source) continue
-    for (const field of ["selected_symbols", "active_symbols", "force_symbols", "symbols"] as const) {
+    for (const field of ["force_symbols", "selected_symbols", "active_symbols", "symbols"] as const) {
       const symbols = parseSymbolValue(source[field])
       if (symbols.size > 0) return symbols
     }
