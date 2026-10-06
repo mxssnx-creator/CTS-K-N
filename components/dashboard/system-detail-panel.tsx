@@ -31,17 +31,16 @@ import {
 } from "lucide-react";
 import { useExchange } from "@/lib/exchange-context";
 import { useConnectionState } from "@/lib/connection-state";
+import {
+  buildSystemDetailFigures,
+  type SystemDetailFigures,
+} from "./system-detail-data";
 
 interface SystemDetailData {
   engine: {
     running: boolean;
     status: string;
     configuredWithoutWorkerHeartbeat: number;
-    uptime: number;
-    lastCycleMs: number;
-    avgCycleMs: number | null;
-    totalCycles: number;
-    successRate: number;
   };
   connections: {
     total: number;
@@ -56,52 +55,7 @@ interface SystemDetailData {
       isRunning?: boolean;
     }>;
   };
-  data: {
-    prehistoric: {
-      symbolsLoaded: number;
-      dataKeys: number | null;
-      candlesProcessed: number;
-      lastUpdate: string | null;
-    };
-    realtime: {
-      activeStreams: number;
-      symbolsStreaming: number | null;
-      intervalsProcessed: number;
-      lastUpdate: string | null;
-    };
-  };
-  processing: {
-    indications: {
-      direction: number;
-      move: number;
-      active: number;
-      optimal: number;
-      auto: number;
-      trend: number;
-      total: number;
-    };
-    strategies: {
-      base: number;
-      main: number;
-      real: number;
-      total: number;
-      evaluated: number;
-      passed: number;
-    };
-    positions: {
-      base: number;
-      main: number;
-      real: number;
-      live: number;
-      total: number;
-    };
-  };
-  database: {
-    entries: number;
-    sizeMb: number;
-    migrations: number;
-    lastBackup: string | null;
-  };
+  figures: SystemDetailFigures;
   errors: {
     total: number;
     recent: Array<{
@@ -218,22 +172,14 @@ export function SystemDetailPanel() {
           running:
             systemStatus?.engineRuntime?.running ??
             engineStatus?.running ??
-            progressionState?.processingCompleteness?.realtimeRunning ??
             false,
           status:
             systemStatus?.engineRuntime?.status ??
             engineStatus?.actualRuntimeStatus ??
             engineStatus?.status ??
-            (progressionState?.processingCompleteness?.realtimeRunning
-              ? "running"
-              : "stopped"),
+            "unknown",
           configuredWithoutWorkerHeartbeat:
             systemStatus?.engineRuntime?.configuredWithoutWorkerHeartbeat ?? 0,
-          uptime: engineStatus?.uptime ?? 0,
-          lastCycleMs: progressionState?.cycleTimeMs ?? 0,
-          avgCycleMs: progressionState?.averageCycleTimeMs ?? null,
-          totalCycles: progressionState?.cyclesCompleted ?? 0,
-          successRate: progressionState?.cycleSuccessRate ?? 0,
         },
         connections: {
           total: connList.length,
@@ -242,59 +188,7 @@ export function SystemDetailPanel() {
             connList.filter((c) => c.isRunning).length,
           list: connList,
         },
-        data: {
-          prehistoric: {
-            symbolsLoaded:
-              progressionState?.prehistoricSymbolsProcessedCount ?? 0,
-            dataKeys: progressionState?.prehistoricDataSize ?? null,
-            candlesProcessed:
-              progressionState?.prehistoricCandlesProcessed ?? 0,
-            lastUpdate: null,
-          },
-          realtime: {
-            activeStreams: progressionState?.realtimeRunningConnections ?? 0,
-            symbolsStreaming: progressionState?.symbolsStreaming ?? null,
-            intervalsProcessed: progressionState?.intervalsProcessed ?? 0,
-            lastUpdate: null,
-          },
-        },
-        processing: {
-          indications: {
-            direction: progressionState?.indicationEvaluatedDirection ?? 0,
-            move: progressionState?.indicationEvaluatedMove ?? 0,
-            active: progressionState?.indicationEvaluatedActive ?? 0,
-            optimal: progressionState?.indicationEvaluatedOptimal ?? 0,
-            auto: 0,
-            trend: progressionState?.indicationEvaluatedTrend ?? 0,
-            total:
-              (progressionState?.indicationEvaluatedDirection ?? 0) +
-              (progressionState?.indicationEvaluatedMove ?? 0) +
-              (progressionState?.indicationEvaluatedActive ?? 0) +
-              (progressionState?.indicationEvaluatedOptimal ?? 0) +
-              (progressionState?.indicationEvaluatedTrend ?? 0),
-          },
-          strategies: {
-            base: progressionState?.setsBaseCount ?? 0,
-            main: progressionState?.setsMainCount ?? 0,
-            real: progressionState?.setsRealCount ?? 0,
-            total: progressionState?.setsTotalCount ?? 0,
-            evaluated: 0,
-            passed: 0,
-          },
-          positions: {
-            base: statsData?.openPositions?.pseudo?.open || 0,
-            main: statsData?.openPositions?.real?.open || 0,
-            real: statsData?.openPositions?.real?.open || 0,
-            live: statsData?.openPositions?.live?.open || 0,
-            total: statsData?.openPositions?.live?.open || 0,
-          },
-        },
-        database: {
-          entries: progressionState?.redisDbEntries ?? 0,
-          sizeMb: progressionState?.redisDbSizeMb ?? 0,
-          migrations: 0,
-          lastBackup: null,
-        },
+        figures: buildSystemDetailFigures(progressionState, statsData),
         errors: {
           total: structuredLogs.filter((l) =>
             String(l.status || l.level || "")
@@ -334,6 +228,8 @@ export function SystemDetailPanel() {
   useEffect(() => {
     loadExchangeConnectionsActive().catch(() => {});
   }, [open]);
+
+  const figures = systemData?.figures;
 
   const groupedLogs = useMemo(() => {
     const groups: Record<string, LogEntry[]> = {
@@ -394,13 +290,20 @@ export function SystemDetailPanel() {
     label,
     value,
     color = "slate",
+    title,
+    missingReason = "No data yet",
   }: {
     label: string;
-    value: string | number;
+    value: string | number | null | undefined;
     color?: string;
+    title?: string;
+    missingReason?: string;
   }) => (
-    <div className={`bg-${color}-50 rounded p-1.5 text-center`}>
-      <div className={`text-${color}-700 font-bold text-sm`}>{value}</div>
+    <div
+      className={`bg-${color}-50 rounded p-1.5 text-center`}
+      title={value === null || value === undefined ? missingReason : title}
+    >
+      <div className={`text-${color}-700 font-bold text-sm`}>{value ?? "—"}</div>
       <div className="text-muted-foreground text-[9px] leading-tight">
         {label}
       </div>
@@ -522,17 +425,20 @@ export function SystemDetailPanel() {
                     />
                     <StatTile
                       label="Total Cycles"
-                      value={systemData?.engine.totalCycles ?? 0}
+                      value={figures?.engine.totalCycles}
                       color="blue"
                     />
                     <StatTile
                       label="Last Cycle"
-                      value={`${systemData?.engine.lastCycleMs ?? 0}ms`}
+                      value={figures?.engine.lastCycleMs == null ? null : `${figures.engine.lastCycleMs}ms`}
+                      title="Duration of the last sampled strategy cycle"
+                      missingReason="No strategy cycle duration sampled yet"
                       color="orange"
                     />
                     <StatTile
                       label="Success Rate"
-                      value={`${(systemData?.engine.successRate ?? 0).toFixed(1)}%`}
+                      value={figures?.engine.successRate == null ? null : `${figures.engine.successRate.toFixed(1)}%`}
+                      missingReason="No pipeline cycle recorded yet"
                       color="emerald"
                     />
                   </div>
@@ -625,36 +531,43 @@ export function SystemDetailPanel() {
                       <div className="text-[9px] text-muted-foreground font-medium uppercase">
                         Prehistoric
                       </div>
-                      <div className="grid grid-cols-2 gap-1">
+                      <div className="grid grid-cols-3 gap-1">
                         <StatTile
                           label="Symbols"
-                          value={
-                            systemData?.data.prehistoric.symbolsLoaded ?? 0
-                          }
+                          value={figures?.historic.symbols}
                           color="amber"
                         />
                         <StatTile
-                          label="Data Keys"
-                          value={systemData?.data.prehistoric.dataKeys ?? "—"}
+                          label="Candles"
+                          value={figures?.historic.candles}
+                          color="amber"
+                        />
+                        <StatTile
+                          label="Intervals"
+                          value={figures?.historic.intervals}
+                          title="Historic timeframe intervals processed"
                           color="amber"
                         />
                       </div>
                     </div>
                     <div className="space-y-1">
                       <div className="text-[9px] text-muted-foreground font-medium uppercase">
-                        Realtime
+                        Realtime (cycles since start)
                       </div>
-                      <div className="grid grid-cols-2 gap-1">
+                      <div className="grid grid-cols-3 gap-1">
                         <StatTile
-                          label="Streams"
-                          value={systemData?.data.realtime.activeStreams ?? 0}
+                          label="Realtime"
+                          value={figures?.realtime.realtimeCycles}
                           color="teal"
                         />
                         <StatTile
-                          label="Intervals"
-                          value={
-                            systemData?.data.realtime.intervalsProcessed ?? 0
-                          }
+                          label="Indication"
+                          value={figures?.realtime.indicationCycles}
+                          color="teal"
+                        />
+                        <StatTile
+                          label="Strategy"
+                          value={figures?.realtime.strategyCycles}
                           color="teal"
                         />
                       </div>
@@ -668,39 +581,39 @@ export function SystemDetailPanel() {
                 <div className="space-y-1.5">
                   <SectionHeader
                     icon={<BarChart3 className="h-3.5 w-3.5" />}
-                    label="Indications"
-                    count={systemData?.processing.indications.total}
+                    label="Indications (cumulative)"
+                    count={figures?.indications.total ?? undefined}
                     color="purple"
                   />
                   <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-6">
                     <StatTile
                       label="Direction"
-                      value={systemData?.processing.indications.direction ?? 0}
+                      value={figures?.indications.direction}
                       color="purple"
                     />
                     <StatTile
                       label="Move"
-                      value={systemData?.processing.indications.move ?? 0}
+                      value={figures?.indications.move}
                       color="purple"
                     />
                     <StatTile
                       label="Active"
-                      value={systemData?.processing.indications.active ?? 0}
+                      value={figures?.indications.active}
                       color="purple"
                     />
                     <StatTile
                       label="Optimal"
-                      value={systemData?.processing.indications.optimal ?? 0}
+                      value={figures?.indications.optimal}
                       color="purple"
                     />
                     <StatTile
                       label="Auto"
-                      value={systemData?.processing.indications.auto ?? 0}
+                      value={figures?.indications.auto}
                       color="purple"
                     />
                     <StatTile
                       label="Trend"
-                      value={systemData?.processing.indications.trend ?? 0}
+                      value={figures?.indications.trend}
                       color="purple"
                     />
                   </div>
@@ -716,23 +629,23 @@ export function SystemDetailPanel() {
                   <SectionHeader
                     icon={<GitBranch className="h-3.5 w-3.5" />}
                     label="Strategies (Real)"
-                    count={systemData?.processing.strategies.total}
+                    count={figures?.strategies.real ?? undefined}
                     color="emerald"
                   />
                   <div className="grid grid-cols-3 gap-1.5">
                     <StatTile
                       label="Base (eval)"
-                      value={systemData?.processing.strategies.base ?? 0}
+                      value={figures?.strategies.base}
                       color="emerald"
                     />
                     <StatTile
                       label="Main (filter)"
-                      value={systemData?.processing.strategies.main ?? 0}
+                      value={figures?.strategies.main}
                       color="emerald"
                     />
                     <StatTile
                       label="Real (adjust)"
-                      value={systemData?.processing.strategies.real ?? 0}
+                      value={figures?.strategies.real}
                       color="emerald"
                     />
                   </div>
@@ -744,29 +657,24 @@ export function SystemDetailPanel() {
                 <div className="space-y-1.5">
                   <SectionHeader
                     icon={<TrendingUp className="h-3.5 w-3.5" />}
-                    label="Positions"
-                    count={systemData?.processing.positions.total}
+                    label="Open Positions"
                     color="green"
                   />
-                  <div className="grid grid-cols-4 gap-1">
+                  <div className="grid grid-cols-3 gap-1">
                     <StatTile
-                      label="Base"
-                      value={systemData?.processing.positions.base ?? 0}
+                      label="Pseudo (eval)"
+                      value={figures?.positions.pseudo}
+                      title="Open pseudo evaluation positions (shared by Base/Main/Real)"
                       color="green"
                     />
                     <StatTile
-                      label="Main"
-                      value={systemData?.processing.positions.main ?? 0}
+                      label="Real (active)"
+                      value={figures?.positions.real}
                       color="green"
                     />
                     <StatTile
-                      label="Real"
-                      value={systemData?.processing.positions.real ?? 0}
-                      color="green"
-                    />
-                    <StatTile
-                      label="Live"
-                      value={systemData?.processing.positions.live ?? 0}
+                      label="Live (exchange)"
+                      value={figures?.positions.live}
                       color="green"
                     />
                   </div>
@@ -784,17 +692,19 @@ export function SystemDetailPanel() {
                   <div className="grid grid-cols-3 gap-1.5">
                     <StatTile
                       label="Entries"
-                      value={systemData?.database.entries ?? 0}
+                      value={figures?.database.entries}
                       color="slate"
                     />
                     <StatTile
                       label="Size"
-                      value={`${(systemData?.database.sizeMb ?? 0).toFixed(2)} MB`}
+                      value={figures?.database.sizeMb == null ? null : `${figures.database.sizeMb.toFixed(2)} MB`}
                       color="slate"
                     />
                     <StatTile
-                      label="Migrations"
-                      value={systemData?.database.migrations ?? 0}
+                      label="Schema"
+                      value={figures?.database.schemaVersion == null ? null : `v${figures.database.schemaVersion}`}
+                      title="Applied Redis migration (schema) version"
+                      missingReason="No migration version recorded"
                       color="slate"
                     />
                   </div>
