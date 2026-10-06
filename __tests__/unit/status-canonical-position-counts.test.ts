@@ -42,19 +42,23 @@ describe("engine-progress aggregate is process-independent", () => {
   })
 })
 
-describe("overview panels label per-cycle snapshot counters distinctly from cumulative counters", () => {
-  test("QuickStart summary marks strategy funnel sizes as per-cycle", () => {
+// The functional overview's stage figures are the last-observed per-symbol
+// basket snapshot (rows retained up to 24 h with explicit freshness), not
+// "this cycle" counts; the former labels misdescribed them.
+describe("overview panels label snapshot counters distinctly from cumulative counters", () => {
+  test("QuickStart summary marks strategy funnel sizes as basket snapshots", () => {
     const ui = readFileSync(resolve(process.cwd(), "components/dashboard/quick-start-button.tsx"), "utf8")
-    expect(ui).toContain("Strategies Evaluated (this cycle):")
-    for (const stage of ["Base", "Main", "Real", "Live"]) expect(ui).toContain(`${stage} Strategies (this cycle):`)
+    expect(ui).toContain("Strategies Evaluated (basket snapshot):")
+    expect(ui).toContain("Sets (basket snapshot):")
+    expect(ui).not.toContain("(this cycle)")
     expect(ui).toContain("Indication Cycles (since engine start):")
     expect(ui).toContain("Strategy Cycles (since engine start):")
   })
 
   test("seed dialog no longer shows the indication cycle count under two different labels", () => {
     const ui = readFileSync(resolve(process.cwd(), "components/dashboard/seed-system-dialog.tsx"), "utf8")
-    expect(ui).toContain("Evaluations (this cycle)")
-    expect(ui).toContain("evaluationsProcessed: functionalOverview.counts?.strategyCycles || 0")
+    expect(ui).toContain("Evaluations (basket snapshot)")
+    expect(ui).toContain("{fmt(stats.data.strategyCycles)}")
     expect(ui).toContain('<div className="text-xs text-muted-foreground">Strategy Cycles (since start)</div>')
     expect(ui).toContain('<div className="text-xs text-muted-foreground">Indication Cycles (since start)</div>')
     expect(ui).not.toContain('>Evaluations</div>')
