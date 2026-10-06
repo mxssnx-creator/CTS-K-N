@@ -3341,7 +3341,10 @@ describe("requested regression guardrails", () => {
     expect(bingx).toContain("tradeService.tradeOrder")
     expect(bingx).toContain('recordSdkFallback("placeStopOrder"')
     expect(factory).toContain('connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk"')
-    expect(marketData).toContain("exchangeConnectorFactory.getOrCreateConnector(String(conn.id))")
+    // The stored connection's factory connector first; the credential-less
+    // public market-data connector only when production built none.
+    expect(marketData).toContain("const connector = await marketDataConnector(String(conn.id))")
+    expect(marketData).toContain("(await exchangeConnectorFactory.getOrCreateConnector(connectionId))\n    ?? (await exchangeConnectorFactory.getPublicMarketDataConnector(connectionId))")
     expect(engineManager).toContain('connectionId: this.connectionId')
     expect(connectionTests).toContain("exchangeConnectorFactory.getOrCreateConnector(connection.id)")
     expect(connectionTests).not.toContain("isTestnet: false, // Always mainnet")

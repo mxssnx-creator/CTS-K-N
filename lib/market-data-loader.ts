@@ -420,6 +420,17 @@ async function readSyntheticHistory(
 }
 
 /**
+ * The connection's trading connector, or — when it has no usable credentials
+ * and production builds none — a credential-less connector for the venue's
+ * public market data. A paper connection then prices on the real market
+ * instead of having no price at all.
+ */
+async function marketDataConnector(connectionId: string) {
+  return (await exchangeConnectorFactory.getOrCreateConnector(connectionId))
+    ?? (await exchangeConnectorFactory.getPublicMarketDataConnector(connectionId))
+}
+
+/**
  * Fetch real OHLCV data from exchange
  * Uses only the explicitly selected connection. An omitted scope is rejected
  * so a venue cannot silently publish into another connection's market-data
@@ -493,7 +504,7 @@ async function fetchRealMarketData(
           const canonicalSymbol = marketType === "forex"
             ? normalizeForexSymbol(symbol)
             : normalizeMarketSymbol(symbol, marketType)
-          const connector = await exchangeConnectorFactory.getOrCreateConnector(String(conn.id))
+          const connector = await marketDataConnector(String(conn.id))
           const sourceTimeframe = marketType === "forex" && /^1s(econd)?$/i.test(String(timeframe).trim())
             ? "M1"
             : timeframe
@@ -590,7 +601,7 @@ export async function loadRangeSecondsFromMinuteBars(
     const nowMs = Number(options.nowMs) || Date.now()
     const minutes = Math.min(RANGE_BACKFILL_MAX_MINUTES, Math.ceil((nowMs - startMs) / 60_000) + 2)
     const bars = await withMarketDataFetchDeadline(async () => {
-      const connector = await exchangeConnectorFactory.getOrCreateConnector(connectionId)
+      const connector = await marketDataConnector(connectionId)
       return connector ? connector.getOHLCV(canonicalSymbol, "1m", minutes) : null
     }, `Range backfill ${connectionId}:${canonicalSymbol}`)
     if (!Array.isArray(bars) || bars.length === 0) return []
