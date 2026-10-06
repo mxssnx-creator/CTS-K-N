@@ -217,6 +217,7 @@ route	methods	group	dynamic	max_duration_seconds	auth_signals	source
 /api/settings/export	GET	settings	force-dynamic		none-detected	app/api/settings/export/route.ts
 /api/settings/import	POST	settings	force-dynamic		none-detected	app/api/settings/import/route.ts
 /api/settings/indications/active-advanced	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/active-advanced/route.ts
+/api/settings/indications/auto	GET,PUT	settings	force-dynamic		none-detected	app/api/settings/indications/auto/route.ts
 /api/settings/indications/common	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/common/route.ts
 /api/settings/indications/main	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/main/route.ts
 /api/settings/indications/signal	GET,POST	settings	force-dynamic		none-detected	app/api/settings/indications/signal/route.ts

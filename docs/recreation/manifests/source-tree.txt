@@ -71,6 +71,7 @@ __tests__/unit/aggregate-sibling-close-grace.test.ts
 __tests__/unit/api-stats-fetcher.test.ts
 __tests__/unit/auth-runtime-secret.test.ts
 __tests__/unit/authoritative-snapshot-cache.test.ts
+__tests__/unit/auto-indication-settings-route.test.ts
 __tests__/unit/axis-default-engages.test.ts
 __tests__/unit/backtest-result-accounting.test.ts
 __tests__/unit/balanced-config-selection.test.ts
@@ -110,6 +111,7 @@ __tests__/unit/build-heap.test.ts
 __tests__/unit/bybit-connector-contract.test.ts
 __tests__/unit/cache-margin-leverage-setup.test.ts
 __tests__/unit/canonical-pipeline-admission.test.ts
+__tests__/unit/clear-progressions-consistency.test.ts
 __tests__/unit/clear-progressions-recovery.test.ts
 __tests__/unit/close-accounting-backfill.test.ts
 __tests__/unit/close-accounting-connections.test.ts
@@ -119,6 +121,7 @@ __tests__/unit/coherent-stage-thresholds.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
 __tests__/unit/connection-change-audit.test.ts
 __tests__/unit/connection-coordinator.test.ts
+__tests__/unit/connection-log-metrics.test.ts
 __tests__/unit/connection-rate-limiter-boundary.test.ts
 __tests__/unit/connection-recoordinator-concurrency.test.ts
 __tests__/unit/connection-refresh-storm.test.ts
@@ -127,6 +130,7 @@ __tests__/unit/connection-secret-status.test.ts
 __tests__/unit/connection-settings-live-state-route.test.ts
 __tests__/unit/connection-settings-merge-clamp.test.ts
 __tests__/unit/connection-stage-overview.test.ts
+__tests__/unit/connection-statistics-prehistoric-source.test.ts
 __tests__/unit/connection-symbol-aliases.test.ts
 __tests__/unit/connection-symbols.test.ts
 __tests__/unit/connection-test-stored-credentials.test.ts
@@ -141,6 +145,8 @@ __tests__/unit/cycle-diagnostic-timing.test.ts
 __tests__/unit/dangling-live-index.test.ts
 __tests__/unit/dashboard-event-polling.test.ts
 __tests__/unit/dashboard-main-connections.test.ts
+__tests__/unit/dashboard-workflow-keys.test.ts
+__tests__/unit/data-positions-pseudo-marking.test.ts
 __tests__/unit/database-validator-migration-contract.test.ts
 __tests__/unit/dca-backtest.test.ts
 __tests__/unit/dca-step-outcomes.test.ts
@@ -150,6 +156,7 @@ __tests__/unit/deferral-reason-visibility.test.ts
 __tests__/unit/deploy-keeps-runtime-up.test.ts
 __tests__/unit/deploy-readiness-transient-halt.test.ts
 __tests__/unit/design-theme-consistency.test.ts
+__tests__/unit/detailed-logs-position-counts.test.ts
 __tests__/unit/direct-trade-calculate-route.test.ts
 __tests__/unit/direct-trade-canonical-order.test.ts
 __tests__/unit/direct-trade-config-store.test.ts
@@ -187,6 +194,7 @@ __tests__/unit/drawdown-ratio-and-replay.test.ts
 __tests__/unit/dynamic-venue-max-leverage.test.ts
 __tests__/unit/empty-book-own-fingerprint.test.ts
 __tests__/unit/engine-event-bus-regression.test.ts
+__tests__/unit/engine-processing-dialog-requests.test.ts
 __tests__/unit/engine-progress-manager.test.ts
 __tests__/unit/engine-progression-log-coalescing.test.ts
 __tests__/unit/engine-progression-long-cycle.test.ts
@@ -194,6 +202,7 @@ __tests__/unit/engine-refresh-queue-claim.test.ts
 __tests__/unit/engine-refresh-queue-ttl.test.ts
 __tests__/unit/engine-settle-by-client-id.test.ts
 __tests__/unit/engine-state-mirror.test.ts
+__tests__/unit/engine-stats-progression-and-batching.test.ts
 __tests__/unit/engine-status-canonical-connections.test.ts
 __tests__/unit/engine-structured-logging.test.ts
 __tests__/unit/env-credential-loading.test.ts
@@ -216,6 +225,7 @@ __tests__/unit/foreign-order-ownership-matrix.test.ts
 __tests__/unit/foreign-position-isolation.test.ts
 __tests__/unit/forex-support.test.ts
 __tests__/unit/fresh-position-snapshot.test.ts
+__tests__/unit/functional-overview-basket.test.ts
 __tests__/unit/functional-overview-stage-snapshot.test.ts
 __tests__/unit/futures-connectors-contract.test.ts
 __tests__/unit/halt-retires-on-own-book.test.ts
@@ -315,7 +325,9 @@ __tests__/unit/market-data-synthetic-continuation.test.ts
 __tests__/unit/min-stop-loss-ratio.test.ts
 __tests__/unit/minimum-scales-with-variant.test.ts
 __tests__/unit/minute-scheduler-once-retry.test.ts
+__tests__/unit/missing-route-callers.test.ts
 __tests__/unit/monitor-live-health.test.ts
+__tests__/unit/monitoring-comprehensive-bounded.test.ts
 __tests__/unit/monitoring-stats-route.test.ts
 __tests__/unit/multi-range-coordination.test.ts
 __tests__/unit/navigation-and-pages.test.ts
@@ -329,6 +341,7 @@ __tests__/unit/order-quantity.test.ts
 __tests__/unit/orders-market-notional.test.ts
 __tests__/unit/orders-route-concurrency.test.ts
 __tests__/unit/orphaned-position-sweep.test.ts
+__tests__/unit/outcome-source-summary.test.ts
 __tests__/unit/overall-control-lifecycle.test.ts
 __tests__/unit/overall-control-orders.test.ts
 __tests__/unit/overall-mode-entry-check.test.ts
@@ -364,15 +377,18 @@ __tests__/unit/preset-optimizer.test.ts
 __tests__/unit/preset-pseudo-trailing-resilience.test.ts
 __tests__/unit/preset-type-config.test.ts
 __tests__/unit/preset-types-persistence.test.ts
+__tests__/unit/presets-route-persistence.test.ts
 __tests__/unit/production-continuity.test.ts
 __tests__/unit/production-deploy-init-state.test.ts
 __tests__/unit/production-start-shutdown.test.ts
 __tests__/unit/progression-live-snapshot.test.ts
 __tests__/unit/progression-lock-atomicity.test.ts
+__tests__/unit/progression-mirrored-counters.test.ts
 __tests__/unit/progression-operator-symbols.test.ts
 __tests__/unit/progression-order-aggregation.test.ts
 __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
+__tests__/unit/progression-stats-rows-and-lineage.test.ts
 __tests__/unit/protection-adopt-by-client-id.test.ts
 __tests__/unit/protection-floor-migration.test.ts
 __tests__/unit/protection-floors.test.ts
@@ -385,9 +401,11 @@ __tests__/unit/quickstart-bootstrap-state.test.ts
 __tests__/unit/quickstart-change-detection.test.ts
 __tests__/unit/quickstart-live-readiness.test.ts
 __tests__/unit/quickstart-ordering.test.ts
+__tests__/unit/quickstart-overview-snapshot.test.ts
 __tests__/unit/quickstart-timeouts.test.ts
 __tests__/unit/rate-limiter-queue.test.ts
 __tests__/unit/real-position-durability.test.ts
+__tests__/unit/real-results-view.test.ts
 __tests__/unit/real-stage-accounting.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/realtime-cycle-phase-timing.test.ts
@@ -424,6 +442,7 @@ __tests__/unit/runtime-telemetry-compatibility.test.ts
 __tests__/unit/runtime-telemetry-interval.test.ts
 __tests__/unit/security-hardening-encryption.test.ts
 __tests__/unit/security-stop-projection.test.ts
+__tests__/unit/seed-system-monitor.test.ts
 __tests__/unit/serialized-response-swr.test.ts
 __tests__/unit/server-autoboot-script.test.ts
 __tests__/unit/server-fixes-halts-accounting.test.ts
@@ -431,8 +450,11 @@ __tests__/unit/set-key-casing-symmetry.test.ts
 __tests__/unit/sets-compaction-settings.test.ts
 __tests__/unit/settings-backup.test.ts
 __tests__/unit/settings-continuity.test.ts
+__tests__/unit/settings-dead-controls.test.ts
 __tests__/unit/settings-hot-reload.test.ts
 __tests__/unit/settings-propagation.test.ts
+__tests__/unit/settings-save-symbol-selection.test.ts
+__tests__/unit/settings-sync-events.test.ts
 __tests__/unit/settled-rows-auto-close.test.ts
 __tests__/unit/shared-slot-post-entry-audit.test.ts
 __tests__/unit/short-range-grid.test.ts
@@ -468,6 +490,7 @@ __tests__/unit/startup-coordinator-cleanup.test.ts
 __tests__/unit/startup-global-liveness.test.ts
 __tests__/unit/startup-validation-runtime-health.test.ts
 __tests__/unit/state-switch-coordination.test.ts
+__tests__/unit/statistics-families-route.test.ts
 __tests__/unit/statistics-history-snapshot.test.ts
 __tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
@@ -497,6 +520,7 @@ __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/stuck-placement-sweeper.test.ts
 __tests__/unit/symbol-capacity.test.ts
 __tests__/unit/symbol-selection-ownership.test.ts
+__tests__/unit/system-detail-panel-sources.test.ts
 __tests__/unit/system-inject-credentials.test.ts
 __tests__/unit/system-log-overload.test.ts
 __tests__/unit/system-monitoring-route.test.ts
@@ -508,11 +532,15 @@ __tests__/unit/theme-tokens-dark-mode.test.ts
 __tests__/unit/top-symbols-high-scale.test.ts
 __tests__/unit/trade-direction.test.ts
 __tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
+__tests__/unit/trade-engine-connection-status-route.test.ts
 __tests__/unit/trade-engine-start-all-accounting.test.ts
 __tests__/unit/trade-engine-start-lock.test.ts
+__tests__/unit/trade-engine-status-degraded.test.ts
 __tests__/unit/trade-engine-status-healing-race.test.ts
 __tests__/unit/trade-engine-status-settings.test.ts
 __tests__/unit/trade-history-attribution.test.ts
+__tests__/unit/trade-history-ledger-statistics-paging.test.ts
+__tests__/unit/trade-history-merge.test.ts
 __tests__/unit/trade-history-own-scope.test.ts
 __tests__/unit/trade-history-pending-and-sticky.test.ts
 __tests__/unit/trade-history-stability.test.ts
@@ -611,6 +639,7 @@ app/api/debug/redis-state/route.ts
 app/api/debug/route.ts
 app/api/debug/system-verification/route.ts
 app/api/engine-logs/route.ts
+app/api/engine-metrics/engine-performance.ts
 app/api/engine-metrics/route.ts
 app/api/engine-progress/route.ts
 app/api/engine-symbols/route.ts
@@ -765,6 +794,7 @@ app/api/settings/database-status/route.ts
 app/api/settings/export/route.ts
 app/api/settings/import/route.ts
 app/api/settings/indications/active-advanced/route.ts
+app/api/settings/indications/auto/route.ts
 app/api/settings/indications/common/route.ts
 app/api/settings/indications/main/route.ts
 app/api/settings/indications/signal/route.ts
@@ -938,6 +968,7 @@ components/dashboard/add-active-connection-dialog.tsx
 components/dashboard/compact-trading-overview.tsx
 components/dashboard/connection-card.tsx
 components/dashboard/connection-detailed-log-dialog.tsx
+components/dashboard/connection-log-metrics.ts
 components/dashboard/connection-logs-panel.tsx
 components/dashboard/connection-state-tabs.tsx
 components/dashboard/dashboard-active-connections-manager.tsx
@@ -973,19 +1004,24 @@ components/dashboard/quickstart-full-system-test-dialog.tsx
 components/dashboard/quickstart-logs-panel.tsx
 components/dashboard/quickstart-options-bar.tsx
 components/dashboard/quickstart-overview-dialog.tsx
+components/dashboard/quickstart-overview-snapshot.ts
 components/dashboard/quickstart-section.tsx
 components/dashboard/quickstart-test-procedure-dialog.tsx
+components/dashboard/real-results-card.tsx
+components/dashboard/real-results-view.ts
 components/dashboard/real-time-ticker.tsx
-components/dashboard/risk-settings.tsx
+components/dashboard/seed-system-data.ts
 components/dashboard/seed-system-dialog.tsx
 components/dashboard/statistics-overview-v2.tsx
 components/dashboard/strategies-config-card.tsx
 components/dashboard/strategies-overview.tsx
 components/dashboard/strategy-pipeline.tsx
 components/dashboard/symbol-settings-card.tsx
+components/dashboard/system-detail-data.ts
 components/dashboard/system-detail-panel.tsx
 components/dashboard/system-monitoring-panel.tsx
 components/dashboard/system-overview.tsx
+components/dashboard/trade-history-merge.ts
 components/dashboard/trade-history-table.tsx
 components/dashboard/volatility-screener-card.tsx
 components/dashboard/volume-configuration-panel.tsx
@@ -1554,6 +1590,7 @@ lib/multi-range-coordination.ts
 lib/orchestrated-verifier-safety.ts
 lib/order-executor.ts
 lib/order-quantity.ts
+lib/outcome-source-summary.ts
 lib/overall-control-orders.ts
 lib/overview-poller.ts
 lib/performance-dashboard.ts
@@ -1646,6 +1683,7 @@ lib/settings-backup.ts
 lib/settings-coordinator.ts
 lib/settings-diff.ts
 lib/settings-storage.ts
+lib/settings-sync-events.ts
 lib/short-range-grid.ts
 lib/signal-analytics.ts
 lib/signal-config-matrix.ts

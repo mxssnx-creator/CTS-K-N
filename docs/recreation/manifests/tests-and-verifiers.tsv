@@ -58,6 +58,7 @@ unit	__tests__/unit/aggregate-sibling-close-grace.test.ts
 unit	__tests__/unit/api-stats-fetcher.test.ts
 unit	__tests__/unit/auth-runtime-secret.test.ts
 unit	__tests__/unit/authoritative-snapshot-cache.test.ts
+unit	__tests__/unit/auto-indication-settings-route.test.ts
 unit	__tests__/unit/axis-default-engages.test.ts
 unit	__tests__/unit/backtest-result-accounting.test.ts
 unit	__tests__/unit/balanced-config-selection.test.ts
@@ -97,6 +98,7 @@ unit	__tests__/unit/build-heap.test.ts
 unit	__tests__/unit/bybit-connector-contract.test.ts
 unit	__tests__/unit/cache-margin-leverage-setup.test.ts
 unit	__tests__/unit/canonical-pipeline-admission.test.ts
+unit	__tests__/unit/clear-progressions-consistency.test.ts
 unit	__tests__/unit/clear-progressions-recovery.test.ts
 unit	__tests__/unit/close-accounting-backfill.test.ts
 unit	__tests__/unit/close-accounting-connections.test.ts
@@ -106,6 +108,7 @@ unit	__tests__/unit/coherent-stage-thresholds.test.ts
 unit	__tests__/unit/connection-card-stage-overview-contract.test.ts
 unit	__tests__/unit/connection-change-audit.test.ts
 unit	__tests__/unit/connection-coordinator.test.ts
+unit	__tests__/unit/connection-log-metrics.test.ts
 unit	__tests__/unit/connection-rate-limiter-boundary.test.ts
 unit	__tests__/unit/connection-recoordinator-concurrency.test.ts
 unit	__tests__/unit/connection-refresh-storm.test.ts
@@ -114,6 +117,7 @@ unit	__tests__/unit/connection-secret-status.test.ts
 unit	__tests__/unit/connection-settings-live-state-route.test.ts
 unit	__tests__/unit/connection-settings-merge-clamp.test.ts
 unit	__tests__/unit/connection-stage-overview.test.ts
+unit	__tests__/unit/connection-statistics-prehistoric-source.test.ts
 unit	__tests__/unit/connection-symbol-aliases.test.ts
 unit	__tests__/unit/connection-symbols.test.ts
 unit	__tests__/unit/connection-test-stored-credentials.test.ts
@@ -128,6 +132,8 @@ unit	__tests__/unit/cycle-diagnostic-timing.test.ts
 unit	__tests__/unit/dangling-live-index.test.ts
 unit	__tests__/unit/dashboard-event-polling.test.ts
 unit	__tests__/unit/dashboard-main-connections.test.ts
+unit	__tests__/unit/dashboard-workflow-keys.test.ts
+unit	__tests__/unit/data-positions-pseudo-marking.test.ts
 unit	__tests__/unit/database-validator-migration-contract.test.ts
 unit	__tests__/unit/dca-backtest.test.ts
 unit	__tests__/unit/dca-step-outcomes.test.ts
@@ -137,6 +143,7 @@ unit	__tests__/unit/deferral-reason-visibility.test.ts
 unit	__tests__/unit/deploy-keeps-runtime-up.test.ts
 unit	__tests__/unit/deploy-readiness-transient-halt.test.ts
 unit	__tests__/unit/design-theme-consistency.test.ts
+unit	__tests__/unit/detailed-logs-position-counts.test.ts
 unit	__tests__/unit/direct-trade-calculate-route.test.ts
 unit	__tests__/unit/direct-trade-canonical-order.test.ts
 unit	__tests__/unit/direct-trade-config-store.test.ts
@@ -174,6 +181,7 @@ unit	__tests__/unit/drawdown-ratio-and-replay.test.ts
 unit	__tests__/unit/dynamic-venue-max-leverage.test.ts
 unit	__tests__/unit/empty-book-own-fingerprint.test.ts
 unit	__tests__/unit/engine-event-bus-regression.test.ts
+unit	__tests__/unit/engine-processing-dialog-requests.test.ts
 unit	__tests__/unit/engine-progress-manager.test.ts
 unit	__tests__/unit/engine-progression-log-coalescing.test.ts
 unit	__tests__/unit/engine-progression-long-cycle.test.ts
@@ -181,6 +189,7 @@ unit	__tests__/unit/engine-refresh-queue-claim.test.ts
 unit	__tests__/unit/engine-refresh-queue-ttl.test.ts
 unit	__tests__/unit/engine-settle-by-client-id.test.ts
 unit	__tests__/unit/engine-state-mirror.test.ts
+unit	__tests__/unit/engine-stats-progression-and-batching.test.ts
 unit	__tests__/unit/engine-status-canonical-connections.test.ts
 unit	__tests__/unit/engine-structured-logging.test.ts
 unit	__tests__/unit/env-credential-loading.test.ts
@@ -203,6 +212,7 @@ unit	__tests__/unit/foreign-order-ownership-matrix.test.ts
 unit	__tests__/unit/foreign-position-isolation.test.ts
 unit	__tests__/unit/forex-support.test.ts
 unit	__tests__/unit/fresh-position-snapshot.test.ts
+unit	__tests__/unit/functional-overview-basket.test.ts
 unit	__tests__/unit/functional-overview-stage-snapshot.test.ts
 unit	__tests__/unit/futures-connectors-contract.test.ts
 unit	__tests__/unit/halt-retires-on-own-book.test.ts
@@ -302,7 +312,9 @@ unit	__tests__/unit/market-data-synthetic-continuation.test.ts
 unit	__tests__/unit/min-stop-loss-ratio.test.ts
 unit	__tests__/unit/minimum-scales-with-variant.test.ts
 unit	__tests__/unit/minute-scheduler-once-retry.test.ts
+unit	__tests__/unit/missing-route-callers.test.ts
 unit	__tests__/unit/monitor-live-health.test.ts
+unit	__tests__/unit/monitoring-comprehensive-bounded.test.ts
 unit	__tests__/unit/monitoring-stats-route.test.ts
 unit	__tests__/unit/multi-range-coordination.test.ts
 unit	__tests__/unit/navigation-and-pages.test.ts
@@ -316,6 +328,7 @@ unit	__tests__/unit/order-quantity.test.ts
 unit	__tests__/unit/orders-market-notional.test.ts
 unit	__tests__/unit/orders-route-concurrency.test.ts
 unit	__tests__/unit/orphaned-position-sweep.test.ts
+unit	__tests__/unit/outcome-source-summary.test.ts
 unit	__tests__/unit/overall-control-lifecycle.test.ts
 unit	__tests__/unit/overall-control-orders.test.ts
 unit	__tests__/unit/overall-mode-entry-check.test.ts
@@ -351,15 +364,18 @@ unit	__tests__/unit/preset-optimizer.test.ts
 unit	__tests__/unit/preset-pseudo-trailing-resilience.test.ts
 unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/preset-types-persistence.test.ts
+unit	__tests__/unit/presets-route-persistence.test.ts
 unit	__tests__/unit/production-continuity.test.ts
 unit	__tests__/unit/production-deploy-init-state.test.ts
 unit	__tests__/unit/production-start-shutdown.test.ts
 unit	__tests__/unit/progression-live-snapshot.test.ts
 unit	__tests__/unit/progression-lock-atomicity.test.ts
+unit	__tests__/unit/progression-mirrored-counters.test.ts
 unit	__tests__/unit/progression-operator-symbols.test.ts
 unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
+unit	__tests__/unit/progression-stats-rows-and-lineage.test.ts
 unit	__tests__/unit/protection-adopt-by-client-id.test.ts
 unit	__tests__/unit/protection-floor-migration.test.ts
 unit	__tests__/unit/protection-floors.test.ts
@@ -372,9 +388,11 @@ unit	__tests__/unit/quickstart-bootstrap-state.test.ts
 unit	__tests__/unit/quickstart-change-detection.test.ts
 unit	__tests__/unit/quickstart-live-readiness.test.ts
 unit	__tests__/unit/quickstart-ordering.test.ts
+unit	__tests__/unit/quickstart-overview-snapshot.test.ts
 unit	__tests__/unit/quickstart-timeouts.test.ts
 unit	__tests__/unit/rate-limiter-queue.test.ts
 unit	__tests__/unit/real-position-durability.test.ts
+unit	__tests__/unit/real-results-view.test.ts
 unit	__tests__/unit/real-stage-accounting.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
 unit	__tests__/unit/realtime-cycle-phase-timing.test.ts
@@ -411,6 +429,7 @@ unit	__tests__/unit/runtime-telemetry-compatibility.test.ts
 unit	__tests__/unit/runtime-telemetry-interval.test.ts
 unit	__tests__/unit/security-hardening-encryption.test.ts
 unit	__tests__/unit/security-stop-projection.test.ts
+unit	__tests__/unit/seed-system-monitor.test.ts
 unit	__tests__/unit/serialized-response-swr.test.ts
 unit	__tests__/unit/server-autoboot-script.test.ts
 unit	__tests__/unit/server-fixes-halts-accounting.test.ts
@@ -418,8 +437,11 @@ unit	__tests__/unit/set-key-casing-symmetry.test.ts
 unit	__tests__/unit/sets-compaction-settings.test.ts
 unit	__tests__/unit/settings-backup.test.ts
 unit	__tests__/unit/settings-continuity.test.ts
+unit	__tests__/unit/settings-dead-controls.test.ts
 unit	__tests__/unit/settings-hot-reload.test.ts
 unit	__tests__/unit/settings-propagation.test.ts
+unit	__tests__/unit/settings-save-symbol-selection.test.ts
+unit	__tests__/unit/settings-sync-events.test.ts
 unit	__tests__/unit/settled-rows-auto-close.test.ts
 unit	__tests__/unit/shared-slot-post-entry-audit.test.ts
 unit	__tests__/unit/short-range-grid.test.ts
@@ -455,6 +477,7 @@ unit	__tests__/unit/startup-coordinator-cleanup.test.ts
 unit	__tests__/unit/startup-global-liveness.test.ts
 unit	__tests__/unit/startup-validation-runtime-health.test.ts
 unit	__tests__/unit/state-switch-coordination.test.ts
+unit	__tests__/unit/statistics-families-route.test.ts
 unit	__tests__/unit/statistics-history-snapshot.test.ts
 unit	__tests__/unit/statistics-overview-current-counts.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
@@ -484,6 +507,7 @@ unit	__tests__/unit/strategy-volume-coordination.test.ts
 unit	__tests__/unit/stuck-placement-sweeper.test.ts
 unit	__tests__/unit/symbol-capacity.test.ts
 unit	__tests__/unit/symbol-selection-ownership.test.ts
+unit	__tests__/unit/system-detail-panel-sources.test.ts
 unit	__tests__/unit/system-inject-credentials.test.ts
 unit	__tests__/unit/system-log-overload.test.ts
 unit	__tests__/unit/system-monitoring-route.test.ts
@@ -495,11 +519,15 @@ unit	__tests__/unit/theme-tokens-dark-mode.test.ts
 unit	__tests__/unit/top-symbols-high-scale.test.ts
 unit	__tests__/unit/trade-direction.test.ts
 unit	__tests__/unit/trade-engine-auto-start-refresh-queue.test.ts
+unit	__tests__/unit/trade-engine-connection-status-route.test.ts
 unit	__tests__/unit/trade-engine-start-all-accounting.test.ts
 unit	__tests__/unit/trade-engine-start-lock.test.ts
+unit	__tests__/unit/trade-engine-status-degraded.test.ts
 unit	__tests__/unit/trade-engine-status-healing-race.test.ts
 unit	__tests__/unit/trade-engine-status-settings.test.ts
 unit	__tests__/unit/trade-history-attribution.test.ts
+unit	__tests__/unit/trade-history-ledger-statistics-paging.test.ts
+unit	__tests__/unit/trade-history-merge.test.ts
 unit	__tests__/unit/trade-history-own-scope.test.ts
 unit	__tests__/unit/trade-history-pending-and-sticky.test.ts
 unit	__tests__/unit/trade-history-stability.test.ts
