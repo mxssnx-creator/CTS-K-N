@@ -21,7 +21,11 @@ describe("observation report", () => {
     writeFileSync(join(dir, "run.json"), JSON.stringify({ connectionId: "bingx-x02", symbols: ["BTCUSDT", "ETHUSDT"], prehistoricHours: 24, startedAt: at(0) }))
     writeFileSync(join(dir, "events.jsonl"), [
       { at: at(0), type: "quickstart" },
-      { at: at(60_000), type: "prehistoric_complete", afterMs: 60_000, prehistoric: { complete: true, processed: 2, total: 2, profitFactor: 1.4, profitFactorCount: 30 } },
+      {
+        at: at(60_000), type: "prehistoric_complete", afterMs: 60_000,
+        prehistoric: { complete: true, processed: 2, total: 2, profitFactor: 1.4, profitFactorCount: 30 },
+        marketData: { BTCUSDT: { source: "bingx" }, ETHUSDT: { source: "bingx" } },
+      },
     ].map((line) => JSON.stringify(line)).join("\n"))
     const stage = (n: number) => ({ evaluated: n, passed: 1 })
     const sample = (ms: number, realtimeMs: number, rssMb: number) => ({
@@ -42,6 +46,7 @@ describe("observation report", () => {
       { id: "open", symbol: "BTCUSDT", realizedPnl: null, closedAt: 0 },
     ]))
     writeFileSync(join(dir, "summary.json"), JSON.stringify({ realtimeObservedMs: 90_000 }))
+    writeFileSync(join(dir, "stats-final.json"), JSON.stringify({ historic: { rangeHours: 24, dataCoverageHours: 24 } }))
     writeFileSync(join(dir, "coverage-final.json"), JSON.stringify({ errors: 0, warnings: 1, findings: [{ severity: "warn", area: "x", message: "slow" }] }))
     execFileSync(process.execPath, ["scripts/build-observation-report.mjs", dir, out, "--title", "Fixture run"], { cwd: process.cwd() })
   })
@@ -69,9 +74,28 @@ describe("observation report", () => {
     expect(summary.rssGrowthMb).toBe(100)
   })
 
+  test("synthetic prices or missing coverage fail the market data criterion", () => {
+    const synthetic = mkdtempSync(join(tmpdir(), "obs-syn-"))
+    const syntheticOut = mkdtempSync(join(tmpdir(), "obs-syn-out-"))
+    try {
+      for (const name of ["events.jsonl", "samples.jsonl", "simulated-trades.json", "summary.json", "coverage-final.json"]) {
+        writeFileSync(join(synthetic, name), readFileSync(join(dir, name)))
+      }
+      writeFileSync(join(synthetic, "run.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, "run.json"), "utf8")), marketDataMode: "synthetic" }))
+      execFileSync(process.execPath, ["scripts/build-observation-report.mjs", synthetic, syntheticOut], { cwd: process.cwd() })
+      const summary = JSON.parse(readFileSync(join(syntheticOut, "summary.json"), "utf8"))
+      const criterion = summary.criteria.find((entry: any) => entry.name === "Prehistoric range covered by real market data")
+      expect(criterion.pass).toBe(false)
+      expect(summary.passed).toBe(false)
+    } finally {
+      rmSync(synthetic, { recursive: true, force: true })
+      rmSync(syntheticOut, { recursive: true, force: true })
+    }
+  })
+
   test("the report is self-contained HTML with the verdict and checksums", () => {
     const html = readFileSync(join(out, "report.html"), "utf8")
-    expect(html).toContain("PASS: 8/8 acceptance criteria met.")
+    expect(html).toContain("PASS: 9/9 acceptance criteria met.")
     expect(html).toContain("<svg")
     expect(html).not.toMatch(/<script[^>]+src=/)
     const sums = readFileSync(join(out, "SHA256SUMS"), "utf8")

@@ -167,6 +167,11 @@ const rssPeak = rssValues.length > 0 ? Math.max(...rssValues) : null
 const engineStopped = realtimeSamples.filter((sample) => sample.engineRunning === false).length
 const prehistoric = prehistoricEvent?.prehistoric || statsAfterPrehistoric?.historic || {}
 const symbolsTotal = Array.isArray(run.symbols) ? run.symbols.length : null
+const marketDataSources = prehistoricEvent?.marketData && typeof prehistoricEvent.marketData === "object" ? prehistoricEvent.marketData : {}
+const sourceNames = Object.values(marketDataSources).map((entry) => String(entry?.source ?? "none"))
+// The coverage figure is written with the run's last-run metadata, which can
+// land just after the completion flag the harness reacts to.
+const coverageHours = Number(statsAfterPrehistoric?.historic?.dataCoverageHours ?? statsFinal?.historic?.dataCoverageHours)
 const historicProcessed = Number(prehistoric.processed ?? prehistoric.symbolsProcessed) || 0
 const historicTotal = Number(prehistoric.total ?? prehistoric.symbolsTotal) || symbolsTotal || 0
 
@@ -179,6 +184,15 @@ const criteria = [
     detail: prehistoricEvent
       ? `${historicProcessed}/${historicTotal} symbols (${symbolsTotal ?? "—"} requested) after ${fmtDuration(prehistoricEvent.afterMs)}`
       : "not completed",
+  },
+  {
+    name: "Prehistoric range covered by real market data",
+    pass: run.marketDataMode === "synthetic"
+      ? false
+      : sourceNames.length > 0 && sourceNames.every((name) => name !== "synthetic" && name !== "none" && name !== "null") &&
+        finite(coverageHours) && coverageHours >= 0.95 * Number(run.prehistoricHours || 0),
+    detail: `${finite(coverageHours) ? coverageHours.toFixed(2) : "—"} of ${run.prehistoricHours ?? "—"} h with data; sources ${[...new Set(sourceNames)].join(", ") || "—"}` +
+      (run.marketDataMode === "synthetic" ? " (synthetic fixture run)" : ""),
   },
   {
     name: "Every stage evaluated Sets in the realtime phase",
