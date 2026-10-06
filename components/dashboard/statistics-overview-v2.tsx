@@ -175,9 +175,9 @@ interface CompactStats {
     // Coordination fan-in
     mirroredSetCount: number
     mirroredSets: Array<{ setKey: string; count: number }>
-    resolution: "pseudo" | "real-fallback" | "unresolved"
+    resolution: "lineage" | "pseudo" | "real-fallback" | "unresolved"
   }>
-  liveResolution: { pseudo: number; realFallback: number; unresolved: number }
+  liveResolution: { lineage: number; pseudo: number; realFallback: number; unresolved: number }
   // ── Active Progressing (sets / trackings / positions) ──────────────
   // Per-type indication and per-stage strategy view fed from the
   // /stats `activeProgressing` block. Kept as flexible name→row maps
@@ -313,7 +313,7 @@ const EMPTY: CompactStats = {
   liveSecurityStopsArmed: 0,
   liveSecurityStopsMissing: 0,
   livePositions: [],
-  liveResolution: { pseudo: 0, realFallback: 0, unresolved: 0 },
+  liveResolution: { lineage: 0, pseudo: 0, realFallback: 0, unresolved: 0 },
   performanceTiers: {
     base:  buildEmptyTier(false), main: buildEmptyTier(false),
     real:  buildEmptyTier(false), live: buildEmptyTier(true),
@@ -376,7 +376,7 @@ function ExchangePositionRow({
       : primarySet.setKey
     : "—"
   const resTone =
-    lp.resolution === "pseudo"
+    lp.resolution === "lineage" || lp.resolution === "pseudo"
       ? "text-emerald-700"
       : lp.resolution === "real-fallback"
         ? "text-amber-700"
@@ -496,21 +496,25 @@ function ExchangePositionRow({
           )}
           <span
             className={`px-1 rounded text-[8px] font-semibold ${
-              lp.resolution === "pseudo"
+              lp.resolution === "lineage" || lp.resolution === "pseudo"
                 ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
                 : lp.resolution === "real-fallback"
                   ? "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
                   : "bg-muted text-muted-foreground"
             }`}
             title={
-              lp.resolution === "pseudo"
+              lp.resolution === "lineage"
+                ? "Resolved via the position's own Set lineage (exact)"
+                : lp.resolution === "pseudo"
                 ? "Resolved via pseudo ledger (exact Base-stage match)"
                 : lp.resolution === "real-fallback"
                   ? "Resolved via Real stage (Base row already closed)"
                   : "No upstream Set matched — investigate orphaned position"
             }
           >
-            {lp.resolution === "pseudo"
+            {lp.resolution === "lineage"
+              ? "L"
+              : lp.resolution === "pseudo"
               ? "P"
               : lp.resolution === "real-fallback"
                 ? "R"
@@ -1039,7 +1043,7 @@ export function StatisticsOverviewV2() {
                   realPositionId:        p.realPositionId ? String(p.realPositionId) : undefined,
                   mirroredSetCount:      Number(p.mirroredSetCount) || (Array.isArray(p.mirroredSets) ? p.mirroredSets.length : 0),
                   mirroredSets:          Array.isArray(p.mirroredSets) ? p.mirroredSets : [],
-                  resolution:            (p.resolution === "real-fallback" || p.resolution === "unresolved" ? p.resolution : "pseudo") as "pseudo" | "real-fallback" | "unresolved",
+                  resolution:            (p.resolution === "lineage" || p.resolution === "real-fallback" || p.resolution === "unresolved" ? p.resolution : "pseudo") as "lineage" | "pseudo" | "real-fallback" | "unresolved",
                 }]
               })
             : []
@@ -1070,6 +1074,7 @@ export function StatisticsOverviewV2() {
               return acc
             }, { list: [], seen: new Map<string, number>() }).list,
           liveResolution: {
+            lineage:      Number(opLive.resolution?.lineage)      || 0,
             pseudo:       Number(opLive.resolution?.pseudo)       || 0,
             realFallback: Number(opLive.resolution?.realFallback) || 0,
             unresolved:   Number(opLive.resolution?.unresolved)   || 0,
@@ -1777,6 +1782,7 @@ export function StatisticsOverviewV2() {
                                     (hover for the full list with per-
                                     Set pseudo-position count)
               • resolution badge — where the Set match came from:
+                                    L (the row's own Set lineage, exact) /
                                     P (pseudo, exact) /
                                     R (real-fallback) /
                                     ? (unresolved). */}
@@ -1788,12 +1794,13 @@ export function StatisticsOverviewV2() {
                 className="text-[9px] tabular-nums"
                 title={
                   `Set-resolution provenance:\n` +
-                  `• P ${stats.liveResolution.pseudo} pseudo       (exact Base-ledger match — authoritative)\n` +
+                  `• L ${stats.liveResolution.lineage} lineage      (the position's own Set keys — authoritative)\n` +
+                  `• P ${stats.liveResolution.pseudo} pseudo       (exact Base-ledger match, legacy rows)\n` +
                   `• R ${stats.liveResolution.realFallback} real-fallback (Base row closed — resolved via Real-stage)\n` +
                   `• ? ${stats.liveResolution.unresolved} unresolved  (no upstream match — investigate)`
                 }
               >
-                P {stats.liveResolution.pseudo} &middot; R {stats.liveResolution.realFallback} &middot; ? {stats.liveResolution.unresolved}
+                L {stats.liveResolution.lineage} &middot; P {stats.liveResolution.pseudo} &middot; R {stats.liveResolution.realFallback} &middot; ? {stats.liveResolution.unresolved}
               </span>
             </div>
             <div className="space-y-1">

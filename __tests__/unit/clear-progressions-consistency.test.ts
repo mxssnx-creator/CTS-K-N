@@ -77,6 +77,10 @@ describe("Reset DB keeps trading records and clears progression consistently", (
       await client.hset(`results:ledger:v3:${ID}:entries`, { "pos-1": JSON.stringify({ id: "pos-1" }) })
       await client.hset(`results:ledger:v3:${ID}:meta`, { complete: "1", keys: "1" })
       await client.sadd(`results:ledger:v3:${ID}:ids`, "pos-1")
+      // Settled real results per Set (exchange-only rings).
+      await client.lpush(`strategy_set_live_ring:${ID}:BTCUSDT:direction:long`, "1|0|0|1|0.1")
+      await client.sadd(`strategy_set_live_close_ids:${ID}`, "pos-1|BTCUSDT:direction:long")
+      await client.hset(`strategy_set_live_closed_counts:${ID}`, { "BTCUSDT:direction:long": "1" })
       // Another project on the same Redis DB.
       await client.set("cts-ga:state", "foreign")
 
@@ -101,6 +105,9 @@ describe("Reset DB keeps trading records and clears progression consistently", (
       expect(await client.hgetall(`results:ledger:v3:${ID}:entries`)).toHaveProperty("pos-1")
       expect(await client.hgetall(`results:ledger:v3:${ID}:meta`)).toMatchObject({ complete: "1" })
       expect(await client.sismember(`results:ledger:v3:${ID}:ids`, "pos-1")).toBe(1)
+      expect(await client.lrange(`strategy_set_live_ring:${ID}:BTCUSDT:direction:long`, 0, -1)).toEqual(["1|0|0|1|0.1"])
+      expect(await client.sismember(`strategy_set_live_close_ids:${ID}`, "pos-1|BTCUSDT:direction:long")).toBe(1)
+      expect(await client.hgetall(`strategy_set_live_closed_counts:${ID}`)).toEqual({ "BTCUSDT:direction:long": "1" })
       expect(await client.get("cts-ga:state")).toBe("foreign")
     } finally {
       await rm(dir, { recursive: true, force: true })

@@ -121,6 +121,11 @@ const PROTECTED_PREFIXES = [
   // missing rows, and real trading records must outlive a progression reset.
   "live_positions:",      // Durable position hashes (live_positions:{connId}:{id})
   "results:ledger:",      // Results ledger: complete trade history and its indexes
+  // Exchange-only Set results (lib/live-set-outcomes.ts): settled real closes
+  // the coordinator judges live Sets by — trading records, not runtime state.
+  "strategy_set_live_ring:",
+  "strategy_set_live_close_ids:",
+  "strategy_set_live_closed_counts:",
 ] as const
 
 // Keys of co-located projects on the same Redis DB (cts-ga:, cts-g:; see
