@@ -2,8 +2,29 @@ import { type NextRequest, NextResponse } from "next/server"
 import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
+import { ProgressionStateManager } from "@/lib/progression-state-manager"
 
 export const dynamic = "force-dynamic"
+
+const READ_BATCH_SIZE = 250
+
+// Count the open rows of a pseudo-position index. One awaited HGETALL per
+// position serialized every poll behind the engine; read in parallel batches.
+async function countOpenRows(
+  redis: any,
+  indexKey: string,
+  rowKey: (id: string) => string,
+): Promise<number> {
+  const ids = await scanRedisSetMembers(redis, indexKey, { count: 250 }).catch(() => [] as string[])
+  let open = 0
+  for (let offset = 0; offset < ids.length; offset += READ_BATCH_SIZE) {
+    const rows = await Promise.all(ids.slice(offset, offset + READ_BATCH_SIZE).map((id) =>
+      redis.hgetall(rowKey(id)).catch(() => null),
+    ))
+    open += rows.filter((row) => (row as Record<string, any> | null)?.status === "open").length
+  }
+  return open
+}
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url)
@@ -16,10 +37,12 @@ export async function GET(req: NextRequest) {
     await initRedis()
     const redis = getRedisClient()
 
-    // ── 1. Read live cycle counts from progression:{connId} hash ──────────────
-    // This hash is updated EVERY indication cycle, so it is always current.
+    // ── 1. Read live cycle counts from the progression hashes ─────────────────
+    // Updated EVERY cycle. The long-lived engine writes the engine-scoped hash,
+    // other writers the legacy progression:{connId}; reading only the legacy
+    // one missed the engine's counters. Same merge as getProgressionState.
     const [progHashRaw, baseDetailRaw, realDetailRaw] = await Promise.all([
-      redis.hgetall(`progression:${connectionId}`).catch(() => null),
+      ProgressionStateManager.getMergedProgressionHash(connectionId).catch(() => null),
       redis.hgetall(`strategy_detail:${connectionId}:base`).catch(() => null),
       redis.hgetall(`strategy_detail:${connectionId}:real`).catch(() => null),
     ])
@@ -123,27 +146,19 @@ export async function GET(req: NextRequest) {
     //   pseudo_position:{connectionId}:{id}  → Redis hash per position
     let positionsCount = 0
     try {
-      const posIds = await scanRedisSetMembers(
+      positionsCount = await countOpenRows(
         redis,
         `pseudo_positions:${connectionId}`,
-        { count: 250 },
+        (posId) => `pseudo_position:${connectionId}:${posId}`,
       )
-      for (const posId of posIds) {
-        const hash = await redis.hgetall(`pseudo_position:${connectionId}:${posId}`) || {}
-        if (hash.status === "open") positionsCount++
-      }
       // Also check stage-specific position sets
       if (positionsCount === 0) {
         for (const stage of ["base", "main", "real", "live"]) {
-          const stageIds = await scanRedisSetMembers(
+          positionsCount += await countOpenRows(
             redis,
             `${stage}_pseudo_positions:${connectionId}`,
-            { count: 250 },
-          ).catch(() => [])
-          for (const posId of stageIds) {
-            const hash = (await redis.hgetall(`${stage}_pseudo_position:${connectionId}:${posId}`).catch(() => ({}))) as Record<string, any> || {}
-            if ((hash as any).status === "open") positionsCount++
-          }
+            (posId) => `${stage}_pseudo_position:${connectionId}:${posId}`,
+          )
         }
       }
     } catch (e) {
