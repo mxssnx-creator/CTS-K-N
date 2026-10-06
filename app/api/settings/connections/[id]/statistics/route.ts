@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { initRedis, getRedisClient, getSettings } from "@/lib/redis-db"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
+import { buildProgressionScope } from "@/lib/progression-scope"
+import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 
 /**
  * GET /api/settings/connections/[id]/statistics
@@ -27,28 +29,34 @@ export async function GET(
       return NextResponse.json({ error: "Connection not found" }, { status: 404 })
     }
 
-    // Get prehistoric data (30-day historical analysis)
-    const prehistoricKey = `prehistoric:${connectionId}`
-    const prehistoricData = await client.hgetall(prehistoricKey)
-    const prehistoricStats = prehistoricData
-      ? {
-          symbols_analyzed: parseInt(prehistoricData.symbols_analyzed || "0"),
-          total_indications: parseInt(prehistoricData.total_indications || "0"),
-          avg_profit_factor: parseFloat(prehistoricData.avg_profit_factor || "0"),
-          winning_signals: parseInt(prehistoricData.winning_signals || "0"),
-          losing_signals: parseInt(prehistoricData.losing_signals || "0"),
-          data_points_loaded: parseInt(prehistoricData.data_points_loaded || "0"),
-          last_updated: prehistoricData.last_updated || new Date().toISOString(),
-        }
-      : {
-          symbols_analyzed: 0,
-          total_indications: 0,
-          avg_profit_factor: 0,
-          winning_signals: 0,
-          losing_signals: 0,
-          data_points_loaded: 0,
-          last_updated: new Date().toISOString(),
-        }
+    // Get prehistoric data (30-day historical analysis). The Historic writer
+    // fills the engine-scoped hash with its own field names; the bare
+    // prehistoric:{id} hash and its analysis fields have no writer left.
+    const [scopedPrehistoric, legacyPrehistoric] = await Promise.all([
+      client.hgetall(buildProgressionScope(connectionId).prehistoricKey).catch(() => null),
+      client.hgetall(`prehistoric:${connectionId}`).catch(() => null),
+    ])
+    const prehistoricSource = scopedPrehistoric && Object.keys(scopedPrehistoric).length > 0 ? "scoped" : "legacy"
+    const prehistoricData: Record<string, string> =
+      (prehistoricSource === "scoped" ? scopedPrehistoric : legacyPrehistoric) || {}
+    const historicProfitFactor = resolveHistoricProfitFactor(prehistoricData)
+    const prehistoricStats = {
+      symbols_analyzed: parseInt(prehistoricData.symbols_analyzed || prehistoricData.symbols_processed || "0"),
+      symbols_total: parseInt(prehistoricData.symbols_total || "0"),
+      total_indications: parseInt(prehistoricData.total_indications || prehistoricData.indicators_calculated || "0"),
+      avg_profit_factor: historicProfitFactor.available
+        ? historicProfitFactor.value
+        : parseFloat(prehistoricData.avg_profit_factor || "0"),
+      avg_profit_factor_available: historicProfitFactor.available,
+      // No current writer records signal outcomes for this summary.
+      winning_signals: parseInt(prehistoricData.winning_signals || "0"),
+      losing_signals: parseInt(prehistoricData.losing_signals || "0"),
+      data_points_loaded: parseInt(prehistoricData.data_points_loaded || prehistoricData.candles_loaded || "0"),
+      intervals_processed: parseInt(prehistoricData.intervals_processed || "0"),
+      // The stored time, never the request time.
+      last_updated: prehistoricData.last_updated || prehistoricData.updated_at || null,
+      source: prehistoricSource,
+    }
 
     // Get symbol statistics
     const symbolsKey = `symbols:${connectionId}`
