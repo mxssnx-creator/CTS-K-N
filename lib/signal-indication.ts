@@ -1053,6 +1053,11 @@ export async function recordSignalPerformanceOutcome(input: {
   pnl: number
   /** Gross signed market move in percent; one PositionCost is deducted here. */
   pnlPct?: number
+  /**
+   * `pnlPct` is already net of trading costs (a real close: the venue's net
+   * PnL), so no PositionCost may be deducted a second time.
+   */
+  pnlPctIsNet?: boolean
   positionCostPct?: number
   sourceIds: readonly string[]
   signalLanes?: ReadonlyArray<{ sourceId: string; configId: string }>
@@ -1100,10 +1105,12 @@ export async function recordSignalPerformanceOutcome(input: {
   // must use the same net result contract as every other strategy set.
   // Older close callers and deterministic tests may not yet carry pnlPct;
   // their signed PnL remains a percentage-compatible fallback.
-  const netMarketMovePct = netMovePctAfterPositionCost(
-    grossMarketMovePct,
-    positionCostPct,
-  )
+  // A real close arrives venue-net (fees already paid); deducting the
+  // configured cost again made every live Signal result look one
+  // PositionCost worse than the exchange settled it.
+  const netMarketMovePct = input.pnlPctIsNet === true
+    ? grossMarketMovePct
+    : netMovePctAfterPositionCost(grossMarketMovePct, positionCostPct)
   const costRelativeRatio = movePctToMainTradePfRatio(
     netMarketMovePct,
     positionCostPct,

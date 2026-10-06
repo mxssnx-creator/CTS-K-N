@@ -4,9 +4,10 @@ import { authorizeCronRequest, cronAuthorizationResponse } from "@/lib/cron-auth
 import { getAllConnections, getRedisClient, initRedis } from "@/lib/redis-db"
 import { applyCloseSettlement, closeOrderCandidates, needsDeferredCloseAccounting } from "@/lib/close-accounting-backfill"
 import { isManualCloseAtPrice, matchVenuePositionClose, normalizeVenuePositionHistory, venueCloseSettlement } from "@/lib/venue-position-close"
-import { MANUAL_CLOSE_SUPPRESS_SECONDS, manualCloseKeyOf } from "@/lib/trade-engine/stages/live-stage"
+import { MANUAL_CLOSE_SUPPRESS_SECONDS, manualCloseKeyOf, settleDeferredLiveRow } from "@/lib/trade-engine/stages/live-stage"
 import { withTimeout } from "@/lib/async-safety"
 import { advanceResultsLedger, ledgerMetaKey } from "@/lib/results/ledger"
+import { scanRedisKeys } from "@/lib/redis-scan"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 55
@@ -80,7 +81,8 @@ async function settleConnection(client: any, exchangeConnectorFactory: any, conn
   const connector: any = await exchangeConnectorFactory.getOrCreateConnector(connectionId).catch(() => null)
   if (!connector?.getOrderSettlement) return { ok: false, connectionId, error: "no settling connector" }
   let scanned = 0, attempted = 0, settled = 0, skipped = 0
-  const allKeys: string[] = ((await client.keys(`live_positions:${connectionId}:*`).catch(() => [])) as string[]).slice().sort()
+  // Paged SCAN, not KEYS: KEYS blocks Redis for the whole keyspace (335k+ keys in production) on every run.
+  const allKeys: string[] = ((await scanRedisKeys(client, `live_positions:${connectionId}:*`, { count: 1000 }).catch(() => [])) as string[]).slice().sort()
   // Resume where the previous run stopped. Every run used to start at the
   // first key; within its 40 s budget it reached ~1,000 of X02's several
   // thousand rows, so every row further back was never settled (e.g. the
@@ -134,6 +136,9 @@ async function settleConnection(client: any, exchangeConnectorFactory: any, conn
           realizedPnlComplete: "true", pnlAccountingComplete: "true", realizedPnlSource: row.realizedPnlSource,
           closeAccountingSettledAt: String(row.closeAccountingSettledAt),
         })
+        // The raw write above bypasses the close hooks: book the now-settled
+        // real result for strategy evaluation, loss gate, Block/DCA and Signal.
+        await settleDeferredLiveRow(connectionId, String(row.id)).catch(() => undefined)
         settled++; done = true; break
       }
     }
@@ -153,6 +158,7 @@ async function settleConnection(client: any, exchangeConnectorFactory: any, conn
           closeAccountingSettledAt: String(row.closeAccountingSettledAt),
           ...(manual === true ? { closedManually: "true" } : {}),
         })
+        await settleDeferredLiveRow(connectionId, String(row.id)).catch(() => undefined)
         // Resolve the provisional no-reopen marker set at the close: a manual
         // close keeps the signal closed for a week, a close at one of our own
         // triggers releases it.
@@ -176,7 +182,7 @@ async function settleConnection(client: any, exchangeConnectorFactory: any, conn
   // X02). Only mirrors that provably never traded are removed: no canonical
   // row, status still pre-fill, no fill, no order id, older than ten minutes.
   let orphanMirrorsRemoved = 0
-  const mirrorKeys: string[] = ((await client.keys(`live:position:live:${connectionId}:*`).catch(() => [])) as string[])
+  const mirrorKeys: string[] = ((await scanRedisKeys(client, `live:position:live:${connectionId}:*`, { count: 1000 }).catch(() => [])) as string[])
   for (const mirrorKey of mirrorKeys) {
     if (orphanMirrorsRemoved >= 300 || Date.now() - started > SWEEP_BUDGET_MS) break
     const positionId = mirrorKey.slice("live:position:".length)

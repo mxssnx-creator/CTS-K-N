@@ -24,6 +24,9 @@ const GROUPS: Record<string, (e: LedgerEntry) => string> = {
   risk: stopOrLiquidationFirst,
   leverage: (e) => (e.lev >= 300 ? ">=300x" : e.lev >= 150 ? "150-299x" : e.lev >= 75 ? "75-149x" : e.lev > 0 ? "<75x" : "unknown"),
   stop: (e) => (e.sl > 0 ? `${Math.round(e.sl * 10) / 10}%` : "unknown"),
+  // Real results per strategy Set: the exact executed Set, and its Base Set.
+  set: (e) => e.exactSetKey || e.setKey || "unknown",
+  baseSet: (e) => e.setKey || "unknown",
 }
 export const RESULT_GROUPS = Object.keys(GROUPS)
 

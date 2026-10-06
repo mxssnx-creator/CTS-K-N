@@ -149,6 +149,14 @@ export interface PosWindowStats {
   recentPnlPcts: number[]
   /** Per-row PositionCost percentages aligned with `recentPnlPcts`. */
   recentPositionCostPcts: number[]
+  /**
+   * Where the window's results come from. "exchange" = settled results of
+   * rows the venue executed (lib/live-set-outcomes.ts); "simulation" = the
+   * general ring of pseudo, paper and early real closes. Absent on legacy reads.
+   */
+  outcomeSource?: "exchange" | "simulation"
+  /** Settled real exchange closes known for this Set, also when below the switch-over count. */
+  exchangeCloses?: number
 }
 
 const EMPTY_WINDOW: PosWindowStats = {
@@ -1302,16 +1310,14 @@ const RECORD_STRATEGY_CLOSE_OUTCOMES_LUA = `
   return inserted
 `
 
-async function recordStrategyCloseOutcomes(
-  client: ReturnType<typeof getRedisClient>,
-  connectionId: string,
-  positionId: string,
-  memberships: string[],
-  outcome?: StrategyPositionCloseOutcome,
-): Promise<void> {
+/**
+ * One ring record ("pnl|cost|ddt|pnlPct|positionCostPct") for a terminal
+ * result. Shared by the general Set ring and the exchange-only ring
+ * (lib/live-set-outcomes.ts) so both windows are derived identically.
+ */
+export function strategyOutcomeRecord(outcome: StrategyPositionCloseOutcome): string | null {
   const pnl = Number(outcome?.pnl)
-  if (memberships.length === 0 || !Number.isFinite(pnl)) return
-
+  if (!Number.isFinite(pnl)) return null
   const ddt = Math.max(0, Number(outcome?.drawdownMinutes || 0))
   const pnlPct = Number(outcome?.pnlPct)
   const positionCostPct = Number(outcome?.positionCostPct)
@@ -1319,13 +1325,24 @@ async function recordStrategyCloseOutcomes(
     Number.isFinite(pnlPct) &&
     Number.isFinite(positionCostPct) &&
     positionCostPct > 0
-  const record = [
+  return [
     pnl.toFixed(6),
     "0",
     ddt.toFixed(3),
     hasCanonicalRatio ? pnlPct.toFixed(8) : "",
     hasCanonicalRatio ? positionCostPct.toFixed(8) : "",
   ].join("|")
+}
+
+async function recordStrategyCloseOutcomes(
+  client: ReturnType<typeof getRedisClient>,
+  connectionId: string,
+  positionId: string,
+  memberships: string[],
+  outcome?: StrategyPositionCloseOutcome,
+): Promise<void> {
+  const record = outcome ? strategyOutcomeRecord(outcome) : null
+  if (memberships.length === 0 || record === null) return
   const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
   const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
   const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
@@ -1491,6 +1508,28 @@ export async function markStrategyPositionInactive(
     return deactivated > 0
   } catch {
     return false
+  }
+}
+
+/**
+ * Book a result that settled AFTER its row closed (close-accounting cron) into
+ * the Set result rings. The close itself booked nothing because the venue had
+ * not returned the settlement yet, so without this the result was lost to
+ * every later PF/DDT window. Close ids (positionId|setKey) keep it exactly-once
+ * against the close path and against replays.
+ */
+export async function recordStrategySetCloseOutcome(
+  connectionId: string,
+  positionId: string,
+  setKeys: string[],
+  outcome: StrategyPositionCloseOutcome,
+): Promise<void> {
+  const memberships = Array.from(new Set(setKeys.map(String).filter(Boolean)))
+  if (!connectionId || !positionId || memberships.length === 0) return
+  try {
+    await recordStrategyCloseOutcomes(getRedisClient(), connectionId, positionId, memberships, outcome)
+  } catch {
+    // Best effort like the close path; the exchange-only ring is booked separately.
   }
 }
 

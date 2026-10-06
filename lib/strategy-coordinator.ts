@@ -70,6 +70,10 @@ import {
   type StrategySetLedgerSnapshot,
   type PosWindowStats,
 } from "@/lib/pos-history"
+import { findDeactivatedLiveSetKeys } from "@/lib/live-config-performance"
+import { liveConfigLossPolicy } from "@/lib/live-config-loss-policy"
+import { getLiveSetClosedCounts, getLiveSetWindowBatch } from "@/lib/live-set-outcomes"
+import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES, normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import {
@@ -95,7 +99,7 @@ import {
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   normalizeProtectionPercentages,
 } from "@/lib/trade-protection-contract"
-import { getActiveProtectionFloors } from "@/lib/protection-floors"
+import { getActiveProtectionFloors, setActiveProtectionFloors } from "@/lib/protection-floors"
 import {
   MAIN_TRADE_PF_RATIO_BASE,
   MAIN_TRADE_PF_RATIO_MAX,
@@ -123,7 +127,7 @@ import {
   getRuntimeConcurrencyProfile,
 } from "@/lib/runtime-concurrency-profile"
 import {
-  DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP,
+  DEFAULT_TRAILING_MIN_STEP,
   MAX_BASE_STEP,
   MIN_BASE_STEP,
 } from "@/lib/constants"
@@ -2389,6 +2393,11 @@ type LiveDispatchDecision = {
 
 const MAX_LIVE_TAKE_PROFIT_PCT = 22
 
+/** Stage whose Set windows a read serves; names the `strategy_detail` hash its outcome-source counts go to. */
+type OutcomeSourceStage = "base" | "main" | "real" | "live"
+/** Window over which exchange-judged Set keys are collected per stage. */
+const OUTCOME_SOURCE_NOTE_MS = 30_000
+
 // SL is derived from TP via the profit-factor ratio. The 0.2% floor is the
 // minimum distance from entry that a stop-loss may be placed — controlled from
 // the Real stage settings and enforced here as a hard lower bound.
@@ -2910,6 +2919,8 @@ export class StrategyCoordinator {
     realEvalPosCount: number
     blockRowRealEvalPosCount: number
     liveEvalPosCount: number
+    /** Settled real closes from which a Set is judged on exchange results only (live trading). */
+    liveOutcomeMinCloses: number
   } = {
     axes: {
       prev:  { enabled: true,  maxWindow: 12 },
@@ -2957,6 +2968,7 @@ export class StrategyCoordinator {
     // escalations. Operator setting: 30.
     blockRowRealEvalPosCount: 30,
     liveEvalPosCount: 20,
+    liveOutcomeMinCloses: DEFAULT_LIVE_OUTCOME_MIN_CLOSES,
   }
   private _coordinationLoadedAt = 0
   private readonly _coordinationTtlMs = 5_000
@@ -2988,6 +3000,8 @@ export class StrategyCoordinator {
    */
   private _liveSetKeysCache: { keys: Set<string>; at: number } | null = null
   private _liveTradingModeCache: { enabled: boolean; at: number } | null = null
+  private _liveConfigLossGateEnabled = true
+  private _outcomeSourceNotes = new Map<OutcomeSourceStage, { startedAt: number; exchangeJudged: Set<string>; exchangePending: Set<string> }>()
   private _strategyLedgerTotalsCache: { axisEntries: number; at: number } | null = null
 
   private async getCachedAxisEntryTotal(): Promise<number> {
@@ -3009,6 +3023,7 @@ export class StrategyCoordinator {
   private async getStrategySetWindowBatch(
     setKeys: string[],
     window: number,
+    options: { stage?: OutcomeSourceStage; prehistoric?: boolean } = {},
   ): Promise<Map<string, PosWindowStats>> {
     // Read only the candidate fields that this cycle can emit. The previous
     // closed-result index path loaded hundreds of thousands of members, and
@@ -3025,7 +3040,77 @@ export class StrategyCoordinator {
         ? setKeys
         : setKeys.filter((setKey) => legacyClosedKeys.has(setKey))
     }
-    return readStrategySetWindowBatch(this.connectionId, keysToRead, window)
+    const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window)
+    // A connection that trades live judges its Sets on what the exchange
+    // settled: from `liveOutcomeMinCloses` settled real closes on, a Set's
+    // window is its exchange-only ring (lib/live-set-outcomes.ts) — no pseudo
+    // or paper result in it. Below that the general ring still qualifies the
+    // Set, otherwise no new Set could ever reach its first real trade. A
+    // prehistoric replay stays on its own reproducible history.
+    if (options.prehistoric || setKeys.length === 0 || !(await this.isLiveTradingEnabledForConnection())) {
+      return windows
+    }
+    const exchangeCounts = await getLiveSetClosedCounts(this.connectionId, setKeys)
+    if (exchangeCounts.size === 0) {
+      this.noteOutcomeSources(options.stage, [], [])
+      return windows
+    }
+    const exchangeWindows = await getLiveSetWindowBatch(
+      this.connectionId,
+      setKeys,
+      window,
+      this._coordinationSettings.liveOutcomeMinCloses,
+      exchangeCounts,
+    )
+    for (const [setKey, exchangeWindow] of exchangeWindows) windows.set(setKey, exchangeWindow)
+    for (const [setKey, count] of exchangeCounts) {
+      if (exchangeWindows.has(setKey)) continue
+      const general = windows.get(setKey)
+      if (general) windows.set(setKey, { ...general, outcomeSource: "simulation", exchangeCloses: count })
+    }
+    this.noteOutcomeSources(
+      options.stage,
+      exchangeWindows.keys(),
+      [...exchangeCounts.keys()].filter((setKey) => !exchangeWindows.has(setKey)),
+    )
+    return windows
+  }
+
+  /**
+   * Per stage, the distinct Set keys judged on exchange results and those that
+   * already have real closes but fewer than the switch-over count, collected
+   * over a 30 s window. Each completed window is written next to the stage's
+   * other figures in `strategy_detail:<conn>:<stage>` for the overviews.
+   */
+  private noteOutcomeSources(
+    stage: OutcomeSourceStage | undefined,
+    exchangeJudged: Iterable<string>,
+    exchangePending: Iterable<string>,
+  ): void {
+    if (!stage) return
+    const now = Date.now()
+    let note = this._outcomeSourceNotes.get(stage)
+    if (note && now - note.startedAt >= OUTCOME_SOURCE_NOTE_MS) {
+      const completed = note
+      note = undefined
+      void (async () => {
+        try {
+          const { getRedisClient } = await import("@/lib/redis-db")
+          await getRedisClient().hset(`strategy_detail:${this.connectionId}:${stage}`, {
+            exchange_judged_sets: String(completed.exchangeJudged.size),
+            exchange_pending_sets: String(completed.exchangePending.size),
+            exchange_min_closes: String(this._coordinationSettings.liveOutcomeMinCloses),
+            outcome_source_ts: String(now),
+          })
+        } catch { /* diagnostic figure only */ }
+      })()
+    }
+    if (!note) {
+      note = { startedAt: now, exchangeJudged: new Set<string>(), exchangePending: new Set<string>() }
+      this._outcomeSourceNotes.set(stage, note)
+    }
+    for (const setKey of exchangeJudged) note.exchangeJudged.add(setKey)
+    for (const setKey of exchangePending) note.exchangePending.add(setKey)
   }
 
   private async isLiveTradingEnabledForConnection(): Promise<boolean> {
@@ -3472,6 +3557,14 @@ export class StrategyCoordinator {
       this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
         ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
         : 20
+      this._liveConfigLossGateEnabled = liveConfigLossPolicy(s as Record<string, unknown>).enabled
+      this._coordinationSettings.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(
+        (s as any).liveOutcomeMinCloses ?? (s as any).live_outcome_min_closes,
+      )
+      // Stop-loss / trailing floors are process-wide. The engine process only
+      // refreshed them when a live entry executed, so paper and prehistoric
+      // evaluation used the built-in default instead of the saved floors.
+      setActiveProtectionFloors(s as Record<string, any>)
 
       // ── Strategy work scheduling ────────────────────────────────────────
       // Batch sizes limit only concurrent work. Legacy stage-cap fields are
@@ -4193,10 +4286,11 @@ export class StrategyCoordinator {
       // range matrix the operator just saved.
       const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
       let trailingMinStep = DEFAULT_TRAILING_MIN_STEP
+      // Unset means the trailing default (8), not the base step (5).
       const rawMin = Number(
         settings.trailingMinStep ??
         settings.trailing_min_step ??
-        DEFAULT_BASE_MIN_STEP,
+        DEFAULT_TRAILING_MIN_STEP,
       )
       if (Number.isFinite(rawMin)) {
         trailingMinStep = Math.min(
@@ -4587,6 +4681,7 @@ export class StrategyCoordinator {
     const exactPositionWindows = await this.getStrategySetWindowBatch(
       prospectiveSetKeys,
       prevPosWindow,
+      { stage: "base", prehistoric: isPrehistoric },
     )
 
     let materializedBaseRows = 0
@@ -5612,6 +5707,7 @@ export class StrategyCoordinator {
           axisCandidates,
           exactSetLedgerSnapshot,
           metrics,
+          isPrehistoric,
         )
         for (const axisSet of expandedWithLedger) {
           if (!appendMainSet(axisSet)) continue
@@ -6471,7 +6567,12 @@ export class StrategyCoordinator {
     }
     const [lifecycleStates, exactWindows, unavailableKeys, activeBlockKeys] = await Promise.all([
       getBlockCountLifecycleStates(client, this.connectionId, symbol),
-      this.getStrategySetWindowBatch(candidates.map((candidate) => candidate.setKey), resultWindow),
+      // The Real-stage Block builders run with includeCurrentActive=false only in prehistoric replay.
+      this.getStrategySetWindowBatch(
+        candidates.map((candidate) => candidate.setKey),
+        resultWindow,
+        { stage: "real", prehistoric: !includeCurrentActive },
+      ),
       includeCurrentActive ? this.getUnavailableBlockKeys(symbol) : Promise.resolve(new Set<string>()),
       includeCurrentActive
         ? getActiveBlockSetKeys(client, this.connectionId, symbol)
@@ -6925,6 +7026,7 @@ export class StrategyCoordinator {
       const exactWindows = await this.getStrategySetWindowBatch(
         candidateKeys,
         resultWindow,
+        { stage: "real", prehistoric: !includeCurrentActive },
       )
 
       for (const source of sourceBatch) {
@@ -7382,6 +7484,7 @@ export class StrategyCoordinator {
       this.getStrategySetWindowBatch(
         candidates.map((candidate) => candidate.laneKey),
         resultWindow,
+        { stage: "real", prehistoric: !includeCurrentActive },
       ),
       includeCurrentActive ? this.getUnavailableBlockKeys(symbol) : Promise.resolve(new Set<string>()),
       includeCurrentActive
@@ -8184,10 +8287,12 @@ export class StrategyCoordinator {
         this.getStrategySetWindowBatch(
           rowHistoryKeysFor(normalSources),
           this._coordinationSettings.realEvalPosCount,
+          { stage: "real", prehistoric: isPrehistoric },
         ),
         this.getStrategySetWindowBatch(
           rowHistoryKeysFor(blockSources),
           this._coordinationSettings.blockRowRealEvalPosCount,
+          { stage: "real", prehistoric: isPrehistoric },
         ),
       ])
       const rowWindows = new Map<string, PosWindowStats>([
@@ -9352,6 +9457,7 @@ export class StrategyCoordinator {
     const rowWindows = await this.getStrategySetWindowBatch(
       rowHistoryKeys,
       this._coordinationSettings.liveEvalPosCount,
+      { stage: "live" },
     )
     liveSub.windows = Date.now() - liveSub.start; let liveMark = Date.now()
     const rowLive = materializeContinuousStageRows(rowLiveSource, {
@@ -9374,6 +9480,7 @@ export class StrategyCoordinator {
     const blockWindows = await this.getStrategySetWindowBatch(
       builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
       this._coordinationSettings.liveEvalPosCount,
+      { stage: "live" },
     )
     liveSub.blockWindows = Date.now() - liveMark; liveMark = Date.now()
     const rowLiveBlock = applyExactBlockRowWindows(
@@ -9383,9 +9490,26 @@ export class StrategyCoordinator {
       activeStrategyKeys,
     )
     const rowQualifying = rowLive.rows.concat(rowLiveBlock)
-    const allQualifying = Array.from(new Map(
+    const qualifyingBeforeLossGate = Array.from(new Map(
       rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
     ).values()).sort(compareStrategySetsBestFirst)
+    // Sets whose settled real results tripped the live loss gate
+    // (lib/live-config-performance.ts) are not executable: without this they
+    // qualified every cycle and were rejected only at order time, taking the
+    // dispatch slot of a healthy Set.
+    const lossGateDeactivated = this._liveConfigLossGateEnabled && await this.isLiveTradingEnabledForConnection()
+      ? await findDeactivatedLiveSetKeys(this.connectionId, qualifyingBeforeLossGate.map((set) => ({
+          symbol,
+          direction: set.direction,
+          setKey: set.setKey,
+          executionIntents: String(set.indicationType || "").toLowerCase() === "signal"
+            ? ["signal"]
+            : ["main", "preset"],
+        })))
+      : new Set<string>()
+    const allQualifying = lossGateDeactivated.size > 0
+      ? qualifyingBeforeLossGate.filter((set) => !lossGateDeactivated.has(set.setKey))
+      : qualifyingBeforeLossGate
     if (coordIndex) {
       for (const row of allQualifying) {
         const sourceKey = row.rowSourceSetKey || row.setKey
@@ -9567,6 +9691,7 @@ export class StrategyCoordinator {
           row_live_executable: String(rowQualifying.length),
           additional_dca_executable: String(dcaAdditionalSets.length),
           executable_total: String(qualifying.length),
+          loss_gate_deactivated: String(lossGateDeactivated.size),
           row_active:        String(liveRunningNow),
           pass_rate:         String(passRatioLive.toFixed(4)),
           // ── ACTIVELY-RUNNING metrics (operator spec) ──────────������──
@@ -10797,7 +10922,24 @@ export class StrategyCoordinator {
       let prevPosCount = 0
       let prevLosses = 0
       const lastN: Array<{ closedAt: number; pnl: number }> = []
-      try {
+      if (liveTradingEnabled) {
+        // Live trading: the recent wins/losses that gate the trailing, DCA and
+        // Block variants are this connection's settled real closes (results
+        // ledger: executed own rows only), never pseudo or paper results.
+        try {
+          const { readResultLedger } = await import("@/lib/results/ledger")
+          const ledger = await readResultLedger(client, this.connectionId)
+          for (const entry of ledger?.entries || []) {
+            if (entry.status !== "closed" || !entry.settled || entry.pnl === null) continue
+            if (!(entry.closed >= cutoff)) continue
+            prevPosCount++
+            if (entry.pnl < 0) prevLosses++
+            lastN.push({ closedAt: entry.closed, pnl: entry.pnl })
+          }
+          lastN.sort((a, b) => b.closedAt - a.closedAt)
+          lastN.length = Math.min(lastN.length, 8)
+        } catch { /* no readable ledger: neutral recent-result context */ }
+      } else try {
         let closedIds: string[] = (
           await client.zrangebyscore(closedTimeIndexKey, cutoff, "+inf").catch(() => [])
         ) as string[]
@@ -10874,14 +11016,13 @@ export class StrategyCoordinator {
       // pseudo-position writes are capped (top-N), so few closes land in the
       // index. The `trailing` gate (≥2 recent wins + flat) and `dca` gate
       // (≥1 recent loss) then never fire even when the connection has a real
-      // track record. lib/pos-history maintains the AUTHORITATIVE rolling
-      // window of genuinely closed trades (recordPosClosed, fired from the
-      // live + config-set close paths). When the pseudo window has < 2
-      // samples, derive wins/losses from that overall window instead so the
-      // gates exercise on real outcomes in BOTH dev and prod. Open-position
+      // track record. lib/pos-history keeps the overall rolling window of
+      // pseudo and config-set (simulated) closes. Paper mode only: when the
+      // pseudo window has < 2 samples, derive wins/losses from that overall
+      // window instead. Live mode reads settled real closes above. Open-position
       // fields (continuousCount / perSymbolOpen) stay active-book-sourced —
       // recorded history has no notion of "currently open".
-      if (lastN.length < 2) {
+      if (!liveTradingEnabled && lastN.length < 2) {
         try {
           const { getPosWindowOverall } = await import("@/lib/pos-history")
           const win = await getPosWindowOverall(this.connectionId, 8)
@@ -11114,13 +11255,19 @@ export class StrategyCoordinator {
     axisSets: StrategySet[],
     ledger: StrategySetLedgerSnapshot,
     metrics: EvaluationMetrics,
+    isPrehistoric = false,
   ): Promise<StrategySet[]> {
     if (axisSets.length === 0) return axisSets
+    // A real close that settled after its row closed is only in the exchange
+    // ring, not in the general closed counts: include those Sets too.
+    const exchangeClosed = isPrehistoric || !(await this.isLiveTradingEnabledForConnection())
+      ? new Map<string, number>()
+      : await getLiveSetClosedCounts(this.connectionId, axisSets.map((set) => set.setKey))
     const resultKeys = axisSets
       .map((set) => set.setKey)
-      .filter((setKey) => (ledger.closed[setKey] || 0) > 0)
+      .filter((setKey) => (ledger.closed[setKey] || 0) > 0 || exchangeClosed.has(setKey))
     const windows = resultKeys.length > 0
-      ? await this.getStrategySetWindowBatch(resultKeys, 12)
+      ? await this.getStrategySetWindowBatch(resultKeys, 12, { stage: "main", prehistoric: isPrehistoric })
       : new Map<string, PosWindowStats>()
     const hydrated: StrategySet[] = []
 

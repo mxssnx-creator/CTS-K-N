@@ -23,6 +23,7 @@
  * stores only compact entries of filled real rows (X02: 1,287, X01: 313).
  */
 import { clearLedgerSkipSetCache, ledgerSkipSetKey } from "@/lib/results/skip-set"
+import { scanRedisKeys } from "@/lib/redis-scan"
 import { getLivePositionSource, isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
 import type { LivePositionLifetimeLane, LivePositionLifetimeSummary } from "@/lib/live-position-lifetime-summary"
@@ -69,7 +70,10 @@ export interface LedgerEntry {
   exit: number
   oid: string
   coid: string
+  /** The Base (parent) Set; kept for existing readers. */
   setKey: string
+  /** The exact Set the row executed (Row-Live/Block key); absent on entries written before 2026-10-06. */
+  exactSetKey?: string
 }
 
 export type RowClass =
@@ -141,6 +145,7 @@ export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry
     oid: text(row.orderId),
     coid: text(row.closeOrderId),
     setKey: text(row.parentSetKey || row.setKey),
+    exactSetKey: text(row.setKey) || undefined,
   }
 }
 
@@ -173,7 +178,8 @@ export async function advanceResultsLedger(
   if (!locked) return done({ skipped: "another pass is running" })
   try {
     const prefix = `live_positions:${connectionId}:`
-    const keys: string[] = ((await client.keys(`${prefix}*`).catch(() => [])) || []).map(String)
+    // Paged SCAN instead of a keyspace-blocking KEYS on every cron run.
+    const keys: string[] = ((await scanRedisKeys(client, `${prefix}*`, { count: 1000 }).catch(() => [])) || []).map(String)
     if (keys.length === 0) {
       await client.hset(ledgerMetaKey(connectionId), { updatedAt: String(Date.now()), keys: "0", complete: "1" }).catch(() => 0)
       return done({ complete: true })
