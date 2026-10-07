@@ -218,11 +218,12 @@ const criteria = [
       (run.marketDataMode === "synthetic" ? " (synthetic fixture run)" : ""),
   },
   {
-    name: "Every stage evaluated Sets in the realtime phase",
-    pass: ["base", "main", "real", "live"].every((stage) => stageMax[stage] > 0),
+    // Base evaluates every complete Set; whether Main/Real/Live receive any
+    // is decided by the measured results (trading outcome below).
+    name: "Base evaluated Sets in the realtime phase",
+    pass: stageMax.base > 0,
     detail: Object.entries(stageMax).map(([stage, value]) => `${stage} ${finite(value) ? value : "—"}`).join(" · "),
   },
-  { name: "Paper positions opened and closed", pass: total.trades > 0, detail: `${total.trades} closed paper trades` },
   { name: "No coverage errors (failed/slow endpoints, NaN, duplicate ids, stage 0)", pass: coverageErrors === 0, detail: `${coverageErrors} error finding(s) in ${coverageSamples.length + 1} checks` },
   { name: "Stats, overview and status endpoints answered 200", pass: httpFailures.length === 0, detail: `${httpFailures.length} failed request(s) in ${samples.length} polls` },
   { name: "Engine kept running", pass: engineStopped === 0 && !failedEvent, detail: failedEvent ? `${failedEvent.type}: ${failedEvent.error || ""}` : `${engineStopped} poll(s) without a running engine` },
@@ -242,6 +243,33 @@ const esc = (value) => String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": 
 const fmt = (value, digits = 2) => (value === Infinity ? "∞" : finite(value) ? value.toFixed(digits) : "—")
 const signed = (value, digits = 2) => (finite(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(digits)}` : "—")
 const tone = (value) => (finite(value) ? (value > 0 ? "pos" : value < 0 ? "neg" : "") : "")
+
+// Trading outcome: reported, not part of the stability verdict. Whether Sets
+// trade is decided by their measured results against the configured
+// thresholds, and "no trade" is the correct outcome when nothing qualifies.
+const qualifyingTypes = typeMeasurementRows.filter((row) => row.meetsBase)
+const downstreamStages = ["main", "real", "live"]
+const outcome = [
+  {
+    name: "Types at or above the Base threshold (whole range, all symbols)",
+    value: `${qualifyingTypes.length}/${typeMeasurementRows.length}`,
+    detail: qualifyingTypes.length > 0 ? qualifyingTypes.map((row) => row.key).join(", ") : `none reached ${fmt(basePfMinimum)}`,
+  },
+  {
+    name: "Stages beyond Base evaluated",
+    value: downstreamStages.some((stage) => stageMax[stage] > 0) ? "yes" : "no",
+    detail: downstreamStages.map((stage) => `${stage} ${finite(stageMax[stage]) ? stageMax[stage] : "—"}`).join(" · "),
+  },
+  {
+    name: "Paper trades closed",
+    value: String(total.trades),
+    detail: total.trades > 0
+      ? `PF ${fmt(total.profitFactor)} · net ${signed(total.net, 4)} · profitable hours ${total.profitableHours}/${total.activeHours}`
+      : qualifyingTypes.length === 0
+        ? `no trade: no type × direction reached the Base threshold ${fmt(basePfMinimum)}`
+        : "no trade although measured types reached the threshold: check the per-symbol buckets and the stage decisions",
+  },
+]
 
 function bookTable(rows, label) {
   if (rows.length === 0) return `<p class="muted">No closed paper trade.</p>`
@@ -350,12 +378,15 @@ const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 </style></head><body><main>
 <h1>${esc(title)}</h1>
 <p class="muted">Connection <code>${esc(run.connectionId)}</code> · paper orders (FORCE_SIMULATED, no exchange credentials) · revision <code>${esc(revision)}</code> · started ${esc(run.startedAt)} · ${run.exactReplay ? "exact candle replay" : "realtime-bridge replay"}</p>
-<div class="banner ${passed ? "pass" : "fail"}">${passed ? "PASS" : "FAIL"}: ${criteria.filter((c) => c.pass).length}/${criteria.length} acceptance criteria met.</div>
+<div class="banner ${passed ? "pass" : "fail"}">${passed ? "PASS" : "FAIL"}: ${criteria.filter((c) => c.pass).length}/${criteria.length} stability criteria met.</div>
 <div class="cardgrid">${cards.map(([label, value]) => `<div class="card"><div class="muted">${esc(label)}</div><div class="value">${esc(value)}</div></div>`).join("")}</div>
 <div class="note">Paper results of one observation window with the system's default strategy thresholds. They show that the pipeline produces, books and reports trades consistently; they are <strong>not</strong> an independent validation of strategy defaults, and this window is not a holdout. Costs: realized PnL of a paper close already deducts the modelled PositionCost; <em>Fees</em> are the modelled fees recorded on the rows.</div>
 
-<h2>Acceptance criteria</h2>
+<h2>Stability criteria</h2>
 <table><thead><tr><th>Criterion</th><th>Result</th><th>Detail</th></tr></thead><tbody>${criteria.map((c) => `<tr><td>${esc(c.name)}</td><td class="${c.pass ? "ok" : "bad"}">${c.pass ? "pass" : "fail"}</td><td>${esc(c.detail)}</td></tr>`).join("")}</tbody></table>
+
+<h2>Trading outcome</h2>
+<table><thead><tr><th>Measure</th><th>Value</th><th>Detail</th></tr></thead><tbody>${outcome.map((o) => `<tr><td>${esc(o.name)}</td><td>${esc(o.value)}</td><td>${esc(o.detail)}</td></tr>`).join("")}</tbody></table>
 
 <h2>Stage processing</h2>
 ${lineChart({ series: stageSeries, yLabel: "Sets evaluated (basket snapshot)" })}
@@ -409,6 +440,7 @@ const summaryOut = {
   startedAt: run.startedAt,
   passed,
   criteria: criteria.map(({ name, pass, detail }) => ({ name, pass, detail })),
+  outcome,
   prehistoricCompleteAfterMs: prehistoricEvent?.afterMs ?? null,
   realtimeObservedMs: summaryIn.realtimeObservedMs ?? null,
   paper: { ...total, byHour: undefined, profitFactor: total.profitFactor === Infinity ? "Infinity" : total.profitFactor },

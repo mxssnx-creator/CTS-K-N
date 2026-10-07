@@ -101,6 +101,48 @@ describe("observation report", () => {
     expect(summary.rssGrowthMb).toBe(100)
   })
 
+  test("the trading outcome reports trades, qualifying types and downstream stages", () => {
+    const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"))
+    const byName = Object.fromEntries(summary.outcome.map((entry: any) => [entry.name, entry]))
+    expect(byName["Paper trades closed"].value).toBe("4")
+    expect(byName["Types at or above the Base threshold (whole range, all symbols)"]).toMatchObject({ value: "1/2", detail: "trend:long" })
+    expect(byName["Stages beyond Base evaluated"].value).toBe("yes")
+  })
+
+  test("a run where no type qualifies passes on stability and explains the missing trades", () => {
+    const quiet = mkdtempSync(join(tmpdir(), "obs-quiet-"))
+    const quietOut = mkdtempSync(join(tmpdir(), "obs-quiet-out-"))
+    try {
+      for (const name of ["run.json", "events.jsonl", "summary.json", "coverage-final.json"]) {
+        writeFileSync(join(quiet, name), readFileSync(join(dir, name)))
+      }
+      const samples = readFileSync(join(dir, "samples.jsonl"), "utf8").trim().split("\n").map((line) => {
+        const sample = JSON.parse(line)
+        for (const stage of ["main", "real", "live"]) sample.stats.stages[stage] = { evaluated: 0, passed: 0 }
+        sample.stats.open = { pseudo: 0, live: 0 }
+        return JSON.stringify(sample)
+      })
+      writeFileSync(join(quiet, "samples.jsonl"), samples.join("\n"))
+      writeFileSync(join(quiet, "simulated-trades.json"), "[]")
+      writeFileSync(join(quiet, "stats-final.json"), JSON.stringify({
+        historic: {
+          rangeHours: 24,
+          dataCoverageHours: 24,
+          typeMeasurement: { closes: 9, byTypeDirection: { "move:short": { closed: 9, wins: 4, losses: 5, netPctSum: -0.4, positionCostRatio: 0.96 } } },
+        },
+        connectionStageOverview: { base: { pfMinimum: 1.1 } },
+      }))
+      execFileSync(process.execPath, ["scripts/build-observation-report.mjs", quiet, quietOut], { cwd: process.cwd() })
+      const summary = JSON.parse(readFileSync(join(quietOut, "summary.json"), "utf8"))
+      expect(summary.passed).toBe(true)
+      const trades = summary.outcome.find((entry: any) => entry.name === "Paper trades closed")
+      expect(trades).toMatchObject({ value: "0", detail: "no trade: no type × direction reached the Base threshold 1.10" })
+    } finally {
+      rmSync(quiet, { recursive: true, force: true })
+      rmSync(quietOut, { recursive: true, force: true })
+    }
+  })
+
   test("synthetic prices or missing coverage fail the market data criterion", () => {
     const synthetic = mkdtempSync(join(tmpdir(), "obs-syn-"))
     const syntheticOut = mkdtempSync(join(tmpdir(), "obs-syn-out-"))
@@ -122,7 +164,8 @@ describe("observation report", () => {
 
   test("the report is self-contained HTML with the verdict and checksums", () => {
     const html = readFileSync(join(out, "report.html"), "utf8")
-    expect(html).toContain("PASS: 9/9 acceptance criteria met.")
+    expect(html).toContain("PASS: 8/8 stability criteria met.")
+    expect(html).toContain("Trading outcome")
     expect(html).toContain("<svg")
     expect(html).not.toMatch(/<script[^>]+src=/)
     const sums = readFileSync(join(out, "SHA256SUMS"), "utf8")
