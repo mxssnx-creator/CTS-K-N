@@ -68,7 +68,9 @@ Der frühere positive PF stammte aus fabrizierten Schließungen (plus generierte
    - M2: Hedge-Netting im Real nie wirksam; eine Aktivierung ändert den Orderfluss → Operator-Entscheidung.
    - M4 Rest: Axis-`cont` pro Symbol/Richtung ist dokumentiertes Design; `last=0` ist das Baseline-Label.
    - L5: Real-Pos-Count zählt Entries × Configs.
-   - M5 und L2 sind behoben.
+   - M5, L2, L1 (Block-Shared-Multiplikator verworfen) und S1 (Main-Variantencache mit veralteter Historie) sind behoben.
+   - S2: kein Defekt, die Mitglieder kombinierter Zeilen teilen die Historie ihres Base-Elternteils.
+   - L5: Schwellen sind als Mindest-Entry-Anzahl dokumentiert, unverändert.
 4. X02-VST-Lebenszyklus + 6-h-Lauf mit Monitoring und Diff-Bericht noch nicht ausgeführt.
 5. Migration 110 (Stufen-PF 1,30→1,10) verschiebt auch den bewusst gesetzten X02-Wert 1,3 beim nächsten Deploy.
 6. Deploy nur aus gemergtem grünem main.

@@ -44,7 +44,10 @@ The earlier positive PF came from fabricated closes, plus generated prices in th
    - H4: needs a ratio source for signal performance.
    - M2: hedge netting never cancels; enabling it changes order flow, so it needs an operator decision.
    - M4: the Axis `cont` count is per symbol and direction, by the documented design; `last=0` is the baseline label.
-   - L1, L3, L5, S1, S2.
+   - L1 (Block shared-volume multiplier dropped) and S1 (Main variant cache reused stale history): fixed.
+   - L5: the Real/Main thresholds are documented as minimum entry counts; unchanged.
+   - S2: not a defect; combined rows' members share their Base parent's history.
+   - L3: DCA is admitted through its Base-valid parent and the live loss gate; it has no measurement of its own.
 3. The X02 VST lifecycle and 6 h monitoring run.
 4. Migration 110 also moves X02's deliberate 1.3 at the next deploy.
 5. Deploy only a merged, green `main`.
