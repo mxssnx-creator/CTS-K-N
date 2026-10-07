@@ -377,6 +377,7 @@ __tests__/unit/position-index-established-with-hash.test.ts
 __tests__/unit/positions-stats-route.test.ts
 __tests__/unit/post-entry-audit-retry.test.ts
 __tests__/unit/post-fill-snapshot-refresh.test.ts
+__tests__/unit/prehistoric-base-history-backfill.test.ts
 __tests__/unit/prehistoric-bootstrap-handoff.test.ts
 __tests__/unit/prehistoric-progress-tracker.test.ts
 __tests__/unit/prehistoric-range-backfill.test.ts
@@ -1244,6 +1245,7 @@ docs/PROJECT-CONTINUATION.md
 docs/REMOTE-CHISEL-WORKMODE.md
 docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
+docs/STAGE-FUNNEL-AND-PROCESSING.md
 docs/baseline/STABLE-BASELINE-2026-09-19.md
 docs/baseline/candles-2026-09-19-1m.json.gz
 docs/chisel-client.service.example
@@ -1927,6 +1929,7 @@ scripts/direct-trade-supervisor.mjs
 scripts/ensure-server-autoboot.sh
 scripts/fetch-dca-public-history.py
 scripts/fetch-research-bars.mjs
+scripts/fetch-research-hourly.mjs
 scripts/final-validation-test.mjs
 scripts/gate-study.ts
 scripts/generate-recreation-manifests.mjs
@@ -1948,6 +1951,7 @@ scripts/kilo-deploy.mjs
 scripts/limit-runtime-logs.sh
 scripts/local-redis.sh
 scripts/logistics-test-suite.mjs
+scripts/long-horizon-lab.ts
 scripts/maintain-github-origin.sh
 scripts/maker-research.ts
 scripts/monitor-live-health.mjs
