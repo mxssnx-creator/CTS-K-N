@@ -65,7 +65,6 @@ export interface BacktestTrade {
   netPct: number
   reason: string
   exitLeg: ExitLeg
-  rangeClass: string
   /** The row's indication profit factor (the Base gate's rawAvgPF input). */
   profitFactor?: number
 }
@@ -132,7 +131,6 @@ export interface BacktestResult {
   bySymbol: BacktestBook[]
   byType: BacktestBook[]
   byDirection: BacktestBook[]
-  byRangeClass: BacktestBook[]
   byReason: BacktestBook[]
   heatmapSymbolHour: BacktestHeatmap
   heatmapTypeHour: BacktestHeatmap

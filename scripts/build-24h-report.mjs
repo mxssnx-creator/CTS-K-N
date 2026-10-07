@@ -67,7 +67,7 @@ const payload = {
     funnel: result.funnel || null,
     equity: result.equity.map((p) => [p.t, Number(p.equityPct.toFixed(4)), Number(p.drawdownPct.toFixed(4))]),
     byHour: result.byHour.map((h) => [h.startAt, Number(h.netPct.toFixed(4)), h.trades]),
-    bySymbol: result.bySymbol, byType: result.byType, byDirection: result.byDirection, byRangeClass: result.byRangeClass, byReason: result.byReason,
+    bySymbol: result.bySymbol, byType: result.byType, byDirection: result.byDirection, byReason: result.byReason,
     heat: result.heatmapSymbolHour,
     costs: result.costs, window: result.window, data: result.data,
   })),
@@ -146,7 +146,7 @@ ${funnel.map((f) => `<tr><td>${f.stage}</td><td>${Number.isFinite(f.evaluated) ?
 <div class="card"><label>Variant <select id="pick"></select></label>
 <div class="grid2" style="margin-top:12px"><div><h3>Net per hour</h3><svg id="hours" viewBox="0 0 560 240"></svg></div><div><h3>Base gate funnel</h3><div id="funnel"></div></div></div>
 <h3 style="margin-top:16px">Symbol × hour heatmap (net per closing hour)</h3><div id="heat" class="scroll"></div>
-<div class="grid2" style="margin-top:16px"><div class="scroll"><h3>Indication types</h3><table id="types"></table></div><div class="scroll"><h3>Range classes</h3><table id="ranges"></table></div>
+<div class="grid2" style="margin-top:16px"><div class="scroll"><h3>Indication types</h3><table id="types"></table></div>
 <div class="scroll"><h3>Symbols</h3><table id="symbols"></table></div><div class="scroll"><h3>Direction and exit reasons</h3><table id="dirs"></table></div></div>
 </div>
 
@@ -204,7 +204,7 @@ document.getElementById("funnel").innerHTML=v.funnel?v.funnel.map(s=>'<div style
 const hm=v.heat,mx=Math.max(1e-9,...hm.cells.flat().map(c=>Math.abs(c.netPct)));let g='<div class="heat" style="grid-template-columns:90px repeat('+hm.cols.length+',minmax(12px,1fr)) 70px;min-width:600px">';g+='<div></div>'+hm.cols.map((c,i)=>'<div style="font-size:9px;text-align:center;color:var(--muted)">'+(i%3===0?new Date(c).toISOString().slice(11,13):"")+'</div>').join("")+'<div style="font-size:9px;text-align:right;color:var(--muted)">net</div>';
 hm.rows.forEach((row,r)=>{const tot=hm.cells[r].reduce((s,c)=>s+c.netPct,0);g+='<div style="font-size:11px">'+row+'</div>'+hm.cells[r].map((c,i)=>{const a=Math.round(25+75*Math.min(1,Math.abs(c.netPct)/mx));const bg=c.trades?"color-mix(in srgb, var("+(c.netPct>=0?"--pos":"--neg")+") "+a+"%, var(--grid))":"var(--grid)";return '<div class="c" data-t="'+row+' · '+new Date(hm.cols[i]).toISOString().slice(11,16)+' UTC · '+c.trades+' trades · '+f(c.netPct)+' %" style="background:'+bg+'"></div>'}).join("")+'<div style="font-size:11px;text-align:right;color:var(--'+(tot>=0?"pos":"neg")+')">'+f(tot,1)+'</div>'});g+="</div>";
 const heat=document.getElementById("heat");heat.innerHTML=g;heat.querySelectorAll(".c").forEach(c=>{c.addEventListener("mousemove",e=>show(e,c.dataset.t));c.addEventListener("mouseleave",hide)});
-book("types",v.byType,"Type");book("ranges",v.byRangeClass,"Range");book("symbols",v.bySymbol,"Symbol");book("dirs",[...v.byDirection,...v.byReason],"Direction / exit")}
+book("types",v.byType,"Type");book("symbols",v.bySymbol,"Symbol");book("dirs",[...v.byDirection,...v.byReason],"Direction / exit")}
 pick.addEventListener("input",detail);detail();
 document.getElementById("gate").innerHTML="<tr><th>Gate variant</th><th>Trades admitted</th><th>PF after gate</th><th>Avg net / trade %</th><th>PF 1st half</th><th>PF 2nd half</th></tr>"+D.gate.map(r=>"<tr><td>"+r.key+"</td><td>"+r.trades+"</td>"+pfc(r.pf,0)+"<td>"+f(r.avgPct,3)+"</td>"+pfc(r.halves[0],0)+pfc(r.halves[1],0)+"</tr>").join("");
 </script></body></html>`

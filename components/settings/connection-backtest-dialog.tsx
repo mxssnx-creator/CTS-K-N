@@ -34,7 +34,6 @@ const pfTone = (book: Pick<BacktestBook, "profitFactor" | "wins" | "trades">) =>
   book.trades === 0 ? "" : toneOf((book.profitFactor ?? (book.wins > 0 ? 2 : 0)) - 1)
 const time = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" })
 const hourLabel = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
-const RANGE_LABEL: Record<string, string> = { micro: "Micro (< 2×)", minimum: "Minimum (2–3×)", short: "Short (3–6×)", general: "General (6–12×)", long: "Long (> 12×)" }
 const PROFIT = "rgb(16 185 129)" // emerald-500
 const LOSS = "rgb(244 63 94)" // rose-500
 
@@ -328,7 +327,6 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                     </BarChart>
                   </ResponsiveContainer>
                 </ChartCard>
-                <BookTable title="Range classes (take profit in PositionCost multiples)" rows={result.byRangeClass} labelOf={(key) => RANGE_LABEL[key] || key} />
               </TabsContent>
 
               <TabsContent value="breakdown" className="mt-0 space-y-4">
@@ -350,7 +348,6 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                   <BookTable title="Indication types" rows={result.byType} />
                   <BookTable title="Direction" rows={result.byDirection} />
                   <BookTable title="Exit reasons" rows={result.byReason} labelOf={(key) => key.replace(/_/g, " ")} />
-                  <BookTable title="Range classes" rows={result.byRangeClass} labelOf={(key) => RANGE_LABEL[key] || key} />
                 </div>
                 <BookTable title="Symbols" rows={result.bySymbol} />
                 <div className="rounded-lg border bg-card p-3 text-[11px] text-muted-foreground">

@@ -23,7 +23,7 @@
  */
 import { readFileSync, readdirSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { sparseExits, rangeClass, type ResearchSignal } from "@/lib/short-range-exits"
+import { sparseExits, type ResearchSignal } from "@/lib/short-range-exits"
 import { applyBaseGate, type BacktestTrade } from "@/lib/connection-backtest"
 import { deriveProtectionFromProfitFactor } from "@/lib/strategy-coordinator"
 import { setActiveProtectionFloors } from "@/lib/protection-floors"
@@ -95,7 +95,7 @@ async function main() {
         symbol, type: c.type, direction: c.direction, rule: c.rule, entryTime: c.entryTime, exitTime: c.exitTime,
         entryPrice: c.entryPrice, exitPrice: c.exitPrice, takeProfitPct: s.takeProfitPct!, stopLossPct: s.stopLossPct!,
         grossPct: c.grossPct, reason: c.reason, exitLeg: "taker" as const,
-        rangeClass: rangeClass(s.takeProfitPct!, POSITION_COST_PCT), profitFactor: s.profitFactor,
+        profitFactor: s.profitFactor,
       }
       const at = (grossPct: number, costPct: number, reason = c.reason): BacktestTrade =>
         ({ ...base, grossPct, costPct, netPct: grossPct - costPct, reason } as BacktestTrade)

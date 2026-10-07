@@ -45,14 +45,14 @@ describe("backtest request", () => {
 const trade = (overrides: Partial<BacktestTrade>): BacktestTrade => ({
   symbol: "BTCUSDT", type: "move", direction: "long", rule: "default", entryTime: T0, exitTime: T0 + 10 * 60_000,
   entryPrice: 100, exitPrice: 100.5, takeProfitPct: 0.5, stopLossPct: 0.6, grossPct: 0.5, costPct: 0.16, netPct: 0.34,
-  reason: "take_profit", exitLeg: "taker", rangeClass: "short", ...overrides,
+  reason: "take_profit", exitLeg: "taker", ...overrides,
 })
 
 describe("aggregateBacktest", () => {
   const trades = [
     trade({ exitTime: T0 + 10 * 60_000, netPct: 0.34 }),
     trade({ symbol: "ETHUSDT", type: "trend", exitTime: T0 + 70 * 60_000, netPct: -0.76, grossPct: -0.6, reason: "stop_loss", direction: "short" }),
-    trade({ exitTime: T0 + 130 * 60_000, netPct: 0.2, rangeClass: "general" }),
+    trade({ exitTime: T0 + 130 * 60_000, netPct: 0.2 }),
   ]
   const result = aggregateBacktest({
     connectionId: "bingx-x01", mode: "signals", execution: "market", hours: 3, fromMs: T0, toMs: T0 + 3 * H,
@@ -68,10 +68,9 @@ describe("aggregateBacktest", () => {
     expect(result.equity.map((point) => Number(point.drawdownPct.toFixed(2)))).toEqual([0, 0, -0.76, -0.56])
   })
 
-  test("hours, symbols in basket order, range classes in class order", () => {
+  test("hours and symbols in basket order", () => {
     expect(result.byHour.map((hour) => hour.trades)).toEqual([1, 1, 1])
     expect(result.bySymbol.map((row) => [row.key, row.trades])).toEqual([["BTCUSDT", 2], ["ETHUSDT", 1], ["SOLUSDT", 0]])
-    expect(result.byRangeClass.map((row) => [row.key, row.trades])).toEqual([["micro", 0], ["minimum", 0], ["short", 2], ["general", 1], ["long", 0]])
     expect(result.byDirection.map((row) => [row.key, row.trades])).toEqual([["long", 2], ["short", 1]])
   })
 
@@ -100,7 +99,7 @@ describe("backtestTradesForSymbol", () => {
   test("market: the row's own TP, taker legs", () => {
     const { trades } = backtestTradesForSymbol({ symbol: "BTCUSDT", bars, signals, execution: "market", positionCostPct: 0.1, fromMs: T0 })
     expect(trades).toHaveLength(1)
-    expect(trades[0]).toMatchObject({ reason: "take_profit", exitPrice: expect.closeTo(100.5, 9), costPct: expect.closeTo(0.16, 12), rangeClass: "short", exitLeg: "taker" })
+    expect(trades[0]).toMatchObject({ reason: "take_profit", exitPrice: expect.closeTo(100.5, 9), costPct: expect.closeTo(0.16, 12), exitLeg: "taker" })
     expect(trades[0].netPct).toBeCloseTo(0.5 - 0.16, 9)
   })
 

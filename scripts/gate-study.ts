@@ -22,7 +22,6 @@ import { deriveProtectionFromProfitFactor } from "@/lib/strategy-coordinator"
 import { setActiveProtectionFloors } from "@/lib/protection-floors"
 import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
-import { rangeClass } from "@/lib/short-range-exits"
 
 const POSITION_COST_PCT = 0.1
 const COST_PCT = simulatedCloseCostPercent(POSITION_COST_PCT)
@@ -103,7 +102,7 @@ async function main() {
         symbol, type: c.type, direction: c.direction, rule: c.rule, entryTime: c.entryTime, exitTime: c.exitTime,
         entryPrice: c.entryPrice, exitPrice: c.exitPrice, takeProfitPct: s.takeProfitPct!, stopLossPct: s.stopLossPct!,
         grossPct: c.grossPct, costPct: COST_PCT, netPct: c.grossPct - COST_PCT, reason: c.reason, exitLeg: "taker",
-        rangeClass: rangeClass(s.takeProfitPct!, POSITION_COST_PCT), profitFactor: s.profitFactor,
+        profitFactor: s.profitFactor,
       }
     })
     for (const variant of GATE_VARIANTS) {

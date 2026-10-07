@@ -60,4 +60,4 @@ None of these is a market result. Measured on 14 real days, the entries have no 
 All five classes are measured in the research report (TP distance in PositionCost multiples: < 2, 2–3, 3–6, 6–12, > 12):
 - None is positive at 0.10 % cost for the original signals.
 - The shortest ranges (Micro, Minimum) are the worst after costs: the cost is a larger share of a small target.
-- `lib/short-range-grid.ts` is still not wired into the live stages. With no validated configuration there is nothing to activate.
+- `lib/short-range-grid.ts` was never wired into the live stages and was removed on 2026-10-07 (operator decision: no range-class coordinations).

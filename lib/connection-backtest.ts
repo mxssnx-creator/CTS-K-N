@@ -18,7 +18,6 @@ import { BOT_FEES } from "@/lib/bots/backtest"
 import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
-  rangeClass,
   simulateExits,
   simulateMakerExits,
   type ExitConfig,
@@ -125,8 +124,6 @@ function heatmap(trades: readonly BacktestTrade[], rows: string[], fromMs: numbe
   return { rows, cols: Array.from({ length: hourCount }, (_, i) => fromMs + i * HOUR_MS), cells }
 }
 
-export const RANGE_CLASS_ORDER = ["micro", "minimum", "short", "general", "long"] as const
-
 /** Every figure of the result from the trade list (pure; unit-tested). */
 export function aggregateBacktest(input: {
   connectionId: string
@@ -198,7 +195,6 @@ export function aggregateBacktest(input: {
     bySymbol: groupBooks(trades, (trade) => trade.symbol, input.symbols),
     byType: groupBooks(trades, (trade) => trade.type),
     byDirection: groupBooks(trades, (trade) => trade.direction, ["long", "short"]),
-    byRangeClass: groupBooks(trades, (trade) => trade.rangeClass, RANGE_CLASS_ORDER),
     byReason: groupBooks(trades, (trade) => trade.reason),
     heatmapSymbolHour: heatmap(trades, input.symbols, input.fromMs, hourCount, (trade) => trade.symbol),
     heatmapTypeHour: heatmap(trades, types, input.fromMs, hourCount, (trade) => trade.type),
@@ -245,7 +241,6 @@ export function backtestTradesForSymbol(input: {
       netPct: close.grossPct - costPct,
       reason: close.reason,
       exitLeg: close.exitLeg,
-      rangeClass: rangeClass(takeProfitPct, input.positionCostPct),
       profitFactor: Number(signal?.profitFactor) || 0,
     }
   })
