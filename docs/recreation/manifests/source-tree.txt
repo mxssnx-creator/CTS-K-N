@@ -428,6 +428,7 @@ __tests__/unit/reconcile-respects-slot-entry.test.ts
 __tests__/unit/redis-connection-identity.test.ts
 __tests__/unit/redis-db-network-client.test.ts
 __tests__/unit/redis-db-write-budget.test.ts
+__tests__/unit/redis-list-append-large-batch.test.ts
 __tests__/unit/redis-memory-policy.test.ts
 __tests__/unit/redis-memory-pressure.test.ts
 __tests__/unit/redis-migration-080.test.ts
@@ -1900,6 +1901,7 @@ scripts/benchmark-direct-trade-symbol-coordination.cjs
 scripts/bingx-comprehensive-test.mjs
 scripts/bingx-x02-vst-baseline.ts
 scripts/bootstrap-install.sh
+scripts/build-24h-report.mjs
 scripts/build-heap.mjs
 scripts/build-next-with-trace-retry.mjs
 scripts/build-observation-report.mjs
@@ -1923,6 +1925,7 @@ scripts/ensure-server-autoboot.sh
 scripts/fetch-dca-public-history.py
 scripts/fetch-research-bars.mjs
 scripts/final-validation-test.mjs
+scripts/gate-study.ts
 scripts/generate-recreation-manifests.mjs
 scripts/historic-signal-data.ts
 scripts/historic-signal-eval-v2.ts
@@ -1954,6 +1957,7 @@ scripts/npm-redis-service.mjs
 scripts/optimize-dca-14d.ts
 scripts/optimize-dca-42d.ts
 scripts/optimize-dca-7d.ts
+scripts/pf-attribution.ts
 scripts/post-deploy-verify.sh
 scripts/prepare-npm-redis.mjs
 scripts/prepare-standalone-assets.mjs
