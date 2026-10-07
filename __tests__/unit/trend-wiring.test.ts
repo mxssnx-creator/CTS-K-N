@@ -20,15 +20,25 @@ describe("Trend indication project wiring", () => {
     expect(sets).toContain('await this.batchSaveIndications(pendingWrites, "trend")')
     expect(sets).toContain("(!hasExplicitPrices && hasCandles)")
 
-    const autoPush = realtime.indexOf('type: "auto"')
-    const activeBarrier = realtime.indexOf("indications.push(...deferredActiveIndications)")
-    const trendPush = realtime.lastIndexOf('type: "trend"')
+    // The direct rules live in one shared module (realtime and the
+    // prehistoric per-type measurement); its emission order is unchanged.
+    const direct = source("lib/trade-engine/direct-indications.ts")
+    const autoPush = direct.indexOf('type: "auto"')
+    const activeBarrier = direct.indexOf("const afterSignal: any[] = [...deferredActiveIndications]")
+    const trendPush = direct.lastIndexOf('type: "trend"')
     expect(autoPush).toBeGreaterThan(-1)
     expect(activeBarrier).toBeGreaterThan(autoPush)
     expect(trendPush).toBeGreaterThan(activeBarrier)
+    expect(direct).toContain("strongestByTimeframe")
+    expect(direct).toContain("for (const trendEvaluation of trendEvaluations)")
     expect(realtime).toContain("oneMinuteClosesOldestFirst")
-    expect(realtime).toContain("strongestByTimeframe")
-    expect(realtime).toContain("for (const trendEvaluation of trendEvaluations)")
+    // Realtime places Signal between the direct rows and the Active/Trend tail.
+    const beforeSignal = realtime.indexOf("[...direct.beforeSignal]")
+    const signalRun = realtime.indexOf("processSignalIndications({")
+    const afterSignal = realtime.indexOf("indications.push(...direct.afterSignal)")
+    expect(beforeSignal).toBeGreaterThan(-1)
+    expect(signalRun).toBeGreaterThan(beforeSignal)
+    expect(afterSignal).toBeGreaterThan(signalRun)
   })
 
   test("keeps each Trend window independent through Strategy and applies adaptive TP", () => {

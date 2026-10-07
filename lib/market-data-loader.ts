@@ -35,6 +35,7 @@ import { normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket,
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 import { expandMinuteBarsToSeconds, mergeSecondsWithMinuteBackfill, ONE_SECOND_BACKFILL_WINDOW_S } from "@/lib/market-data-1s-backfill"
 import { marketDataKey } from "@/lib/market-data-keys"
+import { ENGINE_STAGE_HISTORY_CANDLES, ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import type { ExchangeTicker } from "@/lib/exchange-connectors/base-connector"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 
@@ -117,12 +118,9 @@ export async function withMarketDataFetchDeadline<T>(
   }
 }
 
-// Main/Real coordinates are calculated on one-minute closes even though the
-// engine's canonical market-data feed is 1s.  Keep one authoritative minimum
-// here so startup, realtime indication processing, and cache validation agree:
-// 90 one-minute bars require 5,400 one-second samples.
-export const ENGINE_STAGE_HISTORY_MINUTES = 90
-export const ENGINE_STAGE_HISTORY_CANDLES = ENGINE_STAGE_HISTORY_MINUTES * 60
+// Main/Real coordinates are calculated on one-minute closes (see
+// lib/engine-stage-history.ts for the authoritative constants).
+export { ENGINE_STAGE_HISTORY_CANDLES, ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 
 export interface SecondHistoryCoverage {
   complete: boolean
