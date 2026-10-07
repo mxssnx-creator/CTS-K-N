@@ -138,7 +138,7 @@ export async function advanceTypeMeasurement(input: AdvanceTypeMeasurementInput)
     const firstNewBarMs = state ? state.lastBarMs + MINUTE_MS : Number.NaN
     const resumed = Boolean(state) &&
       firstNewBarMs - (ENGINE_STAGE_HISTORY_MINUTES - 1) * MINUTE_MS >= firstBarMs
-    const { deriveProtectionFromProfitFactor } = await import("@/lib/strategy-coordinator")
+    const { deriveAdaptiveTrendProtection, deriveProtectionFromProfitFactor } = await import("@/lib/strategy-coordinator")
     const { context } = input
     const result = await replayDirectIndicationTypes({
       symbol: input.symbol,
@@ -148,8 +148,10 @@ export async function advanceTypeMeasurement(input: AdvanceTypeMeasurementInput)
       positionCostPct: context.positionCostPct,
       indicationSettings: context.indicationSettings,
       // The dispatch path's protection for a direct indication row.
-      protectionFor: ({ profitFactor }) => {
-        const protection = deriveProtectionFromProfitFactor(profitFactor, context.positionCostPct)
+      protectionFor: ({ type, profitFactor, row }) => {
+        const protection = (type === "trend"
+          ? deriveAdaptiveTrendProtection(row?.metadata?.adaptiveTpRange?.factors, context.positionCostPct)
+          : null) ?? deriveProtectionFromProfitFactor(profitFactor, context.positionCostPct)
         return { takeProfitPct: protection.takeProfitPct, stopLossPct: protection.stopLossPct }
       },
       stepIndicatorsFor: (bars, timeframesMinutes) => StepBasedIndicators.calculateSummariesAsync(

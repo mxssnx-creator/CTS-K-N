@@ -121,7 +121,8 @@ describe("exchange-only Set rings", () => {
     clearLiveSetOutcomeCache(connectionId)
     const window = (await getLiveSetWindowBatch(connectionId, [key], 20, 3)).get(key)
     expect(window).toMatchObject({ count: 3, outcomeSource: "exchange", exchangeCloses: 3 })
-    expect(window?.recentPnls).toEqual([1, -2, -1])
+    // Window outcomes are in net percent (here 0.01 × 100 = 1 USDT notional: ±1 USDT = ±100 %).
+    expect(window?.recentPnls).toEqual([100, -200, -100])
     expect(window?.successRate).toBeCloseTo(1 / 3, 12)
   })
 

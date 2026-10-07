@@ -113,10 +113,26 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
       "-1|0|4|-0.10|0.10",
     ], 2)
 
-    expect(stats.profitFactor).toBe(10)
+    // Classic PF on the net percent every writer supplies (0.30 / 0.10), not
+    // on the quote-currency field whose unit differs between writers.
+    expect(stats.profitFactor).toBeCloseTo(3, 12)
     expect(stats.averagePnlPct).toBeCloseTo(0.1, 12)
     expect(stats.positionCostRatio).toBeCloseTo(1.1, 12)
     expect(stats.positionCostRatioCount).toBe(2)
+  })
+
+  test("mixed writers share one unit: a USDT pseudo close and a percent measurement", () => {
+    // A pseudo close of +2 USDT (+0.2 %) and a measured close of -0.3 %
+    // booked as pnl -0.3: the window PF compares 0.2 % with 0.3 %.
+    const stats = derivePosWindowStats(["2|0|1|0.20|0.10", "-0.3|0|1|-0.30|0.10"], 2)
+    expect(stats.profitFactor).toBeCloseTo(0.2 / 0.3, 12)
+    expect(stats.recentPnls).toEqual([0.2, -0.3])
+  })
+
+  test("a row without a ratio keeps its quote-currency PnL, never 0 %", () => {
+    const stats = derivePosWindowStats(["-4|0|1||", "2|0|1|0.20|0.10"], 2)
+    expect(stats.recentPnls).toEqual([-4, 0.2])
+    expect(stats.successRate).toBe(0.5)
   })
 
   test("does not reinterpret legacy quote-currency rows as percentages", () => {

@@ -424,9 +424,14 @@ export function recordPosClosed(input: RecordPosClosedInput): void {
   const cleanSymbol = symbol || "unknown"
   const cleanType   = indicationType || "unknown"
 
-  const win  = pnl > 0
-  const grossProfit = Math.max(0,  pnl)
-  const grossLoss   = Math.max(0, -pnl)
+  // Writers differ in the unit of `pnl` (a pseudo close books USDT, the
+  // per-type measurement has no notional and books percent, a simulated
+  // live row books the gross move). The signed net percent is the one unit
+  // every writer supplies, so outcome and PF use it whenever it is present.
+  const outcome = pnlPct !== null && pnlPct !== undefined && Number.isFinite(Number(pnlPct)) ? Number(pnlPct) : pnl
+  const win  = outcome > 0
+  const grossProfit = Math.max(0,  outcome)
+  const grossLoss   = Math.max(0, -outcome)
   const ddt         = Math.max(0,  drawdownMinutes)
   
   // Pseudo positions are closed with a fixed 0.1% notional cost already
@@ -649,17 +654,21 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
     // if parts.length >= 3, new format (pnl|cost|ddt)
     const cost = parts.length >= 3 ? Number(parts[1]) : 0
     const ddt = Number(parts.length >= 3 ? parts[2] : parts[1])
-    const pnlPct = parts.length >= 5 ? Number(parts[3]) : Number.NaN
+    // An empty field (a row written without a ratio) is absent, not 0 %.
+    const pnlPct = parts.length >= 5 && parts[3] !== "" ? Number(parts[3]) : Number.NaN
     const positionCostPct = parts.length >= 5 ? Number(parts[4]) : Number.NaN
     
     if (Number.isFinite(pnl)) {
       n++
-      recentPnls.push(pnl)
-      if (pnl > 0) {
+      // One unit per window: the signed net percent when the record carries
+      // it (every current writer does), else the legacy quote-currency PnL.
+      const outcome = Number.isFinite(pnlPct) ? pnlPct : pnl
+      recentPnls.push(outcome)
+      if (outcome > 0) {
         wins++
-        num += pnl
+        num += outcome
       } else {
-        den += -pnl
+        den += -outcome
       }
       // Accumulate position costs for all positions (wins & losses)
       if (Number.isFinite(cost) && cost > 0) {

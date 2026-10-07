@@ -2456,6 +2456,33 @@ export function deriveProtectionFromProfitFactor(
 }
 
 /**
+ * Protection for a Trend row with an adaptive take-profit ladder.
+ *
+ * The ladder (lib/trend-indication.ts buildAdaptiveTrendTpRange) holds
+ * multiples of PositionCost: factor 6 at a 0.10 % PositionCost is a 0.60 %
+ * gross target, not 6 %. The smallest factor is converted to the PF
+ * coordinate whose gross target it is, so the stop-loss floor and every TP
+ * clamp of deriveProtectionFromProfitFactor apply unchanged. Null when the
+ * row carries no ladder. Pseudo creation, live dispatch and the per-type
+ * measurement all use this one conversion.
+ */
+export function deriveAdaptiveTrendProtection(
+  factors: readonly unknown[] | null | undefined,
+  positionCostPct: number,
+  sizeMultiplier = 1,
+): (DerivedProtection & ProfitFactorProtection) | null {
+  const factor = (Array.isArray(factors) ? factors : [])
+    .map(Number)
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right)[0]
+  if (factor === undefined) return null
+  const cost = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
+  // Gross target factor×cost = cost + net move ⇒ net move (factor−1)×cost.
+  const ratio = movePctToMainTradePfRatio((factor - 1) * cost, cost)
+  return deriveProtectionFromProfitFactor(ratio, cost, sizeMultiplier)
+}
+
+/**
  * Convert the consensus' ATR-aware short-trade band into the same cost-aware
  * protection contract used by ordinary Sets. Position size never widens the
  * Signal stop: quantity and price risk are independent controls. Exchange
@@ -4114,7 +4141,8 @@ export class StrategyCoordinator {
         // closed history for `trailing`/`dca`. Cap the per-symbol open book
         // just below blockMaxStack and roll the oldest excess to realistic
         // TP/SL outcomes (writes closed-index + pos-history that the gates
-        // read). No-op in production — real positions close via real prices.
+        // read). Only in a forced simulation (the function checks): with real
+        // prices, positions close at their real TP/SL.
         try {
           const posMgr = new PseudoPositionManager(this.connectionId)
           await posMgr.enforceSimBoundedLifecycle(symbol, {
@@ -10113,6 +10141,9 @@ export class StrategyCoordinator {
                 const protection = (
                   specialProtection ?? activeOutbreakProtection ?? (set.indicationType === "signal"
                     ? deriveProtectionFromSignalRisk(resolvedSignalRisk)
+                    : null) ?? (set.indicationType === "trend"
+                    // Same adaptive Trend target as the pseudo row that qualified the Set.
+                    ? deriveAdaptiveTrendProtection(bestEntry.adaptiveTpFactors, livePositionCostPct, effectiveSizeMult)
                     : null)
                 ) ?? deriveProtectionFromProfitFactor(
                   effectivePF,
@@ -10671,10 +10702,9 @@ export class StrategyCoordinator {
                 )
                 if (!bestEntry) return
 
+                // The ladder holds PositionCost multiples, not percents.
                 const adaptiveTrendTp = set.indicationType === "trend"
-                  ? bestEntry.adaptiveTpFactors?.find(
-                      (factor) => Number.isFinite(factor) && factor > 0,
-                    )
+                  ? deriveAdaptiveTrendProtection(bestEntry.adaptiveTpFactors, livePositionCostPct)?.takeProfitPct
                   : undefined
                 const signalProtection = set.indicationType === "signal"
                   ? deriveProtectionFromSignalRisk(

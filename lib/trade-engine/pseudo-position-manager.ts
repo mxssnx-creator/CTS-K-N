@@ -18,6 +18,7 @@ import {
   type TrailingProfile,
 } from "@/lib/signal-trailing"
 import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
+import { isForcedSimulation } from "@/lib/real-trade-gates"
 import {
   sanitizeSpecialPositionPlan,
   type SpecialPositionPlan,
@@ -891,6 +892,8 @@ export class PseudoPositionManager {
     positionId: string,
     reason: string,
     existingPosition?: Record<string, string> | null,
+    /** The exit price when the caller decided it (a level hit); default = the stored mark. */
+    exitPrice?: number,
   ): Promise<void> {
     let closeLock: DirectionCreationLock | null = null
     try {
@@ -912,7 +915,7 @@ export class PseudoPositionManager {
       if (!position || String(position.status || "").toLowerCase() !== "open") return
 
       const entryPrice = parseFloat(position.entry_price || "0")
-      const currentPrice = parseFloat(position.current_price || "0")
+      const currentPrice = Number(exitPrice) > 0 ? Number(exitPrice) : parseFloat(position.current_price || "0")
       const quantity = parseFloat(position.quantity || "0")
       const configuredPositionCostPct = Number(position.position_cost_pct || "0.1")
       const side = resolveConsistentTradeDirection(position.side, position.direction)
@@ -1292,14 +1295,16 @@ export class PseudoPositionManager {
    * realistic, continuously-cycling book: block sees 1..stack-1 open, and
    * trailing/dca see a genuine win/loss stream.
    *
-   * No-op in PRODUCTION: there the real exchange marks live prices and closes
-   * positions via real TP/SL, so the book bounds itself and these gates get
-   * real data. We must never force-close real exchange positions.
+   * Only in a forced simulation (isForcedSimulation): with real prices —
+   * paper on real market data as well as live — positions close at their
+   * real TP/SL, and coin-flip outcomes would be booked into the Base gate's
+   * buckets as if they had been measured.
    */
   async enforceSimBoundedLifecycle(
     symbol: string,
     opts: { maxOpenPerSymbol: number; minAgeMs?: number },
   ): Promise<{ closed: number; wins: number; losses: number }> {
+    if (!isForcedSimulation()) return { closed: 0, wins: 0, losses: 0 }
     try {
       const minAgeMs = Math.max(0, opts.minAgeMs ?? 0)
       const cap = Math.max(0, Math.floor(opts.maxOpenPerSymbol))
@@ -1340,7 +1345,7 @@ export class PseudoPositionManager {
           ...pos,
           side,
           current_price: String(closePrice),
-        })
+        }, closePrice)
         if (isWin) wins++
         else losses++
       }

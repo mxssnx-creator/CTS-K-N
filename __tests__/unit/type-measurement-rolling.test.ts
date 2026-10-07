@@ -10,7 +10,7 @@ jest.mock("@/lib/trade-engine/indication-processor-fixed", () => ({
 import { getRedisClient } from "@/lib/redis-db"
 import { getPosWindowBatch } from "@/lib/pos-history"
 import { replayDirectIndicationTypes } from "@/lib/trade-engine/prehistoric-type-replay"
-import { deriveProtectionFromProfitFactor } from "@/lib/strategy-coordinator"
+import { deriveAdaptiveTrendProtection, deriveProtectionFromProfitFactor } from "@/lib/strategy-coordinator"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
 import {
   advanceTypeMeasurement,
@@ -75,8 +75,11 @@ describe("per-type measurement continues in realtime", () => {
       rangeEndMs: bars[299].timestamp + MINUTE,
       positionCostPct: 0.1,
       indicationSettings: {},
-      protectionFor: ({ profitFactor }) => {
-        const protection = deriveProtectionFromProfitFactor(profitFactor, 0.1)
+      // The module's protection: the adaptive Trend ladder, else PF-derived.
+      protectionFor: ({ type, profitFactor, row }) => {
+        const protection = (type === "trend"
+          ? deriveAdaptiveTrendProtection(row?.metadata?.adaptiveTpRange?.factors, 0.1)
+          : null) ?? deriveProtectionFromProfitFactor(profitFactor, 0.1)
         return { takeProfitPct: protection.takeProfitPct, stopLossPct: protection.stopLossPct }
       },
       // The measurement includes Auto, exactly as the module runs it.
