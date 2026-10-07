@@ -1,4 +1,4 @@
-import { bookResearchCloses, rangeClass, simulateExits, type ResearchSignal } from "@/lib/short-range-exits"
+import { bookResearchCloses, makerRoundTripPct, rangeClass, simulateExits, simulateMakerExits, type ResearchSignal } from "@/lib/short-range-exits"
 
 /**
  * The research exit evaluator follows the per-type measurement's rules
@@ -56,5 +56,40 @@ describe("simulateExits", () => {
     expect(book).toMatchObject({ trades: 1, wins: 1, profitFactor: Number.POSITIVE_INFINITY })
     expect(book.netPct).toBeCloseTo(0.9, 9)
     expect([0.15, 0.25, 0.4, 0.8, 1.6].map((tp) => rangeClass(tp, 0.1))).toEqual(["micro", "minimum", "short", "general", "long"])
+  })
+})
+
+describe("simulateMakerExits", () => {
+  const maker = { entryOffsetPct: 0.1, fillWindowMinutes: 2 }
+  // Long at 100, limit 99.9.
+
+  test("a touch of the limit is not a fill; a trade-through is, at the limit", () => {
+    const touch = [bar(0, 100, 100, 100, 100), bar(1, 100, 100.1, 99.9, 100), bar(2, 100, 100.1, 99.95, 100)]
+    expect(simulateMakerExits(touch, [signal(1, "long")], fixed, maker)).toMatchObject({ closes: [], placed: 1, missed: 1 })
+    const through = [bar(0, 100, 100, 100, 100), bar(1, 100, 100.1, 99.85, 99.95), bar(2, 99.95, 101.5, 99.9, 101)]
+    const result = simulateMakerExits(through, [signal(1, "long")], fixed, maker)
+    expect(result.closes[0]).toMatchObject({ entryPrice: 99.9, reason: "take_profit", exitLeg: "maker", exitPrice: expect.closeTo(100.899, 9) })
+  })
+
+  test("an unfilled entry expires after the window and books nothing", () => {
+    const bars = [bar(0, 100, 100, 100, 100), bar(1, 100, 100.5, 100, 100.4), bar(2, 100.4, 100.8, 100.3, 100.7), bar(3, 100.7, 100.7, 99, 99.2)]
+    expect(simulateMakerExits(bars, [signal(1, "long")], fixed, maker)).toMatchObject({ closes: [], placed: 1, missed: 1 })
+  })
+
+  test("on the fill bar only the stop can trigger", () => {
+    const bars = [bar(0, 100, 100, 100, 100), bar(1, 100, 101.5, 98.5, 100)]
+    expect(simulateMakerExits(bars, [signal(1, "long")], fixed, maker).closes[0]).toMatchObject({ reason: "stop_loss", exitLeg: "taker" })
+  })
+
+  test("a target touch is not a maker fill; the stop exit is a taker leg", () => {
+    const bars = [bar(0, 100, 100, 100, 100), bar(1, 100, 100, 99.8, 99.9), bar(2, 99.9, 100.899, 99.9, 100.5), bar(3, 100.5, 100.5, 98.7, 98.8)]
+    const close = simulateMakerExits(bars, [signal(1, "long")], fixed, maker).closes[0]
+    expect(close).toMatchObject({ reason: "stop_loss", exitLeg: "taker" })
+  })
+
+  test("round-trip cost per leg", () => {
+    const costs = { makerPct: 0.02, takerPct: 0.07 }
+    expect(makerRoundTripPct({ exitLeg: "maker" }, costs)).toBeCloseTo(0.04, 12)
+    expect(makerRoundTripPct({ exitLeg: "taker" }, costs)).toBeCloseTo(0.09, 12)
   })
 })

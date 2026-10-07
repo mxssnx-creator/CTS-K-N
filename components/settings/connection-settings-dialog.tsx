@@ -19,6 +19,7 @@ import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { MarginCallPanel } from "@/components/settings/margin-call-panel"
 import { HistoricTestSection } from "@/components/settings/historic-test-section"
 import { HistoricTestStatsPanel } from "@/components/settings/historic-test-stats-panel"
+import { ConnectionBacktestSection } from "./connection-backtest-section"
 import { DEFAULT_HISTORIC_TEST_SETTINGS, normalizeHistoricTestSettings, type HistoricTestSettings } from "@/lib/historic-test-settings"
 import {
   EXCHANGE_SYMBOL_COUNT_MAX,
@@ -1649,6 +1650,9 @@ export function ConnectionSettingsDialog({
                     exchangeOptions={["bingx", "bybit", "binance"]}
                   />
                   <HistoricTestStatsPanel connectionId={connectionId} />
+
+                  {/* ── Backtest ── */}
+                  <ConnectionBacktestSection connectionId={connectionId} exchange={exchangeKey} symbols={symbolsCfg.symbols} />
                 </TabsContent>
 
                 {/* LIVE ─────────────────────────────────────────── */}

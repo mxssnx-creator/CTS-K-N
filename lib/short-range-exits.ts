@@ -32,7 +32,15 @@ export interface ResearchSignal {
   entryTime: number
   entryPrice: number
   profitFactor: number
+  /** The row's own protection (the engine derives it per row); default = the configuration's. */
+  takeProfitPct?: number
+  stopLossPct?: number
 }
+
+const signalTakeProfitPct = (signal: ResearchSignal, config: ExitConfig) =>
+  Number(signal.takeProfitPct) > 0 ? Number(signal.takeProfitPct) : config.takeProfitPct
+const signalStopLossPct = (signal: ResearchSignal, config: ExitConfig) =>
+  Number(signal.stopLossPct) > 0 ? Number(signal.stopLossPct) : config.stopLossPct
 
 export interface ExitConfig {
   takeProfitPct: number
@@ -130,8 +138,8 @@ export function simulateExits(
       open.set(key, {
         key,
         signal,
-        stopPrice: signal.entryPrice * (1 + (long ? -1 : 1) * config.stopLossPct / 100),
-        targetPrice: signal.entryPrice * (1 + (long ? 1 : -1) * config.takeProfitPct / 100),
+        stopPrice: signal.entryPrice * (1 + (long ? -1 : 1) * signalStopLossPct(signal, config) / 100),
+        targetPrice: signal.entryPrice * (1 + (long ? 1 : -1) * signalTakeProfitPct(signal, config) / 100),
         bestPrice: signal.entryPrice,
         trailing: false,
       })
@@ -186,4 +194,163 @@ export function rangeClass(takeProfitPct: number, positionCostPct: number): "mic
   if (multiple < 6) return "short"
   if (multiple <= 12) return "general"
   return "long"
+}
+
+// ───────────────────────── maker (post-only) execution ─────────────────────────
+
+export interface MakerExecution {
+  /** Limit distance from the decision close, percent, on the favourable side (long: below). */
+  entryOffsetPct: number
+  /** Minutes the post-only entry rests before it is cancelled. */
+  fillWindowMinutes: number
+}
+
+export type ExitLeg = "maker" | "taker"
+
+export interface MakerResearchClose extends ResearchClose {
+  fillTime: number
+  exitLeg: ExitLeg
+}
+
+export interface MakerResult {
+  closes: MakerResearchClose[]
+  /** Entries placed (one per free key). */
+  placed: number
+  /** Entries cancelled unfilled after the window. */
+  missed: number
+}
+
+/**
+ * Post-only execution on real one-minute bars, conservative by construction:
+ *
+ *  - the entry rests at the decision close ∓ `entryOffsetPct` and fills only
+ *    when a later bar trades THROUGH it (long: low < limit) — a touch is not
+ *    a fill, which stands in for the unknown queue position; unfilled after
+ *    `fillWindowMinutes` it is cancelled and nothing is booked;
+ *  - on the fill bar only the stop can trigger (its order inside the bar is
+ *    unknown, so the adverse case is assumed);
+ *  - the take profit is a resting reduce-only limit (maker), filled only on a
+ *    trade-through of the target; a gap through it fills at the target;
+ *  - stop loss, trailing stop and max hold are market exits (taker);
+ *  - a bar touching both the stop and the target is a stop.
+ *
+ * While an entry rests or a position is open, further signals of the same
+ * (type, direction, rule) are not new entries.
+ */
+export function simulateMakerExits(
+  bars: readonly ReplayCandle[],
+  signals: readonly ResearchSignal[],
+  config: ExitConfig,
+  maker: MakerExecution,
+): MakerResult {
+  const closes: MakerResearchClose[] = []
+  const trailingStart = Number(config.trailingStartPct) > 0 ? Number(config.trailingStartPct) : null
+  const giveBack = Math.min(1, Math.max(0, Number(config.trailingStopRatio) || 0))
+  const maxHoldMs = Math.max(MINUTE_MS, Number(config.maxHoldMs) || 4 * 60 * MINUTE_MS)
+  const windowMs = Math.max(1, Math.round(maker.fillWindowMinutes)) * MINUTE_MS
+  const offset = Math.max(0, Number(maker.entryOffsetPct) || 0)
+  const ordered = [...signals].sort((a, b) => a.entryTime - b.entryTime)
+  interface Resting { key: string; signal: ResearchSignal; limit: number; expiresAt: number }
+  interface Filled { key: string; signal: ResearchSignal; entryPrice: number; fillTime: number; stopPrice: number; targetPrice: number; bestPrice: number; trailing: boolean }
+  const resting = new Map<string, Resting>()
+  const open = new Map<string, Filled>()
+  let placed = 0, missed = 0, next = 0
+
+  const settle = (entry: Filled, exitTime: number, exitPrice: number, reason: ResearchCloseReason, exitLeg: ExitLeg) => {
+    const side = entry.signal.direction === "long" ? 1 : -1
+    closes.push({
+      type: entry.signal.type,
+      direction: entry.signal.direction,
+      rule: entry.signal.rule,
+      entryTime: entry.signal.entryTime,
+      fillTime: entry.fillTime,
+      exitTime,
+      entryPrice: entry.entryPrice,
+      exitPrice,
+      grossPct: ((exitPrice - entry.entryPrice) / entry.entryPrice) * 100 * side,
+      reason,
+      exitLeg,
+    })
+    open.delete(entry.key)
+  }
+
+  for (const bar of bars) {
+    const barEnd = bar.timestamp + MINUTE_MS
+    // 1. Open positions (filled on an earlier bar).
+    for (const entry of [...open.values()]) {
+      if (bar.timestamp < entry.fillTime) continue
+      const long = entry.signal.direction === "long"
+      const stop = entry.stopPrice
+      const stopReason: ResearchCloseReason = entry.trailing ? "trailing_stop" : "stop_loss"
+      if (long ? bar.open <= stop : bar.open >= stop) { settle(entry, bar.timestamp, bar.open, stopReason, "taker"); continue }
+      if (!trailingStart && (long ? bar.open > entry.targetPrice : bar.open < entry.targetPrice)) { settle(entry, bar.timestamp, entry.targetPrice, "take_profit", "maker"); continue }
+      if (long ? bar.low <= stop : bar.high >= stop) { settle(entry, barEnd, stop, stopReason, "taker"); continue }
+      if (!trailingStart) {
+        if (long ? bar.high > entry.targetPrice : bar.low < entry.targetPrice) { settle(entry, barEnd, entry.targetPrice, "take_profit", "maker"); continue }
+      } else {
+        entry.bestPrice = long ? Math.max(entry.bestPrice, bar.high) : Math.min(entry.bestPrice, bar.low)
+        const movePct = ((entry.bestPrice - entry.entryPrice) / entry.entryPrice) * 100 * (long ? 1 : -1)
+        if (movePct >= trailingStart) {
+          entry.trailing = true
+          const trail = entry.entryPrice + (entry.bestPrice - entry.entryPrice) * (1 - giveBack)
+          if (long ? trail > entry.stopPrice : trail < entry.stopPrice) entry.stopPrice = trail
+          if (long ? bar.close <= entry.stopPrice : bar.close >= entry.stopPrice) { settle(entry, barEnd, bar.close, "trailing_stop", "taker"); continue }
+        }
+      }
+      if (barEnd - entry.fillTime >= maxHoldMs) settle(entry, barEnd, bar.close, "max_hold", "taker")
+    }
+    // 2. Resting entries: fill on a trade-through, else expire.
+    for (const order of [...resting.values()]) {
+      if (bar.timestamp < order.signal.entryTime) continue
+      if (bar.timestamp >= order.expiresAt) { resting.delete(order.key); missed++; continue }
+      const long = order.signal.direction === "long"
+      if (!(long ? bar.low < order.limit : bar.high > order.limit)) continue
+      resting.delete(order.key)
+      // A gap through the limit fills at the open, which is better for the maker.
+      const entryPrice = long ? Math.min(order.limit, bar.open) : Math.max(order.limit, bar.open)
+      const filled: Filled = {
+        key: order.key,
+        signal: order.signal,
+        entryPrice,
+        fillTime: bar.timestamp,
+        stopPrice: entryPrice * (1 + (long ? -1 : 1) * signalStopLossPct(order.signal, config) / 100),
+        targetPrice: entryPrice * (1 + (long ? 1 : -1) * signalTakeProfitPct(order.signal, config) / 100),
+        bestPrice: entryPrice,
+        trailing: false,
+      }
+      open.set(order.key, filled)
+      // Fill bar: only the adverse exit is assumed possible.
+      if (long ? bar.low <= filled.stopPrice : bar.high >= filled.stopPrice) settle(filled, barEnd, filled.stopPrice, "stop_loss", "taker")
+      else filled.fillTime = barEnd
+    }
+    // 3. Entries decided at this bar's close.
+    while (next < ordered.length && ordered[next].entryTime <= barEnd) {
+      const signal = ordered[next++]
+      if (signal.entryTime !== barEnd) continue
+      const key = `${signal.type}|${signal.direction}|${signal.rule}`
+      if (open.has(key) || resting.has(key)) continue
+      const long = signal.direction === "long"
+      resting.set(key, {
+        key,
+        signal,
+        limit: signal.entryPrice * (1 + (long ? -1 : 1) * offset / 100),
+        expiresAt: barEnd + windowMs,
+      })
+      placed++
+    }
+  }
+  missed += resting.size
+  return { closes, placed, missed }
+}
+
+export interface LegCosts {
+  /** Percent per maker leg. */
+  makerPct: number
+  /** Percent per taker leg, fee plus slippage. */
+  takerPct: number
+}
+
+/** Round-trip cost of one maker-entry close: maker entry plus its exit leg. */
+export function makerRoundTripPct(close: Pick<MakerResearchClose, "exitLeg">, costs: LegCosts): number {
+  return costs.makerPct + (close.exitLeg === "maker" ? costs.makerPct : costs.takerPct)
 }
