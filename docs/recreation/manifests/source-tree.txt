@@ -499,6 +499,7 @@ __tests__/unit/slot-scoped-protection-halt.test.ts
 __tests__/unit/special-strategy.test.ts
 __tests__/unit/special-vst-validator-contract.test.ts
 __tests__/unit/stable-baseline-2026-09-19.test.ts
+__tests__/unit/stage-audit-fixes.test.ts
 __tests__/unit/stage-pf-default-migration.test.ts
 __tests__/unit/stage-profit-factor-save.test.ts
 __tests__/unit/stage-row-snapshot.test.ts
@@ -1926,6 +1927,7 @@ scripts/generate-recreation-manifests.mjs
 scripts/historic-signal-data.ts
 scripts/historic-signal-eval-v2.ts
 scripts/historic-signal-eval.ts
+scripts/indication-lab.ts
 scripts/init-engine-and-verify.mjs
 scripts/inject-bingx-creds.js
 scripts/inspect-redis-aof-key-history.mjs
