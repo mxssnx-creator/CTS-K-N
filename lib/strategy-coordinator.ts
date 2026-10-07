@@ -169,6 +169,7 @@ import {
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
+import { baseStageFunnel, checkPipelineFunnel, type PipelineFunnel } from "@/lib/stage-funnel-contract"
 
 /**
  * Runtime stage snapshots must not duplicate the canonical, verbose Set key
@@ -4130,6 +4131,12 @@ export class StrategyCoordinator {
       markPhase("main")
       if (!isCurrent()) return []
       applyBaseGateOutcome(baseResult, mainResult)
+      if (mainResult.baseGate) {
+        const gate = mainResult.baseGate
+        this.guardStageFunnel(symbol, {
+          base: { emitted: gate.input, awaitingHistory: gate.awaitingHistory, rejected: gate.rejected, valid: gate.valid },
+        })
+      }
       results.push(mainResult)
       if (!isPrehistoric) {
         emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
@@ -4461,6 +4468,35 @@ export class StrategyCoordinator {
    * fan-out collapses only on the trailing axis; complete indication
    * configurations and directions always remain independent.
    */
+  private static readonly _funnelViolationLoggedAt = new Map<string, number>()
+
+  /**
+   * Runtime guard for the stage funnel contract (lib/stage-funnel-contract.ts).
+   * A violation means a counter was computed from the wrong population; it is
+   * logged once per connection × symbol × message per 10 minutes and never
+   * changes trading.
+   */
+  private guardStageFunnel(symbol: string, pipeline: PipelineFunnel): void {
+    const violations = checkPipelineFunnel(pipeline)
+    if (violations.length === 0) return
+    const key = `${this.connectionId}|${symbol}|${violations[0]}`
+    const now = Date.now()
+    const last = StrategyCoordinator._funnelViolationLoggedAt.get(key) || 0
+    if (now - last < 10 * 60_000) return
+    StrategyCoordinator._funnelViolationLoggedAt.set(key, now)
+    while (StrategyCoordinator._funnelViolationLoggedAt.size > 500) {
+      const oldest = StrategyCoordinator._funnelViolationLoggedAt.keys().next().value
+      if (!oldest) break
+      StrategyCoordinator._funnelViolationLoggedAt.delete(oldest)
+    }
+    console.error(`[v0] [StageFunnel] ${this.connectionId}:${symbol} invariant violation: ${violations.join("; ")}`)
+    void logProgressionEvent(this.connectionId, "stage_funnel_invariant_violation", "error", `Stage funnel invariant violated for ${symbol}`, {
+      symbol,
+      violations,
+      pipeline,
+    }).catch(() => {})
+  }
+
   private async createBaseSets(
     symbol: string,
     indications: any[],
@@ -5151,11 +5187,13 @@ export class StrategyCoordinator {
           //     dialog labels that prefer position-centric phrasing.
           //   sets_progressing         = Sets in mid-calculation this
           //     cycle (entryCount > 0 means slots are being formed).
-          sets_running_now:         String(baseRunningNow),
-          sets_with_open_positions: String(baseRunningNow),
-          sets_progressing:         String(
-            baseSets.filter((s) => (s.entryCount || 0) > 0).length,
-          ),
+          // Processing / progressing / running count Base-VALID Sets only
+          // (lib/stage-funnel-contract.ts). The Base gate runs at the start
+          // of Main, so createMainSets writes these three; Base resets them
+          // like passed_sets. row_total_open keeps every emitted open Set.
+          sets_running_now:         "0",
+          sets_with_open_positions: "0",
+          sets_progressing:         "0",
           updated_at:        String(Date.now()),
           // ── Per-symbol fields (cross-symbol aggregation source) ──────
           // The legacy fields above are overwritten by every symbol's
@@ -5170,10 +5208,8 @@ export class StrategyCoordinator {
           [`s:${symbol}:entries`]:    String(baseEntriesTotal),
           [`s:${symbol}:trailing`]:   String(baseTrailingSets),
           [`s:${symbol}:trailing_entries`]: String(baseTrailingEntriesTotal),
-          [`s:${symbol}:running`]:    String(baseRunningNow),
-          [`s:${symbol}:progressing`]: String(
-            baseSets.filter((s) => (s.entryCount || 0) > 0).length,
-          ),
+          [`s:${symbol}:running`]:    "0",  // Base-valid only, written by Main
+          [`s:${symbol}:progressing`]: "0", // Base-valid only, written by Main
           [`s:${symbol}:passed`]:     "0",  // updated when Main runs
           [`s:${symbol}:evaluated`]:  String(baseSets.length),
           [`s:${symbol}:row_total`]:      String(baseSets.length),
@@ -5217,7 +5253,7 @@ export class StrategyCoordinator {
       if (!isPrehistoric) {
         writes.push(
           client.hset(`strategies_active:${this.connectionId}`, {
-            [`${symbol}:base`]:          String(baseRunningNow),
+            // `${symbol}:base` (running) is Base-valid only and written by Main.
             [`${symbol}:base:trailing`]: String(baseTrailingRunningNow),
             // base:evaluated = same as base (every Base Set IS evaluated at Base stage)
             [`${symbol}:base:evaluated`]: String(baseSets.length),
@@ -6101,6 +6137,17 @@ export class StrategyCoordinator {
       const mainRunningNow = mainOpenAccounting.overall
       const baseValidOpen = Array.from(baseValidSetKeys)
         .filter((setKey) => activeKeys.has(setKey)).length
+      // The Base funnel of this pass: processing/running over Base-valid
+      // Sets only (lib/stage-funnel-contract.ts).
+      const baseFunnel = baseStageFunnel({
+        emitted: baseSets.length,
+        awaitingHistory: baseAwaitingHistory,
+        rejected: Math.max(0, baseMeasuredCount - baseValidCount),
+        validSetKeys: baseValidSetKeys,
+        sets: baseSets,
+        openSetKeys: activeKeys,
+      })
+      this.guardStageFunnel(symbol, { base: baseFunnel, main: { input: mainBaseInputCount } })
 
       const writes: Promise<any>[] = [
         hsetStrategyProgression(client, this.connectionId, "strategies_main_current", String(mainSets.length)),
@@ -6185,13 +6232,25 @@ export class StrategyCoordinator {
           pass_rate:   String(basePassRatio.toFixed(4)),
           row_valid:   String(baseValidCount),
           row_valid_open: String(baseValidOpen),
+          // Processing = Base-valid (high-PF, measured) Sets only.
+          sets_progressing:         String(baseFunnel.processing),
+          sets_running_now:         String(baseFunnel.running),
+          sets_with_open_positions: String(baseFunnel.running),
+          awaiting_history:         String(baseFunnel.awaitingHistory),
+          rejected_sets:            String(baseFunnel.rejected),
           [`s:${symbol}:passed`]: String(baseValidCount),
           [`s:${symbol}:row_valid`]: String(baseValidCount),
           [`s:${symbol}:row_valid_open`]: String(baseValidOpen),
+          [`s:${symbol}:progressing`]: String(baseFunnel.processing),
+          [`s:${symbol}:running`]:     String(baseFunnel.running),
+          [`s:${symbol}:awaiting_history`]: String(baseFunnel.awaitingHistory),
+          [`s:${symbol}:rejected`]:    String(baseFunnel.rejected),
         }).catch(() => {}),
         client.set(`strategies:${this.connectionId}:main:count`, String(mainSets.length)),
         client.set(`strategies:${this.connectionId}:main:evaluated`, String(mainLogicalEvaluated)),
         client.set(`strategies:${this.connectionId}:base:passed`, String(baseValidCount)),
+        client.set(`strategies:${this.connectionId}:main:passed`, String(mainPassedParentCount)),
+        client.expire(`strategies:${this.connectionId}:main:passed`, 86400),
         client.expire(`strategies:${this.connectionId}:main:count`, 86400),
         client.expire(`strategies:${this.connectionId}:main:evaluated`, 86400),
         client.expire(`strategies:${this.connectionId}:base:passed`, 86400),
@@ -6212,6 +6271,9 @@ export class StrategyCoordinator {
       if (!isPrehistoric) {
         writes.push(
           client.hset(`strategies_active:${this.connectionId}`, {
+            // Base running = Base-valid Sets with an open position.
+            [`${symbol}:base`]:           String(baseFunnel.running),
+            [`${symbol}:base:valid`]:     String(baseValidCount),
             [`${symbol}:main`]:           String(mainRunningNow),
             // `evaluated` is logical; `input` remains the Base-parent funnel
             // used for Main's filter pass rate.
@@ -8907,6 +8969,10 @@ export class StrategyCoordinator {
         // pass statistics and make passed_sets > evaluated impossible to read.
         client.set(`strategies:${this.connectionId}:real:count`, String(realSets.length)),
         client.set(`strategies:${this.connectionId}:real:evaluated`, String(realLogicalInput)),
+        // The coordinator is the only writer of the flat stage keys
+        // (statistics-tracker no longer INCRBYs them on top of these SETs).
+        client.set(`strategies:${this.connectionId}:real:passed`, String(realLogicalPassed)),
+        client.expire(`strategies:${this.connectionId}:real:passed`, 86400),
         client.expire(`strategies:${this.connectionId}:real:count`, 86400),
         client.expire(`strategies:${this.connectionId}:real:evaluated`, 86400),
       ]

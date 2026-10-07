@@ -31,6 +31,10 @@ interface StrategyTracking {
     setsRunningNow?: number
     setsWithOpenPositions: number
     setsProgressing: number
+    /** Emitted Sets without enough measured closes yet (optional for older payloads). */
+    setsAwaitingHistory?: number
+    /** Measured Sets that failed the Base PF/DDT contract. */
+    setsRejected?: number
     setsTotal: number
     setsCurrent: number
     avgProfitFactor: number
@@ -397,7 +401,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
               LIMIT-GATED
             </Badge>
             <Badge variant="secondary" className="font-mono">
-              {data.base.setsActivelyProcessing} processing
+              {data.base.setsActivelyProcessing} validated processing
             </Badge>
           </CardTitle>
           <p className="text-xs text-muted-foreground">
@@ -408,7 +412,7 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric label="Sets (current)" value={data.base.setsCurrent} />
+            <Metric label="Sets emitted (current)" value={data.base.setsCurrent} />
             <Metric label="Sets (total)" value={data.base.setsTotal} />
             <Metric label="Avg PF" value={data.base.avgProfitFactor.toFixed(3)} />
             <Metric
@@ -419,18 +423,21 @@ export function StrategyPipeline({ connectionId }: { connectionId: string }) {
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <Metric
-              label="Sets Running Now"
+              label="Validated Sets Running Now"
               value={data.base.setsRunningNow ?? data.base.setsWithOpenPositions}
               accent="success"
-              hint="Canonical 'active' count: Sets whose setKey is in pseudo_positions:active_config_keys right now (open pseudo-position OR in-formation)."
+              hint="Base-validated Sets (measured history, PF ≥ the Base threshold) that hold an open pseudo/live position right now."
             />
             <Metric
-              label="Progressing Sets"
+              label="Validated Sets Processing"
               value={data.base.setsProgressing}
               accent="primary"
-              hint="Sets in mid-calculation this cycle (entries being formed, before open). Cloning/filtering input."
+              hint="Base-validated Sets with entries this cycle. Only validated Sets are processed by Main, Real and Live; emitted Sets that are still awaiting history or were rejected are not counted."
             />
           </div>
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="base-gate-outcome">
+            Base gate: {data.base.setsAwaitingHistory ?? 0} awaiting measured history · {data.base.setsRejected ?? 0} rejected (PF/DDT)
+          </p>
           <div className="mt-3 rounded-md border bg-muted/30 p-3">
             <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
               Pseudo-position limit per Base Set

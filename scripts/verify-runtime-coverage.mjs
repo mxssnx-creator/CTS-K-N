@@ -13,6 +13,9 @@
  *   BASE_URL=http://127.0.0.1:3102 CONNECTION_ID=bingx-x02 node scripts/verify-runtime-coverage.mjs [--json] [--report-only]
  */
 
+import { createRequire } from "node:module"
+const { stageFunnelViolationsFromStats } = createRequire(import.meta.url)("../lib/stage-funnel-contract.cjs")
+
 const BASE_URL = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 3102}`
 const CONNECTION_ID = String(process.env.CONNECTION_ID || "").trim()
 const SLOW_MS = Math.max(250, Number(process.env.COVERAGE_SLOW_MS || 3_000))
@@ -148,6 +151,16 @@ async function main() {
     const candlesLoaded = num(pick(stats, "historic.candlesLoaded"))
     if (historicComplete && symbolsTotal > 0 && Number.isFinite(candlesLoaded) && candlesLoaded <= 0) {
       add("error", "progression-stats", `historic phase complete with 0 candles loaded for ${symbolsTotal} symbols (no market data)`)
+    }
+  }
+
+  // Stage funnel contract (lib/stage-funnel-contract.cjs): processing,
+  // progressing and running count gate-validated Sets only, and no stage
+  // passes more than it evaluated. Base once reported 327 progressing Sets
+  // with 0 passed; any such count is an error.
+  if (stats) {
+    for (const violation of stageFunnelViolationsFromStats(stats)) {
+      add("error", "stage-funnel", violation)
     }
   }
 
