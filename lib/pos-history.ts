@@ -682,8 +682,10 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
         recentPnlPcts.push(pnlPct)
         recentPositionCostPcts.push(positionCostPct)
       }
-      // DDT averaged over the SAME window sample as PF.
-      if (Number.isFinite(ddt) && ddt > 0) {
+      // DDT averaged over the SAME window sample as PF — closes that never
+      // went into drawdown count with 0 (9 × 0 min and 1 × 120 min average 12
+      // minutes, not 120).
+      if (Number.isFinite(ddt) && ddt >= 0) {
         ddtSum += ddt
         ddtCount++
       }

@@ -1374,8 +1374,9 @@ describe("Real-stage Block overlays", () => {
     }
     const countOneKey = `${normalSource.setKey}#block:1`
     const countOneRing = `strategy_set_result_ring:${comparisonConnectionId}:${countOneKey}`
+    // Canonical records (PositionCost 0.1 %): ratio 1 + pct, here 2/3 on average.
     for (const pnl of [1, 1, -1, -1, -1]) {
-      await client.lpush(countOneRing, `${pnl}|0|5`)
+      await client.lpush(countOneRing, `${pnl}|0|5|${pnl * 5 / 3}|0.1`)
     }
     // Production close booking updates the bounded ring and its exact indexes
     // atomically. Keep this focused fixture on that canonical contract so the
@@ -1409,7 +1410,7 @@ describe("Real-stage Block overlays", () => {
       expect(stats["s:BTCUSDT:c:1:eligible"]).toBe("0")
       expect(stats["s:BTCUSDT:c:1:emitted"]).toBe("0")
       expect(Number(stats["s:BTCUSDT:c:1:avg_normal_pf"])).toBe(2)
-      expect(Number(stats["s:BTCUSDT:c:1:avg_pf_difference"])).toBeCloseTo(-4 / 3, 10)
+      expect(Number(stats["s:BTCUSDT:c:1:avg_pf_difference"])).toBeCloseTo(-4 / 3, 8)
       expect(stats["s:BTCUSDT:c:2:cold_start"]).toBe("1")
       expect(stats["s:BTCUSDT:c:2:emitted"]).toBe("1")
     } finally {
@@ -1436,7 +1437,7 @@ describe("Real-stage Block overlays", () => {
     const countOneKey = `${strongSource.setKey}#block:1`
     const ringKey = `strategy_set_result_ring:${connectionId}:${countOneKey}`
     for (const pnl of [1, 1, 1, 1, -10]) {
-      await client.lpush(ringKey, `${pnl}|0|5`)
+      await client.lpush(ringKey, `${pnl}|0|5|${pnl * 0.1}|0.1`)
     }
     await client.hset(`strategy_set_closed_counts:${connectionId}`, countOneKey, "5")
     await client.sadd(`strategy_closed_set_keys:${connectionId}`, countOneKey)
@@ -1920,12 +1921,17 @@ describe("Real-stage Block overlays", () => {
       direction: "short",
       countGlobalPosition: false,
     })
+    // PositionCost ratios 7.5 and 0.5 (1 + pct at 0.1 %): the overall lane averages 4.
     await markStrategyPositionInactive(scopedConnectionId, "overall-long-position", {
       pnl: 4,
+      pnlPct: 6.5,
+      positionCostPct: 0.1,
       drawdownMinutes: 2,
     })
     await markStrategyPositionInactive(scopedConnectionId, "overall-short-position", {
       pnl: -1,
+      pnlPct: -0.5,
+      positionCostPct: 0.1,
       drawdownMinutes: 4,
     })
 

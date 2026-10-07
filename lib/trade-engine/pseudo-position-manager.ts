@@ -1090,10 +1090,12 @@ export class PseudoPositionManager {
           Number.isFinite(openedMs) && Number.isFinite(closedMs) && closedMs > openedMs
             ? (closedMs - openedMs) / 60000
             : 0
-        // We don't track adverse-excursion duration separately — proxy
-        // with full position duration when there was a drawdown sample,
-        // 0 otherwise. Fine for cumulative averages.
-        const drawdownMinutes = drawdownPctOrPx > 0 ? positionDurationMin : 0
+        // One DDT definition for every writer: the time in the position (the
+        // Set ring, the per-type measurement and live closes book the hold
+        // time; this bucket used to book 0 unless a drawdown sample existed,
+        // so the same close counted differently in the two windows).
+        void drawdownPctOrPx
+        const drawdownMinutes = positionDurationMin
         recordPosClosed({
           connectionId: this.connectionId,
           symbol: String(position.symbol || ""),

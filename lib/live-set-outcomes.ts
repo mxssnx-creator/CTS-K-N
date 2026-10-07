@@ -96,6 +96,32 @@ function withAncestors(key: string): string[] {
 }
 
 /**
+ * The exact result of each Block leg of a closed row, keyed by the leg's Set
+ * (and lifecycle) key: the leg's own entry against the close, minus its
+ * quantity share of the fees. Without it every leg Set booked the whole
+ * position's result — a leg that made +1 % inside a position that lost 0.3 %
+ * was recorded as −0.3 %, so a Block Set's PF was not the Block's PF.
+ */
+export function blockLegOutcomes(row: Row): Map<string, { pnl: number; pnlPct: number }> {
+  const out = new Map<string, { pnl: number; pnlPct: number }>()
+  const legs = Array.isArray((row as any)?.blockLegs) ? (row as any).blockLegs : []
+  const direction = text(row.direction).toLowerCase()
+  const close = Number((row as any).closePrice || 0)
+  const total = Math.max(Number(row.totalExecutedQuantity) || 0, Number(row.quantity) || 0)
+  const fees = Math.max(0, Number((row as any).tradingFees || 0))
+  if ((direction !== "long" && direction !== "short") || !(close > 0) || !(total > 0)) return out
+  for (const leg of legs) {
+    const entry = Number(leg?.entryPrice || 0)
+    const quantity = Number(leg?.quantity || 0)
+    if (!(entry > 0) || !(quantity > 0)) continue
+    const pnl = (direction === "long" ? close - entry : entry - close) * quantity - fees * quantity / total
+    const value = { pnl, pnlPct: (pnl / (entry * quantity)) * 100 }
+    for (const key of [text(leg?.setKey), text(leg?.lifecycleKey)].filter(Boolean)) out.set(key, value)
+  }
+  return out
+}
+
+/**
  * Every Set the row realised, with the share of the row's PnL it carries.
  * Members follow recordConfirmedStrategyEntry (live-stage): a combined
  * position-count row is its accumulated Sets, any other row its Set plus the
@@ -204,9 +230,11 @@ export async function recordLiveSetOutcome(
   if (!outcome) return 0
   const shares = liveOutcomeSetShares(row)
   if (shares.size === 0) return 0
+  const legOutcomes = blockLegOutcomes(row)
   const entries: Array<[string, string]> = []
   for (const [setKey, share] of shares) {
-    const record = strategyOutcomeRecord({ ...outcome, pnl: outcome.pnl * share })
+    const leg = legOutcomes.get(setKey)
+    const record = strategyOutcomeRecord(leg ? { ...outcome, pnl: leg.pnl, pnlPct: leg.pnlPct } : { ...outcome, pnl: outcome.pnl * share })
     if (record) entries.push([setKey, record])
   }
   if (entries.length === 0) return 0

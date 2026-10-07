@@ -989,6 +989,8 @@ export interface StrategySet {
     recentPnls?: number[]
     recentPnlPcts?: number[]
     recentPositionCostPcts?: number[]
+    /** True when the window it was read from is full (count ≥ window). */
+    hasSignal?: boolean
   }
 }
 
@@ -1838,6 +1840,8 @@ export function materializeContinuousStageRows(
     lookbackByVariant?: Partial<Record<"default" | "trailing" | "block", number>>
     metrics: Pick<EvaluationMetrics, "minProfitFactor" | "maxDrawdownTime" | "maxDrawdownRatio">
     activeSetKeys?: ReadonlySet<string>
+    /** Ratio samples a window needs before it judges a row (default ROW_WINDOW_MIN_SAMPLES). */
+    minimumSamples?: number
     /**
      * Batched exact position-result windows.  Callers build this once per
      * stage from the row evaluation keys; no per-row Redis reads are allowed.
@@ -1883,9 +1887,15 @@ export function materializeContinuousStageRows(
         : `${source.setKey}#row_live`)
     const windowKeys = [evaluationKey, source.setKey, source.rowSourceSetKey]
       .filter((key, index, list): key is string => Boolean(key) && list.indexOf(key) === index)
+    // A window judges the row only with enough PositionCost-ratio samples:
+    // the first live close used to replace a 25-close source history (one
+    // loss rejected a good Set, one win passed a bad one), and a legacy
+    // window without ratios fell back to the classic PF (capped at 99)
+    // compared against a ratio threshold.
+    const minimumSamples = Math.max(1, Math.min(lookback, Math.floor(Number(options.minimumSamples) || ROW_WINDOW_MIN_SAMPLES)))
     const exactWindow = windowKeys
       .map((key) => options.windowBySetKey?.get(key))
-      .find((window): window is PosWindowStats => Boolean(window && window.count > 0))
+      .find((window): window is PosWindowStats => Boolean(window && window.positionCostRatioCount >= minimumSamples))
 
     let sampleCount = 0
     let profitFactor = Number(source.avgProfitFactor) || 0
@@ -1899,9 +1909,7 @@ export function materializeContinuousStageRows(
       // "last N positions" contract used by Base/Main/Real, not an average
       // of synthetic indication entries.
       sampleCount = Math.min(lookback, exactWindow.count)
-      profitFactor = exactWindow.positionCostRatioCount > 0
-        ? exactWindow.positionCostRatio
-        : exactWindow.profitFactor
+      profitFactor = exactWindow.positionCostRatio
       drawdownTime = exactWindow.avgDDT
       drawdownRatioValue = exactWindow.drawdownRatio ?? 0
       entries = []
@@ -2022,13 +2030,13 @@ export function applyExactBlockRowWindows(
       activeSetKeys?.has(evaluationKey) ||
       (row.rowSourceSetKey && activeSetKeys?.has(row.rowSourceSetKey)),
     )
-    if (!window || window.count <= 0) {
+    // Below ROW_WINDOW_MIN_SAMPLES ratio samples the row keeps its parent's
+    // validation (bootstrap) instead of being judged on one or two closes.
+    if (!window || window.positionCostRatioCount < ROW_WINDOW_MIN_SAMPLES) {
       evaluated.push(row)
       continue
     }
-    const profitFactor = window.positionCostRatioCount > 0
-      ? window.positionCostRatio
-      : window.profitFactor
+    const profitFactor = window.positionCostRatio
     const drawdownTime = window.avgDDT
     const drawdownRatioValue = window.drawdownRatio ?? 0
     const minimumProfitFactor = Math.max(
@@ -2238,6 +2246,19 @@ export function coordinateActiveRealLiveCounts(
 //     ~2-3 (prev survivors) × 4 (last, single outcome) × 8 × 2 ≈ 128-192 / Base
 //   After Real hedge-net (≤ ½):
 //     ≤ 96 effective Sets / Base reaching Live evaluation
+/**
+ * Mean PositionCost ratio of the newest `count` closes of a window (its
+ * samples are newest-first) — the axis "previous" window of a Set.
+ */
+export function axisPreviousWindowRatio(window: Pick<PosWindowStats, "recentPnlPcts" | "recentPositionCostPcts" | "positionCostRatio">, count: number): number {
+  const pnls = (window.recentPnlPcts || []).slice(0, Math.max(1, Math.floor(count)))
+  const costs = window.recentPositionCostPcts || []
+  if (pnls.length === 0) return Number(window.positionCostRatio)
+  return pnls.reduce((sum, pnl, index) => sum + movePctToMainTradePfRatio(pnl, costs[index]), 0) / pnls.length
+}
+
+/** Closes a row window needs before it judges a Set (the Base gate's prevPosMinCount default). */
+const ROW_WINDOW_MIN_SAMPLES = 5
 const AXIS_PREV     = [4, 6, 8, 10, 12]    as const
 const AXIS_LAST     = [1, 2, 3, 4]         as const
 const AXIS_CONT     = [1, 2, 3, 4, 5, 6, 7, 8] as const
@@ -4948,6 +4969,7 @@ export class StrategyCoordinator {
               recentPnls: [...posStats.recentPnls],
               recentPnlPcts: [...posStats.recentPnlPcts],
               recentPositionCostPcts: [...posStats.recentPositionCostPcts],
+              hasSignal: (posStats as { hasSignal?: boolean }).hasSignal === true,
             },
           }),
         }
@@ -5450,7 +5472,11 @@ export class StrategyCoordinator {
       // exists, its own exact lane must complete the configured window before
       // it can be promoted.
       const hasHistoricData = histCount > 0
-      if (hasHistoricData && histCount < mainMinPos) {
+      // The count is read from a window of `prevPosWindow` closes; a full
+      // window cannot grow. Requiring more than the window holds (forex: 24
+      // against the default 25) rejected every Set forever.
+      const historyWindowFull = baseSet.prevPos?.hasSignal === true
+      if (hasHistoricData && histCount < mainMinPos && !historyWindowFull) {
         baseSet.rejectionReason = `main_insufficient_history: ${histCount}/${mainMinPos}`
         skippedLowPos++
         continue
@@ -6658,8 +6684,8 @@ export class StrategyCoordinator {
         normalProfitFactor: blockNormalProfitFactor,
         observedProfitFactor: ownWindow && ownWindow.positionCostRatioCount > 0
           ? ownWindow.positionCostRatio
-          : ownWindow?.profitFactor,
-        sampleCount: Number(ownWindow?.count || 0),
+          : undefined,
+        sampleCount: Number(ownWindow?.positionCostRatioCount || 0),
         minimumSampleCount,
       })
       const blockObservedProfitFactor = performance.observedProfitFactor
@@ -7093,8 +7119,8 @@ export class StrategyCoordinator {
           normalProfitFactor: blockNormalProfitFactor,
           observedProfitFactor: ownWindow && ownWindow.positionCostRatioCount > 0
             ? ownWindow.positionCostRatio
-            : ownWindow?.profitFactor,
-          sampleCount: Number(ownWindow?.count || 0),
+            : undefined,
+          sampleCount: Number(ownWindow?.positionCostRatioCount || 0),
           minimumSampleCount,
         })
         const blockObservedProfitFactor = performance.observedProfitFactor
@@ -7604,8 +7630,8 @@ export class StrategyCoordinator {
         normalProfitFactor: blockNormalProfitFactor,
         observedProfitFactor: laneWindow && laneWindow.positionCostRatioCount > 0
           ? laneWindow.positionCostRatio
-          : laneWindow?.profitFactor,
-        sampleCount: Number(laneWindow?.count || 0),
+          : undefined,
+        sampleCount: Number(laneWindow?.positionCostRatioCount || 0),
         minimumSampleCount,
       })
       const blockObservedProfitFactor = performance.observedProfitFactor
@@ -11311,9 +11337,14 @@ export class StrategyCoordinator {
         !!ownWindow &&
         ownWindow.positionCostRatioCount >= previousWindow
       const hasOwnDdtWindow = !!ownWindow && ownWindow.count >= previousWindow
+      // The Set's own "previous" window is its last `prev` closes (4…12), not
+      // the 12 the batch read: a prev=4 Set was judged on 12 closes.
+      const ownPrevRatio = hasOwnRatioWindow
+        ? axisPreviousWindowRatio(ownWindow!, previousWindow)
+        : Number.NaN
       const ownPfFails =
         hasOwnRatioWindow &&
-        ownWindow!.positionCostRatio < PREVIOUS_POSITION_MIN_PF_RATIO
+        ownPrevRatio < PREVIOUS_POSITION_MIN_PF_RATIO
       const ownDdtFails =
         hasOwnDdtWindow &&
         ownWindow!.avgDDT > metrics.maxDrawdownTime
@@ -11332,8 +11363,9 @@ export class StrategyCoordinator {
           confirmedClosedCount: closedEntries,
           ...(ownWindow && ownWindow.count > 0
             ? {
-              ...(ownWindow.positionCostRatioCount > 0 && {
-                avgProfitFactor: ownWindow.positionCostRatio,
+              // Only a complete own window replaces the inherited PF.
+              ...(hasOwnRatioWindow && Number.isFinite(ownPrevRatio) && {
+                avgProfitFactor: ownPrevRatio,
               }),
               avgDrawdownTime: ownWindow.avgDDT,
               prevPos: {
@@ -11736,9 +11768,15 @@ export class StrategyCoordinator {
 
     // Exhaustively evaluate every Base entry × profile configuration. History
     // compaction is a persistence concern and never truncates this calculation.
+    // The Base Set's own PF is the measured one (min of the indication PF and
+    // the measured PositionCost ratio once enough closes exist). Scaling each
+    // entry's raw indication PF instead let Main/Real/Live carry an estimate
+    // that the Base gate had already overruled (e.g. raw 1.8 vs measured 1.12
+    // passed a 1.20 Real gate).
+    const measuredBasePf = Number.isFinite(Number(baseSet.avgProfitFactor)) ? Number(baseSet.avgProfitFactor) : Number.NaN
     for (const baseEntry of baseSet.entries) {
       for (const cfg of profile.configs) {
-        const pf = scaleMainTradePfCoordinate(baseEntry.profitFactor, cfg.pfBias)
+        const pf = scaleMainTradePfCoordinate(Number.isFinite(measuredBasePf) ? measuredBasePf : baseEntry.profitFactor, cfg.pfBias)
         const baseDDT = baseEntry.drawdownTime > 0 ? baseEntry.drawdownTime : baseDDTFallback
         const ddt     = baseDDT + cfg.ddtBias
         if (ddt > metrics.maxDrawdownTime) continue
