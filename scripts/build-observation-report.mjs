@@ -173,6 +173,28 @@ const sourceNames = Object.values(marketDataSources).map((entry) => String(entry
 // land just after the completion flag the harness reacts to.
 const coverageHours = Number(statsAfterPrehistoric?.historic?.dataCoverageHours ?? statsFinal?.historic?.dataCoverageHours)
 const historicProcessed = Number(prehistoric.processed ?? prehistoric.symbolsProcessed) || 0
+// Per-type prehistoric measurement: what each indication type's Sets would
+// have done over the range. It seeds the Base gate's buckets, so it explains
+// which types can become valid Base Sets at all.
+const typeMeasurement = statsFinal?.historic?.typeMeasurement ?? statsAfterPrehistoric?.historic?.typeMeasurement ?? null
+const basePfMinimum = Number(statsFinal?.connectionStageOverview?.base?.pfMinimum) || 1.3
+const BASE_HISTORY_MIN_COUNT = 5
+const typeMeasurementRows = Object.entries(typeMeasurement?.byTypeDirection || {})
+  .map(([key, bucket]) => {
+    const closed = Number(bucket?.closed) || 0
+    const ratio = finite(Number(bucket?.positionCostRatio)) && bucket?.positionCostRatio !== null ? Number(bucket.positionCostRatio) : null
+    return {
+      key,
+      closed,
+      wins: Number(bucket?.wins) || 0,
+      losses: Number(bucket?.losses) || 0,
+      netPctSum: Number(bucket?.netPctSum) || 0,
+      meanNetPct: closed > 0 ? (Number(bucket?.netPctSum) || 0) / closed : null,
+      ratio,
+      meetsBase: closed >= BASE_HISTORY_MIN_COUNT && ratio !== null && ratio >= basePfMinimum,
+    }
+  })
+  .sort((left, right) => left.key.localeCompare(right.key))
 const historicTotal = Number(prehistoric.total ?? prehistoric.symbolsTotal) || symbolsTotal || 0
 
 const criteria = [
@@ -309,6 +331,7 @@ const cards = [
   ["Verdict", passed ? "PASS" : "FAIL"],
   ["Prehistoric window", `${run.prehistoricHours ?? "—"} h · ${symbolsTotal ?? "—"} symbols`],
   ["Prehistoric done after", prehistoricEvent ? fmtDuration(prehistoricEvent.afterMs) : "—"],
+  ["Type measurement closes", typeMeasurement ? String(typeMeasurement.closes) : "—"],
   ["Historic PF (n)", `${fmt(Number(prehistoric.profitFactor ?? statsAfterPrehistoric?.prehistoricMeta?.historicAvgProfitFactor))} (${prehistoric.profitFactorCount ?? statsAfterPrehistoric?.prehistoricMeta?.historicAvgProfitFactorCount ?? "—"})`],
   ["Realtime observed", fmtDuration(summaryIn.realtimeObservedMs)],
   ["Paper trades closed", String(total.trades)],
@@ -336,6 +359,15 @@ const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta n
 <h2>Stage processing</h2>
 ${lineChart({ series: stageSeries, yLabel: "Sets evaluated (basket snapshot)" })}
 ${lineChart({ series: openSeries, yLabel: "open positions" })}
+
+<h2>Prehistoric measurement per indication type</h2>
+${typeMeasurementRows.length === 0
+  ? `<p class="muted">No per-type measurement recorded${typeMeasurement ? " (no closed position in the range)" : ""}.</p>`
+  : `<div class="scroll"><table><thead><tr><th>Type · direction</th><th>Closes</th><th>W/L</th><th>Win rate</th><th>Net sum %</th><th>Mean net %</th><th>PositionCost ratio</th><th>Base gate (≥ ${fmt(basePfMinimum)}, n ≥ ${BASE_HISTORY_MIN_COUNT})</th></tr></thead><tbody>${typeMeasurementRows.map((row) =>
+      `<tr><td>${esc(row.key)}</td><td>${row.closed}</td><td>${row.wins}/${row.losses}</td><td>${row.closed > 0 ? fmt((row.wins / row.closed) * 100, 1) : "—"}%</td>` +
+      `<td class="${tone(row.netPctSum)}">${signed(row.netPctSum, 3)}</td><td class="${tone(row.meanNetPct)}">${signed(row.meanNetPct, 4)}</td><td>${fmt(row.ratio, 4)}</td>` +
+      `<td class="${row.meetsBase ? "ok" : "bad"}">${row.meetsBase ? "reachable" : "below"}</td></tr>`).join("")}</tbody></table></div>`}
+<p class="muted">Each type replayed with its own entry rules and the Sets' protection over the prehistoric range, net of PositionCost, aggregated over all symbols. The Base gate itself compares the newest ${BASE_HISTORY_MIN_COUNT}–25 closes of each symbol × type × direction bucket, so a type can still qualify for a single symbol.</p>
 
 <h2>Paper results</h2>
 ${lineChart({ series: [{ name: "cumulative net", color: "#2563eb", points: equityPoints }, { name: "drawdown", color: "#c0362c", points: drawdownPoints }], yLabel: "settlement units" })}
@@ -381,6 +413,7 @@ const summaryOut = {
   paper: { ...total, byHour: undefined, profitFactor: total.profitFactor === Infinity ? "Infinity" : total.profitFactor },
   bySymbol: bySymbol.map(({ byHour, ...row }) => ({ ...row, profitFactor: row.profitFactor === Infinity ? "Infinity" : row.profitFactor })),
   byType: byType.map(({ byHour, ...row }) => ({ ...row, profitFactor: row.profitFactor === Infinity ? "Infinity" : row.profitFactor })),
+  typeMeasurement: { basePfMinimum, rows: typeMeasurementRows },
   coverageErrors,
   httpFailures: httpFailures.length,
   rssGrowthMb: rssGrowth,

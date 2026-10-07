@@ -37,6 +37,7 @@ import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { summarizeOutcomeSource } from "@/lib/outcome-source-summary"
+import { parseTypeMeasurement } from "@/lib/prehistoric-type-measurement"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
@@ -4584,6 +4585,9 @@ export async function GET(
         rangeHours:             n(prehistoricHash.range_hours) || null,
         dataCoverageHours:      prehistoricHash.data_coverage_hours ? n(prehistoricHash.data_coverage_hours) : null,
         dataCoveredFrom:        prehistoricHash.data_covered_from || null,
+        // What each indication type's Sets would have done over the range;
+        // these closes seeded the Base gate's per-type buckets.
+        typeMeasurement:        parseTypeMeasurement(prehistoricHash),
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
         configWork: {
           completed: n(prehistoricMeta.configWorkUnitsCompleted),

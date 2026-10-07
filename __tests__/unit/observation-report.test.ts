@@ -46,7 +46,20 @@ describe("observation report", () => {
       { id: "open", symbol: "BTCUSDT", realizedPnl: null, closedAt: 0 },
     ]))
     writeFileSync(join(dir, "summary.json"), JSON.stringify({ realtimeObservedMs: 90_000 }))
-    writeFileSync(join(dir, "stats-final.json"), JSON.stringify({ historic: { rangeHours: 24, dataCoverageHours: 24 } }))
+    writeFileSync(join(dir, "stats-final.json"), JSON.stringify({
+      historic: {
+        rangeHours: 24,
+        dataCoverageHours: 24,
+        typeMeasurement: {
+          closes: 9,
+          byTypeDirection: {
+            "trend:long": { closed: 6, wins: 5, losses: 1, netPctSum: 2.4, positionCostRatio: 1.4 },
+            "direction:long": { closed: 3, wins: 1, losses: 2, netPctSum: -0.9, positionCostRatio: 0.7 },
+          },
+        },
+      },
+      connectionStageOverview: { base: { pfMinimum: 1.3 } },
+    }))
     writeFileSync(join(dir, "coverage-final.json"), JSON.stringify({ errors: 0, warnings: 1, findings: [{ severity: "warn", area: "x", message: "slow" }] }))
     execFileSync(process.execPath, ["scripts/build-observation-report.mjs", dir, out, "--title", "Fixture run"], { cwd: process.cwd() })
   })
@@ -65,6 +78,20 @@ describe("observation report", () => {
     expect(summary.paper.fees).toBeCloseTo(0.04, 10)
     expect(summary.bySymbol.map((row: any) => [row.key, row.trades])).toEqual([["BTCUSDT", 2], ["ETHUSDT", 2]])
     expect(summary.byType.map((row: any) => row.key).sort()).toEqual(["direction", "move"])
+  })
+
+  test("the per-type measurement is reported against the Base gate", () => {
+    const summary = JSON.parse(readFileSync(join(out, "summary.json"), "utf8"))
+    expect(summary.typeMeasurement.basePfMinimum).toBe(1.3)
+    const [direction, trend] = summary.typeMeasurement.rows
+    expect(direction).toMatchObject({ key: "direction:long", closed: 3, wins: 1, losses: 2, ratio: 0.7, meetsBase: false })
+    expect(direction.meanNetPct).toBeCloseTo(-0.3, 10)
+    expect(trend).toMatchObject({ key: "trend:long", closed: 6, wins: 5, losses: 1, ratio: 1.4, meetsBase: true })
+    expect(trend.meanNetPct).toBeCloseTo(0.4, 10)
+    expect(summary.typeMeasurement.rows).toHaveLength(2)
+    const html = readFileSync(join(out, "report.html"), "utf8")
+    expect(html).toContain("Prehistoric measurement per indication type")
+    expect(html).toContain("trend:long")
   })
 
   test("acceptance criteria pass for a healthy run", () => {
