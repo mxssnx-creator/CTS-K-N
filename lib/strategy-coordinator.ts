@@ -2257,6 +2257,23 @@ export function coordinateActiveRealLiveCounts(
 //   After Real hedge-net (≤ ½):
 //     ≤ 96 effective Sets / Base reaching Live evaluation
 /**
+ * Identity of a Base Set's measured history for the Main variant cache. A
+ * cache hit reuses the variant Set with its `prevPos`, and the Axis prev/last
+ * filters read that history. Keyed only by PF rounded to 0.1 and the entry
+ * count, a new close that moved neither reused the previous cycle's history.
+ */
+export function mainHistoryFingerprint(prevPos: StrategySet["prevPos"] | undefined): string {
+  if (!prevPos) return "none"
+  const newest = Number(prevPos.recentPnlPcts?.[0])
+  return [
+    Number(prevPos.count) || 0,
+    Number(prevPos.positionCostRatioCount ?? 0) || 0,
+    (Number(prevPos.positionCostRatio) || 0).toFixed(4),
+    Number.isFinite(newest) ? newest.toFixed(6) : "-",
+  ].join(":")
+}
+
+/**
  * The entries a Set's TP/SL derive from — one rule for the pseudo row that
  * measures the Set and the live order that executes it. An Axis Set carries
  * one synthetic entry (inherited PF, no Trend/Active/Special protection
@@ -11778,12 +11795,13 @@ export class StrategyCoordinator {
     // position-count Set. Do not include live/closed position-count context
     // in its fingerprint or it will be recreated/rebucketed as counts change.
     const baseRef = strategySetStorageRef(baseSet.setKey)
+    const hist = mainHistoryFingerprint(baseSet.prevPos)
     if (variant === "dca") {
-      return `${baseRef}#${variant}#pf=${bPF}#ec=${bEC}`
+      return `${baseRef}#${variant}#pf=${bPF}#ec=${bEC}#h=${hist}`
     }
 
     const bCtx = `c${cont}/lw${lW}/ll${lL}/lp${lP}/pp${pP}/pl${pL}`
-    return `${baseRef}#${variant}#pf=${bPF}#ec=${bEC}#ctx=${bCtx}`
+    return `${baseRef}#${variant}#pf=${bPF}#ec=${bEC}#h=${hist}#ctx=${bCtx}`
   }
 
   /**

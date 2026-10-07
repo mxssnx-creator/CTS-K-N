@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { derivePosWindowStats, type PosWindowStats } from "@/lib/pos-history"
-import { applyBaseGateOutcome, axisPreviousWindowRatio, materializeContinuousStageRows, protectionEntriesFor, type StrategySet } from "@/lib/strategy-coordinator"
+import { applyBaseGateOutcome, axisPreviousWindowRatio, mainHistoryFingerprint, materializeContinuousStageRows, protectionEntriesFor, type StrategySet } from "@/lib/strategy-coordinator"
 import { blockLegOutcomes } from "@/lib/live-set-outcomes"
 
 /**
@@ -132,5 +132,24 @@ describe("Axis Sets protect with the same entries when measured and executed", (
 describe("Block stop distance", () => {
   it("live dispatch adds no second slippage buffer on top of the size-scaled, capped stop", () => {
     expect(coordinator).not.toContain("const slippageBuffer")
+  })
+})
+
+describe("Main variant cache follows the measured history", () => {
+  const base = { count: 10, positionCostRatio: 0.92, positionCostRatioCount: 10, recentPnlPcts: [-0.3, 0.2] } as any
+
+  it("a new close changes the history identity even when PF (0.1 steps) and entry count do not", () => {
+    const afterClose = { ...base, count: 11, positionCostRatioCount: 11, recentPnlPcts: [0.25, -0.3, 0.2] }
+    expect(mainHistoryFingerprint(afterClose)).not.toBe(mainHistoryFingerprint(base))
+  })
+
+  it("is stable for unchanged history and handles a missing window", () => {
+    expect(mainHistoryFingerprint({ ...base })).toBe(mainHistoryFingerprint(base))
+    expect(mainHistoryFingerprint(undefined)).toBe("none")
+  })
+
+  it("is part of every variant fingerprint", () => {
+    expect(coordinator).toContain("#ec=${bEC}#h=${hist}#ctx=${bCtx}")
+    expect(coordinator).toContain("#ec=${bEC}#h=${hist}`")
   })
 })
