@@ -354,3 +354,88 @@ export interface LegCosts {
 export function makerRoundTripPct(close: Pick<MakerResearchClose, "exitLeg">, costs: LegCosts): number {
   return costs.makerPct + (close.exitLeg === "maker" ? costs.makerPct : costs.takerPct)
 }
+
+// ───────────────────────── sparse evaluation (research at scale) ─────────────────────────
+
+/**
+ * The same exits as simulateExits / simulateMakerExits (fixed target, no
+ * trailing), computed by scanning forward from each entry instead of walking
+ * every bar for every configuration: research over many rule families,
+ * symbols and exit grids is then proportional to the trades, not to the bars.
+ * `bars` must be the minute-aligned, sorted series; `barIndexAt` maps a bar
+ * timestamp to its index. Results are identical (unit-tested against the
+ * full-scan evaluators).
+ */
+export function sparseExits(
+  bars: readonly ReplayCandle[],
+  barIndexAt: ReadonlyMap<number, number>,
+  signals: readonly ResearchSignal[],
+  config: ExitConfig,
+  maker?: MakerExecution,
+): MakerResult {
+  const closes: MakerResearchClose[] = []
+  // key → the first decision time a new entry may use: the end of the bar
+  // its position closed in (or one bar after an unfilled order expired).
+  const freeAt = new Map<string, number>()
+  const maxHoldMs = Math.max(MINUTE_MS, Number(config.maxHoldMs) || 4 * 60 * MINUTE_MS)
+  const ordered = [...signals].sort((a, b) => a.entryTime - b.entryTime)
+  let placed = 0, missed = 0
+  for (const signal of ordered) {
+    const key = `${signal.type}|${signal.direction}|${signal.rule}`
+    // A key is free again for entries decided at or after the bar its position closed in.
+    const free = freeAt.get(key)
+    if (free !== undefined && signal.entryTime < free) continue
+    const startIndex = barIndexAt.get(signal.entryTime)
+    if (startIndex === undefined) continue
+    const long = signal.direction === "long"
+    let entryPrice = signal.entryPrice
+    let fillTime = signal.entryTime
+    let index = startIndex
+    if (maker) {
+      placed++
+      const limit = signal.entryPrice * (1 + (long ? -1 : 1) * Math.max(0, maker.entryOffsetPct) / 100)
+      const expiresAt = signal.entryTime + Math.max(1, Math.round(maker.fillWindowMinutes)) * MINUTE_MS
+      let filledAt = -1
+      for (let i = startIndex; i < bars.length && bars[i].timestamp < expiresAt; i++) {
+        if (long ? bars[i].low < limit : bars[i].high > limit) { filledAt = i; break }
+      }
+      if (filledAt < 0) { missed++; freeAt.set(key, expiresAt + MINUTE_MS); continue }
+      const fillBar = bars[filledAt]
+      entryPrice = long ? Math.min(limit, fillBar.open) : Math.max(limit, fillBar.open)
+      const stop = entryPrice * (1 + (long ? -1 : 1) * signalStopLossPct(signal, config) / 100)
+      if (long ? fillBar.low <= stop : fillBar.high >= stop) {
+        const exitTime = fillBar.timestamp + MINUTE_MS
+        closes.push({ type: signal.type, direction: signal.direction, rule: signal.rule, entryTime: signal.entryTime, fillTime: fillBar.timestamp, exitTime, entryPrice, exitPrice: stop, grossPct: ((stop - entryPrice) / entryPrice) * 100 * (long ? 1 : -1), reason: "stop_loss", exitLeg: "taker" })
+        freeAt.set(key, exitTime)
+        continue
+      }
+      fillTime = fillBar.timestamp + MINUTE_MS
+      index = filledAt + 1
+    }
+    const stop = entryPrice * (1 + (long ? -1 : 1) * signalStopLossPct(signal, config) / 100)
+    const target = entryPrice * (1 + (long ? 1 : -1) * signalTakeProfitPct(signal, config) / 100)
+    const strict = Boolean(maker) // a resting maker TP needs a trade-through
+    let exit: { time: number; barEnd: number; price: number; reason: ResearchCloseReason; leg: ExitLeg } | null = null
+    for (let i = index; i < bars.length; i++) {
+      const bar = bars[i]
+      const barEnd = bar.timestamp + MINUTE_MS
+      if (long ? bar.open <= stop : bar.open >= stop) { exit = { time: bar.timestamp, barEnd, price: bar.open, reason: "stop_loss", leg: "taker" }; break }
+      if (strict ? (long ? bar.open > target : bar.open < target) : (long ? bar.open >= target : bar.open <= target)) {
+        exit = { time: bar.timestamp, barEnd, price: strict ? target : bar.open, reason: "take_profit", leg: strict ? "maker" : "taker" }; break
+      }
+      if (long ? bar.low <= stop : bar.high >= stop) { exit = { time: barEnd, barEnd, price: stop, reason: "stop_loss", leg: "taker" }; break }
+      if (strict ? (long ? bar.high > target : bar.low < target) : (long ? bar.high >= target : bar.low <= target)) {
+        exit = { time: barEnd, barEnd, price: target, reason: "take_profit", leg: strict ? "maker" : "taker" }; break
+      }
+      if (barEnd - fillTime >= maxHoldMs) { exit = { time: barEnd, barEnd, price: bar.close, reason: "max_hold", leg: "taker" }; break }
+    }
+    if (!exit) { freeAt.set(key, Number.POSITIVE_INFINITY); continue }
+    closes.push({
+      type: signal.type, direction: signal.direction, rule: signal.rule,
+      entryTime: signal.entryTime, fillTime, exitTime: exit.time, entryPrice, exitPrice: exit.price,
+      grossPct: ((exit.price - entryPrice) / entryPrice) * 100 * (long ? 1 : -1), reason: exit.reason, exitLeg: exit.leg,
+    })
+    freeAt.set(key, exit.barEnd)
+  }
+  return { closes, placed, missed }
+}

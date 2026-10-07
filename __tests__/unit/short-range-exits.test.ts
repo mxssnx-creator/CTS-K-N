@@ -1,4 +1,4 @@
-import { bookResearchCloses, makerRoundTripPct, rangeClass, simulateExits, simulateMakerExits, type ResearchSignal } from "@/lib/short-range-exits"
+import { bookResearchCloses, makerRoundTripPct, rangeClass, simulateExits, simulateMakerExits, sparseExits, type ResearchSignal } from "@/lib/short-range-exits"
 
 /**
  * The research exit evaluator follows the per-type measurement's rules
@@ -92,4 +92,46 @@ describe("simulateMakerExits", () => {
     expect(makerRoundTripPct({ exitLeg: "maker" }, costs)).toBeCloseTo(0.04, 12)
     expect(makerRoundTripPct({ exitLeg: "taker" }, costs)).toBeCloseTo(0.09, 12)
   })
+})
+
+describe("sparseExits equals the full-scan evaluators", () => {
+  // Deterministic pseudo-random walk with wicks and gaps.
+  function walk(n: number, seed: number) {
+    let x = seed, price = 100
+    const rnd = () => ((x = (x * 1103515245 + 12345) % 2147483648) / 2147483648)
+    return Array.from({ length: n }, (_, i) => {
+      const open = price * (1 + (rnd() - 0.5) * 0.002 * (rnd() < 0.05 ? 8 : 1))
+      const close = open * (1 + (rnd() - 0.5) * 0.006)
+      const high = Math.max(open, close) * (1 + rnd() * 0.003)
+      const low = Math.min(open, close) * (1 - rnd() * 0.003)
+      price = close
+      return { timestamp: T0 + i * 60_000, open, high, low, close, volume: 1 }
+    })
+  }
+  for (const seed of [1, 7, 42, 99]) {
+    const bars = walk(600, seed)
+    const index = new Map(bars.map((b, i) => [b.timestamp, i]))
+    let y = seed
+    const r = () => ((y = (y * 69069 + 1) % 4294967296) / 4294967296)
+    const signals = bars.slice(0, 560).flatMap((b, i) => r() < 0.25
+      ? [{ type: r() < 0.5 ? "move" : "trend", direction: (r() < 0.5 ? "long" : "short") as "long" | "short", rule: "default", entryTime: b.timestamp + 60_000, entryPrice: b.close, profitFactor: 1.2, ...(r() < 0.3 && { takeProfitPct: 0.3 + r(), stopLossPct: 0.6 + r() }) }]
+      : []).filter((s) => index.has(s.entryTime))
+    const config = { takeProfitPct: 0.5, stopLossPct: 0.6, maxHoldMs: 30 * 60_000 }
+    const strip = (c: any) => ({ type: c.type, direction: c.direction, entryTime: c.entryTime, exitTime: c.exitTime, exitPrice: Number(c.exitPrice.toFixed(9)), reason: c.reason, ...(c.exitLeg && { exitLeg: c.exitLeg }) })
+    test(`market, seed ${seed}`, () => {
+      const full = simulateExits(bars, signals, config).map((c) => strip({ ...c, exitLeg: "taker" }))
+      const sparse = sparseExits(bars, index, signals, config).closes.map(strip)
+      const sort = (list: any[]) => [...list].sort((a, b) => a.entryTime - b.entryTime || a.type.localeCompare(b.type) || a.direction.localeCompare(b.direction))
+      expect(sort(sparse)).toEqual(sort(full))
+      expect(full.length).toBeGreaterThan(20)
+    })
+    test(`maker, seed ${seed}`, () => {
+      const maker = { entryOffsetPct: 0.05, fillWindowMinutes: 3 }
+      const full = simulateMakerExits(bars, signals, config, maker)
+      const sparse = sparseExits(bars, index, signals, config, maker)
+      const sort = (list: any[]) => [...list].sort((a, b) => a.entryTime - b.entryTime || a.type.localeCompare(b.type) || a.direction.localeCompare(b.direction))
+      expect(sort(sparse.closes.map(strip))).toEqual(sort(full.closes.map(strip)))
+      expect(sparse.placed).toBe(full.placed)
+    })
+  }
 })
