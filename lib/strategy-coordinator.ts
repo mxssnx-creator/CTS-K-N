@@ -6539,11 +6539,14 @@ export class StrategyCoordinator {
       boundedCount: number
       scope: "global" | "set"
       setKey: string
+      /** Shared-volume mode: the operator's shared stack multiplier (1 + valid × shared ratio, capped). */
+      sharedVolumeMultiplier?: number
     }> = []
     const addCandidate = (
       source: StrategySet,
       requestedCount: number,
       scope: "global" | "set",
+      sharedVolumeMultiplier?: number,
     ): void => {
       const boundedCount = Math.min(Math.max(1, requestedCount), maxStack)
       // Keep the established `#block:active:N` identity for the direction-wide
@@ -6555,7 +6558,7 @@ export class StrategyCoordinator {
         : `${source.setKey}#block:set:${boundedCount}`
       if (overlayKeys.has(setKey)) return
       overlayKeys.add(setKey)
-      candidates.push({ source, boundedCount, scope, setKey })
+      candidates.push({ source, boundedCount, scope, setKey, sharedVolumeMultiplier })
     }
 
     const activeCombinedByDir = {
@@ -6600,7 +6603,12 @@ export class StrategyCoordinator {
         for (const dir of ["long", "short"] as const) {
           if (activeCombinedByDir[dir] <= 1) continue
           const source = eligibleSources.find((set) => set.direction === dir)
-          if (source) addCandidate(source, stacked.totalValid, "global")
+          // Sized by the shared stack: stackBlockSharedLanes already applies
+          // the operator's shared ratio and cap. Before, `stacked.multiplier`
+          // was computed and dropped, and the per-Block ratio was applied to
+          // a count that excludes the base entry (the non-shared path counts
+          // it), so the same book sized 1 + 1·r here and 1 + 2·r there.
+          if (source) addCandidate(source, stacked.totalValid, "global", stacked.multiplier)
         }
       }
     } else {
@@ -6707,24 +6715,29 @@ export class StrategyCoordinator {
     let profitFactorDifferenceSum = 0
 
     const activeVolumeIncrementByDirection = { long: 0, short: 0 }
-    for (const { source, boundedCount, scope, setKey } of candidates) {
+    for (const { source, boundedCount, scope, setKey, sharedVolumeMultiplier } of candidates) {
       const ownWindow = exactWindows.get(setKey)
       const lifecycle = lifecycleStates.get(setKey)
         const blockEffectiveIncrementStep = lifecycle?.incrementStep || 1
-        const blockVolumeIncrementRatio = calculateBlockVolumeIncrementRatio(
-        boundedCount,
-        ratio,
-        incrementSteps,
-          blockEffectiveIncrementStep,
-      )
       // The Block target is anchored to the already-calculated general order
       // volume. The historical profile size must not scale it a second time.
-      const blockCalculatedVolumeMultiplier = calculateBlockVolumeMultiplier(
-        boundedCount,
-        ratio,
-        incrementSteps,
+      // Shared-volume candidates carry the operator's shared stack instead.
+      const blockCalculatedVolumeMultiplier = sharedVolumeMultiplier !== undefined
+        ? sharedVolumeMultiplier
+        : calculateBlockVolumeMultiplier(
+          boundedCount,
+          ratio,
+          incrementSteps,
           blockEffectiveIncrementStep,
-      )
+        )
+      const blockVolumeIncrementRatio = sharedVolumeMultiplier !== undefined
+        ? Number(Math.max(0, sharedVolumeMultiplier - 1).toFixed(12))
+        : calculateBlockVolumeIncrementRatio(
+          boundedCount,
+          ratio,
+          incrementSteps,
+          blockEffectiveIncrementStep,
+        )
       const blockConfiguredMinimumProfitFactor = calculateBlockMinimumProfitFactor(
         metrics.minProfitFactor,
         profitFactorRatio,
