@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import { derivePosWindowStats, type PosWindowStats } from "@/lib/pos-history"
-import { axisPreviousWindowRatio, materializeContinuousStageRows, type StrategySet } from "@/lib/strategy-coordinator"
+import { applyBaseGateOutcome, axisPreviousWindowRatio, materializeContinuousStageRows, protectionEntriesFor, type StrategySet } from "@/lib/strategy-coordinator"
 import { blockLegOutcomes } from "@/lib/live-set-outcomes"
 
 /**
@@ -86,5 +86,51 @@ describe("Block legs book their own result", () => {
 describe("PositionCost ratio, never classic PF, in Block decisions", () => {
   test("no classic-PF fallback remains in Block observed PF", () => {
     expect(coordinator).not.toMatch(/: (ownWindow|laneWindow)\?\.profitFactor,/)
+  })
+})
+
+describe("Base funnel reports gate admissions", () => {
+  it("copies the Main-side Base gate outcome onto the Base result", () => {
+    const base: any = { type: "base", passedEvaluation: 165, logicalPassed: 165, failedEvaluation: 0, avgProfitFactor: 1.78 }
+    const main: any = { type: "main", baseGate: { input: 165, valid: 0, awaitingHistory: 120, rejected: 45, measuredAvgProfitFactor: 0.41 } }
+    applyBaseGateOutcome(base, main)
+    expect(base.logicalPassed).toBe(0)
+    expect(base.failedEvaluation).toBe(45)
+    expect(base.awaitingHistory).toBe(120)
+    expect(base.measuredAvgProfitFactor).toBeCloseTo(0.41)
+    // The materialized count stays as the physical Set count.
+    expect(base.passedEvaluation).toBe(165)
+  })
+
+  it("leaves the Base result unchanged when Main did not run its gate", () => {
+    const base: any = { type: "base", passedEvaluation: 3, logicalPassed: 3, failedEvaluation: 0 }
+    applyBaseGateOutcome(base, { type: "main" } as any)
+    expect(base.logicalPassed).toBe(3)
+  })
+})
+
+describe("Axis Sets protect with the same entries when measured and executed", () => {
+  const parent = [
+    { id: "p1", sizeMultiplier: 1, leverage: 1, positionState: "", profitFactor: 1.4, drawdownTime: 0, confidence: 0.6, adaptiveTpFactors: [2, 3] },
+  ] as any[]
+  const synth = [{ id: "x#axis-synth", sizeMultiplier: 0.1, leverage: 1, positionState: "axis", profitFactor: 1.1, drawdownTime: 0, confidence: 0.6 }] as any[]
+
+  it("an Axis Set uses its Base parent's entries, not the synthetic entry", () => {
+    expect(protectionEntriesFor({ axisWindows: { prev: 4 } as any, entries: synth }, parent)).toEqual(parent)
+  })
+
+  it("a profile Set keeps its own entries; an empty Set falls back to the parent", () => {
+    expect(protectionEntriesFor({ entries: synth }, parent)).toBe(synth)
+    expect(protectionEntriesFor({ entries: [] }, parent)).toEqual(parent)
+  })
+
+  it("live dispatch and the pseudo row both call the shared resolver", () => {
+    expect(coordinator.match(/protectionEntriesFor\(/g)?.length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe("Block stop distance", () => {
+  it("live dispatch adds no second slippage buffer on top of the size-scaled, capped stop", () => {
+    expect(coordinator).not.toContain("const slippageBuffer")
   })
 })

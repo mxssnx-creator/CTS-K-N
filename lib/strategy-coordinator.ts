@@ -701,6 +701,16 @@ export interface StrategyEvaluation {
   rawEvaluated?: number
   /** Additional Real coordination work (Block/Row-Real) beyond Main inputs. */
   coordinationEvaluated?: number
+  /**
+   * Base only: Sets still collecting measured history (not judged yet).
+   * Base emits every Set; its gate (valid_base) runs at the start of Main, so
+   * the flow patches logicalPassed/failedEvaluation/these fields afterwards.
+   */
+  awaitingHistory?: number
+  /** Base only: mean PF of the Sets judged on measured history. */
+  measuredAvgProfitFactor?: number
+  /** Main only: the Base-gate outcome of this pass. */
+  baseGate?: { input: number; valid: number; awaitingHistory: number; rejected: number; measuredAvgProfitFactor: number }
   dispatchSelected?: number
   dispatchSuppressed?: number
 }
@@ -2246,6 +2256,40 @@ export function coordinateActiveRealLiveCounts(
 //     ~2-3 (prev survivors) × 4 (last, single outcome) × 8 × 2 ≈ 128-192 / Base
 //   After Real hedge-net (≤ ½):
 //     ≤ 96 effective Sets / Base reaching Live evaluation
+/**
+ * The entries a Set's TP/SL derive from — one rule for the pseudo row that
+ * measures the Set and the live order that executes it. An Axis Set carries
+ * one synthetic entry (inherited PF, no Trend/Active/Special protection
+ * fields), so it protects with its Base parent's entries. Before, the pseudo
+ * row used the parent's entries and live dispatch the synthetic entry, so the
+ * TP that was measured was not the TP that was executed.
+ */
+export function protectionEntriesFor(
+  set: Pick<StrategySet, "axisWindows" | "entries">,
+  parentEntries: readonly StrategySetEntry[],
+): StrategySetEntry[] {
+  if (set.axisWindows && parentEntries.length > 0) return [...parentEntries]
+  if (set.entries.length > 0) return set.entries
+  return [...parentEntries]
+}
+
+/**
+ * Base emits every Set (one per indication type × direction); its gate —
+ * measured history ≥ prevPosMinCount and PF/DDT within the Base contract —
+ * runs at the start of Main. Copy that outcome onto the Base result so the
+ * funnel reports gate admissions as Base "passed", not every emitted Set.
+ * Before, a pass with 165 Sets and 0 admitted read "base passed 165" with the
+ * raw indication PF 1.78 while Main evaluated 0.
+ */
+export function applyBaseGateOutcome(baseResult: StrategyEvaluation, mainResult: StrategyEvaluation): void {
+  const gate = mainResult.baseGate
+  if (!gate) return
+  baseResult.logicalPassed = gate.valid
+  baseResult.failedEvaluation = gate.rejected
+  baseResult.awaitingHistory = gate.awaitingHistory
+  baseResult.measuredAvgProfitFactor = gate.measuredAvgProfitFactor
+}
+
 /**
  * Mean PositionCost ratio of the newest `count` closes of a window (its
  * samples are newest-first) — the axis "previous" window of a Set.
@@ -4068,6 +4112,7 @@ export class StrategyCoordinator {
       stageTimings.main = Date.now() - mainStartedAt
       markPhase("main")
       if (!isCurrent()) return []
+      applyBaseGateOutcome(baseResult, mainResult)
       results.push(mainResult)
       if (!isPrehistoric) {
         emitCanonicalEvent({ type: "strategy.stageChanged", connectionId: this.connectionId, symbol, stage: "main", data: mainResult })
@@ -5325,6 +5370,9 @@ export class StrategyCoordinator {
     const mainMinPos = this._coordinationSettings.mainEvalPosCount
     let skippedLowPos = 0
     const baseValidSetKeys = new Set<string>()
+    let baseAwaitingHistory = 0
+    let baseMeasuredCount = 0
+    let baseMeasuredPfSum = 0
 
     // ── 1. Fingerprint-cache lookup ───────────────���────────────────────────
     // Fetch last cycle's fingerprint map up-front. `fpCacheKey:v3` stores a
@@ -5451,8 +5499,11 @@ export class StrategyCoordinator {
       if (measuredHistoryRejection) {
         baseSet.status = "invalid"
         baseSet.rejectionReason = measuredHistoryRejection
+        baseAwaitingHistory++
         continue
       }
+      baseMeasuredCount++
+      baseMeasuredPfSum += baseSet.avgProfitFactor
       if (
         baseSet.avgProfitFactor < metricsBase.minProfitFactor ||
         baseSet.avgDrawdownTime > metricsBase.maxDrawdownTime
@@ -6217,6 +6268,13 @@ export class StrategyCoordinator {
           mainAccounting.positionCountRelated +
           mainAccounting.otherRelated,
         rawEvaluated: mainAccounting.rawMaterialized,
+        baseGate: {
+          input: baseSets.length,
+          valid: baseValidCount,
+          awaitingHistory: baseAwaitingHistory,
+          rejected: Math.max(0, baseMeasuredCount - baseValidCount),
+          measuredAvgProfitFactor: baseMeasuredCount > 0 ? baseMeasuredPfSum / baseMeasuredCount : 0,
+        },
       },
       sets: mainSets,
     }
@@ -10112,12 +10170,12 @@ export class StrategyCoordinator {
                 //   2. coordIndex.base.byKey.get(parentKey).entries  ← O(1)
                 //   3. realSets.find() linear scan  ← only when no coordIndex
                 const parentKey = set.parentSetKey || set.setKey.split("#")[0]
-                const effectiveEntries: StrategySetEntry[] =
-                  set.entries.length > 0
-                    ? set.entries
-                    : coordIndex
-                      ? (coordIndex.base.byKey.get(parentKey)?.entries ?? [])
-                      : (realSets.find((s) => s.setKey === parentKey)?.entries ?? [])
+                const effectiveEntries: StrategySetEntry[] = protectionEntriesFor(
+                  set,
+                  coordIndex
+                    ? (coordIndex.base.byKey.get(parentKey)?.entries ?? [])
+                    : (realSets.find((s) => s.setKey === parentKey)?.entries ?? []),
+                )
                 const bestEntry = effectiveEntries.reduce(
                   (best, e) => (e.profitFactor > best.profitFactor ? e : best),
                   effectiveEntries[0]
@@ -10193,21 +10251,13 @@ export class StrategyCoordinator {
                       (coordIndex ? coordIndex.base.byKey.get(parentKey)?.trailingProfile : undefined)
                     : undefined
 
+                // Block size already widens the stop inside
+                // deriveProtectionFromProfitFactor (stop = PositionCost ×
+                // sizeMultiplier, then the SL ≤ 1.5 × TP cap). A second
+                // additive "slippage buffer" here broke that cap, was clamped
+                // back by the live stage's computeSetAwareSL whenever TP was
+                // below about 0.67 %, and skewed reward/risk above it.
                 let sl = protection.stopLossPct
-                // CRITICAL FIX: Add slippage buffer to block variant SL prices
-                // Larger positions experience worse fills due to order book depth.
-                // Block positions (1.15-1.25x) need ~0.5-1.0% wider SL bands to account
-                // for fill slippage so SL doesn't immediately cross on entry.
-                if (
-                  set.indicationType !== "signal" &&
-                  set.indicationType !== "active" &&
-                  set.indicationType !== "special" &&
-                  set.variant === "block" &&
-                  effectiveSizeMult > 1.0
-                ) {
-                  const slippageBuffer = Math.min(0.5, (effectiveSizeMult - 1.0) * 2.0)  // 0.2-0.5% buffer for 1.1-1.25x sizes
-                  sl = Math.max(0.5, sl + slippageBuffer)  // Add buffer, but keep minimum 0.5%
-                }
                 if (
                   set.indicationType !== "special" &&
                   set.variant === "trailing" &&
@@ -10717,11 +10767,7 @@ export class StrategyCoordinator {
                 const parentEntries = coordIndex
                   ? (coordIndex.base.byKey.get(_pseudoParentKey)?.entries ?? [])
                   : (realSets.find((s) => s.setKey === _pseudoParentKey)?.entries ?? [])
-                const effectiveEntries = set.axisWindows && parentEntries.length > 0
-                  ? parentEntries
-                  : set.entries.length > 0
-                    ? set.entries
-                    : parentEntries
+                const effectiveEntries = protectionEntriesFor(set, parentEntries)
                 const bestEntry = effectiveEntries.reduce(
                   (best, e) => (e.profitFactor > best.profitFactor ? e : best),
                   effectiveEntries[0],
