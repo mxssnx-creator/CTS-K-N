@@ -1,5 +1,79 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-10-07 ~23:00 UTC (Claude Cloud-Sitzung, Branch `claude/zen-fermat-gswxt7`, Draft-PR #559)
+
+**Arbeitsort:** Cloud-Container `/home/user/CTS-K-N` (nicht die kanonische `/workspace/CTS-K-N`); alle Änderungen über GitHub-Branch `claude/zen-fermat-gswxt7` (PR #559, Draft). Checkpoints nur via `scripts/create-checkpoint.sh` unter `/var/backups/cts-kn` (Container-lokal). **Nicht deployed, nicht gemergt.** Kein Exchange-Write in dieser Sitzung (Paper auf öffentlichen BingX-Daten; X02-VST-Lauf noch offen).
+
+**Behobene Defekte (jeweils mit Regressionstest):**
+- **Mindestmenge/Stop:** Mindestvolumen „min min“ (Venue-`minQuantity`, 101400 am richtigen Key); erlaubter SL-Bereich (`lib/protection-allowed-range.ts`, einmaliges Neu-Platzieren, Backoff 15/30/60 s).
+- **Sim vs. Live:**
+  - `enforceSimBoundedLifecycle` buchte Münzwurf-Schließungen in die Base-Buckets, auf jeder Verbindung → nur noch unter `isForcedSimulation()`.
+  - pnl-Einheiten in Buckets vereinheitlicht (Netto-%).
+  - Trend-adaptiver TP (PositionCost-Vielfache statt %).
+  - Common-Historic-Look-ahead (Forward-Fenster) entfernt.
+  - Bewertung „beide Level berührt = Stop“.
+- **Kosten:** Simulierte Schließungen (Messung, Pseudo, simulierte Live-Zeilen) zahlen `max(0,26 % Round Trip, PositionCost)` statt 0,10 % (`simulatedCloseCostPercent`).
+- **RSI:**
+  - Eine Wilder-RSI (`lib/wilder-rsi.ts`) für alle 7 Kopien.
+  - Live-„1m“-Indikatoren liefen auf 1-s-Kerzen → jetzt 1-min-Aggregation.
+- **Stufen-Audit:**
+  - Main/Real/Live trugen die Indikations-Schätzung statt des gemessenen Base-PF.
+  - Main verlangte mehr Closes, als das Fenster fasst (Forex 24/25).
+  - Eine einzelne Live-Schließung überstimmte 25er-Historie.
+  - Klassischer PF (max. 99) gegen Ratio-Schwellen.
+  - Axis-Prev-Fenster (12 statt `prev`).
+  - Block-Legs buchten Gesamtergebnis.
+  - avgDDT ignorierte 0-Werte.
+- **Laufzeit:**
+  - QuickStart wählte `mexc-x01` (kein Connector) → Guard + Harness-Default `bingx-x01`.
+  - Prehistoric ohne Marktdaten galt als „complete“ → Fehler.
+  - Coverage-Fehler bei 0 Kerzen.
+  - **Redis-Append-Lua** verlor ganze ADL-Indikationsgruppen („too many results to unpack“, 176/1320 Config-Units) → Chunked LPUSH, im 24-h-Lauf 0 Fehler.
+- **Neu:** Backtest-Bereich im Main-Connection-Einstellungsdialog (Overview unten):
+  - 5–75 h, Schritt 5, Default 15;
+  - Default-Modus **Base-gated** (Operator-Entscheidung), Alternative „All signals“;
+  - Market/Maker;
+  - Statistik-Dialog mit Equity/Drawdown/Stunden/Heatmap/Tabellen.
+
+- **Stufenverarbeitung (22:45):**
+  - Base-Funnel meldete jedes erzeugte Set als „passed“ (165, roher PF 1,78) bei 0 Gate-Zulassungen → jetzt Gate-Zulassungen, wartende Historie, gemessener PF.
+  - Axis-TP/SL: Messung und Ausführung nutzen dieselben Entries.
+  - Doppelter Block-Stop-Puffer entfernt.
+
+**Herkunft des früheren PF 1,2–1,4 (`scripts/pf-attribution.ts`, gleiche 112.439 echte Trades):**
+- korrigiert 0,42;
+- alte 0,10 %-Kosten 0,71;
+- ganz ohne Kosten 0,97;
+- alte Bewertung „beide berührt = Gewinn“ 0,71;
+- **alte Münzwurf-Schließungen 1,91 (nach Base-Gate 3,04).**
+
+Der frühere positive PF stammte aus fabrizierten Schließungen (plus generierten Preisen). Ein echter PF 1,2–1,4 erfordert Einstiege mit gemessener Kante.
+
+**Ergebnisse (ehrlich, kein Positivitätsanspruch):**
+- **Kurzbereichs-Forschung:** 14 Tage × 15 Symbole, 648 Exit-Konfigurationen → 0 Kandidaten.
+- **Maker-Forschung:** 504 Konfigurationen → 0 Kandidaten (Holdout Sep 8–21 bleibt ungesehen).
+- **Indikations-Labor:** 50 Symbole, 12.240 Zeilen, RSI voll + 10 Taktikfamilien → 0 Kandidaten. Bestes: RSI(14)-Reversion 20, Maker, PF 1,04/1,01 Stress, 2. Hälfte 0,95.
+- **Nach-Base-Gate-Studie:** 112.439 Engine-Trades, PF 0,42 ungated; jede Gate-Variante (PF 1,1–1,5, Fenster 10–50, Signifikanz) 0,05–0,51 — **das Gate fügt keine Kante hinzu**. Vergangene Bucket-Ergebnisse persistieren nicht.
+- **24-h-Lauf, 12 Symbole** (bingx-x01 Paper, Oct 06 21:24 → Oct 07 22:24): stabil, 1,04 Mio Kerzen, 0 fehlgeschlagene Units. Backtest desselben Fensters:
+  - alle Signale Market PF 0,55;
+  - Base-gated Market PF 0,71;
+  - Base-gated Maker PF 0,86 (12/23 h positiv).
+  - Bericht `docs/reports/20261007-sim24h-12s/report.html`.
+- **Struktur:** PF→TP-Vertrag (TP ≈ 0,2–0,55 %, SL 0,6 %) gegen 0,26 % Kosten verlangt ~85 % Trefferquote; die Signale haben ~0 Richtungskante.
+
+**Offen / nächste Schritte:**
+1. Entscheidung des Operators zur Richtung: längere Horizonte (Stunden), externe Signalquellen oder Pausieren des Handels.
+2. H4 (Signal-Block-Normal-PF klassisch 999) offen: Signal-Performance-Lua liefert kein Kosten-Ratio-Feld.
+3. Dokumentiert, nicht behoben:
+   - M2: Hedge-Netting im Real nie wirksam; eine Aktivierung ändert den Orderfluss → Operator-Entscheidung.
+   - M4 Rest: Axis-`cont` pro Symbol/Richtung ist dokumentiertes Design; `last=0` ist das Baseline-Label.
+   - L5: Real-Pos-Count zählt Entries × Configs.
+   - M5 und L2 sind behoben.
+4. X02-VST-Lebenszyklus + 6-h-Lauf mit Monitoring und Diff-Bericht noch nicht ausgeführt.
+5. Migration 110 (Stufen-PF 1,30→1,10) verschiebt auch den bewusst gesetzten X02-Wert 1,3 beim nächsten Deploy.
+6. Deploy nur aus gemergtem grünem main.
+
+
 ## Fortsetzungsstand — 2026-09-16 ~15:50 UTC (Claude-Sitzung: PF/Block/DCA gemergt; Konfigurations-Rückfall auf Mainnet)
 
 **Gemergt (PR #384, `main` e5a90069) — noch NICHT deployed:** (1) Stufen-PF-Default 0,80/1,10 → **1,30** (liegt exakt auf dem Raster 1,02+n×0,02; verlangt +0,30 % = 3× PositionCost; strenger, nie beschönigend; wählbarer Base-Boden bleibt 0,80). (2) Echter Defekt behoben: `calculateBaseStrategy`/`validateStrategyForTrading` verglichen direkt gegen die Default-Konstante → konfigurierte `baseProfitFactor` wurde ignoriert; jetzt über `resolveBaseStagePfThreshold()`. (3) **Block-Recovery-Level 1..6, Default 3** (vorher 1..2/2) in CJS-Klemmung, TS-Spiegel und beiden Oberflächen. (4) **DCA erhält denselben Vertrag aus denselben Helfern**: `DcaProfile.incrementSteps` (1..6, Default 3), `calculateDcaStepVolumeRatio()` = Basis × Schritt-Ratio × Level; Test sichert wertweise Gleichheit beider Lanes. Gates: 315 Suiten / 2198 Tests, tsc 0, ESLint sauber. Fixtures einzeln geprüft: ausgelieferte Defaults steigen auf 1,30, **explizite Operator-Werte bleiben unangetastet** (conn-stage-floor main 1,02; bingx-custom-v100 1,10; app_settings 1,12/1,14/2,3). Dispatch-Mengen unverändert (0,055/0,045, Ratio 4,5) — die Bereichserweiterung verschiebt für sich genommen kein Volumen.
