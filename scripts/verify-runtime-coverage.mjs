@@ -121,11 +121,20 @@ async function main() {
   // historic phase is through; a 0 there is a processing gap, not a result.
   // Only a stage whose basket snapshot covers every symbol is judged, so a
   // stage that has not reported yet is not mistaken for one that evaluated 0.
+  // A stage only receives what the stage before it passed: when that stage
+  // passed nothing, an empty stage is the gates' outcome, not a gap.
   if (overview && REQUIRE_STAGES) {
-    for (const stage of ["base", "main", "real", "live"]) {
+    const stages = ["base", "main", "real", "live"]
+    for (const [index, stage] of stages.entries()) {
       const evaluated = num(pick(overview, `strategiesEvaluatedByStage.${stage}`, `stages.${stage}.evaluated`))
       const snapshotComplete = pick(overview, `stageSnapshots.${stage}.complete`) === true
-      if (snapshotComplete && Number.isFinite(evaluated) && evaluated <= 0) add("error", "functional-overview", `${stage} stage evaluated 0 Sets`)
+      if (!(snapshotComplete && Number.isFinite(evaluated) && evaluated <= 0)) continue
+      const upstreamPassed = index > 0 ? num(pick(stats, `strategyDetail.${stages[index - 1]}.passed`)) : Number.NaN
+      if (Number.isFinite(upstreamPassed) && upstreamPassed <= 0) {
+        add("info", "functional-overview", `${stage} stage evaluated 0 Sets: ${stages[index - 1]} passed none`)
+        continue
+      }
+      add("error", "functional-overview", `${stage} stage evaluated 0 Sets`)
     }
   }
 
