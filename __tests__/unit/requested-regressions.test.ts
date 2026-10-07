@@ -3349,7 +3349,10 @@ describe("requested regression guardrails", () => {
     expect(connectionTests).toContain("exchangeConnectorFactory.getOrCreateConnector(connection.id)")
     expect(connectionTests).not.toContain("isTestnet: false, // Always mainnet")
     expect(liveStage).toContain("EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000")
-    expect(liveStage).toContain("const [slPlacement, tpPlacement] = await Promise.all")
+    // SL and TP are submitted together; a rejected stop may be re-placed once
+    // at the allowed price (lib/protection-allowed-range.ts) before ids are read.
+    expect(liveStage).toContain("const [initialSlPlacement, tpPlacement] = await Promise.all")
+    expect(liveStage).toContain("let slPlacement = initialSlPlacement")
     expect(liveStage).toContain("const slOrderId = slPlacement.orderId")
     expect(liveStage).toContain("const tpOrderId = tpPlacement.orderId")
     expect(migrations).toContain("066-bingx-sdk-fast-order-default")

@@ -1,4 +1,5 @@
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
+import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
 import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
@@ -1564,6 +1565,15 @@ export interface LivePosition {
   // storms when a position's price oscillates at the 0.25% drift boundary.
   stopLossLastArmedAt?: number
   takeProfitLastArmedAt?: number
+  /**
+   * Ticks the stop keeps from the mark price (allowed SL range, default 2);
+   * raised after an unexplained venue rejection of the stop.
+   */
+  protectionMarkBufferTicks?: number
+  /** After a venue rejection of the stop, no new attempt before this epoch-ms. */
+  stopLossRetryAfter?: number
+  /** Consecutive venue rejections of the stop (drives the backoff). */
+  stopLossRejectCount?: number
   assignedStopLoss?: number
   assignedTakeProfit?: number
   /** Venue-confirmed protected quantity for each independent control leg. */
@@ -3075,6 +3085,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "stopLossLastArmedAt",
     "takeProfitLastArmedAt",
     "securityStopLastArmedAt",
+    "protectionMarkBufferTicks",
+    "stopLossRetryAfter",
+    "stopLossRejectCount",
     "assignedStopLoss",
     "assignedTakeProfit",
     "stopLossArmedQuantity",
@@ -9402,6 +9415,22 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     if (!Number.isFinite(desiredSl)) desiredSl = 0
   }
 
+  // The venue accepts a stop only on the protective side of the mark and
+  // inside the liquidation price: place it at the nearest allowed price
+  // instead of having it rejected (lib/protection-allowed-range.ts).
+  if (desiredSl > 0) {
+    const allowed = allowedStopLossPrice({
+      direction,
+      entryPrice: fillPrice,
+      stopPrice: desiredSl,
+      markPrice: Number(pos.exchangeData?.markPrice ?? pos.markPrice) || null,
+      liquidationPrice: Number(pos.exchangeData?.liquidationPrice ?? pos.liquidationPrice) || null,
+      priceTick: Number(pos.priceTick) || null,
+      minMarkTicks: Number(pos.protectionMarkBufferTicks) || undefined,
+    })
+    if (allowed.adjusted) desiredSl = allowed.stopPrice
+  }
+
   // A take profit below the round-trip cost is a guaranteed loss even when it
   // WINS. Production on X01: TAKEUSDT TP 0.205 % and SPXUSDT TP 0.20 % against
   // a 0.26 % round trip — every such win booked about -0.06 %. The target must
@@ -9693,6 +9722,32 @@ async function getCachedSystemCloseOnly(connectionId: string): Promise<boolean> 
 
 async function getCachedOverallControlOrdersOnly(connectionId: string): Promise<boolean> {
   return (await getCachedProtectionPolicy(connectionId)).overallControlOrdersOnly
+}
+
+/**
+ * Reconcile backoff after a venue rejected the stop-loss for no recognised
+ * reason (not crossed, quota or quantity): 15 s, 30 s, then 60 s between
+ * attempts, each with a wider distance to the mark (10, 20, 30 … ticks, at
+ * most 50). A successful placement clears it.
+ */
+export const STOP_LOSS_REJECTION_BACKOFF_MS = [15_000, 30_000, 60_000] as const
+
+export function noteStopLossRejection(pos: LivePosition, nowMs: number = Date.now()): number {
+  const count = Math.max(0, Math.floor(Number(pos.stopLossRejectCount) || 0)) + 1
+  const delayMs = STOP_LOSS_REJECTION_BACKOFF_MS[Math.min(count, STOP_LOSS_REJECTION_BACKOFF_MS.length) - 1]
+  pos.stopLossRejectCount = count
+  pos.stopLossRetryAfter = nowMs + delayMs
+  pos.protectionMarkBufferTicks = Math.min(50, Math.max(10 * count, Number(pos.protectionMarkBufferTicks) || 0))
+  return delayMs
+}
+
+export function stopLossRetryPending(pos: LivePosition, nowMs: number = Date.now()): boolean {
+  return Number(pos.stopLossRetryAfter) > nowMs
+}
+
+function clearStopLossRejection(pos: LivePosition): void {
+  pos.stopLossRejectCount = 0
+  pos.stopLossRetryAfter = 0
 }
 
 function setSystemProtectionLeg(pos: LivePosition, leg: ProtectionOrderLeg, enabled: boolean): void {
@@ -10497,6 +10552,9 @@ async function updateProtectionOrders(
       // always bypass the cooldown — arming a missing order is never a no-op.
       desiredSl > 0 &&
       !pendingSlBlocksPlacement &&
+      // A venue rejection backs off (stopLossRejectionBackoff) instead of
+      // re-placing every tick; the system-side close covers the stop meanwhile.
+      !stopLossRetryPending(pos) &&
       (
         !pos.stopLossOrderId
           ? true  // no order at all → arm immediately regardless of cooldown
@@ -10581,6 +10639,7 @@ async function updateProtectionOrders(
         result.changed = true
         result.slPlaced = true
         setSystemProtectionLeg(pos, "stop_loss", false)
+        clearStopLossRejection(pos)
         if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
         if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
       } else {
@@ -10588,6 +10647,14 @@ async function updateProtectionOrders(
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
         setProtectionLegArmedQuantity(pos, "stop_loss", 0)
+        if (id === null) {
+          // An unexplained rejection: the next attempt keeps a wider distance
+          // to the mark (computeDesiredProtectionPrices → allowedStopLossPrice)
+          // and waits instead of re-sending the same price every tick.
+          const delayMs = noteStopLossRejection(pos)
+          result.changed = true
+          pushStep(pos, "stop_loss_rejected_backoff", false, `SL ${desiredSl} rejected; retry in ${Math.round(delayMs / 1000)}s with ${pos.protectionMarkBufferTicks} mark ticks`)
+        }
       }
     }
   })()
@@ -16935,7 +17002,7 @@ export async function executeLivePosition(
       const initialProtection = computeDesiredProtectionPrices(livePosition)
       const protectionDirection = resolveLivePositionDirection(livePosition)
       const priceTick = Number(livePosition.priceTick || 0)
-      const slPrice = normalizeProtectionTriggerPrice(
+      let slPrice = normalizeProtectionTriggerPrice(
         initialProtection.desiredSl,
         priceTick,
         protectionDirection,
@@ -16992,7 +17059,7 @@ export async function executeLivePosition(
       const tpClientOrderId = tpPrice > 0 && !livePosition.takeProfitOrderId && tpCapacity.allowed
         ? await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)
         : undefined
-      const [slPlacement, tpPlacement] = await Promise.all([
+      const [initialSlPlacement, tpPlacement] = await Promise.all([
         (slPrice > 0 && !livePosition.stopLossOrderId && slCapacity.allowed)
           ? placeProtectionOrder(
               exchangeConnector,
@@ -17028,6 +17095,53 @@ export async function executeLivePosition(
                 : 0,
             }),
       ])
+      // An unexplained venue rejection of the stop (not crossed, quota or
+      // quantity): refresh mark and liquidation, keep a wider distance from
+      // the mark and place it once more at the nearest allowed price before
+      // the entry is treated as unprotectable.
+      let slPlacement = initialSlPlacement
+      if (slPrice > 0 && slCapacity.allowed && !livePosition.stopLossOrderId && initialSlPlacement.orderId === null) {
+        try {
+          const exPos = typeof exchangeConnector.getPosition === "function"
+            ? await exchangeConnector.getPosition(realPosition.symbol, realPosition.direction as "long" | "short")
+            : null
+          if (exPos) {
+            livePosition.exchangeData = {
+              ...(livePosition.exchangeData || {}),
+              markPrice: (exPos as any).markPrice,
+              liquidationPrice: (exPos as any).liquidationPrice,
+            }
+          }
+          livePosition.protectionMarkBufferTicks = Math.max(10, Number(livePosition.protectionMarkBufferTicks) || 0)
+          const retryPrice = normalizeProtectionTriggerPrice(
+            computeDesiredProtectionPrices(livePosition).desiredSl,
+            priceTick,
+            protectionDirection,
+            "stop_loss",
+          )
+          if (retryPrice > 0 && retryPrice !== slPrice) {
+            pushStep(livePosition, "stop_loss_allowed_range", true, `stop rejected at ${slPrice}; re-placing at the allowed ${retryPrice}`)
+            const retryClientOrderId = await prepareProtectionSubmission(livePosition, "stopLoss", retryPrice, livePosition.executedQuantity)
+            const retried = await placeProtectionOrder(
+              exchangeConnector,
+              realPosition.symbol,
+              sideClose,
+              livePosition.executedQuantity,
+              retryPrice,
+              "StopLoss",
+              realPosition.direction,
+              retryClientOrderId,
+            )
+            slPlacement = retried
+            slPrice = retryPrice
+          }
+        } catch (error) {
+          console.warn(
+            `${LOG_PREFIX} StopLoss allowed-range retry failed for ${realPosition.symbol}:`,
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+      }
       const slOrderId = slPlacement.orderId
       const tpOrderId = tpPlacement.orderId
 
