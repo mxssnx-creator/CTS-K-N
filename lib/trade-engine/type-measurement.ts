@@ -12,7 +12,8 @@
  * close is booked twice and none is lost. The gate itself is unchanged.
  */
 import { getAppSettings, getRedisClient } from "@/lib/redis-db"
-import { recordPosClosedBatch } from "@/lib/pos-history"
+import { posRingKey, recordPosClosedBatch } from "@/lib/pos-history"
+import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { setActiveProtectionFloors } from "@/lib/protection-floors"
 import { normalizePositionCostPercent } from "@/lib/position-cost"
@@ -241,4 +242,132 @@ export async function refreshTypeMeasurement(
     context,
     rolling: true,
   })
+}
+
+
+export const TYPE_MEASUREMENT_BACKFILL_STEP_HOURS = 24
+export const TYPE_MEASUREMENT_BACKFILL_MAX_HOURS = 7 * 24
+
+export interface TypeMeasurementBackfillInput {
+  connectionId: string
+  symbol: string
+  /** Types to complete (both directions); usually the types the range measured. */
+  types: readonly string[]
+  /** The measured range starts here; the backfill only reads older bars. */
+  beforeMs: number
+  /** Closes each (type × direction) bucket needs (the Base gate's prevPosMinCount). */
+  minCount: number
+  context: TypeMeasurementContext
+  maxHours?: number
+  stepHours?: number
+  assertActive?: () => void
+  /** Bar source; defaults to the venue's real one-minute bars. */
+  loadBars?: (startMs: number, endMs: number) => Promise<any[]>
+}
+
+export interface TypeMeasurementBackfillResult {
+  hours: number
+  closes: number
+  /** Ring length per `type:direction` after the backfill. */
+  counts: Record<string, number>
+  /** Buckets still below `minCount` at the cap (a type that rarely fires). */
+  thin: string[]
+}
+
+/**
+ * Make the Base gate's buckets usable right after the prehistoric run.
+ *
+ * The measurement covers the prehistoric range; a type that fires rarely can
+ * end it with fewer closes than the gate needs, and its Sets would stay
+ * "awaiting history". Such buckets are extended backwards over the venue's
+ * real one-minute bars, one day at a time up to the cap. Causal: each step
+ * replays only bars older than the measured range, and its closes are
+ * appended BEHIND the existing ones (newest-first ring), so the gate still
+ * reads the latest closes first. The continuous measurement state (the
+ * forward edge) is not touched.
+ */
+export async function backfillTypeMeasurement(input: TypeMeasurementBackfillInput): Promise<TypeMeasurementBackfillResult> {
+  const client = getRedisClient() as any
+  const minCount = Math.max(1, Math.floor(input.minCount))
+  const stepMs = Math.max(1, input.stepHours ?? TYPE_MEASUREMENT_BACKFILL_STEP_HOURS) * 3_600_000
+  const maxMs = Math.max(0, input.maxHours ?? TYPE_MEASUREMENT_BACKFILL_MAX_HOURS) * 3_600_000
+  const loadBars = input.loadBars ?? ((startMs: number, endMs: number) =>
+    loadRangeMinuteBars(input.symbol, { connectionId: input.connectionId, startMs, endMs }))
+  const buckets = [...new Set(input.types)].flatMap((type) => [`${type}:long`, `${type}:short`])
+  const readCounts = async (): Promise<Record<string, number>> => {
+    const lengths = await Promise.all(buckets.map((bucket) => {
+      const [type, direction] = bucket.split(":")
+      return client.llen(posRingKey(input.connectionId, input.symbol, type, direction)).catch(() => 0)
+    }))
+    return Object.fromEntries(buckets.map((bucket, i) => [bucket, Number(lengths[i]) || 0]))
+  }
+  let counts = await readCounts()
+  let hours = 0
+  let closes = 0
+  const { deriveAdaptiveTrendProtection, deriveProtectionFromProfitFactor } = await import("@/lib/strategy-coordinator")
+  const { context } = input
+  for (let endMs = input.beforeMs; input.beforeMs - endMs < maxMs; endMs -= stepMs) {
+    if (buckets.every((bucket) => counts[bucket] >= minCount)) break
+    input.assertActive?.()
+    const startMs = endMs - stepMs
+    const bars = await loadBars(startMs - ENGINE_STAGE_HISTORY_MINUTES * MINUTE_MS, endMs)
+    hours += stepMs / 3_600_000
+    if (!bars || bars.length === 0) break
+    const result = await replayDirectIndicationTypes({
+      symbol: input.symbol,
+      bars,
+      rangeStartMs: startMs,
+      rangeEndMs: endMs,
+      positionCostPct: context.positionCostPct,
+      indicationSettings: context.indicationSettings,
+      protectionFor: ({ type, profitFactor, row }) => {
+        const protection = (type === "trend"
+          ? deriveAdaptiveTrendProtection(row?.metadata?.adaptiveTpRange?.factors, context.positionCostPct)
+          : null) ?? deriveProtectionFromProfitFactor(profitFactor, context.positionCostPct)
+        return { takeProfitPct: protection.takeProfitPct, stopLossPct: protection.stopLossPct }
+      },
+      stepIndicatorsFor: (stepBars, timeframesMinutes) => StepBasedIndicators.calculateSummariesAsync(
+        stepBars,
+        timeframesMinutes,
+        context.indicationSettings?.commonIndicatorTypes,
+        context.indicationSettings?.commonSettings,
+      ),
+      assertActive: input.assertActive,
+    })
+    // Only buckets that still need closes take them; a full bucket keeps
+    // exactly the closes of the measured range.
+    const needed = new Set(buckets.filter((bucket) => counts[bucket] < minCount))
+    const older = result.closes
+      .filter((close) => close.exitTime <= input.beforeMs && needed.has(`${close.type}:${close.direction}`))
+      .sort((a, b) => b.exitTime - a.exitTime)
+    if (older.length > 0) {
+      const pipeline = client.multi()
+      recordPosClosedBatch({
+        connectionId: input.connectionId,
+        pipeline,
+        older: true,
+        entries: older.map((close) => ({
+          symbol: input.symbol,
+          indicationType: close.type,
+          direction: close.direction,
+          pnl: close.netPct,
+          pnlPct: close.netPct,
+          positionCostPct: close.positionCostPct,
+          drawdownMinutes: close.holdMinutes,
+          entryPrice: close.entryPrice,
+        })),
+      })
+      await pipeline.exec()
+      closes += older.length
+      counts = await readCounts()
+    }
+  }
+  return { hours, closes, counts, thin: buckets.filter((bucket) => counts[bucket] < minCount) }
+}
+
+/** The Base gate's "enough history" count for a connection (same resolution as the coordinator). */
+export async function resolvePrevPosMinCount(connectionId: string): Promise<number> {
+  const settings = await getCanonicalConnectionSettingsOverlay(connectionId).catch(() => ({} as Record<string, string>))
+  const value = Number(settings?.prevPosMinCount || settings?.prevPiMinCount || "")
+  return Number.isFinite(value) && value >= 1 ? Math.min(50, Math.floor(value)) : 5
 }

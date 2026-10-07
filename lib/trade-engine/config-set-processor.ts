@@ -42,7 +42,14 @@ import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeMinuteBars } from "@/lib/market-
 import { expandMinuteBarsToSeconds } from "@/lib/market-data-1s-backfill"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import { minuteBars, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
-import { advanceTypeMeasurement, loadTypeMeasurementContext, type TypeMeasurementContext } from "./type-measurement"
+import {
+  advanceTypeMeasurement,
+  backfillTypeMeasurement,
+  loadTypeMeasurementContext,
+  resolvePrevPosMinCount,
+  type TypeMeasurementBackfillResult,
+  type TypeMeasurementContext,
+} from "./type-measurement"
 import {
   clearHistoricCalculationState,
   clearHistoricAggregateMarkers,
@@ -645,14 +652,20 @@ export class ConfigSetProcessor {
     // Per-type measurement context: the realtime indication settings, the
     // operator protection floors and PositionCost. Absent in a forced
     // simulation (synthetic prices are no measurement).
+    let typeMeasurementSkipReason = ""
     const typeReplayContext = await loadTypeMeasurementContext(this.connectionId).catch((error) => {
+      typeMeasurementSkipReason = `context_error:${error instanceof Error ? error.message : String(error)}`.slice(0, 200)
       console.warn(
         `[v0] [ConfigSetProcessor] per-type measurement unavailable:`,
         error instanceof Error ? error.message : String(error),
       )
       return null
     })
+    // A skipped measurement is reported, never silent: the Base gate then has
+    // no prehistoric history and every Set waits for realtime closes.
+    if (!typeReplayContext && !typeMeasurementSkipReason) typeMeasurementSkipReason = "forced_simulation"
     const typeReplayCloses: TypeReplayClose[] = []
+    const typeBackfills: Array<{ symbol: string } & TypeMeasurementBackfillResult> = []
     const strategyConfigs = allStrategyConfigs
     const indicationCalculationGroups = groupHistoricIndicationCalculationConfigs(indicationConfigs)
     await this.indicationManager.setResultReferences(
@@ -1177,6 +1190,7 @@ export class ConfigSetProcessor {
             context: typeReplayContext,
             assertActive: assertRunActive,
             totals: typeReplayCloses,
+            backfill: typeBackfills,
           })
           await assertCurrentSelection()
         }
@@ -1768,6 +1782,15 @@ export class ConfigSetProcessor {
         last_run_strategy_positions: String(totalStrategyPositions),
         type_measurement_closes: String(typeReplayCloses.length),
         type_measurement_summary: JSON.stringify(summarizeTypeReplay(typeReplayCloses)),
+        // measured | skipped:<reason> | no_closes (data present, nothing fired)
+        type_measurement_status: typeMeasurementSkipReason
+          ? `skipped:${typeMeasurementSkipReason}`
+          : typeReplayCloses.length > 0 ? "measured" : "no_closes",
+        type_measurement_backfill: JSON.stringify({
+          maxHours: typeBackfills.reduce((max, entry) => Math.max(max, entry.hours), 0),
+          closes: typeBackfills.reduce((sum, entry) => sum + entry.closes, 0),
+          thin: typeBackfills.flatMap((entry) => entry.thin.map((bucket) => `${entry.symbol}:${bucket}`)).slice(0, 200),
+        }),
         // Data actually available for the range: hours from the latest
         // per-symbol first candle to the range end (a data gap shows here).
         ...(latestCoverageStartMs > 0 ? {
@@ -1831,6 +1854,7 @@ export class ConfigSetProcessor {
       context: TypeMeasurementContext
       assertActive: () => void
       totals: TypeReplayClose[]
+      backfill?: Array<{ symbol: string } & TypeMeasurementBackfillResult>
     },
   ): Promise<void> {
     const startedAt = Date.now()
@@ -1854,6 +1878,35 @@ export class ConfigSetProcessor {
       `steps=${result.steps} autoSteps=${result.stepIndicatorCalls} closes=${result.closes.length} open=${result.openAtEnd} ` +
       `in ${Date.now() - startedAt}ms ${JSON.stringify(summarizeTypeReplay(result.closes))}`,
     )
+    // The Base gate needs `prevPosMinCount` closes per (type × direction)
+    // right after the prehistoric run; thin buckets of the measured types are
+    // extended backwards over older real bars (capped, causal).
+    if (!resumed) {
+      const types = [...new Set(result.closes.map((close) => close.type))]
+      if (types.length > 0) {
+        try {
+          const backfill = await backfillTypeMeasurement({
+            connectionId: this.connectionId,
+            symbol,
+            types,
+            beforeMs: options.rangeStartMs,
+            minCount: await resolvePrevPosMinCount(this.connectionId),
+            context: options.context,
+            assertActive: options.assertActive,
+          })
+          options.backfill?.push({ symbol, ...backfill })
+          if (backfill.hours > 0) {
+            console.log(
+              `[v0] [ConfigSetProcessor] ${symbol}: per-type backfill ${backfill.hours}h, +${backfill.closes} closes` +
+              (backfill.thin.length > 0 ? `, still thin: ${backfill.thin.join(",")}` : ""),
+            )
+          }
+        } catch (error) {
+          if (error instanceof PrehistoricProcessingCancelledError) throw error
+          console.warn(`[v0] [ConfigSetProcessor] ${symbol}: per-type backfill failed:`, error instanceof Error ? error.message : String(error))
+        }
+      }
+    }
   }
 
   private async processIndicationConfigs(

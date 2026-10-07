@@ -25,12 +25,27 @@ describe("parseTypeMeasurement", () => {
         "trend:long": { closed: 6, wins: 5, losses: 1, netPctSum: 2.4, positionCostRatio: 1.4 },
         "direction:short": { closed: 3, wins: 1, losses: 2, netPctSum: -0.9, positionCostRatio: null },
       },
+      status: null,
+      backfill: null,
     })
+  })
+
+  test("reports the measurement status and the backfill of thin buckets", () => {
+    const parsed = parseTypeMeasurement({
+      type_measurement_closes: "12",
+      type_measurement_summary: "{}",
+      type_measurement_status: "measured",
+      type_measurement_backfill: JSON.stringify({ maxHours: 48, closes: 7, thin: ["BTCUSDT:optimal:short"] }),
+    })
+    expect(parsed?.status).toBe("measured")
+    expect(parsed?.backfill).toEqual({ maxHours: 48, closes: 7, thin: ["BTCUSDT:optimal:short"] })
+    expect(parseTypeMeasurement({ type_measurement_closes: "0", type_measurement_status: "skipped:forced_simulation" })?.status)
+      .toBe("skipped:forced_simulation")
   })
 
   test("a damaged summary yields no buckets, foreign keys and NaN are dropped", () => {
     expect(parseTypeMeasurement({ type_measurement_closes: "4", type_measurement_summary: "{oops" }))
-      .toEqual({ closes: 4, byTypeDirection: {} })
+      .toEqual({ closes: 4, byTypeDirection: {}, status: null, backfill: null })
     const parsed = parseTypeMeasurement({
       type_measurement_closes: "x",
       type_measurement_summary: JSON.stringify({
@@ -42,6 +57,8 @@ describe("parseTypeMeasurement", () => {
     expect(parsed).toEqual({
       closes: 0,
       byTypeDirection: { "move:long": { closed: 0, wins: 0, losses: 0, netPctSum: 0, positionCostRatio: null } },
+      status: null,
+      backfill: null,
     })
   })
 })

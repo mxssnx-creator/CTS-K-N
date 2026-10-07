@@ -18,6 +18,10 @@ export interface TypeMeasurement {
   closes: number
   /** Keyed `type:direction`, e.g. `direction:long`. */
   byTypeDirection: Record<string, TypeMeasurementBucket>
+  /** measured | no_closes | skipped:<reason>; null for runs before 2026-10-08. */
+  status: string | null
+  /** Older bars replayed to give thin buckets enough closes for the Base gate. */
+  backfill: { maxHours: number; closes: number; thin: string[] } | null
 }
 
 export function parseTypeMeasurement(hash: Record<string, string> | null | undefined): TypeMeasurement | null {
@@ -48,7 +52,21 @@ export function parseTypeMeasurement(hash: Record<string, string> | null | undef
       }
     }
   }
-  return { closes, byTypeDirection }
+  let backfill: TypeMeasurement["backfill"] = null
+  try {
+    const parsed = JSON.parse(String(hash.type_measurement_backfill || "null"))
+    if (parsed && typeof parsed === "object") {
+      backfill = {
+        maxHours: Math.max(0, Number(parsed.maxHours) || 0),
+        closes: count(parsed.closes),
+        thin: Array.isArray(parsed.thin) ? parsed.thin.map(String).slice(0, 200) : [],
+      }
+    }
+  } catch {
+    backfill = null
+  }
+  const status = typeof hash.type_measurement_status === "string" && hash.type_measurement_status ? hash.type_measurement_status : null
+  return { closes, byTypeDirection, status, backfill }
 }
 
 /**
@@ -59,7 +77,7 @@ export function parseTypeMeasurement(hash: Record<string, string> | null | undef
 export const typeMeasurementRollingKey = (connectionId: string) =>
   `prehistoric:type_measurement_rolling:${connectionId}`
 
-export interface RollingTypeMeasurement extends TypeMeasurement {
+export interface RollingTypeMeasurement extends Omit<TypeMeasurement, "status" | "backfill"> {
   lastAt: number | null
 }
 

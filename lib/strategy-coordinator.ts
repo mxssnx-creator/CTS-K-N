@@ -2292,6 +2292,26 @@ export function protectionEntriesFor(
 }
 
 /**
+ * The measured window a Base Set is judged on. The Set's own ring wins only
+ * once it carries `minCount` canonical (cost-relative) closes; until then the
+ * type × direction bucket — which the prehistoric measurement fills — keeps
+ * deciding. Before, any own close (count > 0) replaced a full bucket, so one
+ * close sent a Set back to "awaiting history".
+ */
+export function selectBaseHistoryWindow<T extends { count: number; positionCostRatioCount: number }>(
+  exact: T | undefined | null,
+  bucket: T | undefined | null,
+  minCount: number,
+): T | undefined {
+  const required = Math.max(1, minCount)
+  if (exact && exact.positionCostRatioCount >= required) return exact
+  if (bucket && bucket.positionCostRatioCount >= required) return bucket
+  // Neither is complete: the one with more measured closes reports progress.
+  if (exact && exact.count > 0 && (!bucket || exact.positionCostRatioCount >= bucket.positionCostRatioCount)) return exact
+  return bucket ?? (exact && exact.count > 0 ? exact : undefined)
+}
+
+/**
  * Base emits every Set (one per indication type × direction); its gate —
  * measured history ≥ prevPosMinCount and PF/DDT within the Base contract —
  * runs at the start of Main. Copy that outcome onto the Base result so the
@@ -4985,7 +5005,7 @@ export class StrategyCoordinator {
         // raw indication-derived PF untouched (= bootstrap path).
         const exactStats = exactPositionWindows.get(setKey)
         const legacyStats = posMap.get(`${group.indicationType}|${group.direction}`)
-        const posStats = exactStats && exactStats.count > 0 ? exactStats : legacyStats
+        const posStats = selectBaseHistoryWindow(exactStats, legacyStats, prevPosMinCount)
         const blendActive =
           !!posStats &&
           posStats.positionCostRatioCount >= prevPosMinCount

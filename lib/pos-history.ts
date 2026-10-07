@@ -80,6 +80,11 @@ const OVERALL_BUCKET = "_overall"
 // in play (Real/Main eval counts + the 550 DDT cap) with headroom.
 const RING_CAP = 600
 
+/** The (symbol × type × direction) measured-close ring the Base gate reads. */
+export function posRingKey(connectionId: string, symbol: string, indicationType: string, direction: string): string {
+  return listKey(connectionId, symbol, indicationType, direction)
+}
+
 function listKey(
   connectionId: string,
   symbol: string,
@@ -260,6 +265,13 @@ export interface RecordPosClosedBatchInput {
   connectionId: string
   entries: RecordPosClosedBatchEntry[]
   pipeline?: ReturnType<ReturnType<typeof getRedisClient>["multi"]>
+  /**
+   * The entries are OLDER than everything already in the rings (a backfill),
+   * given newest-first: they are appended at the ring's tail so the ring
+   * stays newest-first and the measured window keeps reading the latest
+   * closes. Counters add up the same either way.
+   */
+  older?: boolean
 }
 
 interface PosHistoryBatchAggregate {
@@ -325,6 +337,7 @@ function addClosedPositionToAggregate(
 function queuePosHistoryBatchAggregate(
   pipeline: ReturnType<ReturnType<typeof getRedisClient>["multi"]>,
   aggregate: PosHistoryBatchAggregate,
+  older = false,
 ): void {
   if (aggregate.count === 0) return
   pipeline.hincrby(aggregate.hash, "count", aggregate.count)
@@ -340,7 +353,8 @@ function queuePosHistoryBatchAggregate(
     pipeline.hincrby(aggregate.hash, "ddt_num_x10", aggregate.ddtX10)
   }
   pipeline.expire(aggregate.hash, TTL_SECONDS)
-  pipeline.lpush(aggregate.ring, ...aggregate.ringRecords)
+  if (older) pipeline.rpush(aggregate.ring, ...aggregate.ringRecords)
+  else pipeline.lpush(aggregate.ring, ...aggregate.ringRecords)
   pipeline.ltrim(aggregate.ring, 0, RING_CAP - 1)
   pipeline.expire(aggregate.ring, TTL_SECONDS)
 }
@@ -381,9 +395,9 @@ export function recordPosClosedBatch(input: RecordPosClosedBatchInput): void {
   }
 
   for (const aggregate of perBucket.values()) {
-    queuePosHistoryBatchAggregate(client, aggregate)
+    queuePosHistoryBatchAggregate(client, aggregate, input.older === true)
   }
-  queuePosHistoryBatchAggregate(client, overall)
+  queuePosHistoryBatchAggregate(client, overall, input.older === true)
 
   if (owned) {
     ;(client as any).exec().catch(() => {})
