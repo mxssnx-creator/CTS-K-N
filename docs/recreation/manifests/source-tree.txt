@@ -467,6 +467,7 @@ __tests__/unit/settings-save-symbol-selection.test.ts
 __tests__/unit/settings-sync-events.test.ts
 __tests__/unit/settled-rows-auto-close.test.ts
 __tests__/unit/shared-slot-post-entry-audit.test.ts
+__tests__/unit/short-range-exits.test.ts
 __tests__/unit/short-range-grid.test.ts
 __tests__/unit/shutdown-keeps-positions.test.ts
 __tests__/unit/signal-analytics.test.ts
@@ -484,6 +485,7 @@ __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-source-validation.test.ts
 __tests__/unit/signal-statistics-quorum.test.ts
 __tests__/unit/signal-trailing.test.ts
+__tests__/unit/sim-live-divergence-fixes.test.ts
 __tests__/unit/simulated-stats-routes.test.ts
 __tests__/unit/site-logs-key.test.ts
 __tests__/unit/slot-audit-type-separation.test.ts
@@ -1293,6 +1295,10 @@ docs/reports/20260913-sol-windows/results.json
 docs/reports/20261007-control-4s/SHA256SUMS
 docs/reports/20261007-control-4s/report.html
 docs/reports/20261007-control-4s/summary.json
+docs/reports/20261007-short-range-14d/SHA256SUMS
+docs/reports/20261007-short-range-14d/report.html
+docs/reports/20261007-short-range-14d/summary.json
+docs/reports/20261007-sim-vs-live/differences.md
 docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json
@@ -1703,6 +1709,7 @@ lib/settings-coordinator.ts
 lib/settings-diff.ts
 lib/settings-storage.ts
 lib/settings-sync-events.ts
+lib/short-range-exits.ts
 lib/short-range-grid.ts
 lib/signal-analytics.ts
 lib/signal-config-matrix.ts
@@ -1882,6 +1889,7 @@ scripts/bootstrap-install.sh
 scripts/build-heap.mjs
 scripts/build-next-with-trace-retry.mjs
 scripts/build-observation-report.mjs
+scripts/build-short-range-report.mjs
 scripts/clean-next-dist.mjs
 scripts/clean-opennext-output.mjs
 scripts/cleanup-bingx-cts-protection-orders.ts
@@ -1899,6 +1907,7 @@ scripts/direct-trade-processor.mjs
 scripts/direct-trade-supervisor.mjs
 scripts/ensure-server-autoboot.sh
 scripts/fetch-dca-public-history.py
+scripts/fetch-research-bars.mjs
 scripts/final-validation-test.mjs
 scripts/generate-recreation-manifests.mjs
 scripts/historic-signal-data.ts
@@ -1973,6 +1982,8 @@ scripts/runtime-recovery.sh
 scripts/scan-release-secrets.mjs
 scripts/service-control.sh
 scripts/setup-github-cli.sh
+scripts/short-range-capture.ts
+scripts/short-range-research.ts
 scripts/simulate-signal-source-ranking.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs

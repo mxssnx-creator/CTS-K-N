@@ -454,6 +454,7 @@ unit	__tests__/unit/settings-save-symbol-selection.test.ts
 unit	__tests__/unit/settings-sync-events.test.ts
 unit	__tests__/unit/settled-rows-auto-close.test.ts
 unit	__tests__/unit/shared-slot-post-entry-audit.test.ts
+unit	__tests__/unit/short-range-exits.test.ts
 unit	__tests__/unit/short-range-grid.test.ts
 unit	__tests__/unit/shutdown-keeps-positions.test.ts
 unit	__tests__/unit/signal-analytics.test.ts
@@ -471,6 +472,7 @@ unit	__tests__/unit/signal-source-registry.test.ts
 unit	__tests__/unit/signal-source-validation.test.ts
 unit	__tests__/unit/signal-statistics-quorum.test.ts
 unit	__tests__/unit/signal-trailing.test.ts
+unit	__tests__/unit/sim-live-divergence-fixes.test.ts
 unit	__tests__/unit/simulated-stats-routes.test.ts
 unit	__tests__/unit/site-logs-key.test.ts
 unit	__tests__/unit/slot-audit-type-separation.test.ts
