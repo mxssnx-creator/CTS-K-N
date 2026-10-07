@@ -112,7 +112,7 @@ describe("backtestTradesForSymbol", () => {
 })
 
 describe("applyBaseGate", () => {
-  // Measured closes: gross 0.5 % at PositionCost 0.1 → net 0.4 → ratio 1.4; gross -0.6 → ratio 0.3.
+  // Measured closes pay the real round trip (0.26 %): gross 0.5 % → net 0.24 → ratio 1.24; gross -0.6 → ratio 0.14.
   const close = (minute: number, grossPct: number, profitFactor = 1.5): BacktestTrade =>
     trade({ entryTime: T0 + minute * 60_000, exitTime: T0 + (minute + 5) * 60_000, grossPct, profitFactor })
 

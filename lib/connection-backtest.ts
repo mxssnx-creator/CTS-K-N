@@ -16,6 +16,7 @@
  */
 import { BOT_FEES } from "@/lib/bots/backtest"
 import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
+import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
   rangeClass,
   simulateExits,
@@ -260,7 +261,7 @@ export const BACKTEST_BASE_GATE = { minCount: 5, window: 25, stagePf: 1.1 } as c
  * that finished before the entry, and min(row PF, mean PositionCost ratio of
  * the last `window` closes) reaches the stage PF. Every candidate is a
  * measured close for the later ones, as in the per-type measurement (which
- * charges PositionCost, not the execution fees, on its closes).
+ * charges max(real round trip, PositionCost) on its closes).
  */
 export function applyBaseGate(
   candidates: readonly BacktestTrade[],
@@ -282,7 +283,7 @@ export function applyBaseGate(
       const history = byExit.filter((close) => close.exitTime <= candidate.entryTime).slice(-gate.window)
       if (history.length < gate.minCount) continue
       measuredReady++
-      const ratio = history.reduce((sum, close) => sum + toRatio(close.grossPct - positionCostPct, positionCostPct), 0) / history.length
+      const ratio = history.reduce((sum, close) => sum + toRatio(close.grossPct - simulatedCloseCostPercent(positionCostPct), positionCostPct), 0) / history.length
       if (Math.min(Number(candidate.profitFactor) || 0, ratio) >= gate.stagePf) admitted.push(candidate)
     }
   }
