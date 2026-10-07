@@ -36,6 +36,42 @@ export const GATE_VARIANTS = (() => {
   return out
 })()
 
+/**
+ * Significance-aware gate: a candidate trades only when its bucket's last
+ * `window` measured closes (finished before the entry) number at least
+ * `minCount` and the one-sided lower confidence bound of their mean net
+ * result after costs is above zero: mean − z·sd/√n > 0.
+ */
+export const SIGNIFICANCE_VARIANTS = (() => {
+  const out: { key: string; window: number; minCount: number; z: number }[] = []
+  for (const window of [25, 50, 100])
+    for (const z of [1.28, 1.645])
+      out.push({ key: `sig_w${window}_z${z}`, window, minCount: Math.min(window, 20), z })
+  return out
+})()
+
+export function applySignificanceGate(candidates: readonly BacktestTrade[], gate: { window: number; minCount: number; z: number }): BacktestTrade[] {
+  const byBucket = new Map<string, BacktestTrade[]>()
+  for (const trade of candidates) {
+    const key = `${trade.symbol}|${trade.type}|${trade.direction}`
+    if (!byBucket.has(key)) byBucket.set(key, [])
+    byBucket.get(key)!.push(trade)
+  }
+  const admitted: BacktestTrade[] = []
+  for (const list of byBucket.values()) {
+    const byExit = [...list].sort((a, b) => a.exitTime - b.exitTime)
+    for (const candidate of [...list].sort((a, b) => a.entryTime - b.entryTime)) {
+      const history = byExit.filter((close) => close.exitTime <= candidate.entryTime).slice(-gate.window)
+      if (history.length < gate.minCount) continue
+      const values = history.map((close) => close.netPct)
+      const mean = values.reduce((sum, v) => sum + v, 0) / values.length
+      const sd = Math.sqrt(values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / Math.max(1, values.length - 1))
+      if (mean - gate.z * sd / Math.sqrt(values.length) > 0) admitted.push(candidate)
+    }
+  }
+  return admitted
+}
+
 function book(trades: BacktestTrade[]) {
   let gp = 0, gl = 0
   for (const t of trades) { if (t.netPct > 0) gp += t.netPct; else gl -= t.netPct }
@@ -46,7 +82,7 @@ async function main() {
   const [barsDir, signalsDir, outFile, symbolArg] = process.argv.slice(2)
   setActiveProtectionFloors({})
   const symbols = symbolArg ? symbolArg.split(",") : readdirSync(signalsDir).filter((n) => n.endsWith(".json")).map((n) => n.replace(/\.json$/, ""))
-  const all: Record<string, BacktestTrade[]> = Object.fromEntries(GATE_VARIANTS.map((v) => [v.key, []]))
+  const all: Record<string, BacktestTrade[]> = Object.fromEntries([...GATE_VARIANTS, ...SIGNIFICANCE_VARIANTS].map((v) => [v.key, []]))
   const startMs: number[] = []
   for (const symbol of symbols) {
     const bars = readdirSync(barsDir).filter((n) => n.startsWith(`${symbol}_`) && n.endsWith(".json")).sort()
@@ -73,10 +109,11 @@ async function main() {
     for (const variant of GATE_VARIANTS) {
       all[variant.key].push(...(variant.key === "ungated" ? trades : applyBaseGate(trades, POSITION_COST_PCT, variant, movePctToMainTradePfRatio).admitted))
     }
+    for (const variant of SIGNIFICANCE_VARIANTS) all[variant.key].push(...applySignificanceGate(trades, variant))
     console.log(`${symbol}: ${trades.length} trades`)
   }
   const mid = startMs.length ? Math.min(...startMs) + 7 * 86_400_000 : 0
-  const rows = GATE_VARIANTS.map((variant) => {
+  const rows = [...GATE_VARIANTS, ...SIGNIFICANCE_VARIANTS].map((variant) => {
     const trades = all[variant.key]
     const byType: Record<string, ReturnType<typeof book>> = {}
     for (const type of [...new Set(trades.map((t) => t.type))].sort()) byType[type] = book(trades.filter((t) => t.type === type))
