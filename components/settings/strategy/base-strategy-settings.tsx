@@ -168,7 +168,7 @@ export default function BaseStrategySettings({
                 )}
               />
               <p className="text-xs text-muted-foreground">
-                Base Valid PF threshold (selectable range 0.80–2.30 in 0.02 steps; default 1.30).
+                Base Valid PF threshold (selectable range 0.80–2.30 in 0.02 steps; default {MAIN_TRADE_BASE_PF_RATIO_DEFAULT.toFixed(2)}).
               </p>
             </div>
           </div>

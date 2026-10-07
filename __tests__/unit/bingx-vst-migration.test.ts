@@ -59,14 +59,14 @@ describe("BingX environment migration safety", () => {
       await client.set("_migrations_run", "true")
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 109 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 110 })
       // Credentials were injected, the environment stayed demo.
       expect(await client.hget("connection:bingx-x02", "api_key")).toBe("x02-vst-api-key-long-enough")
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x02", "environment")).toBe("prod-vst")
       // A second run under an explicit mainnet environment does not move it.
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 109 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 110 })
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -91,7 +91,7 @@ describe("BingX environment migration safety", () => {
       await client.flushDb()
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 109 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 110 })
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x02", "environment")).toBe("prod-vst")
       // And X01 is mainnet, as pinned.
@@ -125,7 +125,7 @@ describe("BingX environment migration safety", () => {
 
       const migrations = await import("@/lib/redis-migrations")
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 109 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 110 })
 
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x02", "is_predefined")).toBe("1")
@@ -146,7 +146,7 @@ describe("BingX environment migration safety", () => {
 
       process.env.BINGX_ENVIRONMENT = "prod-live"
       migrations.resetMigrationRunState()
-      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 109 })
+      await expect(migrations.runMigrations()).resolves.toMatchObject({ success: true, version: 110 })
       expect(await client.hget("connection:bingx-x02", "is_testnet")).toBe("1")
       expect(await client.hget("connection:bingx-x02", "environment")).toBe("prod-vst")
       expect(await client.hget("connection:bingx-x02", "base_url")).toBe("https://open-api-vst.bingx.com")

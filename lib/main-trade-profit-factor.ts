@@ -43,15 +43,18 @@ export const PREVIOUS_POSITION_MIN_PF_RATIO = 1.1
 // The selectable floor stays at 0.80 for Base so an operator can still widen
 // the bootstrap domain deliberately; only the DEFAULT is raised.
 export const MAIN_TRADE_BASE_PF_RATIO_MIN = 0.8
-// Operator-requested systemwide quality default (2026-09-16): every stage
-// starts at ratio 1.30 instead of Base 0.80 / downstream 1.10. With
-// PositionCost 0.10% this demands a rolling realised average of +0.30%
-// (3 × PositionCost) before a Set is promoted. 1.30 sits exactly on the
-// documented 1.02 + n×0.02 grid (n = 14), so normalizeMainTradePfRatio is a
-// no-op on it. This is a STRICTER gate: it reduces the admitted Set domain
-// and never inflates a reported result.
-export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.3
-export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.3
+// Operator decision (2026-10-07): every stage starts at ratio 1.10, i.e. a
+// rolling realised average of +1 × PositionCost after costs (+0.10% at a
+// 0.10% PositionCost). The former 1.30 default (2026-09-16) demanded +0.30%
+// per trade, which with the Sets' protection (stop-loss floor 0.6 %, target
+// about 0.4–0.55 %) needs a win rate of about 90 %: measured on real data no
+// indication type reached it, so no Set ever qualified. 1.10 sits on both
+// grids (Base 0.80 + 15×0.02, downstream 1.02 + 4×0.02). This is an operator
+// choice, not a default promoted from validated results.
+export const MAIN_TRADE_BASE_PF_RATIO_DEFAULT = 1.1
+export const MAIN_TRADE_DOWNSTREAM_PF_RATIO_DEFAULT = 1.1
+/** The stage default before 2026-10-07; migration 110 moves stored copies of it. */
+export const PREVIOUS_MAIN_TRADE_STAGE_PF_DEFAULT = 1.3
 
 export type MainTradeStage = "base" | "main" | "real" | "live"
 

@@ -15,6 +15,7 @@ import { createRedisLockToken, releaseOwnedRedisLock, renewOwnedRedisLock } from
 import { scanRedisKeys } from "./redis-scan"
 import { migrateAdditiveBlockSettings } from "./block-settings-migration"
 import { migrateProtectionFloorDefaults } from "./protection-floor-migration"
+import { migrateStagePfDefaults } from "./stage-pf-default-migration"
 import { ALL_TRAILING_VARIANTS, DEFAULT_TRAILING_VARIANTS } from "./trailing-settings"
 import {
   DEFAULT_SYMBOL_COUNT as CANONICAL_DEFAULT_SYMBOL_COUNT,
@@ -8231,6 +8232,18 @@ const migrations: Migration[] = [
     down: async (client: any) => {
       // The raised floors only ever widen stops; rollback moves the cursor only.
       await client.set("_schema_version", "108")
+    },
+  },
+  {
+    version: 110,
+    name: "110-stage-pf-defaults-1-10",
+    up: async (client: any) => {
+      await migrateStagePfDefaults(client)
+    },
+    down: async (client: any) => {
+      // Stored 1.10 cannot be told apart from an operator's choice; rollback
+      // moves the cursor only.
+      await client.set("_schema_version", "109")
     },
   },
 ]

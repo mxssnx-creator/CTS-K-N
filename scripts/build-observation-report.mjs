@@ -177,7 +177,8 @@ const historicProcessed = Number(prehistoric.processed ?? prehistoric.symbolsPro
 // have done over the range. It seeds the Base gate's buckets, so it explains
 // which types can become valid Base Sets at all.
 const typeMeasurement = statsFinal?.historic?.typeMeasurement ?? statsAfterPrehistoric?.historic?.typeMeasurement ?? null
-const basePfMinimum = Number(statsFinal?.connectionStageOverview?.base?.pfMinimum) || 1.3
+// The engine's configured Base threshold; 1.10 is the system default.
+const basePfMinimum = Number(statsFinal?.connectionStageOverview?.base?.pfMinimum) || 1.1
 const BASE_HISTORY_MIN_COUNT = 5
 const typeMeasurementRows = Object.entries(typeMeasurement?.byTypeDirection || {})
   .map(([key, bucket]) => {

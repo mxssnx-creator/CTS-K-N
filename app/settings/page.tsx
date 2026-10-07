@@ -582,7 +582,7 @@ const initialSettings: Settings = {
   quoteAsset: "USDT", // Moved to exchange tab default
 
   // ── Main Trade PF thresholds per stage (spec defaults) ───────────
-  // Base 0.80; Main/Real/Live 1.10 — operator-tunable via
+  // Every stage 1.10 (2026-10-07) — operator-tunable via
   // Settings → Strategy → Main → Profit Factor Thresholds. Read by
   // `lib/strategy-coordinator.ts` on every flow cycle (5s TTL cache).
   baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
