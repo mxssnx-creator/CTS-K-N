@@ -47,6 +47,7 @@ export function backtestRoundTripPct(execution: BacktestExecution, exitLeg: Exit
 }
 
 export {
+  BACKTEST_DEFAULT_MODE,
   BACKTEST_HOURS,
   BACKTEST_MAX_SYMBOLS,
   BACKTEST_MAKER_DEFAULTS,

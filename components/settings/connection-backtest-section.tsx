@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { Slider } from "@/components/ui/slider"
-import { BACKTEST_HOURS, type BacktestExecution, type BacktestMode, type BacktestResult } from "@/lib/connection-backtest-settings"
+import { BACKTEST_DEFAULT_MODE, BACKTEST_HOURS, type BacktestExecution, type BacktestMode, type BacktestResult } from "@/lib/connection-backtest-settings"
 import { ConnectionBacktestDialog, fmtPct, fmtPf, toneOf } from "./connection-backtest-dialog"
 
 interface JobStatus {
@@ -50,7 +50,7 @@ function windowLabel(hours: number, now = Date.now()) {
 
 export function ConnectionBacktestSection({ connectionId, exchange, symbols = [] }: Props) {
   const [hours, setHours] = useState<number>(BACKTEST_HOURS.default)
-  const [mode, setMode] = useState<BacktestMode>("signals")
+  const [mode, setMode] = useState<BacktestMode>(BACKTEST_DEFAULT_MODE)
   const [execution, setExecution] = useState<BacktestExecution>("market")
   const [job, setJob] = useState<JobStatus | null>(null)
   const [result, setResult] = useState<BacktestResult | null>(null)
@@ -154,7 +154,7 @@ export function ConnectionBacktestSection({ connectionId, exchange, symbols = []
           <div className="space-y-1.5">
             <Label className="text-xs">Mode</Label>
             <div className="grid grid-cols-2 gap-1 rounded-md border p-1" role="radiogroup" aria-label="Backtest mode">
-              {([["signals", "All signals"], ["gated", "Base-gated"]] as const).map(([value, label]) => (
+              {([["gated", "Base-gated"], ["signals", "All signals"]] as const).map(([value, label]) => (
                 <button key={value} type="button" role="radio" aria-checked={mode === value} disabled={running}
                   onClick={() => setMode(value)}
                   className={`rounded px-2 py-1 text-xs transition-colors ${mode === value ? "bg-primary text-primary-foreground" : "hover:bg-muted"}`}>

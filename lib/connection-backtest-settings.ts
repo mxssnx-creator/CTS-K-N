@@ -6,6 +6,7 @@
 import type { ExitLeg } from "@/lib/short-range-exits"
 
 export const BACKTEST_HOURS = { min: 5, max: 75, step: 5, default: 15 } as const
+export const BACKTEST_DEFAULT_MODE = "gated" as const
 export const BACKTEST_MAX_SYMBOLS = 30
 export const BACKTEST_MAKER_DEFAULTS = { entryOffsetPct: 0, fillWindowMinutes: 3 } as const
 /**
@@ -41,7 +42,8 @@ export function normalizeBacktestRequest(body: any): BacktestRequest {
     : undefined
   return {
     hours: normalizeBacktestHours(body?.hours),
-    mode: body?.mode === "gated" || body?.mode === "pipeline" ? "gated" : "signals",
+    // Base-gated is the default (operator decision 2026-10-07); "All signals" only on request.
+    mode: body?.mode === "signals" ? "signals" : "gated",
     execution: body?.execution === "maker" ? "maker" : "market",
     ...(symbols && symbols.length > 0 && { symbols }),
   }

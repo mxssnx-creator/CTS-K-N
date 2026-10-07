@@ -24,7 +24,9 @@ describe("backtest request", () => {
   })
 
   test("mode, execution and symbols are normalised", () => {
-    expect(normalizeBacktestRequest({})).toEqual({ hours: 15, mode: "signals", execution: "market" })
+    // Base-gated is the default; "All signals" only when asked for.
+    expect(normalizeBacktestRequest({})).toEqual({ hours: 15, mode: "gated", execution: "market" })
+    expect(normalizeBacktestRequest({ mode: "signals" }).mode).toBe("signals")
     expect(normalizeBacktestRequest({ hours: 40, mode: "gated", execution: "maker", symbols: ["btcusdt", "BTCUSDT", "eth-usdt", ""] }))
       .toEqual({ hours: 40, mode: "gated", execution: "maker", symbols: ["BTCUSDT", "ETHUSDT"] })
     // The former "pipeline" choice maps to the Base-gated mode.

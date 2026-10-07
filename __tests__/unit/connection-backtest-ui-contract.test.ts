@@ -24,6 +24,7 @@ describe("connection backtest UI", () => {
     expect(section).toContain("max={BACKTEST_HOURS.max}")
     expect(section).toContain("step={BACKTEST_HOURS.step}")
     expect(section).toContain("useState<number>(BACKTEST_HOURS.default)")
+    expect(section).toContain("useState<BacktestMode>(BACKTEST_DEFAULT_MODE)")
     expect(section).toContain('aria-label="Backtest mode"')
     expect(section).toContain('aria-label="Backtest execution"')
     expect(section).toContain("/api/connections/${encodeURIComponent(connectionId)}/backtest")

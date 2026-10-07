@@ -49,7 +49,7 @@ describe("connection backtest jobs", () => {
     const first = await post("bt-bingx", { hours: 17, execution: "maker", symbols: ["SOLUSDT"] })
     expect(first.status).toBe(202)
     const job = (await first.json()).job
-    expect(job).toMatchObject({ status: "running", request: { hours: 15, mode: "signals", execution: "maker", symbols: ["SOLUSDT"] } })
+    expect(job).toMatchObject({ status: "running", request: { hours: 15, mode: "gated", execution: "maker", symbols: ["SOLUSDT"] } })
     // A second start while it runs returns the same job.
     const second = await (await post("bt-bingx", { hours: 40 })).json()
     expect(second.job.jobId).toBe(job.jobId)
