@@ -18,7 +18,7 @@ jest.mock("@/lib/exchange-connectors/factory", () => ({
   exchangeConnectorFactory: { getOrCreateConnector: async () => ({ getOHLCV }) },
 }))
 
-import { loadRangeSecondsFromMinuteBars } from "@/lib/market-data-loader"
+import { loadRangeMinuteBars, loadRangeSecondsFromMinuteBars } from "@/lib/market-data-loader"
 import { marketDataKey } from "@/lib/market-data-keys"
 
 const MINUTE = 60_000
@@ -50,6 +50,22 @@ describe("prehistoric range backfill", () => {
     expect(seconds[59].close).toBeCloseTo(106, 10)
     expect(seconds[119].timestamp).toBe(start + 2 * MINUTE - 1_000)
     expect(seconds.every((candle) => candle.high >= Math.max(candle.open, candle.close) && candle.low <= Math.min(candle.open, candle.close))).toBe(true)
+  })
+
+  test("the measurement reads the venue's bars themselves: real wicks, aligned minutes, the range only", async () => {
+    const start = now - 3 * MINUTE
+    getOHLCV.mockResolvedValue([
+      bar(start - MINUTE, 99, 100),                         // before the range
+      { ...bar(start, 100, 106), timestamp: start + 1_234 }, // unaligned venue timestamp
+      bar(start + MINUTE, 106, 100),
+      bar(start + MINUTE, 106, 101),                        // a repeated minute keeps its last bar
+      { ...bar(start + 2 * MINUTE, 100, 103), high: Number.NaN },
+      bar(now, 103, 104),                                   // at the range end (exclusive)
+    ])
+    const bars = await loadRangeMinuteBars("BTCUSDT", { connectionId: "bingx-x02", startMs: start, endMs: now, nowMs: now })
+    expect(bars.map((entry) => entry.timestamp)).toEqual([start, start + MINUTE])
+    expect(bars[0]).toMatchObject({ open: 100, high: 107, low: 99, close: 106 })
+    expect(bars[1].close).toBe(101)
   })
 
   test("a paper/preview process stays offline", async () => {

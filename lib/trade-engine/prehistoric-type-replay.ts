@@ -7,15 +7,21 @@
  * (momentum entries, TP 1–10 % / SL 0.5–5 %) mirrored into every type, so
  * every type showed the same — and on real data uniformly negative — history.
  *
- * This replay measures each type with what its live Sets do:
+ * This replay measures each type with what its live Sets do. The venue keeps
+ * no old seconds, so a prehistoric range is measured on its real one-minute
+ * bars (seconds interpolated from them carry neither the wicks nor the path
+ * inside a minute):
  *  - entries: the engine's own DIRECT indication rules (computeDirectIndications,
- *    the code realtime runs), evaluated causally once per minute on the last
- *    90 one-minute closes and the current 1-second candle;
+ *    the code realtime runs), evaluated once per completed minute on the last
+ *    90 one-minute closes with that minute's bar as the current candle — only
+ *    data known when the minute has closed — entering at its close;
  *  - the Strategy validity floor (PF ≥ MAIN_TRADE_BASE_PF_RATIO_MIN);
  *  - exits: the Sets' protection (injected — the engine passes
  *    deriveProtectionFromProfitFactor, i.e. PositionCost-derived TP and the
- *    operator stop-loss floor), checked on every 1-second close like a pseudo
- *    position, with the pseudo maximum hold time;
+ *    operator stop-loss floor) against every later bar's real high and low.
+ *    A bar reaching both levels counts as a stop (the order inside a minute
+ *    is unknown), a bar opening beyond a level exits at its open, and the
+ *    pseudo maximum hold closes at a bar's close;
  *  - result: net of PositionCost, the same record a pseudo close writes.
  *
  * One open position per (type, direction, rule) at a time, like one pseudo
@@ -23,7 +29,7 @@
  * Signal (remote, realtime-only) cannot be replayed and is not measured here.
  */
 import { MAIN_TRADE_BASE_PF_RATIO_MIN, movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
-import { ENGINE_STAGE_HISTORY_CANDLES, ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
+import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import {
   commonMultiRangeCoordinationFor,
   computeDirectIndications,
@@ -68,9 +74,9 @@ export interface TypeReplayClose {
 
 export interface TypeReplayInput {
   symbol: string
-  /** 1-second candles, any order; the replay sorts them. */
-  candles: readonly any[]
-  /** First moment an entry may be taken (90 minutes of history must precede it). */
+  /** Real one-minute bars, any order; the replay aligns, de-duplicates and sorts them. */
+  bars: readonly any[]
+  /** Earliest close an entry may be taken at (90 bars of history must precede it). */
   rangeStartMs: number
   rangeEndMs: number
   positionCostPct: number
@@ -79,8 +85,7 @@ export interface TypeReplayInput {
   /** The Sets' TP/SL for one indication row. */
   protectionFor: (row: { type: string; profitFactor: number; row: any }) => ReplayProtection
   /** Step-based indicator summaries for Auto; omitted = Auto is not measured. */
-  stepIndicatorsFor?: (candles: ReplayCandle[], timeframesMinutes: number[]) => Promise<any>
-  stepMs?: number
+  stepIndicatorsFor?: (bars: ReplayCandle[], timeframesMinutes: number[]) => Promise<any>
   maxHoldMs?: number
   /** Throws to cancel (superseded prehistoric generation). */
   assertActive?: () => void
@@ -106,67 +111,39 @@ interface OpenPosition {
   stopLossPct: number
 }
 
+const MINUTE_MS = 60_000
 const DEFAULT_MAX_HOLD_MS = 4 * 60 * 60 * 1000
 const YIELD_EVERY_STEPS = 30
 
-function normalizeCandles(raw: readonly any[]): ReplayCandle[] {
-  const out: ReplayCandle[] = []
-  for (const candle of raw || []) {
-    const timestamp = timestampMs(candle?.timestamp ?? candle?.time ?? candle?.t)
-    const close = Number(candle?.close ?? candle?.c ?? candle?.price)
+/** Valid bars, aligned to their minute, oldest first; a repeated minute keeps its last bar. */
+function normalizeBars(raw: readonly any[]): ReplayCandle[] {
+  const byMinute = new Map<number, ReplayCandle>()
+  for (const bar of raw || []) {
+    const timestamp = timestampMs(bar?.timestamp ?? bar?.time ?? bar?.t)
+    const close = Number(bar?.close ?? bar?.c ?? bar?.price)
     if (timestamp === null || !(close > 0)) continue
-    const open = Number(candle?.open ?? candle?.o)
-    const high = Number(candle?.high ?? candle?.h)
-    const low = Number(candle?.low ?? candle?.l)
-    out.push({
-      timestamp,
-      open: open > 0 ? open : close,
-      high: high > 0 ? high : close,
-      low: low > 0 ? low : close,
+    const open = Number(bar?.open ?? bar?.o) > 0 ? Number(bar?.open ?? bar?.o) : close
+    const high = Number(bar?.high ?? bar?.h) > 0 ? Number(bar?.high ?? bar?.h) : close
+    const low = Number(bar?.low ?? bar?.l) > 0 ? Number(bar?.low ?? bar?.l) : close
+    const minute = Math.floor(timestamp / MINUTE_MS) * MINUTE_MS
+    byMinute.set(minute, {
+      timestamp: minute,
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
       close,
-      volume: Number(candle?.volume ?? candle?.v) || 0,
+      volume: Number(bar?.volume ?? bar?.v) || 0,
     })
   }
-  out.sort((left, right) => left.timestamp - right.timestamp)
-  return out
+  return [...byMinute.values()].sort((left, right) => left.timestamp - right.timestamp)
 }
 
-/** First index whose timestamp is > value (upper bound). */
-function upperBound(timestamps: readonly number[], value: number): number {
-  let low = 0
-  let high = timestamps.length
-  while (low < high) {
-    const middle = (low + high) >>> 1
-    if (timestamps[middle] <= value) low = middle + 1
-    else high = middle
-  }
-  return low
-}
-
-/**
- * oneMinuteClosesOldestFirst() for the replay's sorted, numeric candles in
- * [startIndex, endIndex): the last close of each of the newest 90 minutes,
- * oldest first. Same result without re-parsing and re-sorting 5,400 rows on
- * every step.
- */
-export function minuteClosesOfSorted(candles: readonly ReplayCandle[], startIndex: number, endIndex: number): number[] {
-  const closes: number[] = []
-  let minute = Number.NaN
-  for (let index = endIndex - 1; index >= startIndex && closes.length < ENGINE_STAGE_HISTORY_MINUTES; index--) {
-    const candleMinute = Math.floor(candles[index].timestamp / 60_000)
-    if (candleMinute === minute) continue
-    minute = candleMinute
-    closes.push(candles[index].close)
-  }
-  return closes.reverse()
-}
-
-/** One-minute OHLCV bars from 1-second candles (for the step indicators). */
+/** One-minute OHLCV bars from finer candles (the fallback when no venue bars exist). */
 export function minuteBars(candles: readonly ReplayCandle[]): ReplayCandle[] {
   const bars: ReplayCandle[] = []
   let current: ReplayCandle | null = null
   for (const candle of candles) {
-    const minute = Math.floor(candle.timestamp / 60_000) * 60_000
+    const minute = Math.floor(candle.timestamp / MINUTE_MS) * MINUTE_MS
     if (!current || current.timestamp !== minute) {
       current = { timestamp: minute, open: candle.open, high: candle.high, low: candle.low, close: candle.close, volume: candle.volume }
       bars.push(current)
@@ -203,103 +180,92 @@ function passesStrategyValidity(row: any): boolean {
 }
 
 export async function replayDirectIndicationTypes(input: TypeReplayInput): Promise<TypeReplayResult> {
-  const candles = normalizeCandles(input.candles)
-  const timestamps = candles.map((candle) => candle.timestamp)
-  const stepMs = Math.max(1_000, Math.floor(Number(input.stepMs) || 60_000))
-  const maxHoldMs = Math.max(60_000, Number(input.maxHoldMs) || DEFAULT_MAX_HOLD_MS)
+  const bars = normalizeBars(input.bars)
+  const maxHoldMs = Math.max(MINUTE_MS, Number(input.maxHoldMs) || DEFAULT_MAX_HOLD_MS)
   const positionCostPct = Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1
   const result: TypeReplayResult = { closes: [], steps: 0, stepIndicatorCalls: 0, signals: {}, openAtEnd: 0 }
-  if (candles.length === 0) return result
+  if (bars.length < ENGINE_STAGE_HISTORY_MINUTES) return result
 
   const settings = input.indicationSettings || {}
   const coordinatedTimeframes = parseNumericSettingList(
     settings.commonCoordination?.timeframesMinutes,
     [1, 5, 15, 30],
   ).map((value) => Math.max(1, Math.round(value)))
-  const windowMs = ENGINE_STAGE_HISTORY_CANDLES * 1_000
-  const firstEntryMs = Math.max(
-    Number(input.rangeStartMs) || timestamps[0],
-    timestamps[0] + ENGINE_STAGE_HISTORY_MINUTES * 60_000,
-  )
-  const lastMs = Math.min(Number(input.rangeEndMs) || timestamps[timestamps.length - 1], timestamps[timestamps.length - 1])
+  const rangeStartMs = Number(input.rangeStartMs) || bars[0].timestamp
+  const rangeEndMs = Number(input.rangeEndMs) || bars[bars.length - 1].timestamp + MINUTE_MS
   const open = new Map<string, OpenPosition>()
-  let exitCursor = 0
 
-  const settle = (position: OpenPosition, candle: ReplayCandle, reason: ReplayCloseReason) => {
+  const settle = (position: OpenPosition, exitTime: number, exitPrice: number, reason: ReplayCloseReason) => {
     const side = position.direction === "long" ? 1 : -1
-    const grossPct = ((candle.close - position.entryPrice) / position.entryPrice) * 100 * side
+    const grossPct = ((exitPrice - position.entryPrice) / position.entryPrice) * 100 * side
     result.closes.push({
       type: position.type,
       direction: position.direction,
       rule: position.rule,
       entryTime: position.entryTime,
-      exitTime: candle.timestamp,
+      exitTime,
       entryPrice: position.entryPrice,
-      exitPrice: candle.close,
+      exitPrice,
       takeProfitPct: position.takeProfitPct,
       stopLossPct: position.stopLossPct,
       grossPct,
       netPct: grossPct - positionCostPct,
       positionCostPct,
-      holdMinutes: (candle.timestamp - position.entryTime) / 60_000,
+      holdMinutes: (exitTime - position.entryTime) / MINUTE_MS,
       reason,
     })
     open.delete(position.key)
   }
 
-  // Walk every 1-second close up to (and including) `untilMs`: a pseudo
-  // position closes on the first close beyond its TP or SL, or at max hold.
-  const advanceExits = (untilMs: number) => {
-    const end = upperBound(timestamps, untilMs)
-    for (; exitCursor < end; exitCursor++) {
-      if (open.size === 0) continue
-      const candle = candles[exitCursor]
-      for (const position of [...open.values()]) {
-        if (candle.timestamp <= position.entryTime) continue
-        const side = position.direction === "long" ? 1 : -1
-        const movePct = ((candle.close - position.entryPrice) / position.entryPrice) * 100 * side
-        if (movePct >= position.takeProfitPct) settle(position, candle, "take_profit")
-        else if (movePct <= -position.stopLossPct) settle(position, candle, "stop_loss")
-        else if (candle.timestamp - position.entryTime >= maxHoldMs) settle(position, candle, "max_hold")
-      }
+  // A bar's real range decides the exits of every position opened before it.
+  const settleExits = (bar: ReplayCandle) => {
+    const barEnd = bar.timestamp + MINUTE_MS
+    for (const position of [...open.values()]) {
+      if (bar.timestamp < position.entryTime) continue
+      const long = position.direction === "long"
+      const stopPrice = position.entryPrice * (1 + (long ? -1 : 1) * position.stopLossPct / 100)
+      const targetPrice = position.entryPrice * (1 + (long ? 1 : -1) * position.takeProfitPct / 100)
+      if (long ? bar.open <= stopPrice : bar.open >= stopPrice) settle(position, bar.timestamp, bar.open, "stop_loss")
+      else if (long ? bar.open >= targetPrice : bar.open <= targetPrice) settle(position, bar.timestamp, bar.open, "take_profit")
+      else if (long ? bar.low <= stopPrice : bar.high >= stopPrice) settle(position, barEnd, stopPrice, "stop_loss")
+      else if (long ? bar.high >= targetPrice : bar.low <= targetPrice) settle(position, barEnd, targetPrice, "take_profit")
+      else if (barEnd - position.entryTime >= maxHoldMs) settle(position, barEnd, bar.close, "max_hold")
     }
   }
 
-  const firstStep = Math.ceil(firstEntryMs / stepMs) * stepMs
-  for (let stepTime = firstStep; stepTime <= lastMs; stepTime += stepMs) {
+  for (let index = 0; index < bars.length; index++) {
+    const bar = bars[index]
+    settleExits(bar)
+    const closedAt = bar.timestamp + MINUTE_MS
+    if (index + 1 < ENGINE_STAGE_HISTORY_MINUTES || closedAt < rangeStartMs || closedAt > rangeEndMs) continue
+    // The stage contract: the 90 one-minute closes before the decision, complete.
+    const history = bars.slice(index + 1 - ENGINE_STAGE_HISTORY_MINUTES, index + 1)
+    if (bar.timestamp - history[0].timestamp !== (ENGINE_STAGE_HISTORY_MINUTES - 1) * MINUTE_MS) continue
     if (result.steps > 0 && result.steps % YIELD_EVERY_STEPS === 0) {
       input.assertActive?.()
       await new Promise<void>((resolve) => setImmediate(resolve))
     }
-    advanceExits(stepTime)
-    const endIndex = upperBound(timestamps, stepTime)
-    if (endIndex === 0) continue
-    const startIndex = upperBound(timestamps, stepTime - windowMs)
-    const pricesOldestFirst = minuteClosesOfSorted(candles, startIndex, endIndex)
-    if (pricesOldestFirst.length < ENGINE_STAGE_HISTORY_MINUTES) continue
-    const window = candles.slice(startIndex, endIndex)
-    const current = window[window.length - 1]
+    const pricesOldestFirst = history.map((entry) => entry.close)
     // Auto is the only consumer of the step indicators and can only fire
     // when the Common coordination passes, so the costly summaries are
-    // computed only then. They resample to 1/5/15/30-minute bars; feeding
-    // the window's own one-minute bars gives the same bars at 1/60 of the work.
+    // computed only then.
     const autoPossible = Boolean(input.stepIndicatorsFor) &&
       settings.autoEnabled !== false &&
       commonMultiRangeCoordinationFor(pricesOldestFirst, positionCostPct, settings).passed
     if (autoPossible) result.stepIndicatorCalls++
     const stepIndicators = autoPossible
-      ? await input.stepIndicatorsFor!(minuteBars(window), coordinatedTimeframes).catch(() => ({}))
+      ? await input.stepIndicatorsFor!(history, coordinatedTimeframes).catch(() => ({}))
       : {}
     const direct = computeDirectIndications({
       symbol: input.symbol,
-      candles: window,
+      candles: history,
       pricesOldestFirst,
       positionCostPct,
       indicationSettings: settings,
       stepIndicators,
       coordinatedTimeframes,
-      current,
-      now: current.timestamp,
+      current: bar,
+      now: closedAt,
     })
     result.steps++
     for (const row of [...direct.beforeSignal, ...direct.afterSignal]) {
@@ -318,14 +284,13 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
         type,
         direction,
         rule,
-        entryTime: current.timestamp,
-        entryPrice: current.close,
+        entryTime: closedAt,
+        entryPrice: bar.close,
         takeProfitPct: protection.takeProfitPct,
         stopLossPct: protection.stopLossPct,
       })
     }
   }
-  advanceExits(lastMs)
   result.openAtEnd = open.size
   return result
 }

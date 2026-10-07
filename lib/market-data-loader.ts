@@ -564,17 +564,12 @@ async function fetchRealMarketData(
 const RANGE_BACKFILL_MAX_MINUTES = 12_000
 
 /**
- * Real one-second candles for the part of a prehistoric range that is older
- * than the stored history. The loader keeps only the stage window (about 120
- * minutes of seconds), so a longer prehistoric range (8 h by default, up to
- * 50 h) used to be evaluated over that window only. The missing older part is
- * filled from the venue's REAL one-minute bars resolved to seconds — the same
- * resolution the 120-minute backfill uses. Nothing here is synthetic: a
- * paper/preview process (FORCE_SIMULATED), a synthetic stored series, forex
- * (M1 history) and a failed venue read all return [] and leave the range as
- * covered as it was.
+ * The venue's REAL one-minute bars of a prehistoric range [startMs, endMs),
+ * minute-aligned and oldest first. Nothing here is synthetic: a paper/preview
+ * process (FORCE_SIMULATED), a synthetic stored series, forex (M1 history)
+ * and a failed venue read all return [].
  */
-export async function loadRangeSecondsFromMinuteBars(
+export async function loadRangeMinuteBars(
   symbol: string,
   options: { connectionId: string; startMs: number; endMs: number; nowMs?: number },
 ): Promise<MarketDataCandle[]> {
@@ -603,7 +598,15 @@ export async function loadRangeSecondsFromMinuteBars(
       return connector ? connector.getOHLCV(canonicalSymbol, "1m", minutes) : null
     }, `Range backfill ${connectionId}:${canonicalSymbol}`)
     if (!Array.isArray(bars) || bars.length === 0) return []
-    return expandMinuteBarsToSeconds(bars as MarketDataCandle[], startMs, endMs)
+    const byMinute = new Map<number, MarketDataCandle>()
+    for (const bar of bars as MarketDataCandle[]) {
+      const minute = Math.floor(Number(bar?.timestamp) / 60_000) * 60_000
+      const values = [bar?.open, bar?.high, bar?.low, bar?.close].map(Number)
+      if (!Number.isFinite(minute) || minute < startMs || minute >= endMs) continue
+      if (!values.every((value) => Number.isFinite(value) && value > 0)) continue
+      byMinute.set(minute, { ...bar, timestamp: minute })
+    }
+    return [...byMinute.values()].sort((left, right) => left.timestamp - right.timestamp)
   } catch (error) {
     logRuntimeWarning(
       `market-data:${connectionId}:range-backfill`,
@@ -612,6 +615,23 @@ export async function loadRangeSecondsFromMinuteBars(
     )
     return []
   }
+}
+
+/**
+ * Real one-second candles for the part of a prehistoric range that is older
+ * than the stored history. The loader keeps only the stage window (about 120
+ * minutes of seconds), so a longer prehistoric range (8 h by default, up to
+ * 50 h) used to be evaluated over that window only. The missing older part is
+ * filled from the venue's REAL one-minute bars (loadRangeMinuteBars) resolved
+ * to seconds — the same resolution the 120-minute backfill uses.
+ */
+export async function loadRangeSecondsFromMinuteBars(
+  symbol: string,
+  options: { connectionId: string; startMs: number; endMs: number; nowMs?: number },
+): Promise<MarketDataCandle[]> {
+  const bars = await loadRangeMinuteBars(symbol, options)
+  if (bars.length === 0) return []
+  return expandMinuteBarsToSeconds(bars, Math.floor(Number(options.startMs) / 60_000) * 60_000, Number(options.endMs))
 }
 
 const DEFAULT_ENGINE_MARKET_SYMBOLS = [

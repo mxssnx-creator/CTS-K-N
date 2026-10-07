@@ -38,9 +38,10 @@ const __DBGC = (message: string): void => {
     console.warn(`[v0] [HistoricTiming] ${message}`)
   }
 }
-import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeSecondsFromMinuteBars } from "@/lib/market-data-loader"
+import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeMinuteBars } from "@/lib/market-data-loader"
+import { expandMinuteBarsToSeconds } from "@/lib/market-data-1s-backfill"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
-import { replayDirectIndicationTypes, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
+import { minuteBars, replayDirectIndicationTypes, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
 import { recordPosClosedBatch as recordTypeReplayCloses } from "@/lib/pos-history"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { setActiveProtectionFloors } from "@/lib/protection-floors"
@@ -943,18 +944,26 @@ export class ConfigSetProcessor {
         // seconds). A longer prehistoric range is completed from the venue's
         // real one-minute bars resolved to seconds, so a 24 h range is
         // evaluated over 24 h of data instead of the newest two hours.
+        let rangeMinuteBars: any[] = []
         if (marketType !== "forex") {
           // 90 minutes before the range warm the per-type measurement up, so
           // its first entry can be taken at the range start.
           const rangeStartMs = effectiveStart.getTime() - ENGINE_STAGE_HISTORY_MINUTES * 60_000
           const earliestMs = earliestCandleTimestamp(candles)
           const gapEndMs = Math.min(Number.isFinite(earliestMs) ? earliestMs : effectiveEnd.getTime(), effectiveEnd.getTime())
-          if (gapEndMs - rangeStartMs > PREHISTORIC_RANGE_BACKFILL_TOLERANCE_MS) {
-            const older = await loadRangeSecondsFromMinuteBars(symbol, {
+          const needsBackfill = gapEndMs - rangeStartMs > PREHISTORIC_RANGE_BACKFILL_TOLERANCE_MS
+          // One read of the venue's bars serves both the missing older
+          // seconds and the per-type measurement, which needs the bars' real
+          // highs and lows (interpolated seconds have neither).
+          if (needsBackfill || typeReplayContext) {
+            rangeMinuteBars = await loadRangeMinuteBars(symbol, {
               connectionId: this.connectionId,
               startMs: rangeStartMs,
-              endMs: gapEndMs,
+              endMs: effectiveEnd.getTime(),
             })
+          }
+          if (needsBackfill && rangeMinuteBars.length > 0) {
+            const older = expandMinuteBarsToSeconds(rangeMinuteBars, Math.floor(rangeStartMs / 60_000) * 60_000, gapEndMs)
             if (older.length > 0) candles = [...older, ...candles]
           }
         }
@@ -981,7 +990,6 @@ export class ConfigSetProcessor {
           const coveredFromMs = earliestCandleTimestamp(candles)
           if (Number.isFinite(coveredFromMs)) latestCoverageStartMs = Math.max(latestCoverageStartMs, coveredFromMs)
         }
-        const replayCandles = candles
 
         if (candles.length === 0) {
           console.log(`[v0] [ConfigSetProcessor] ⚠ no candles for ${symbol} — skipping`)
@@ -1155,7 +1163,19 @@ export class ConfigSetProcessor {
         // The Base gate reads (symbol × type × direction) buckets; they are
         // filled from what each type's Sets would have done over the range.
         if (combinedCandles.length > 0 && typeReplayContext) {
-          await this.measureIndicationTypes(symbol, replayCandles, {
+          // The venue's real bars; without them (forex, failed read) the
+          // stored candles resolved to minutes.
+          const replayBars = rangeMinuteBars.length > 0
+            ? rangeMinuteBars
+            : minuteBars(candlesSorted.map((candle: any) => ({
+                timestamp: candle._ts,
+                open: Number(candle.open),
+                high: Number(candle.high),
+                low: Number(candle.low),
+                close: Number(candle.close),
+                volume: Number(candle.volume) || 0,
+              })))
+          await this.measureIndicationTypes(symbol, replayBars, {
             rangeStartMs: effectiveStart.getTime(),
             rangeEndMs: effectiveEnd.getTime(),
             generation: historicGeneration,
@@ -1821,15 +1841,16 @@ export class ConfigSetProcessor {
   }
 
   /**
-   * Replay one symbol's range with every indication type's own entry rules
-   * and the Sets' protection, then book the closes into the
+   * Replay one symbol's range (its real one-minute bars) with every
+   * indication type's own entry rules and the Sets' protection, then book
+   * the closes into the
    * (symbol × type × direction) buckets the Base gate reads. Booked once per
    * historic generation: the claim is taken only after a complete
    * calculation, so a cancelled run neither loses nor doubles results.
    */
   private async measureIndicationTypes(
     symbol: string,
-    candles: any[],
+    bars: any[],
     options: {
       rangeStartMs: number
       rangeEndMs: number
@@ -1844,7 +1865,7 @@ export class ConfigSetProcessor {
     const startedAt = Date.now()
     const result = await replayDirectIndicationTypes({
       symbol,
-      candles,
+      bars,
       rangeStartMs: options.rangeStartMs,
       rangeEndMs: options.rangeEndMs,
       positionCostPct: context.positionCostPct,
