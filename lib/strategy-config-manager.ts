@@ -43,9 +43,9 @@ export interface PseudoPosition {
   direction?: "long" | "short"
   /**
    * Strategy family label of this prehistoric position (e.g. "MA_Cross").
-   * Mirrors `StrategyConfig.type`. It is NOT a Base indication type: the
-   * prehistoric write path records the row into the Base buckets listed in
-   * `HISTORIC_POS_HISTORY_INDICATION_TYPES` (direction/move/…).
+   * Mirrors `StrategyConfig.type`. It is NOT a Base indication type and is
+   * never booked into the Base buckets: those are measured per indication
+   * type by ConfigSetProcessor.measureIndicationTypes().
    */
   indication_type?: string
   /** UI percent used for the one-time close-cost deduction. */

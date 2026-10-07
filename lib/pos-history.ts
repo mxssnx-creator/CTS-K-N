@@ -240,27 +240,21 @@ export interface RecordPosClosedInput {
 }
 
 /**
- * Batched form of `recordPosClosed` for a completed Historic strategy pass.
+ * Batched form of `recordPosClosed` for a completed prehistoric measurement.
  *
- * Historic replay can produce hundreds of closed pseudo positions for one
- * strategy configuration. Queuing the single-position writer for each row
- * expands that into thousands of individual pipeline commands (two history
- * hashes plus two rolling lists per row). On the in-process Redis adapter all
- * of those commands execute on the same JavaScript event loop, which can
- * starve status/progression requests for many seconds. This input preserves
- * the same per-position rounding and rolling records, but aggregates the
- * commutative counters once per bucket and appends each ring in one operation.
+ * A prehistoric range can produce hundreds of closes for one symbol. Queuing
+ * the single-position writer for each row expands that into thousands of
+ * individual pipeline commands (two history hashes plus two rolling lists per
+ * row). On the in-process Redis adapter all of those commands execute on the
+ * same JavaScript event loop, which can starve status/progression requests for
+ * many seconds. This input preserves the same per-position rounding and
+ * rolling records, but aggregates the commutative counters once per bucket
+ * and appends each ring in one operation.
+ *
+ * Each row is booked into its own (symbol × type × direction) bucket only: it
+ * is evidence for the indication type that produced it, never for another.
  */
-export interface RecordPosClosedBatchEntry extends Omit<RecordPosClosedInput, "connectionId" | "pipeline"> {
-  /**
-   * Every (symbol × type × direction) bucket this one closed row is evidence
-   * for. Historic strategy simulation is indication-type agnostic, so it
-   * lists the Base indication types it measures; the row is written once per
-   * listed bucket and still counted exactly once in the overall rollup.
-   * Absent → the single `indicationType` bucket (live close semantics).
-   */
-  indicationTypes?: readonly string[]
-}
+export type RecordPosClosedBatchEntry = Omit<RecordPosClosedInput, "connectionId" | "pipeline">
 
 export interface RecordPosClosedBatchInput {
   connectionId: string
@@ -372,23 +366,17 @@ export function recordPosClosedBatch(input: RecordPosClosedBatchInput): void {
     const cleanDir = normalizeTradeDirection(entry.direction)
     if (!cleanDir) continue
     const cleanSymbol = entry.symbol || "unknown"
-    const cleanTypes = new Set(
-      entry.indicationTypes?.length
-        ? entry.indicationTypes.map((type) => type || "unknown")
-        : [entry.indicationType || "unknown"],
-    )
-    for (const cleanType of cleanTypes) {
-      const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
-      let bucket = perBucket.get(bucketKey)
-      if (!bucket) {
-        bucket = createPosHistoryBatchAggregate(
-          hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
-          listKey(connectionId, cleanSymbol, cleanType, cleanDir),
-        )
-        perBucket.set(bucketKey, bucket)
-      }
-      addClosedPositionToAggregate(bucket, entry)
+    const cleanType = entry.indicationType || "unknown"
+    const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
+    let bucket = perBucket.get(bucketKey)
+    if (!bucket) {
+      bucket = createPosHistoryBatchAggregate(
+        hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
+        listKey(connectionId, cleanSymbol, cleanType, cleanDir),
+      )
+      perBucket.set(bucketKey, bucket)
     }
+    addClosedPositionToAggregate(bucket, entry)
     addClosedPositionToAggregate(overall, entry)
   }
 
