@@ -2792,6 +2792,19 @@ export class TradeEngineManager {
           `Historic bootstrap incomplete: ${processingResult.symbolsProcessed}/${processingResult.symbolsTotal} symbols, ${processingResult.errors} error(s)`,
         )
       }
+      // A symbol without candles still counts as processed. When no symbol
+      // had any, nothing was evaluated (e.g. an exchange without a market-data
+      // connector) and the run must not be published as complete or move the
+      // engine to Live; the catch path records the failure and retries.
+      if (
+        processingResult.symbolsTotal > 0 &&
+        (Number(processingResult.candlesProcessed) <= 0 ||
+          Number(processingResult.symbolsWithoutData) >= processingResult.symbolsTotal)
+      ) {
+        throw new Error(
+          `Historic bootstrap loaded no market data: ${processingResult.symbolsWithoutData}/${processingResult.symbolsTotal} symbols without candles`,
+        )
+      }
       await logProgressionEvent(this.connectionId, "prehistoric_processed", processingResult.errors > 0 ? "warning" : "info", `Prehistoric complete: ${processingResult.indicationResults} indications, ${processingResult.strategyPositions} strategies`, {
         symbolsTotal: processingResult.symbolsTotal,
         symbolsProcessed: processingResult.symbolsProcessed,

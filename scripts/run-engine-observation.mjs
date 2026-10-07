@@ -36,7 +36,9 @@ const port = Number(process.env.OBS_PORT || 3102)
 const baseUrl = `http://127.0.0.1:${port}`
 const distDir = process.env.NEXT_DIST_DIR || ".next-prod"
 const outDir = path.resolve(process.env.OBS_OUT_DIR || `/tmp/cts-observation-${Date.now()}`)
-const connectionRequested = String(process.env.OBS_CONNECTION_ID || "").trim()
+// The paper default is the BingX public-data connection: picking "the first
+// connection" took an unordered Redis set member (mexc-x01, no connector).
+const connectionRequested = String(process.env.OBS_CONNECTION_ID || "bingx-x01").trim()
 const symbolCount = Math.max(1, Math.min(128, Number(process.env.OBS_SYMBOL_COUNT || 15)))
 const prehistoricHours = Math.max(1, Math.min(50, Number(process.env.OBS_PREHISTORIC_HOURS || 24)))
 const realtimeMs = Math.max(60_000, Number(process.env.OBS_REALTIME_MS || 60 * 60_000))
@@ -539,6 +541,8 @@ async function main() {
       bootstrapDoneAt = now
       event("prehistoric_complete", { afterMs: now - startedAt, prehistoric: compact?.prehistoric, marketData: await marketDataSources(connectionId) })
       writeFileSync(path.join(outDir, "stats-after-prehistoric.json"), JSON.stringify(stats.json))
+      // A run without market data evaluates nothing: stop instead of observing it for hours.
+      if (Number(stats.json?.historic?.candlesLoaded) <= 0) throw new Error(`${connectionId}: prehistoric phase complete with 0 candles (no market data)`)
     }
     if (compact?.phase && compact.phase !== lastPhase) {
       lastPhase = compact.phase

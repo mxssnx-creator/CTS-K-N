@@ -71,4 +71,13 @@ describe("runtime coverage: empty stages", () => {
     })
     expect(summary.findings.some((finding: any) => finding.severity === "error" && finding.message === "base stage evaluated 0 Sets")).toBe(true)
   })
+
+  test("a historic phase complete with 0 candles is an error (no market data)", async () => {
+    const summary = await coverage({
+      overview: { strategiesEvaluatedByStage: {}, stageSnapshots: {} },
+      stats: { historic: { isComplete: true, symbolsTotal: 15, candlesLoaded: 0 } },
+    })
+    expect(summary.findings.filter((finding: any) => finding.severity === "error").map((finding: any) => finding.message))
+      .toEqual(["historic phase complete with 0 candles loaded for 15 symbols (no market data)"])
+  })
 })

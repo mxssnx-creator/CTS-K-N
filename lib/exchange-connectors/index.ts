@@ -4,6 +4,7 @@
  * Handles API type normalization between perpetual/perpetual_futures variants
  */
 
+import { SUPPORTED_CONNECTOR_EXCHANGES } from "@/lib/supported-exchanges"
 import type { BaseExchangeConnector, ExchangeCredentials } from "./base-connector"
 import { EXCHANGE_API_TYPES } from "@/lib/connection-predefinitions"
 import { hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
@@ -175,7 +176,7 @@ export async function createExchangeConnector(
           // fall through to explicit unsupported error
         }
       }
-      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx, instaforex`)
+      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: ${SUPPORTED_CONNECTOR_EXCHANGES.join(", ")}`)
   }
 }
 

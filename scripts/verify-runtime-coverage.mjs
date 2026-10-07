@@ -138,6 +138,19 @@ async function main() {
     }
   }
 
+  // Market data: a historic phase marked complete for a configured basket
+  // must have loaded candles. Without them nothing was evaluated and every
+  // stage check above is silent (no stage snapshot is ever written), which
+  // let a run on an exchange without a connector pass with 0 errors.
+  if (stats) {
+    const historicComplete = pick(stats, "historic.isComplete") === true
+    const symbolsTotal = num(pick(stats, "historic.symbolsTotal"))
+    const candlesLoaded = num(pick(stats, "historic.candlesLoaded"))
+    if (historicComplete && symbolsTotal > 0 && Number.isFinite(candlesLoaded) && candlesLoaded <= 0) {
+      add("error", "progression-stats", `historic phase complete with 0 candles loaded for ${symbolsTotal} symbols (no market data)`)
+    }
+  }
+
   // Open positions: the position book, the live-position API and the overview
   // must agree on what is open for this connection.
   const openCounts = {}
