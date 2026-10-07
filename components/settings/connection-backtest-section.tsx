@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label"
 import { Progress } from "@/components/ui/progress"
 import { Slider } from "@/components/ui/slider"
-import { BACKTEST_HOURS, type BacktestExecution, type BacktestMode, type BacktestResult } from "@/lib/connection-backtest"
+import { BACKTEST_HOURS, type BacktestExecution, type BacktestMode, type BacktestResult } from "@/lib/connection-backtest-settings"
 import { ConnectionBacktestDialog, fmtPct, fmtPf, toneOf } from "./connection-backtest-dialog"
 
 interface JobStatus {
@@ -215,13 +215,13 @@ export function ConnectionBacktestSection({ connectionId, exchange, symbols = []
             {[
               ["Trades", String(s.trades), ""],
               ["Profit factor", fmtPf(s.profitFactor, s.wins), toneOf((s.profitFactor ?? (s.wins > 0 ? 2 : 0)) - 1)],
-              ["Net (sum %)", fmtPct(s.netPct), toneOf(s.netPct)],
-              ["Max drawdown", fmtPct(-s.maxDrawdownPct), s.maxDrawdownPct > 0 ? toneOf(-1) : ""],
-              ["Positive hours", `${s.profitableHours}/${s.activeHours}`, ""],
+              ["Net Σ %", fmtPct(s.netPct, 1), toneOf(s.netPct)],
+              ["Max DD", fmtPct(-s.maxDrawdownPct, 1), s.maxDrawdownPct > 0 ? toneOf(-1) : ""],
+              ["+ Hours", `${s.profitableHours}/${s.activeHours}`, ""],
             ].map(([label, value, tone]) => (
               <div key={label} className="rounded-md border px-2.5 py-2">
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-                <div className={`text-sm font-semibold tabular-nums ${tone}`}>{value}</div>
+                <div className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+                <div className={`whitespace-nowrap text-sm font-semibold tabular-nums ${tone}`}>{value}</div>
               </div>
             ))}
           </div>

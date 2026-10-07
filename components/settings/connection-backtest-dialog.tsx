@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import type { BacktestBook, BacktestHeatmap, BacktestResult, BacktestTrade } from "@/lib/connection-backtest"
+import type { BacktestBook, BacktestHeatmap, BacktestResult, BacktestTrade } from "@/lib/connection-backtest-settings"
 
 // ───────────────────────────── formatting ─────────────────────────────
 export const fmtPct = (value: number | null | undefined, digits = 2) =>
@@ -33,7 +33,7 @@ export const toneOf = (value: number | null | undefined) =>
 const pfTone = (book: Pick<BacktestBook, "profitFactor" | "wins" | "trades">) =>
   book.trades === 0 ? "" : toneOf((book.profitFactor ?? (book.wins > 0 ? 2 : 0)) - 1)
 const time = (ms: number) => new Date(ms).toLocaleString(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" })
-const hourLabel = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
+const hourLabel = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
 const RANGE_LABEL: Record<string, string> = { micro: "Micro (< 2×)", minimum: "Minimum (2–3×)", short: "Short (3–6×)", general: "General (6–12×)", long: "Long (> 12×)" }
 const PROFIT = "rgb(16 185 129)" // emerald-500
 const LOSS = "rgb(244 63 94)" // rose-500
@@ -41,8 +41,8 @@ const LOSS = "rgb(244 63 94)" // rose-500
 function Kpi({ label, value, tone = "", hint }: { label: string; value: string; tone?: string; hint?: string }) {
   return (
     <div className="rounded-lg border bg-card px-3 py-2.5" title={hint}>
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className={`mt-0.5 text-base font-semibold tabular-nums ${tone}`}>{value}</div>
+      <div className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={`mt-0.5 whitespace-nowrap text-base font-semibold tabular-nums ${tone}`}>{value}</div>
     </div>
   )
 }
@@ -62,6 +62,8 @@ function ChartCard({ title, children, height = 220, subtitle }: { title: string;
 const tooltipStyle = {
   contentStyle: { background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12, color: "hsl(var(--popover-foreground))" },
   labelStyle: { color: "hsl(var(--muted-foreground))" },
+  itemStyle: { color: "hsl(var(--popover-foreground))" },
+  cursor: { fill: "hsl(var(--muted))", fillOpacity: 0.35 },
 }
 
 function BookTable({ title, rows, labelOf = (key) => key }: { title: string; rows: BacktestBook[]; labelOf?: (key: string) => string }) {
@@ -69,7 +71,7 @@ function BookTable({ title, rows, labelOf = (key) => key }: { title: string; row
     <div className="rounded-lg border bg-card">
       <div className="border-b px-3 py-2 text-xs font-medium">{title}</div>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs tabular-nums">
+        <table className="w-full whitespace-nowrap text-xs tabular-nums">
           <thead className="text-muted-foreground">
             <tr>{["", "Trades", "Win rate", "PF", "Net (sum %)", "Avg / trade"].map((h, i) => <th key={i} className="px-3 py-1.5 text-right font-normal first:text-left">{h}</th>)}</tr>
           </thead>
@@ -230,7 +232,7 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
   const symbols = result.bySymbol.filter((row) => row.trades > 0)
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl h-[90dvh] flex flex-col p-0 gap-0" data-testid="connection-backtest-dialog">
+      <DialogContent className="max-w-6xl sm:max-w-6xl h-[90dvh] flex flex-col p-0 gap-0" data-testid="connection-backtest-dialog">
         <DialogHeader className="border-b px-5 py-3">
           <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
             Backtest statistics
@@ -257,12 +259,12 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
                   <Kpi label="Trades" value={String(s.trades)} />
                   <Kpi label="Profit factor" value={fmtPf(s.profitFactor, s.wins)} tone={pfTone(s)} />
-                  <Kpi label="Net (sum %)" value={fmtPct(s.netPct)} tone={toneOf(s.netPct)} />
+                  <Kpi label="Net Σ %" value={fmtPct(s.netPct)} tone={toneOf(s.netPct)} />
                   <Kpi label="Win rate" value={s.winRate === null ? "–" : `${(s.winRate * 100).toFixed(1)} %`} />
                   <Kpi label="Max drawdown" value={fmtPct(-s.maxDrawdownPct)} tone={s.maxDrawdownPct > 0 ? toneOf(-1) : ""} />
                   <Kpi label="Positive hours" value={`${s.profitableHours}/${s.activeHours}`} />
                   <Kpi label="Avg hold" value={s.avgHoldMinutes === null ? "–" : `${s.avgHoldMinutes.toFixed(0)} min`} />
-                  <Kpi label={result.execution === "maker" ? "Fill rate" : "Fees (sum %)"} value={result.execution === "maker" ? (s.fillRate === null ? "–" : `${(s.fillRate * 100).toFixed(0)} %`) : fmtPct(-s.feesPct)}
+                  <Kpi label={result.execution === "maker" ? "Fill rate" : "Fees Σ %"} value={result.execution === "maker" ? (s.fillRate === null ? "–" : `${(s.fillRate * 100).toFixed(0)} %`) : fmtPct(-s.feesPct)}
                     hint={result.execution === "maker" ? "Post-only entries filled by a trade-through within 3 minutes" : "Total round-trip fees and slippage"} />
                 </div>
                 {result.notes.length > 0 && (
@@ -293,7 +295,7 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                       <LineChart data={equity} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={hourLabel} tick={{ fontSize: 10 }} />
-                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}`} />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => Number(v).toFixed(0)} />
                         <Tooltip {...tooltipStyle} labelFormatter={(v) => time(Number(v))} formatter={(v: any) => [fmtPct(Number(v)), "Equity"]} />
                         <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="4 3" />
                         <Line type="monotone" dataKey="equityPct" stroke="hsl(var(--chart-2))" strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -305,7 +307,7 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                       <AreaChart data={equity} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                         <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={hourLabel} tick={{ fontSize: 10 }} />
-                        <YAxis tick={{ fontSize: 10 }} />
+                        <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => Number(v).toFixed(0)} />
                         <Tooltip {...tooltipStyle} labelFormatter={(v) => time(Number(v))} formatter={(v: any) => [fmtPct(Number(v)), "Drawdown"]} />
                         <Area type="stepAfter" dataKey="drawdownPct" stroke={LOSS} fill={LOSS} fillOpacity={0.18} strokeWidth={1.5} isAnimationActive={false} />
                       </AreaChart>
@@ -317,7 +319,7 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                     <BarChart data={hourly} margin={{ top: 4, right: 8, left: -8, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                       <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize: 10 }} />
+                      <YAxis tick={{ fontSize: 10 }} domain={[(min: number) => Math.min(0, min), (max: number) => Math.max(0, max)]} tickFormatter={(v) => Number(v).toFixed(0)} />
                       <Tooltip {...tooltipStyle} formatter={(v: any, name: any, item: any) => [`${fmtPct(Number(v))} · ${item?.payload?.trades ?? 0} trades`, "Net"]} />
                       <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
                       <Bar dataKey="netPct" radius={[3, 3, 0, 0]} isAnimationActive={false}>
@@ -334,7 +336,7 @@ export function ConnectionBacktestDialog({ open, onOpenChange, result }: Props) 
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={symbols} layout="vertical" margin={{ top: 4, right: 12, left: 8, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" className="stroke-muted" horizontal={false} />
-                      <XAxis type="number" tick={{ fontSize: 10 }} />
+                      <XAxis type="number" tick={{ fontSize: 10 }} domain={[(min: number) => Math.min(0, min), (max: number) => Math.max(0, max)]} tickFormatter={(v) => Number(v).toFixed(0)} />
                       <YAxis type="category" dataKey="key" width={84} tick={{ fontSize: 10 }} />
                       <Tooltip {...tooltipStyle} formatter={(v: any, _n: any, item: any) => [`${fmtPct(Number(v))} · PF ${fmtPf(item?.payload?.profitFactor, item?.payload?.wins)} · ${item?.payload?.trades} trades`, "Net"]} />
                       <ReferenceLine x={0} stroke="hsl(var(--muted-foreground))" />

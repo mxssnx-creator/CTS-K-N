@@ -43,4 +43,13 @@ describe("connection backtest UI", () => {
     expect(route).toContain("export async function GET")
     expect(route).toContain("export async function DELETE")
   })
+
+  test("client components import only the client-safe module (server modules broke the build)", () => {
+    for (const file of [section, stats]) {
+      expect(file).not.toMatch(/from "@\/lib\/connection-backtest"/)
+      expect(file).not.toMatch(/from "@\/lib\/connection-backtest-jobs"/)
+    }
+    const settings = source("lib/connection-backtest-settings.ts")
+    expect(settings.match(/^import (?!type )/gm)).toBeNull()
+  })
 })

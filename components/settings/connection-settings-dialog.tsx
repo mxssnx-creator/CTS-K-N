@@ -1207,7 +1207,7 @@ export function ConnectionSettingsDialog({
         onOpenChange(nextOpen)
       }}
     >
-      <DialogContent className="max-w-3xl h-[90dvh] max-h-[90dvh] overflow-hidden flex flex-col p-0 [&>button]:z-10">
+      <DialogContent className="max-w-3xl sm:max-w-3xl h-[90dvh] max-h-[90dvh] overflow-hidden flex flex-col p-0 [&>button]:z-10">
         {/* Header */}
         <DialogHeader className="px-5 pt-4 pb-3 border-b shrink-0">
           <div className="flex items-center gap-2">
