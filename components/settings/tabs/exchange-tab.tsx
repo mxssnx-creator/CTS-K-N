@@ -242,7 +242,7 @@ export function ExchangeTab({
                 <div className="flex items-center justify-between p-3 border rounded-lg">
                   <div>
                     <Label>Minimum Volume Enforcement</Label>
-                    <p className="text-xs text-muted-foreground">Require minimum trading volume for positions</p>
+                    <p className="text-xs text-muted-foreground">Size every live order at the smallest quantity the exchange executes (minimum quantity or notional on the quantity step); Block/DCA legs keep their ratio to it. Off: size from PositionCost and the volume factors.</p>
                   </div>
                   <Switch
                     checked={settings.min_volume_enforcement !== false}

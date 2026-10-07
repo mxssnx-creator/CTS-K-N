@@ -1088,7 +1088,8 @@ export default function SettingsPage() {
     // FIX: Ensure symbolOrderType default is applied
     symbolOrderType: initialSettings.symbolOrderType ?? "volatility_1h",
     // FIX: Ensure min_volume_enforcement default is applied
-    min_volume_enforcement: initialSettings.min_volume_enforcement ?? false, // Now defaults to false in initialSettings
+    // On by default, like the engine (lib/volume-calculator.ts minimumVolumeEnforced).
+    min_volume_enforcement: initialSettings.min_volume_enforcement ?? true,
     // Apply defaults for new indicator ranges
     rsiPeriodFrom: initialSettings.rsiPeriodFrom ?? 5,
     rsiPeriodTo: initialSettings.rsiPeriodTo ?? 20,

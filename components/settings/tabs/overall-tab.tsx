@@ -336,7 +336,7 @@ export function OverallTab({
                     <div>
                       <Label>Minimum Volume Enforcement</Label>
                       <p className="text-xs text-muted-foreground">
-                        Require minimum trading volume for positions
+                        Size every live order at the smallest quantity the exchange executes (minimum quantity or notional on the quantity step); Block/DCA legs keep their ratio to it. Off: size from PositionCost and the volume factors.
                       </p>
                     </div>
                     <Switch

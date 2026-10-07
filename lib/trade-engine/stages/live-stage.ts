@@ -297,7 +297,12 @@ function optionalBoundedInteger(value: unknown, max = 18): number | undefined {
 
 function normalizeLiveInstrumentRules(raw: Record<string, unknown> | null | undefined): LiveInstrumentRules {
   const source = raw || {}
-  const quantity = normalizeExchangeQuantityRules(source)
+  const contractQuantity = normalizeExchangeQuantityRules(source)
+  // A minimum the venue enforced in a 101400 rejection outranks the contract.
+  const observedMinimum = firstFinitePositive(source.minQuantityObserved)
+  const quantity = observedMinimum && observedMinimum > Number(contractQuantity.minQuantity || 0)
+    ? { ...contractQuantity, minQuantity: observedMinimum }
+    : contractQuantity
   const pricePrecision = optionalBoundedInteger(
     source.pricePrecision ?? source.price_precision,
   )
@@ -339,6 +344,26 @@ function bingXEnvironmentInfo(connector: any): { environment: string; baseUrl: s
       : null
   } catch {
     return null
+  }
+}
+
+/**
+ * A minimum quantity the venue enforced in a 101400 rejection. It is stored
+ * next to the contract rules (which the 15-minute contract refresh rewrites)
+ * as `minQuantityObserved`, and the cached rules of the symbol are dropped so
+ * the next entry already sizes with it.
+ */
+async function rememberVenueMinimumQuantity(symbol: string, connectionId: string, minQuantity: number): Promise<void> {
+  const normalizedSymbol = String(symbol || "").trim().toUpperCase().replace(/[-/_:]/g, "")
+  if (!normalizedSymbol || !(minQuantity > 0)) return
+  const client = getRedisClient() as any
+  await client.hset(tradingPairKey(normalizedSymbol, connectionId), {
+    minQuantityObserved: String(minQuantity),
+    minQuantityObservedAt: new Date().toISOString(),
+    minQuantityObservedSource: "101400_error_extraction",
+  }).catch(() => undefined)
+  for (const key of [...bingXInstrumentRulesCache.keys()]) {
+    if (key.endsWith(`|${normalizedSymbol}`)) bingXInstrumentRulesCache.delete(key)
   }
 }
 
@@ -390,7 +415,9 @@ async function loadExchangeQuantityRules(
         ...stored,
         quantityStep: fetched.quantityStep,
         quantityPrecision: fetched.quantityPrecision,
-        minQuantity: fetched.minQuantity,
+        // A minimum the venue enforced in a 101400 rejection outranks a
+        // smaller contract figure.
+        minQuantity: Math.max(fetched.minQuantity, firstFinitePositive(stored.minQuantityObserved) || 0),
         minNotionalUsdt: fetched.minNotionalUsdt,
         pricePrecision,
         priceTick: 10 ** -pricePrecision,
@@ -15389,7 +15416,9 @@ export async function executeLivePosition(
       const cappedNotional = positionNotionalUsd(livePosition, cappedQuantity, currentPrice)
       if (!(cappedQuantity > 0) || cappedNotional > maxExecutionNotionalUsd + 1e-8 || cappedQuantity < liveInstrumentRules.minQuantity) {
         livePosition.status = "error"
-        livePosition.statusReason = `Live entry refused: executable quantity exceeds the ${maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd.toFixed(2) : "configured"} USD exposure ceiling`
+        livePosition.statusReason = cappedQuantity > 0 && cappedQuantity < liveInstrumentRules.minQuantity
+          ? `Live entry refused: the venue minimum ${liveInstrumentRules.minQuantity} exceeds the ${maxExecutionNotionalUsd.toFixed(2)} USD exposure ceiling (venue_minimum_exceeds_ceiling)`
+          : `Live entry refused: executable quantity exceeds the ${maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd.toFixed(2) : "configured"} USD exposure ceiling`
         pushStep(livePosition, "volume_cap", false, livePosition.statusReason)
         await savePosition(livePosition)
         await recordExecutionPreflightFailure()
@@ -15417,7 +15446,9 @@ export async function executeLivePosition(
           const budgetQuantity = unitNotional > 0 && Number.isFinite(allowedNotional) ? roundQuantityDown(allowedNotional / unitNotional, liveInstrumentRules) : 0
           if (!(budgetQuantity > 0) || budgetQuantity < liveInstrumentRules.minQuantity) {
             livePosition.status = "error"
-            livePosition.statusReason = `Live entry refused: account stop-loss risk budget ${budgetPercent}% of ${balanceUsd.toFixed(2)} USD is used (open stop risk ${openRiskUsd.toFixed(2)} USD)`
+            livePosition.statusReason = budgetQuantity > 0 && budgetQuantity < liveInstrumentRules.minQuantity
+              ? `Live entry refused: the venue minimum ${liveInstrumentRules.minQuantity} exceeds the remaining account stop-loss risk budget (${budgetPercent}% of ${balanceUsd.toFixed(2)} USD, open stop risk ${openRiskUsd.toFixed(2)} USD) (venue_minimum_exceeds_ceiling)`
+              : `Live entry refused: account stop-loss risk budget ${budgetPercent}% of ${balanceUsd.toFixed(2)} USD is used (open stop risk ${openRiskUsd.toFixed(2)} USD)`
             pushStep(livePosition, "risk_budget", false, livePosition.statusReason)
             await savePosition(livePosition)
             await recordExecutionPreflightFailure()
@@ -16452,14 +16483,9 @@ export async function executeLivePosition(
               await savePosition(livePosition).catch(() => {})
               return livePosition
             }
-            const { setSettings } = await import("@/lib/redis-db")
-            
-            // Save the corrected minimum for future cycles
-            await setSettings(tradingPairKey(realPosition.symbol, connectionId), {
-              min_order_size: minQty,
-              updated_at: new Date().toISOString(),
-              source: "101400_error_extraction",
-            })
+            // Save the corrected minimum where the quantity rules and the
+            // volume calculator read it (setSettings would prefix the key).
+            await rememberVenueMinimumQuantity(realPosition.symbol, connectionId, minQty)
             
             console.warn(
               `${LOG_PREFIX} [101400 Correction] Detected minimum ${minQty} > current ${computedVolume.toFixed(8)} for ${realPosition.symbol}; retrying in same cycle`,
