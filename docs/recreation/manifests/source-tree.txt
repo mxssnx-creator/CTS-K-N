@@ -443,6 +443,7 @@ __tests__/unit/row-share-and-rotating-accounting.test.ts
 __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
 __tests__/unit/runtime-concurrency-profile.test.ts
+__tests__/unit/runtime-coverage-stages.test.ts
 __tests__/unit/runtime-log-throttle.test.ts
 __tests__/unit/runtime-maintenance.test.ts
 __tests__/unit/runtime-telemetry-compatibility.test.ts
@@ -561,6 +562,7 @@ __tests__/unit/transient-halt-short-ttl.test.ts
 __tests__/unit/trend-indication.test.ts
 __tests__/unit/trend-wiring.test.ts
 __tests__/unit/truthful-dispatch-reasons.test.ts
+__tests__/unit/type-measurement-rolling.test.ts
 __tests__/unit/ui-browser-review.test.ts
 __tests__/unit/unplaced-rows-not-exposure.test.ts
 __tests__/unit/unsubmitted-live-retention.test.ts
@@ -1285,6 +1287,9 @@ docs/reports/20260909-order-counter-fix/report.html
 docs/reports/20260909-order-counter-fix/summary.json
 docs/reports/20260913-sol-windows/protocol.json
 docs/reports/20260913-sol-windows/results.json
+docs/reports/20261007-control-4s/SHA256SUMS
+docs/reports/20261007-control-4s/report.html
+docs/reports/20261007-control-4s/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json
@@ -1795,6 +1800,7 @@ lib/trade-engine/state-machine.ts
 lib/trade-engine/strategy-processor.ts
 lib/trade-engine/symbol-selection-ownership.ts
 lib/trade-engine/trade-engine.tsx
+lib/trade-engine/type-measurement.ts
 lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts

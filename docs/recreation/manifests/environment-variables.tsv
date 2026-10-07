@@ -159,6 +159,7 @@ CTS_TEST_CAPTURE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment
 CTS_TEST_EXPECT_MODE	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_INSTALLER	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_TEST_REDIS_URL	test-or-operator-tool	yes	no	1	scripts/verify-live-config-loss.mjs
+CTS_TYPE_MEASUREMENT_REFRESH_MS	application-runtime	no	no	1	lib/trade-engine/type-measurement.ts
 CTS_USE_LOCAL_NEXT_BUILD	test-or-operator-tool	no	no	2	__tests__/unit/install-deployment-contract.test.ts,scripts/build-next-with-trace-retry.mjs
 CYCLE_DEADLINE_MS	application-runtime	no	no	1	lib/trade-engine/engine-manager.ts
 DASHBOARD_REFRESH_MS	application-runtime	no	no	1	ops/server-access-dashboard/server/access-dashboard.mjs
