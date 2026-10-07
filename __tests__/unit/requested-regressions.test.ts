@@ -2192,7 +2192,7 @@ describe("requested regression guardrails", () => {
     expect(globalReadyBlock).toContain("migrationsRan = false")
     expect(source).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(source).toContain('import("@/lib/redis-migrations")')
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 108")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 110")
     expect(source).toContain('client.get("_schema_version").catch(() => null)')
   })
 
@@ -3341,12 +3341,18 @@ describe("requested regression guardrails", () => {
     expect(bingx).toContain("tradeService.tradeOrder")
     expect(bingx).toContain('recordSdkFallback("placeStopOrder"')
     expect(factory).toContain('connectionLibrary: this.resolveExchangeName(connection) === "bingx" ? "sdk"')
-    expect(marketData).toContain("exchangeConnectorFactory.getOrCreateConnector(String(conn.id))")
+    // The stored connection's factory connector first; the credential-less
+    // public market-data connector only when production built none.
+    expect(marketData).toContain("const connector = await marketDataConnector(String(conn.id))")
+    expect(marketData).toContain("(await exchangeConnectorFactory.getOrCreateConnector(connectionId))\n    ?? (await exchangeConnectorFactory.getPublicMarketDataConnector(connectionId))")
     expect(engineManager).toContain('connectionId: this.connectionId')
     expect(connectionTests).toContain("exchangeConnectorFactory.getOrCreateConnector(connection.id)")
     expect(connectionTests).not.toContain("isTestnet: false, // Always mainnet")
     expect(liveStage).toContain("EXCHANGE_TIMEOUT_PLACE_STOP_MS    = 8_000")
-    expect(liveStage).toContain("const [slPlacement, tpPlacement] = await Promise.all")
+    // SL and TP are submitted together; a rejected stop may be re-placed once
+    // at the allowed price (lib/protection-allowed-range.ts) before ids are read.
+    expect(liveStage).toContain("const [initialSlPlacement, tpPlacement] = await Promise.all")
+    expect(liveStage).toContain("let slPlacement = initialSlPlacement")
     expect(liveStage).toContain("const slOrderId = slPlacement.orderId")
     expect(liveStage).toContain("const tpOrderId = tpPlacement.orderId")
     expect(migrations).toContain("066-bingx-sdk-fast-order-default")
@@ -4074,7 +4080,7 @@ describe("requested regression guardrails", () => {
     expect(migrations).toContain("RUNTIME_BOOTSTRAP_MARKER_TTL_SECONDS")
     expect(migrations).toContain("await releaseOwnedRedisLock(client, keys.baseLock, token)")
     expect(migrations).toContain("__v0_devBootGuardDone = false")
-    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 108")
+    expect(bootstrap).toContain("LATEST_REDIS_SCHEMA_VERSION = 110")
     expect(redisDb).toContain('hasSharedRuntimeMarker(getRedisClient(), "base")')
     expect(redisDb).toContain("ensureSharedVolatileStartupCleanup")
     expect(redisDb).toContain("markSharedRuntimeReady")

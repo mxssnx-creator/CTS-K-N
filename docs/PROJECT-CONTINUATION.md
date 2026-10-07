@@ -1,5 +1,65 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Continuation — 2026-10-07 ~23:00 UTC (Claude cloud session, branch `claude/zen-fermat-gswxt7`, draft PR #559)
+
+**Where:** cloud container checkout `/home/user/CTS-K-N`. The published state is the GitHub branch `claude/zen-fermat-gswxt7`; it is not merged and not deployed. No exchange writes happened (paper on public BingX data). Checkpoints were created with `scripts/create-checkpoint.sh` (container-local `/var/backups/cts-kn`).
+
+**Fixed, each with regression tests (see `.kilocode/rules/memory-bank/context.md` for the full list):**
+- **Live path:** minimum volume and the allowed SL range.
+- **Simulation vs. live:** coin-flip closes, pnl units, trend TP unit, Common look-ahead.
+- **Costs:** real round trip in simulated closes.
+- **RSI:** one Wilder implementation; live 1-minute aggregation.
+- **Stage audit:** measured PF through Main/Real/Live, the Main window, row-window minimum samples, no classic-PF fallback, the Axis previous window, Block per-leg booking, DDT averaging.
+- **Runtime:** unsupported-exchange QuickStart, no-market-data runs, the coverage error, and the Redis append Lua that lost ADL indication groups.
+- **New:** the Backtest section in the main connection settings dialog (default Base-gated).
+
+- **Stage processing (2026-10-07 ~22:45):**
+  - the Base funnel reports gate admissions instead of every emitted Set;
+  - Axis TP/SL use the same entries measured and executed;
+  - no second Block stop buffer.
+
+**Stage funnel (2026-10-07 ~23:30, binding):** processing / progressing / running count only gate-validated Sets (`docs/STAGE-FUNNEL-AND-PROCESSING.md`, `lib/stage-funnel-contract.*`), with a runtime guard, a verifier rule and tests. The prehistoric run leaves the Base gate with measured history:
+- a Set's own ring decides only once complete;
+- thin type buckets are backfilled up to 7 days;
+- the measurement status is visible in the stats API.
+
+The Micro/Minimum/Short/General/Long range classes are removed (operator decision). Operator direction: real edge first; no synthetic or gate-off runs.
+
+**Why the earlier PF 1.2–1.4 is gone (`scripts/pf-attribution.ts`):** the same 112,439 real trades (14 days, 15 symbols), with each fixed defect switched back on one at a time:
+
+| Variant | PF all | PF after Base gate |
+|---|---|---|
+| Corrected | 0.42 | 0.42 |
+| Old 0.10 % cost | 0.71 | 0.64 |
+| No cost at all | 0.97 | 0.86 |
+| Old "both touched = win" | 0.71 | 0.64 |
+| Old coin-flip closes | 1.91 | 3.04 |
+
+The earlier positive PF came from fabricated closes, plus generated prices in those runs. A real PF of 1.2–1.4 needs entries with a measured edge; costs, grading and gates cannot supply it.
+
+**Measured results (no positivity claim):**
+- Short-range, maker, indication-lab (50 symbols) and after-Base-gate studies found no configuration that is positive after costs on development data. Nothing was promoted, so the Sep 8–21 holdout is still unviewed.
+- **24 h × 12 symbols run:** stable. The same-window backtest gives PF 0.55 for all signals, 0.71 Base-gated market and 0.86 Base-gated maker.
+- **Reports:**
+  - `docs/reports/20261007-sim-vs-live/differences.md`
+  - `docs/reports/20261007-short-range-14d/report.html`
+  - `docs/reports/20261007-sim24h-12s/report.html`
+
+**Open:**
+1. The operator decides the strategy direction.
+2. Remaining audit items, documented in `context.md`:
+   - H4: needs a ratio source for signal performance.
+   - M2: hedge netting never cancels; enabling it changes order flow, so it needs an operator decision.
+   - M4: the Axis `cont` count is per symbol and direction, by the documented design; `last=0` is the baseline label.
+   - L1 (Block shared-volume multiplier dropped) and S1 (Main variant cache reused stale history): fixed.
+   - L5: the Real/Main thresholds are documented as minimum entry counts; unchanged.
+   - S2: not a defect; combined rows' members share their Base parent's history.
+   - L3: DCA is admitted through its Base-valid parent and the live loss gate; it has no measurement of its own.
+3. The X02 VST lifecycle and 6 h monitoring run.
+4. Migration 110 also moves X02's deliberate 1.3 at the next deploy.
+5. Deploy only a merged, green `main`.
+
+
 ## Final remote handoff — 2026-09-13 00:46 UTC
 
 This entry supersedes all earlier pending-release statements. Runtime release: merged PR348 `fd531f18badfcd3e9fee903571f38d56588ecf64`, exact checked application tree `d5413ac4cc96e93c96a13d5742ac61be37e6e9fd`. Canonical checkout `/workspace/CTS-K-N`; final handoff branch `codex/sol-remote-handoff-20260913` changes documentation/evidence only. Its later GitHub main commit does not require a second application reinstall: compare production files against fd531f18. Earlier local source commits68140439 and7f4978eb are preserved in their original branch; the connector-published tree matched exactly. PR348 and merged-main GitHub smoke passed; both corresponding CTS-K-N Vercel deployments reached READY. The unrelated CTS-V status is not claimed green.

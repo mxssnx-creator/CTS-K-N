@@ -146,7 +146,7 @@ export default function BaseStrategySettings({
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Floors for Main/Preset/Direct live stops (range 0.05–10 %, default 0.5 %). Tighter
+              Floors for Main/Preset/Direct live stops (range {PROTECTION_FLOOR_MIN_PCT}–{PROTECTION_FLOOR_MAX_PCT} %, default {DEFAULT_MIN_STOP_LOSS_PCT} %). Tighter
               stops and trailing distances are raised to the floor; wider ones are unchanged.
             </p>
           </div>
@@ -168,7 +168,7 @@ export default function BaseStrategySettings({
                 )}
               />
               <p className="text-xs text-muted-foreground">
-                Base Valid PF threshold (selectable range 0.80–2.30 in 0.02 steps; default 1.30).
+                Base Valid PF threshold (selectable range 0.80–2.30 in 0.02 steps; default {MAIN_TRADE_BASE_PF_RATIO_DEFAULT.toFixed(2)}).
               </p>
             </div>
           </div>

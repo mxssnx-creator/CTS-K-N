@@ -446,6 +446,70 @@ async function fetchExchangeHistory(
 }
 
 /**
+ * `view=statistics` from a complete results ledger: the full history of the
+ * connection's own filled real trades. The closed-position index behind the
+ * archive path is capped (5,000 ids) and its rows expire, so the Statistics
+ * page lost every older trade. Same response shape as the archive path.
+ */
+async function ledgerStatisticsResponse(
+  client: any,
+  connectionId: string,
+  ledger: NonNullable<Awaited<ReturnType<typeof readResultLedger>>>,
+): Promise<Response> {
+  const [connection, rawCached] = await Promise.all([
+    getConnection(connectionId),
+    readCachedExchangeHistory(client, connectionId),
+  ])
+  if (!connection) {
+    return NextResponse.json({ success: false, error: "Connection not found" }, { status: 404 })
+  }
+  const cached = compatibleExchangeHistory(rawCached, connection as Record<string, any>)
+  const history = tradeHistoryFromLedger(ledger)
+  const exchangeRows = (cached?.rows || []).filter((row) => row.environment === "exchange")
+  // Venue rows matching none of the own trades (pending ones included) are
+  // other actors' trades on a shared account: listed, never counted.
+  const unattributedRows = mergeTradeHistory(exchangeRows, history.rows as TradeHistoryRow[])
+    .filter((row) => !isAttributedTradeHistoryRow(row))
+  const attributedRows = history.settled as TradeHistoryRow[]
+  const rows = [...attributedRows, ...unattributedRows].sort((left, right) => right.closedAt - left.closedAt)
+  const nonResults = Object.values(ledger.funnel).reduce((sum, count) => sum + count, 0)
+  const analyticsNow = Date.now()
+  return NextResponse.json({
+    success: true,
+    connectionId,
+    mode: "exchange",
+    view: "statistics",
+    tupleVersion: 1,
+    historySource: "results-ledger",
+    rows: rows.map(toStatisticsHistoryTuple),
+    attributedRows: attributedRows.length,
+    analytics: buildLiveTradingAnalytics(attributedRows, analyticsNow),
+    unattributedExchange: {
+      rows: unattributedRows.length,
+      analytics: buildLiveTradingAnalytics(unattributedRows, analyticsNow),
+    },
+    archive: {
+      // Closed own trades of the ledger; settled ones are counted, pending
+      // ones are reported as unresolved, non-results as excluded.
+      indexed: history.rows.length,
+      uniqueIds: history.rows.length,
+      resolvedSnapshots: history.rows.length,
+      eligibleSnapshots: history.rows.length,
+      normalizedSnapshots: attributedRows.length,
+      excludedNonTradeSnapshots: nonResults,
+      unresolvedTradeSnapshots: history.pending,
+      normalizedLocalRows: attributedRows.length,
+      exchangeOverlays: exchangeRows.length,
+      returned: rows.length,
+      complete: history.pending === 0,
+      capturedAt: analyticsNow,
+    },
+  }, {
+    headers: { "Cache-Control": "no-store, max-age=0" },
+  })
+}
+
+/**
  * GET /api/trading/trade-history
  *   ?connection_id=...
  *   &mode=exchange|simulated
@@ -470,6 +534,12 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     if (view === "statistics") {
       await initRedis()
       const client = getRedisClient()
+      const statisticsLedger = mode === "exchange"
+        ? await readResultLedger(client, connectionId).catch(() => null)
+        : null
+      if (statisticsLedger && statisticsLedger.meta.complete) {
+        return ledgerStatisticsResponse(client, connectionId, statisticsLedger)
+      }
       const [connection, archive, rawCached] = await Promise.all([
         getConnection(connectionId),
         loadClosedPositionSnapshotArchive(client, connectionId),
@@ -540,6 +610,7 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
         mode,
         view: "statistics",
         tupleVersion: 1,
+        historySource: "position-archive",
         rows: rows.map(toStatisticsHistoryTuple),
         attributedRows: attributedRows.length,
         // The Statistics page must use the same complete local/venue-cache
@@ -701,7 +772,17 @@ async function buildTradeHistoryResponse(request: NextRequest): Promise<Response
     const historyRows: any[] = ledgerHistory
       ? ledgerHistory.rows
       : (scope === "all" ? mergedAll : mergedAll.filter(isAttributedTradeHistoryRow))
-    const rows = (ledgerHistory ? historyRows.slice(offset, offset + limit) : historyRows.slice(0, limit)) as any[]
+    // Page zero merges the venue overlay into the local index page, but
+    // nextOffset advances over the whole local page. A newest-first cut could
+    // drop local rows that then appeared on no page: order this page's local
+    // rows first (stable sort; there are at most `limit` of them) so only
+    // venue-only rows fall off the cut, then restore newest-first.
+    const rows = (ledgerHistory
+      ? historyRows.slice(offset, offset + limit)
+      : [...historyRows]
+          .sort((left, right) => Number(isAttributedTradeHistoryRow(right)) - Number(isAttributedTradeHistoryRow(left)))
+          .slice(0, limit)
+          .sort((left, right) => right.closedAt - left.closedAt)) as any[]
     const resolvedOwnRows = (ledgerHistory
       ? ledgerHistory.settled
       : rows.filter((row) => isAttributedTradeHistoryRow(row) && !(row as any).accountingPending)) as any[]

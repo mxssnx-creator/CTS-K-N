@@ -30,8 +30,8 @@ export function systemTrackingPrefix(connectionId: unknown): string {
  * "kn" + a 6-character hash of the system id (CTS_SYSTEM_ID, default
  * "cts-k-n") and the connection id.
  */
-export function systemOrderHash(connectionId: unknown): string {
-  const input = `${text(process.env.CTS_SYSTEM_ID) || "cts-k-n"}|${text(connectionId)}`
+export function systemOrderHash(connectionId: unknown, systemId: unknown = process.env.CTS_SYSTEM_ID): string {
+  const input = `${text(systemId) || "cts-k-n"}|${text(connectionId)}`
   let hash = 0x811c9dc5
   for (let i = 0; i < input.length; i++) {
     hash ^= input.charCodeAt(i)

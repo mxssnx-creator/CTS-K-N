@@ -23,6 +23,7 @@
  * stores only compact entries of filled real rows (X02: 1,287, X01: 313).
  */
 import { clearLedgerSkipSetCache, ledgerSkipSetKey } from "@/lib/results/skip-set"
+import { scanRedisKeys } from "@/lib/redis-scan"
 import { getLivePositionSource, isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
 import type { LivePositionLifetimeLane, LivePositionLifetimeSummary } from "@/lib/live-position-lifetime-summary"
@@ -69,7 +70,10 @@ export interface LedgerEntry {
   exit: number
   oid: string
   coid: string
+  /** The Base (parent) Set; kept for existing readers. */
   setKey: string
+  /** The exact Set the row executed (Row-Live/Block key); absent on entries written before 2026-10-06. */
+  exactSetKey?: string
 }
 
 export type RowClass =
@@ -141,6 +145,7 @@ export function toLedgerEntry(id: string, row: Record<string, any>): LedgerEntry
     oid: text(row.orderId),
     coid: text(row.closeOrderId),
     setKey: text(row.parentSetKey || row.setKey),
+    exactSetKey: text(row.setKey) || undefined,
   }
 }
 
@@ -173,7 +178,8 @@ export async function advanceResultsLedger(
   if (!locked) return done({ skipped: "another pass is running" })
   try {
     const prefix = `live_positions:${connectionId}:`
-    const keys: string[] = ((await client.keys(`${prefix}*`).catch(() => [])) || []).map(String)
+    // Paged SCAN instead of a keyspace-blocking KEYS on every cron run.
+    const keys: string[] = ((await scanRedisKeys(client, `${prefix}*`, { count: 1000 }).catch(() => [])) || []).map(String)
     if (keys.length === 0) {
       await client.hset(ledgerMetaKey(connectionId), { updatedAt: String(Date.now()), keys: "0", complete: "1" }).catch(() => 0)
       return done({ complete: true })
@@ -323,6 +329,12 @@ export interface ResultBook {
   short: { trades: number; net: number }
   under60s: number
   under5m: number
+  /**
+   * Settled results per UTC clock hour of their close: how many hours had
+   * closes, how many of them ended net positive / negative, the positive
+   * share in percent and the settled closes per active hour.
+   */
+  hours: { active: number; profitable: number; losing: number; profitableShare: number | null; closesPerActiveHour: number | null }
 }
 
 export function computeResultBook(entries: readonly LedgerEntry[], window: { since?: number; until?: number } = {}): ResultBook {
@@ -338,9 +350,14 @@ export function computeResultBook(entries: readonly LedgerEntry[], window: { sin
   let best: number | null = null, worst: number | null = null
   const longB = { trades: 0, net: 0 }, shortB = { trades: 0, net: 0 }
   let u60 = 0, u5 = 0
+  const netByHour = new Map<number, number>()
   for (const e of settled) {
     const p = e.pnl as number
     net += p; fees += e.fees
+    if (e.closed > 0) {
+      const hour = Math.floor(e.closed / 3_600_000)
+      netByHour.set(hour, (netByHour.get(hour) || 0) + p)
+    }
     if (p > 0) { wins++; gp += p } else if (p < 0) { losses++; gl -= p } else flat++
     best = best === null ? p : Math.max(best, p)
     worst = worst === null ? p : Math.min(worst, p)
@@ -349,6 +366,8 @@ export function computeResultBook(entries: readonly LedgerEntry[], window: { sin
     if (e.closed > 0 && e.opened > 0) { const d = e.closed - e.opened; if (d < 60_000) u60++; if (d < 300_000) u5++ }
   }
   const decisive = wins + losses
+  const hourlyNets = [...netByHour.values()]
+  const profitableHours = hourlyNets.filter((value) => value > 0).length
   return {
     executed: rows.length,
     open: rows.length - closed.length,
@@ -366,6 +385,13 @@ export function computeResultBook(entries: readonly LedgerEntry[], window: { sin
     expectancy: settled.length > 0 ? net / settled.length : null,
     volumeUsd: closed.reduce((s, e) => s + e.notional, 0),
     long: longB, short: shortB, under60s: u60, under5m: u5,
+    hours: {
+      active: hourlyNets.length,
+      profitable: profitableHours,
+      losing: hourlyNets.filter((value) => value < 0).length,
+      profitableShare: hourlyNets.length > 0 ? (profitableHours / hourlyNets.length) * 100 : null,
+      closesPerActiveHour: hourlyNets.length > 0 ? settled.filter((e) => e.closed > 0).length / hourlyNets.length : null,
+    },
   }
 }
 

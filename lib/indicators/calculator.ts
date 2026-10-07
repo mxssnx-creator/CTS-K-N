@@ -6,6 +6,7 @@
  * Supports: RSI, MACD, Bollinger Bands, EMA, ATR, Momentum, Divergence
  */
 
+import { latestWilderRsi } from "@/lib/wilder-rsi"
 import { getRedisClient } from "@/lib/redis-db"
 // shim: existing code uses redisDb.set/get; map to InlineLocalRedis instance.
 const redisDb = {
@@ -38,26 +39,7 @@ export class IndicatorCalculator {
    * Calculate RSI (Relative Strength Index)
    */
   calculateRSI(prices: number[], period: number = 14): number {
-    if (prices.length < period + 1) return 50 // Neutral if not enough data
-
-    let gainSum = 0
-    let lossSum = 0
-
-    for (let i = prices.length - period; i < prices.length; i++) {
-      const change = prices[i] - prices[i - 1]
-      if (change > 0) gainSum += change
-      else lossSum += Math.abs(change)
-    }
-
-    const avgGain = gainSum / period
-    const avgLoss = lossSum / period
-
-    if (avgLoss === 0) return avgGain === 0 ? 50 : 100
-
-    const rs = avgGain / avgLoss
-    const rsi = 100 - (100 / (1 + rs))
-
-    return Math.round(rsi * 100) / 100
+    return Math.round(latestWilderRsi(prices, period) * 100) / 100
   }
 
   /**

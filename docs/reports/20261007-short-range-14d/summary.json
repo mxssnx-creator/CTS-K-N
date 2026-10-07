@@ -1,0 +1,40 @@
+{
+  "generatedAt": "2026-10-07T19:04:58.994Z",
+  "revision": "dda5151",
+  "window": {
+    "firstDay": "2026-09-22",
+    "days": 14,
+    "devDays": "2026-09-22 … 2026-10-01",
+    "holdoutDays": "2026-10-02 … 2026-10-05"
+  },
+  "symbols": [
+    "ADAUSDT",
+    "ATOMUSDT",
+    "AVAXUSDT",
+    "BCHUSDT",
+    "BNBUSDT",
+    "BTCUSDT",
+    "DOGEUSDT",
+    "DOTUSDT",
+    "ETHUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "NEARUSDT",
+    "SOLUSDT",
+    "UNIUSDT",
+    "XRPUSDT"
+  ],
+  "bars": 302400,
+  "signals": 988212,
+  "gaps": {},
+  "configurations": 648,
+  "rows": 24624,
+  "developmentCandidates": 0,
+  "selection": {
+    "minDevTrades": 300,
+    "rule": "dev PF > 1 at 0.10 % and at 0.15 % cost; ranked by dev PF at 0.15 %",
+    "devCandidates": 0
+  },
+  "makerOnlyCandidates": 40,
+  "verdict": "No configuration is positive after costs on the development window; nothing was evaluated on the holdout or enabled."
+}

@@ -69,6 +69,7 @@ import {
   validateProtectionFloorInput,
 } from "@/lib/protection-floors"
 import { liveConfigLossPolicy, normalizeLiveConfigLossWindow } from "@/lib/live-config-loss-policy"
+import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES, normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -175,6 +176,9 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
   if (normalized.liveConfigLossWindow !== undefined) {
     normalized.liveConfigLossWindow = normalizeLiveConfigLossWindow(normalized.liveConfigLossWindow)
   }
+  if (normalized.liveOutcomeMinCloses !== undefined) {
+    normalized.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(normalized.liveOutcomeMinCloses)
+  }
   if (normalized.liveConfigAutoDeactivateEnabled !== undefined) {
     normalized.liveConfigAutoDeactivateEnabled = liveConfigLossPolicy(normalized).enabled
   }
@@ -257,6 +261,7 @@ function getDefaultSettings(): Record<string, any> {
     overall_control_orders_only: false,
     liveConfigAutoDeactivateEnabled: true,
     liveConfigLossWindow: 12,
+    liveOutcomeMinCloses: DEFAULT_LIVE_OUTCOME_MIN_CLOSES,
     ...flattenSpecialSettings(DEFAULT_SPECIAL_STRATEGY_SETTINGS),
     ...defaultStrategyIndicationVariantSettings(),
     mainEngineIntervalMs: 700,

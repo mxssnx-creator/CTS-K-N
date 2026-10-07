@@ -13,19 +13,21 @@ describe("net position-cost result contract", () => {
     expect(calculateSignedResultR(100, 99.8, "short", 0.1)).toBeCloseTo(1, 10)
     const close = calculatePseudoClosePnl({ entryPrice: 100, currentPrice: 100.2, quantity: 1, side: "long" })
     expect(close.grossPnl).toBeCloseTo(0.2, 10)
-    expect(close.positionCost).toBeCloseTo(0.1, 10)
-    expect(close.netPnl).toBeCloseTo(0.1, 10)
+    // A pseudo close pays the real round trip (0.26 %), not the 0.10 % PositionCost.
+    expect(close.positionCost).toBeCloseTo(0.26, 10)
+    expect(close.netPnl).toBeCloseTo(-0.06, 10)
+    expect(close.positionCostPct).toBeCloseTo(0.1, 10)
   })
 
-  test("uses the stored per-position cost instead of silently reverting to 0.1%", () => {
+  test("uses a stored per-position cost above the round trip instead of silently reverting", () => {
     const close = calculatePseudoClosePnl({
       entryPrice: 100,
       currentPrice: 100.2,
       quantity: 1,
       side: "long",
-      positionCostPct: 0.2,
+      positionCostPct: 0.3,
     })
-    expect(close.positionCost).toBeCloseTo(0.2, 10)
-    expect(close.netPnl).toBeCloseTo(0, 10)
+    expect(close.positionCost).toBeCloseTo(0.3, 10)
+    expect(close.netPnl).toBeCloseTo(-0.1, 10)
   })
 })

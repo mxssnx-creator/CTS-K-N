@@ -4,6 +4,7 @@
  * Handles API type normalization between perpetual/perpetual_futures variants
  */
 
+import { SUPPORTED_CONNECTOR_EXCHANGES } from "@/lib/supported-exchanges"
 import type { BaseExchangeConnector, ExchangeCredentials } from "./base-connector"
 import { EXCHANGE_API_TYPES } from "@/lib/connection-predefinitions"
 import { hasUsableLiveCredentials, isForcedSimulation } from "@/lib/real-trade-gates"
@@ -12,6 +13,12 @@ export interface ExchangeConnectorCreationOptions {
   /** A caller that already enforced an exact connection allow-list may bypass
    * global paper mode only for authenticated BingX Prod-VST virtual funds. */
   allowForcedSimulationForAuthorizedVst?: boolean
+  /**
+   * Build the venue connector without credentials for PUBLIC market data
+   * (klines, recent trades) only. Never used for orders: see
+   * ExchangeConnectorFactory.getPublicMarketDataConnector.
+   */
+  publicMarketDataOnly?: boolean
 }
 
 // Perpetual-type equivalents - these all mean the same thing across exchanges
@@ -98,7 +105,10 @@ export async function createExchangeConnector(
   // InstaForex's supported HTTP surface is intentionally read-only. A
   // quote-only or account-read connector must not be replaced with a paper
   // connector merely because it has no crypto-style API secret.
-  const shouldUseSim = forceSim || (!isInstaForex && !hasRealCredentials && (!isProduction || allowProdSim))
+  // A public-data connector is requested only when the venue connector could
+  // not be built for want of credentials; it reads public endpoints only.
+  const publicMarketDataOnly = options.publicMarketDataOnly === true && !hasRealCredentials && !isInstaForex
+  const shouldUseSim = forceSim || (!publicMarketDataOnly && !isInstaForex && !hasRealCredentials && (!isProduction || allowProdSim))
   if (shouldUseSim) {
     try {
       const { SimulatedConnector } = await import("./simulated-connector")
@@ -111,7 +121,7 @@ export async function createExchangeConnector(
       )
     }
   }
-  if (!hasRealCredentials && !isInstaForex) {
+  if (!hasRealCredentials && !isInstaForex && !publicMarketDataOnly) {
     throw new Error(
       `Valid ${exchange} credentials are required because production simulation is not enabled`,
     )
@@ -166,7 +176,7 @@ export async function createExchangeConnector(
           // fall through to explicit unsupported error
         }
       }
-      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: bybit, bingx, pionex, orangex, binance, okx, instaforex`)
+      throw new Error(`Unsupported exchange: ${exchange}. Supported exchanges: ${SUPPORTED_CONNECTOR_EXCHANGES.join(", ")}`)
   }
 }
 

@@ -1,3 +1,4 @@
+import { wilderRsiSeries } from "@/lib/wilder-rsi"
 import type { CommonIndicatorType } from "@/lib/common-indicator-config"
 
 export type TechnicalDirection = "long" | "short" | "neutral"
@@ -124,10 +125,15 @@ export function resampleTechnicalCandles(
 ): TechnicalCandle[] {
   const candles = normalizeTechnicalCandles(rawCandles)
   const timeframeMinutes = Math.max(1, Math.min(60, Math.round(timeframeMinutesInput)))
-  if (timeframeMinutes === 1 || candles.length <= 1) return candles
+  if (candles.length <= 1) return candles
 
   const durationMs = timeframeMinutes * 60_000
   const hasWallClockTimestamps = candles.every((candle) => candle.timestamp > 10_000_000_000)
+  // "1m" means one-minute bars. Live passes one-second candles (the stage
+  // history), which used to go through unchanged — RSI(14) on "1m" was then
+  // RSI over 14 seconds while the replay computed it over 14 minutes. Only
+  // index-ordered input without wall-clock time is taken as already 1 m.
+  if (timeframeMinutes === 1 && !hasWallClockTimestamps) return candles
   const groups = new Map<number, TechnicalCandle[]>()
   candles.forEach((candle, index) => {
     const bucket = hasWallClockTimestamps
@@ -173,29 +179,8 @@ export function ema(values: number[], periodInput: number): number[] {
 }
 
 export function rsi(candles: TechnicalCandle[], periodInput: number): number[] {
-  const period = Math.max(2, Math.round(periodInput))
-  const result = new Array<number>(candles.length).fill(50)
-  if (candles.length <= period) return result
-  let averageGain = 0
-  let averageLoss = 0
-  for (let index = 1; index <= period; index++) {
-    const change = candles[index].close - candles[index - 1].close
-    if (change > 0) averageGain += change
-    else averageLoss -= change
-  }
-  averageGain /= period
-  averageLoss /= period
-  const current = () => averageLoss === 0
-    ? averageGain > 0 ? 100 : 50
-    : 100 - 100 / (1 + averageGain / averageLoss)
-  result[period] = current()
-  for (let index = period + 1; index < candles.length; index++) {
-    const change = candles[index].close - candles[index - 1].close
-    averageGain = (averageGain * (period - 1) + Math.max(0, change)) / period
-    averageLoss = (averageLoss * (period - 1) + Math.max(0, -change)) / period
-    result[index] = current()
-  }
-  return result
+  // Neutral 50 until the series can seed (lib/wilder-rsi.ts).
+  return wilderRsiSeries(candles.map((candle) => candle.close), periodInput).map((value) => Number.isFinite(value) ? value : 50)
 }
 
 function trueRange(candles: TechnicalCandle[], index: number): number {

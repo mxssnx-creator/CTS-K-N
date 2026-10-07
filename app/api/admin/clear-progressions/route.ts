@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { initRedis, getRedisClient, getAllConnections, protectedRedisKeyPrefixes } from "@/lib/redis-db"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { SystemLogger } from "@/lib/system-logger"
 import { allocateStateSwitchVersion } from "@/lib/engine-refresh-queue"
@@ -29,14 +29,16 @@ export const dynamic = "force-dynamic"
  *   • STOPS every running engine via the coordinator so no producer
  *     can race the deletion (otherwise a tick mid-flight could re-
  *     create the keys we just deleted).
- *   • DELETES all runtime keys: progression logs, set caches, indication
- *     and strategy snapshots, tracking entries, position runtime data,
- *     engine state/metrics, cycle counters, variant fingerprint cache,
- *     and per-connection trade history.
+ *   • DELETES all runtime keys: each connection's progression hashes and
+ *     logs, set caches, indication and strategy snapshots, tracking
+ *     entries, engine state/metrics, cycle counters and the variant
+ *     fingerprint cache.
  *   • PRESERVES: connection records (`connection:*`), settings
  *     (`settings:*`, `app_settings:*`), migration markers, strategy
- *     coordination framework (axis_pos_acc, real_pi_acc, progression
- *     metadata, strategy_count), and position history structure.
+ *     coordination framework (axis_pos_acc, real_pi_acc, global progression
+ *     metadata, strategy_count), position history structure, the real
+ *     trading records (live position rows, their indexes and the results
+ *     ledger) and keys of co-located projects (protectedRedisKeyPrefixes).
  *
  * The coordination framework is preserved so new strategy progression
  * runs can start fresh without rebuilding the infrastructure. All
@@ -101,7 +103,9 @@ const PROTECTED_PREFIXES = [
   "strategy_active_set_keys:", // Active exact Set listing index
   "strategy_closed_set_keys:", // Closed exact Set listing index
   "strategy_ledger_totals:", // O(1) exact/axis/active/closed totals
-  "progression:",         // Progression metadata (coordination framework)
+  // Global progression metadata (coordination framework). Each connection's
+  // own progression hashes and logs are cleared explicitly below.
+  "progression:",
   "strategy_count:",      // Strategy count tracking (coordination framework)
   "pi_history:",          // Position history structure (coordination framework - base structure only, data will be cleared separately)
   // ── Live positions — MUST survive a DB clear ──────────────────────
@@ -112,7 +116,23 @@ const PROTECTED_PREFIXES = [
   // Keeping them means a fresh engine start finds and tracks them.
   "live:position:",       // Per-position JSON store (live:position:{id})
   "live:positions:",      // Open/closed index LISTs (live:positions:{connId}, live:positions:{connId}:closed)
+  // The authoritative position rows those indexes point at. Deleting them
+  // while the indexes survived left the open/closed lists pointing at
+  // missing rows, and real trading records must outlive a progression reset.
+  "live_positions:",      // Durable position hashes (live_positions:{connId}:{id})
+  "results:ledger:",      // Results ledger: complete trade history and its indexes
+  // Exchange-only Set results (lib/live-set-outcomes.ts): settled real closes
+  // the coordinator judges live Sets by — trading records, not runtime state.
+  "strategy_set_live_ring:",
+  "strategy_set_live_close_ids:",
+  "strategy_set_live_closed_counts:",
 ] as const
+
+// Keys of co-located projects on the same Redis DB (cts-ga:, cts-g:; see
+// protectedRedisKeyPrefixes) are never CTS-K-N runtime state.
+function protectedPrefixes(): string[] {
+  return [...PROTECTED_PREFIXES, ...protectedRedisKeyPrefixes()]
+}
 
 // FORCE-CLEAR: prefixes that LOOK like they're protected but are pure
 // runtime caches that must be wiped on reset. Add here only if the
@@ -123,12 +143,12 @@ const FORCE_CLEAR_PREFIXES = [
   "connection:rate_limit:",        // Rate-limit tracker (5-min window)
 ] as const
 
-function isProtected(key: string): boolean {
+function isProtected(key: string, prefixes: readonly string[]): boolean {
   // Force-clear overrides protection.
   for (const fc of FORCE_CLEAR_PREFIXES) {
     if (key.startsWith(fc)) return false
   }
-  for (const prefix of PROTECTED_PREFIXES) {
+  for (const prefix of prefixes) {
     if (key.startsWith(prefix)) return true
   }
   return false
@@ -258,6 +278,29 @@ export async function POST(request: Request) {
     let totalDeleted = 0
     let protectedSkippedCount = 0
     const removed: Record<string, number> = {}
+    const keepPrefixes = protectedPrefixes()
+
+    // Each connection's progression hashes (legacy progression:{id} and the
+    // engine-scoped progression:{id}:{engine}), logs and session history are
+    // runtime state although `progression:` stays protected. Keeping them
+    // left high cycle counters next to an empty overview after a reset.
+    const progressionKeys = new Set<string>()
+    for (const connection of await getAllConnections().catch(() => [] as any[])) {
+      const id = String(connection?.id || "").trim()
+      if (!id) continue
+      progressionKeys.add(`progression:${id}`)
+      for (const key of await scanRedisKeys(client, `progression:${id}:*`, { count: 250 }).catch(() => [] as string[])) {
+        progressionKeys.add(key)
+      }
+    }
+    let progressionKeysCleared = 0
+    for (const key of progressionKeys) {
+      progressionKeysCleared += Number(await client.del(key).catch(() => 0)) || 0
+    }
+    if (progressionKeysCleared > 0) {
+      totalDeleted += progressionKeysCleared
+      removed["progression:*"] = progressionKeysCleared
+    }
 
     // Use `flushRuntimeKeys` on the InlineLocalRedis instance directly
     // when available (it lives on the same global singleton). For any
@@ -265,10 +308,10 @@ export async function POST(request: Request) {
     // DEL path.
     if (typeof (client as any).flushRuntimeKeys === "function") {
       const result = await (client as any).flushRuntimeKeys(
-        PROTECTED_PREFIXES,
+        keepPrefixes,
         FORCE_CLEAR_PREFIXES,
       ) as { deleted: number; protected: number; buckets: Record<string, number> }
-      totalDeleted = result.deleted
+      totalDeleted += result.deleted
       protectedSkippedCount = result.protected
       // Use the bucket breakdown returned from flushRuntimeKeys — it was
       // built BEFORE deletion so it accurately reflects what was removed
@@ -281,7 +324,7 @@ export async function POST(request: Request) {
       // Fallback for external Redis adapters: scan BEFORE deletion so the
       // bucket summary is accurate, then chunked DEL.
       const allKeys = await scanRedisKeys(client, "*", { count: 500 }).catch(() => [] as string[])
-      const safeKeys = allKeys.filter((k) => typeof k === "string" && !isProtected(k))
+      const safeKeys = allKeys.filter((k) => typeof k === "string" && !isProtected(k, keepPrefixes))
       protectedSkippedCount = allKeys.length - safeKeys.length
       // Build bucket summary from keys TO DELETE (before deletion).
       for (const k of safeKeys) {
@@ -414,6 +457,7 @@ export async function POST(request: Request) {
       totalRemoved: totalDeleted,
       removed,
       protectedSkipped: protectedSkippedCount,
+      progressionKeysCleared,
       startingKeyCount,
       endingKeyCount,
       engineStopError,

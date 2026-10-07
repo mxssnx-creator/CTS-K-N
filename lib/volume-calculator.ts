@@ -208,6 +208,13 @@ interface VolumeCalculationParams {
    * the connection-aware async wrapper; pure callers remain unchanged.
    */
   minimumNotionalCeilingAllowanceUsd?: number
+  /**
+   * Minimum volume enforcement: size the order at exactly the smallest
+   * executable quantity (exchange minimum quantity / minimum notional on the
+   * quantity step), scaled by the variant multiplier so Block/DCA legs keep
+   * their ratio. Ceilings still apply.
+   */
+  minimumVolumeOnly?: boolean
 }
 
 /**
@@ -282,6 +289,17 @@ export interface VolumeCalculationResult {
   liveMultiplierCapped?: boolean
 }
 
+
+/**
+ * Settings → "Minimum Volume Enforcement" (`min_volume_enforcement`,
+ * connection overlay over app settings): on by default, every live order is
+ * sized at the venue's smallest executable quantity.
+ */
+export function minimumVolumeEnforced(settings: Record<string, unknown> | null | undefined): boolean {
+  const raw = settings?.min_volume_enforcement ?? settings?.minVolumeEnforcement
+  if (raw === undefined || raw === null || raw === "") return true
+  return !(raw === false || ["false", "0", "off", "no"].includes(String(raw).trim().toLowerCase()))
+}
 
 export class VolumeCalculator {
   /**
@@ -454,6 +472,7 @@ export class VolumeCalculator {
       sizeMultiplier,
       allowUnboundedVariantMultiplier = false,
       minimumNotionalCeilingAllowanceUsd,
+      minimumVolumeOnly = false,
     } = params
 
     // Symbol inference is only a compatibility fallback for callers that
@@ -718,6 +737,17 @@ export class VolumeCalculator {
       return { final: safeRaw, adjusted: false }
     }
 
+    // Minimum volume enforcement: the smallest executable order, scaled by
+    // the variant multiplier so a Block/DCA leg keeps its ratio to the base.
+    const minimumVolumeTarget = (variantScale = 1): { final: number; adjusted: boolean; reason?: string } => {
+      const scale = Number.isFinite(variantScale) && variantScale > 0 ? variantScale : 1
+      return {
+        final: effectiveMin * scale,
+        adjusted: true,
+        reason: `minimum volume enforcement: smallest executable order${scale !== 1 ? ` x${scale.toFixed(2)} variant` : ""}`,
+      }
+    }
+
     if (resolvedPositionCostFraction > 0) {
       // ── positions_average + engine factor wired into positionCost ─────
       //
@@ -821,11 +851,14 @@ export class VolumeCalculator {
       const executionVolume = currentPrice > 0 && forexConversionAvailable
         ? executionNotional / (isForex ? forexNotionalPerLot : currentPrice)
         : 0
-      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(executionVolume, variantMult)
+      const minimumOnly = minimumVolumeOnly && effectiveMin > 0
+      const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = minimumOnly
+        ? minimumVolumeTarget(variantMult)
+        : clampUp(executionVolume, variantMult)
       const executable = maxExecutionNotionalUsd
         ? executableQuantityAtMost(clampedFinal, maxExecutionNotionalUsd)
         : executableQuantity(clampedFinal)
-      const capAdjusted = Boolean(maxExecutionNotionalUsd && positionSizeUsd > maxExecutionNotionalUsd)
+      const capAdjusted = Boolean(!minimumOnly && maxExecutionNotionalUsd && positionSizeUsd > maxExecutionNotionalUsd)
       const final = executable.quantity
       const adjusted = clampedAdjusted || executable.adjusted || capAdjusted
       const reason = [clampReason, executable.reason].filter(Boolean).join("; ") || undefined
@@ -932,11 +965,14 @@ export class VolumeCalculator {
     const executionVolume = currentPrice > 0 && forexConversionAvailable
       ? executionNotional / (isForex ? forexNotionalPerLot : currentPrice)
       : 0
-    const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = clampUp(executionVolume)
+    const riskMinimumOnly = minimumVolumeOnly && effectiveMin > 0
+    const { final: clampedFinal, adjusted: clampedAdjusted, reason: clampReason } = riskMinimumOnly
+      ? minimumVolumeTarget(riskVariantMultiplier)
+      : clampUp(executionVolume)
     const executable = maxExecutionNotionalUsd
       ? executableQuantityAtMost(clampedFinal, maxExecutionNotionalUsd)
       : executableQuantity(clampedFinal)
-    const capAdjusted = Boolean(maxExecutionNotionalUsd && rawExecutionNotional > maxExecutionNotionalUsd)
+    const capAdjusted = Boolean(!riskMinimumOnly && maxExecutionNotionalUsd && rawExecutionNotional > maxExecutionNotionalUsd)
     const final = executable.quantity
     const adjusted = clampedAdjusted || executable.adjusted || capAdjusted
     const reason = [clampReason, executable.reason].filter(Boolean).join("; ") || undefined
@@ -1293,9 +1329,19 @@ export class VolumeCalculator {
       let tradingPair = await getRedisClient()
         .hgetall(tradingPairKey(symbol, connectionId))
         .catch(() => ({} as Record<string, unknown>))
-      const exchangeMinVolume = tradingPair?.min_order_size
-        ? parseFloat(String(tradingPair.min_order_size))
-        : undefined
+      // loadExchangeQuantityRules (live stage) stores the venue contract as
+      // camelCase `minQuantity`; older writers used `min_order_size`.
+      // A minimum the venue enforced in a 101400 rejection (`minQuantityObserved`)
+      // outranks a smaller contract figure.
+      const positiveOrZero = (value: unknown) => {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+      }
+      const storedMinQuantity = Math.max(
+        positiveOrZero(tradingPair?.minQuantity ?? tradingPair?.min_order_size),
+        positiveOrZero(tradingPair?.minQuantityObserved),
+      )
+      const exchangeMinVolume = storedMinQuantity > 0 ? storedMinQuantity : undefined
 
       // ── Resolve engine factor IFF caller asked for it ──────────────
       //
@@ -1391,6 +1437,8 @@ export class VolumeCalculator {
         sizeMultiplier: options.sizeMultiplier,
         allowUnboundedVariantMultiplier: options.allowUnboundedVariantMultiplier === true,
         minimumNotionalCeilingAllowanceUsd,
+        // Live orders only: strategy/pseudo callers pass no trade mode.
+        minimumVolumeOnly: Boolean(resolvedMode) && minimumVolumeEnforced(settings),
         marketType,
         lotSize,
         symbol,

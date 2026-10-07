@@ -8,6 +8,7 @@
  * position instead of sharing it with a superficially similar configuration.
  */
 
+import { latestWilderRsi } from "@/lib/wilder-rsi"
 import {
   DEFAULT_DCA_PROFILE,
   calculateDcaAddQuantity,
@@ -616,17 +617,8 @@ export function resampleCandles(candles: DirectTradeCandle[], minutes: number): 
 }
 
 function rsi(closes: number[]): number {
-  if (closes.length < 2) return 50
-  let gains = 0
-  let losses = 0
-  for (let index = 1; index < closes.length; index++) {
-    const change = closes[index] - closes[index - 1]
-    if (change > 0) gains += change
-    else losses -= change
-  }
-  if (losses === 0) return gains > 0 ? 100 : 50
-  const rs = gains / losses
-  return 100 - 100 / (1 + rs)
+  // RSI(14), Wilder (lib/wilder-rsi.ts): 15 closes give the 14 changes it needs.
+  return latestWilderRsi(closes, Math.min(14, Math.max(2, closes.length - 1)))
 }
 
 function average(values: number[]): number {
@@ -651,7 +643,8 @@ function entrySignal(
   const recentLow = Math.min(...history.map((candle) => candle.low))
   const ema5 = average(closes.slice(-5))
   const ema14 = average(closes)
-  const currentRsi = rsi(closes)
+  // Up to the decision candle: the 14 before it and its own close.
+  const currentRsi = rsi([...closes, current.close])
   const momentum = previous.close > 0 ? (current.close - previous.close) / previous.close : 0
   const averageVolume = average(history.map((candle) => candle.volume))
   const activeEnough = averageVolume <= 0 || current.volume >= averageVolume * Math.max(0, activityVolumeRatio)

@@ -20,9 +20,12 @@ function identities(position: Row) {
     }))
 }
 
+/** Settled by the venue at close time, or later by the close-accounting cron. */
+const SETTLED_EXCHANGE_SOURCES = new Set(["exchange_settlement", "exchange_settlement_deferred", "venue_position_history"])
+
 export function confirmedLiveConfigOutcome(position: Row): Outcome | null {
   if (position.executionMode !== "live" || position.status !== "closed"
-    || position.realizedPnlComplete !== true || position.realizedPnlSource !== "exchange_settlement"
+    || position.realizedPnlComplete !== true || !SETTLED_EXCHANGE_SOURCES.has(String(position.realizedPnlSource))
     || !position.id || !position.connectionId || !position.orderId
     || !(Math.max(Number(position.executedQuantity) || 0, Number(position.totalExecutedQuantity) || 0, Number(position.closedQuantity) || 0) > 0)
     || Number(position.remainingQuantity) > 0
@@ -128,6 +131,45 @@ export async function findDeactivatedLiveConfig(connectionId: string, position: 
     if (raw) return JSON.parse(String(raw)) as DeactivatedLiveConfig
   }
   return null
+}
+
+/**
+ * Which of these Live candidates the loss gate has switched off. The engine's
+ * Live stage drops them before dispatch; otherwise they qualified every cycle
+ * and were rejected at order time (negative_live_config_window), taking the
+ * dispatch slot of a healthy Set. One pipelined read for all candidates.
+ */
+export async function findDeactivatedLiveSetKeys(
+  connectionId: string,
+  candidates: ReadonlyArray<{ symbol: string; direction?: string; setKey: string; executionIntents: readonly string[] }>,
+): Promise<Set<string>> {
+  const out = new Set<string>()
+  const lookups: Array<{ setKey: string; id: string }> = []
+  for (const candidate of candidates) {
+    for (const executionIntent of candidate.executionIntents) {
+      for (const meta of identities({ ...candidate, executionIntent, accumulatedSetKeys: [] })) {
+        if (meta.setKey === candidate.setKey) lookups.push({ setKey: candidate.setKey, id: meta.id })
+      }
+    }
+  }
+  if (!connectionId || lookups.length === 0) return out
+  try {
+    const client: any = getRedisClient()
+    const deactivatedKey = keysFor(connectionId)[1]
+    if (!(Number(await client.hlen(deactivatedKey).catch(() => 0)) > 0)) return out
+    for (let start = 0; start < lookups.length; start += 500) {
+      const batch = lookups.slice(start, start + 500)
+      const pipeline = client.multi()
+      for (const lookup of batch) pipeline.hget(deactivatedKey, lookup.id)
+      const results = await pipeline.exec()
+      batch.forEach((lookup, index) => {
+        const raw = results?.[index]
+        const value = Array.isArray(raw) && raw.length === 2 ? raw[1] : raw
+        if (value) out.add(lookup.setKey)
+      })
+    }
+  } catch { /* the order-time gate in LiveStage still applies */ }
+  return out
 }
 
 export async function listDeactivatedLiveConfigs(connectionId: string, offset = 0, limit = 50) {

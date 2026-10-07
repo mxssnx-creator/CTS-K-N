@@ -163,6 +163,9 @@ export async function trackIndicationStatsBatch(
  * Track strategy statistics - called after strategy evaluation
  * Records strategy type, counts, and metrics to database for statistics
  */
+/** Stages whose flat `strategies:{conn}:{stage}:{count,evaluated,passed}` keys the StrategyCoordinator owns. */
+export const COORDINATOR_OWNED_STAGE_TYPES: ReadonlySet<string> = new Set(["base", "main", "real"])
+
 export async function trackStrategyStats(
   connectionId: string,
   symbol: string,
@@ -208,9 +211,14 @@ export async function trackStrategyStats(
     const passedKey = `strategies:${connectionId}:${type}:passed`
     const latestKey = `strategies:${connectionId}:${type}:latest`
 
+    // The StrategyCoordinator SETs the flat Base/Main/Real stage keys each
+    // cycle (count, evaluated, passed). INCRBYing the same keys here mixed a
+    // per-cycle snapshot with a lifetime sum, so one writer owns them.
+    const coordinatorOwned = COORDINATOR_OWNED_STAGE_TYPES.has(type)
+    if (!coordinatorOwned) {
+      writes.push(client.incrby(typeCountKey, 1), client.expire(typeCountKey, 86400))
+    }
     writes.push(
-      client.incrby(typeCountKey, 1),
-      client.expire(typeCountKey, 86400),
       client.incrby(totalCountKey, 1),
       client.expire(totalCountKey, 86400),
       client.set(
@@ -219,10 +227,10 @@ export async function trackStrategyStats(
       ),
       client.expire(latestKey, 3600),
     )
-    if (totalCreated > 0) {
+    if (!coordinatorOwned && totalCreated > 0) {
       writes.push(client.incrby(evalKey, totalCreated), client.expire(evalKey, 86400))
     }
-    if (passedCount > 0) {
+    if (!coordinatorOwned && passedCount > 0) {
       writes.push(client.incrby(passedKey, passedCount), client.expire(passedKey, 86400))
     }
     await Promise.all(writes)

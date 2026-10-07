@@ -460,51 +460,11 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
                 <div>
                   <h4 className="text-sm font-semibold">Symbol Fan-Out</h4>
                   <p className="text-xs text-muted-foreground">
-                    Mirrors Exchange → Symbol Configuration and writes the same canonical settings keys.
+                    The dynamic symbol order and count are per-connection settings
+                    (<code>symbol_order</code>, <code>symbol_count</code>) edited in each
+                    connection&apos;s settings dialog; the global basket below is the canonical{" "}
+                    <code>mainSymbols</code> / <code>forcedSymbols</code> configuration.
                   </p>
-                </div>
-
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Symbol Order Type</Label>
-                    <Select
-                      value={settings.symbolOrderType || "volatility_1h"}
-                      onValueChange={(value) => handleSettingChange("symbolOrderType", value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="volume24h">24h Volume (Highest First)</SelectItem>
-                        <SelectItem value="marketCap">Market Cap (Largest First)</SelectItem>
-                        <SelectItem value="priceChange24h">24h Price Change</SelectItem>
-                        <SelectItem value="volatility_1h">1h Volatility (Most Volatile)</SelectItem>
-                        <SelectItem value="volatility">24h Volatility</SelectItem>
-                        <SelectItem value="trades24h">24h Trades (Most Active)</SelectItem>
-                        <SelectItem value="alphabetical">Alphabetical (A-Z)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Canonical key: <code>symbolOrderType</code>.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label>Symbol Count</Label>
-                      <span className="text-sm font-semibold tabular-nums">{settings.numberOfSymbolsToSelect || 8}</span>
-                    </div>
-                    <Slider
-                      min={2}
-                      max={30}
-                      step={1}
-                      value={[settings.numberOfSymbolsToSelect || 8]}
-                      onValueChange={([value]) => handleSettingChange("numberOfSymbolsToSelect", value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Canonical key: <code>numberOfSymbolsToSelect</code> (the exchange fan-out symbol count).
-                    </p>
-                  </div>
                 </div>
 
                 <div className="grid md:grid-cols-2 gap-4 text-xs">
@@ -817,140 +777,9 @@ export function SystemTab({ settings, handleSettingChange }: SystemTabProps) {
               </div>
             </div>
 
-            {/* API and Exchange Operation Timeouts */}
-            <div className="space-y-4 border-t pt-4">
-              <h3 className="text-lg font-semibold">API & Exchange Timeouts</h3>
-              <p className="text-xs text-muted-foreground">
-                Configure timeout limits for exchange API calls and operations. Critical for handling network latency and preventing hanging requests.
-              </p>
-
-              <div className="grid md:grid-cols-2 gap-4">
-                {/* General API Call Timeout */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>API Call Timeout</Label>
-                    <span className="text-sm font-semibold tabular-nums">
-                      {settings.apiCallTimeoutMs ?? 20000}ms
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.apiCallTimeoutMs ?? 20000]}
-                    onValueChange={(v) => handleSettingChange("apiCallTimeoutMs", v[0])}
-                    min={5000}
-                    max={60000}
-                    step={1000}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Default timeout for general API calls (5s - 60s). Default: 20s
-                  </p>
-                </div>
-
-                {/* Order Placement Timeout */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Order Placement Timeout</Label>
-                    <span className="text-sm font-semibold tabular-nums">
-                      {settings.orderPlacementTimeoutMs ?? 40000}ms
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.orderPlacementTimeoutMs ?? 40000]}
-                    onValueChange={(v) => handleSettingChange("orderPlacementTimeoutMs", v[0])}
-                    min={10000}
-                    max={120000}
-                    step={5000}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Timeout for placing orders on exchange (10s - 120s). Default: 40s
-                  </p>
-                </div>
-
-                {/* Order Status/Fill Detection Timeout */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Order Status Timeout</Label>
-                    <span className="text-sm font-semibold tabular-nums">
-                      {settings.orderStatusTimeoutMs ?? 20000}ms
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.orderStatusTimeoutMs ?? 20000]}
-                    onValueChange={(v) => handleSettingChange("orderStatusTimeoutMs", v[0])}
-                    min={5000}
-                    max={60000}
-                    step={1000}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Timeout for checking order status and fill detection (5s - 60s). Default: 20s
-                  </p>
-                </div>
-
-                {/* Position Sync Timeout */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Position Sync Timeout</Label>
-                    <span className="text-sm font-semibold tabular-nums">
-                      {settings.positionSyncTimeoutMs ?? 20000}ms
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.positionSyncTimeoutMs ?? 20000]}
-                    onValueChange={(v) => handleSettingChange("positionSyncTimeoutMs", v[0])}
-                    min={5000}
-                    max={60000}
-                    step={1000}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Timeout for syncing positions with exchange (5s - 60s). Default: 20s
-                  </p>
-                </div>
-
-                {/* Order Cancellation Timeout */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Order Cancellation Timeout</Label>
-                    <span className="text-sm font-semibold tabular-nums">
-                      {settings.orderCancellationTimeoutMs ?? 15000}ms
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.orderCancellationTimeoutMs ?? 15000]}
-                    onValueChange={(v) => handleSettingChange("orderCancellationTimeoutMs", v[0])}
-                    min={5000}
-                    max={60000}
-                    step={1000}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Timeout for canceling orders (5s - 60s). Default: 15s
-                  </p>
-                </div>
-
-                {/* Balance/Account Query Timeout */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Account Query Timeout</Label>
-                    <span className="text-sm font-semibold tabular-nums">
-                      {settings.accountQueryTimeoutMs ?? 15000}ms
-                    </span>
-                  </div>
-                  <Slider
-                    value={[settings.accountQueryTimeoutMs ?? 15000]}
-                    onValueChange={(v) => handleSettingChange("accountQueryTimeoutMs", v[0])}
-                    min={3000}
-                    max={45000}
-                    step={1000}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Timeout for balance and account info queries (3s - 45s). Default: 15s
-                  </p>
-                </div>
-              </div>
-
-              <div className="p-3 border rounded-lg bg-blue-50 text-xs text-blue-900">
-                <strong>Note:</strong> Longer timeouts handle high-latency networks but may cause slower failure detection. 
-                Shorter timeouts fail faster but may cause false timeouts on congested networks. Adjust based on your exchange's typical response time.
-              </div>
-            </div>
+            {/* Exchange call timeouts are owned by the connectors and the live
+                stage (bounded per-call deadlines); the six former timeout
+                sliders here were saved but never read and were removed. */}
 
             <div className="space-y-4 border-t pt-4">
               <h3 className="text-lg font-semibold">Database Statistics</h3>

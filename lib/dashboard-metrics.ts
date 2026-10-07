@@ -25,6 +25,27 @@ export function firstFiniteMetric(...values: unknown[]): number {
   return 0
 }
 
+/**
+ * Fallback chains over compatibility fields. Several routes fill a counter
+ * that was never written with 0, which is indistinguishable from a real zero,
+ * so `firstFiniteMetric` would stop there and never reach the source that is
+ * actually written. Return the first finite value above zero; when every
+ * present source is zero return 0, and when no source carries a value at all
+ * return null so the caller renders "—" instead of a fabricated zero.
+ * Use `firstFiniteMetric` wherever a zero is authoritative.
+ */
+export function firstPositiveMetric(...values: unknown[]): number | null {
+  let sawZero = false
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) continue
+    if (numeric > 0) return numeric
+    if (numeric === 0) sawZero = true
+  }
+  return sawZero ? 0 : null
+}
+
 export function nonNegativeMetric(value: unknown): number {
   return Math.max(0, finiteMetric(value))
 }

@@ -13,7 +13,6 @@ import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { canonicalTotalForSymbols, clampProcessedToTotal, getCanonicalSymbolSelection, ownsCanonicalSymbolSelectionEpoch } from "@/lib/trade-engine/symbol-selection-ownership"
 import { calculatePseudoClosePnl } from "@/lib/pseudo-position-costs"
-import { HISTORIC_POS_HISTORY_INDICATION_TYPES } from "@/lib/strategy-indication-policy"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { buildProgressionScope } from "@/lib/progression-scope"
 import {
@@ -39,7 +38,18 @@ const __DBGC = (message: string): void => {
     console.warn(`[v0] [HistoricTiming] ${message}`)
   }
 }
-import { ENGINE_STAGE_HISTORY_CANDLES } from "@/lib/market-data-loader"
+import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeMinuteBars } from "@/lib/market-data-loader"
+import { expandMinuteBarsToSeconds } from "@/lib/market-data-1s-backfill"
+import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
+import { minuteBars, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
+import {
+  advanceTypeMeasurement,
+  backfillTypeMeasurement,
+  loadTypeMeasurementContext,
+  resolvePrevPosMinCount,
+  type TypeMeasurementBackfillResult,
+  type TypeMeasurementContext,
+} from "./type-measurement"
 import {
   clearHistoricCalculationState,
   clearHistoricAggregateMarkers,
@@ -306,6 +316,20 @@ function historicAggregateMarkerMember(configId: string, scope: string): string 
     ? normalizedScope.slice(separator + 1)
     : normalizedScope
   return JSON.stringify([String(configId || ""), symbol])
+}
+
+/** A gap under two minutes at the range start is candle alignment, not missing data. */
+const PREHISTORIC_RANGE_BACKFILL_TOLERANCE_MS = 120_000
+
+function earliestCandleTimestamp(candles: readonly any[]): number {
+  let earliest = Number.POSITIVE_INFINITY
+  for (const candle of candles) {
+    const timestamp = typeof candle?.timestamp === "number"
+      ? candle.timestamp
+      : new Date(candle?.timestamp || candle?.time).getTime()
+    if (Number.isFinite(timestamp) && timestamp < earliest) earliest = timestamp
+  }
+  return earliest
 }
 
 export interface ProcessingResult {
@@ -613,6 +637,8 @@ export class ConfigSetProcessor {
     let errors = 0
     let totalIntervalsProcessed = 0
     let missingIntervalsLoaded = 0
+    // Latest first-candle time over all symbols: the range every symbol covers.
+    let latestCoverageStartMs = 0
 
     const tConfigsStart = Date.now()
     const [allIndicationConfigs, allStrategyConfigs] = await Promise.all([
@@ -623,6 +649,23 @@ export class ConfigSetProcessor {
     // Bootstrap/replay processes every enabled configuration. Concurrency is
     // bounded below, but selection is never truncated by a top-K core.
     const indicationConfigs = allIndicationConfigs
+    // Per-type measurement context: the realtime indication settings, the
+    // operator protection floors and PositionCost. Absent in a forced
+    // simulation (synthetic prices are no measurement).
+    let typeMeasurementSkipReason = ""
+    const typeReplayContext = await loadTypeMeasurementContext(this.connectionId).catch((error) => {
+      typeMeasurementSkipReason = `context_error:${error instanceof Error ? error.message : String(error)}`.slice(0, 200)
+      console.warn(
+        `[v0] [ConfigSetProcessor] per-type measurement unavailable:`,
+        error instanceof Error ? error.message : String(error),
+      )
+      return null
+    })
+    // A skipped measurement is reported, never silent: the Base gate then has
+    // no prehistoric history and every Set waits for realtime closes.
+    if (!typeReplayContext && !typeMeasurementSkipReason) typeMeasurementSkipReason = "forced_simulation"
+    const typeReplayCloses: TypeReplayClose[] = []
+    const typeBackfills: Array<{ symbol: string } & TypeMeasurementBackfillResult> = []
     const strategyConfigs = allStrategyConfigs
     const indicationCalculationGroups = groupHistoricIndicationCalculationConfigs(indicationConfigs)
     await this.indicationManager.setResultReferences(
@@ -906,6 +949,34 @@ export class ConfigSetProcessor {
           if (chunkCandles.length > candles.length) candles = chunkCandles
         }
 
+        // The stored history covers the stage window (about 120 minutes of
+        // seconds). A longer prehistoric range is completed from the venue's
+        // real one-minute bars resolved to seconds, so a 24 h range is
+        // evaluated over 24 h of data instead of the newest two hours.
+        let rangeMinuteBars: any[] = []
+        if (marketType !== "forex") {
+          // 90 minutes before the range warm the per-type measurement up, so
+          // its first entry can be taken at the range start.
+          const rangeStartMs = effectiveStart.getTime() - ENGINE_STAGE_HISTORY_MINUTES * 60_000
+          const earliestMs = earliestCandleTimestamp(candles)
+          const gapEndMs = Math.min(Number.isFinite(earliestMs) ? earliestMs : effectiveEnd.getTime(), effectiveEnd.getTime())
+          const needsBackfill = gapEndMs - rangeStartMs > PREHISTORIC_RANGE_BACKFILL_TOLERANCE_MS
+          // One read of the venue's bars serves both the missing older
+          // seconds and the per-type measurement, which needs the bars' real
+          // highs and lows (interpolated seconds have neither).
+          if (needsBackfill || typeReplayContext) {
+            rangeMinuteBars = await loadRangeMinuteBars(symbol, {
+              connectionId: this.connectionId,
+              startMs: rangeStartMs,
+              endMs: effectiveEnd.getTime(),
+            })
+          }
+          if (needsBackfill && rangeMinuteBars.length > 0) {
+            const older = expandMinuteBarsToSeconds(rangeMinuteBars, Math.floor(rangeStartMs / 60_000) * 60_000, gapEndMs)
+            if (older.length > 0) candles = [...older, ...candles]
+          }
+        }
+
         // ── Fallback read switched from `:1m` → `:1s` (spec §7.3) ───
         //
         // The market-data loader was migrated to 1-second timeframe so
@@ -924,6 +995,10 @@ export class ConfigSetProcessor {
         }
         await assertCurrentSelection()
         __DBGC(`PS_sym_candles ${symbol} ${candles.length}`)
+        if (candles.length > 0) {
+          const coveredFromMs = earliestCandleTimestamp(candles)
+          if (Number.isFinite(coveredFromMs)) latestCoverageStartMs = Math.max(latestCoverageStartMs, coveredFromMs)
+        }
 
         if (candles.length === 0) {
           console.log(`[v0] [ConfigSetProcessor] ⚠ no candles for ${symbol} — skipping`)
@@ -1091,6 +1166,33 @@ export class ConfigSetProcessor {
             }),
             client.expire(progressKey, 7 * 24 * 60 * 60),
           ])
+        }
+
+        // --- Measure every indication type with its own rules ---
+        // The Base gate reads (symbol × type × direction) buckets; they are
+        // filled from what each type's Sets would have done over the range.
+        if (combinedCandles.length > 0 && typeReplayContext) {
+          // The venue's real bars; without them (forex, failed read) the
+          // stored candles resolved to minutes.
+          const replayBars = rangeMinuteBars.length > 0
+            ? rangeMinuteBars
+            : minuteBars(candlesSorted.map((candle: any) => ({
+                timestamp: candle._ts,
+                open: Number(candle.open),
+                high: Number(candle.high),
+                low: Number(candle.low),
+                close: Number(candle.close),
+                volume: Number(candle.volume) || 0,
+              })))
+          await this.measureIndicationTypes(symbol, replayBars, {
+            rangeStartMs: effectiveStart.getTime(),
+            rangeEndMs: effectiveEnd.getTime(),
+            context: typeReplayContext,
+            assertActive: assertRunActive,
+            totals: typeReplayCloses,
+            backfill: typeBackfills,
+          })
+          await assertCurrentSelection()
         }
 
         // --- Run indications + strategies in parallel for this symbol ---
@@ -1543,11 +1645,22 @@ export class ConfigSetProcessor {
       // shows a valid value instead of undefined/blank.
       let pfStr = "0.0000"
       let pfSource = "no_closed_positions"
+      // The per-type measurement is what the Base gate judges Sets on, so it
+      // is the Historic PF; the generic grid remains the fallback.
+      if (typeReplayCloses.length > 0) {
+        posSum = 0
+        negAbsSum = 0
+        resultCount = typeReplayCloses.length
+        for (const close of typeReplayCloses) {
+          if (close.netPct > 0) posSum += close.netPct
+          else if (close.netPct < 0) negAbsSum += -close.netPct
+        }
+      }
       if (resultCount > 0 && (posSum > 0 || negAbsSum > 0)) {
         const rawPF = negAbsSum > 0 ? posSum / negAbsSum : 9.999 // all-wins ceiling
         const aggregatePF = Math.min(9.999, Math.max(0, rawPF))
         pfStr = aggregatePF.toFixed(4)
-        pfSource = "prehistoric_aggregate"
+        pfSource = typeReplayCloses.length > 0 ? "prehistoric_type_measurement" : "prehistoric_aggregate"
       }
       
       const { hsetProgression } = await import("./progression-writes")
@@ -1667,6 +1780,25 @@ export class ConfigSetProcessor {
         last_run_candles: String(candlesProcessed),
         last_run_indication_results: String(totalIndicationResults),
         last_run_strategy_positions: String(totalStrategyPositions),
+        type_measurement_closes: String(typeReplayCloses.length),
+        type_measurement_summary: JSON.stringify(summarizeTypeReplay(typeReplayCloses)),
+        // measured | skipped:<reason> | no_closes (data present, nothing fired)
+        type_measurement_status: typeMeasurementSkipReason
+          ? `skipped:${typeMeasurementSkipReason}`
+          : typeReplayCloses.length > 0 ? "measured" : "no_closes",
+        type_measurement_backfill: JSON.stringify({
+          maxHours: typeBackfills.reduce((max, entry) => Math.max(max, entry.hours), 0),
+          closes: typeBackfills.reduce((sum, entry) => sum + entry.closes, 0),
+          thin: typeBackfills.flatMap((entry) => entry.thin.map((bucket) => `${entry.symbol}:${bucket}`)).slice(0, 200),
+        }),
+        // Data actually available for the range: hours from the latest
+        // per-symbol first candle to the range end (a data gap shows here).
+        ...(latestCoverageStartMs > 0 ? {
+          data_covered_from: new Date(Math.max(latestCoverageStartMs, effectiveStart.getTime())).toISOString(),
+          data_coverage_hours: String(Math.round(
+            (effectiveEnd.getTime() - Math.max(latestCoverageStartMs, effectiveStart.getTime())) / 36_000,
+          ) / 100),
+        } : {}),
       })
       await client.expire(`prehistoric:${this.connectionId}`, 86400)
     } catch (err) {
@@ -1705,6 +1837,78 @@ export class ConfigSetProcessor {
    * identical inputs reuse one pure calculation and one bounded detail list;
    * their aggregate markers and configuration identities remain separate.
    */
+  /**
+   * Measure one symbol's range (its real one-minute bars) with every
+   * indication type's own entry rules and the Sets' protection, and book the
+   * closes into the (symbol × type × direction) buckets the Base gate reads.
+   * The measurement continues from its stored state when there is one, so a
+   * repeated or restarted bootstrap never books a close twice; the engine
+   * heartbeat advances it afterwards (type-measurement.ts).
+   */
+  private async measureIndicationTypes(
+    symbol: string,
+    bars: any[],
+    options: {
+      rangeStartMs: number
+      rangeEndMs: number
+      context: TypeMeasurementContext
+      assertActive: () => void
+      totals: TypeReplayClose[]
+      backfill?: Array<{ symbol: string } & TypeMeasurementBackfillResult>
+    },
+  ): Promise<void> {
+    const startedAt = Date.now()
+    const advanced = await advanceTypeMeasurement({
+      connectionId: this.connectionId,
+      symbol,
+      bars,
+      rangeStartMs: options.rangeStartMs,
+      rangeEndMs: options.rangeEndMs,
+      context: options.context,
+      assertActive: options.assertActive,
+    })
+    if (!advanced) {
+      console.log(`[v0] [ConfigSetProcessor] ${symbol}: per-type measurement busy (another advance holds it)`)
+      return
+    }
+    const { result, resumed } = advanced
+    options.totals.push(...result.closes)
+    console.log(
+      `[v0] [ConfigSetProcessor] ${symbol}: per-type measurement ${resumed ? "resumed" : "started"} — ` +
+      `steps=${result.steps} autoSteps=${result.stepIndicatorCalls} closes=${result.closes.length} open=${result.openAtEnd} ` +
+      `in ${Date.now() - startedAt}ms ${JSON.stringify(summarizeTypeReplay(result.closes))}`,
+    )
+    // The Base gate needs `prevPosMinCount` closes per (type × direction)
+    // right after the prehistoric run; thin buckets of the measured types are
+    // extended backwards over older real bars (capped, causal).
+    if (!resumed) {
+      const types = [...new Set(result.closes.map((close) => close.type))]
+      if (types.length > 0) {
+        try {
+          const backfill = await backfillTypeMeasurement({
+            connectionId: this.connectionId,
+            symbol,
+            types,
+            beforeMs: options.rangeStartMs,
+            minCount: await resolvePrevPosMinCount(this.connectionId),
+            context: options.context,
+            assertActive: options.assertActive,
+          })
+          options.backfill?.push({ symbol, ...backfill })
+          if (backfill.hours > 0) {
+            console.log(
+              `[v0] [ConfigSetProcessor] ${symbol}: per-type backfill ${backfill.hours}h, +${backfill.closes} closes` +
+              (backfill.thin.length > 0 ? `, still thin: ${backfill.thin.join(",")}` : ""),
+            )
+          }
+        } catch (error) {
+          if (error instanceof PrehistoricProcessingCancelledError) throw error
+          console.warn(`[v0] [ConfigSetProcessor] ${symbol}: per-type backfill failed:`, error instanceof Error ? error.message : String(error))
+        }
+      }
+    }
+  }
+
   private async processIndicationConfigs(
     symbol: string,
     candles: any[],
@@ -2017,26 +2221,12 @@ export class ConfigSetProcessor {
   ): Promise<number> {
     if (configs.length === 0) return 0
 
-    // ── Systemwide fix: prehistoric must populate pos_history ───────────
-    // The Main/Real min-pos gates (mainEvalPosCount / realEvalPosCount,
-    // default 25/20) read `baseSet.prevPos.count` (sourced from the
-    // pos_history:* hashes) to decide whether a Base Set has enough
-    // historic context to be promoted. If this is empty when realtime
-    // starts, the gates skip every Set and Main/Real stay 0 forever —
-    // the user's "no sets evaluated" symptom.
-    //
-    // recordPosClosed() is what populates pos_history. It was previously
-    // only called by the live close path (pseudo-position-manager.ts).
-    // We now mirror every closed prehistoric position into pos_history
-    // through the same semantic writer, batched into one Redis pipeline per
-    // symbol-config so the command count stays bounded even when a single
-    // config produces hundreds of historic closes.
-    //
-    // Spec: "Make sure prehistoric progress works completely correct
-    //   with created sets data and then start realtime progress, AFTER
-    //   prehistoric has finished, fix systemwide."
-    const { recordPosClosedBatch } = await import("@/lib/pos-history")
-    const piClient = getRedisClient()
+    // These generic grid positions feed the strategy lists and the historic
+    // aggregates. The Base gate's (symbol × type × direction) history is
+    // measured per type by measureIndicationTypes(): mirroring one generic
+    // replay into every type bucket made all types look identical and, on
+    // real data, uniformly negative (PF 0.04 over 24 h), which kept every
+    // Base Set invalid.
     const appSettings = (await getAppSettings().catch(() => null)) || {}
     const configuredPositionCostPct = Number(
       appSettings.exchangePositionCost ?? appSettings.positionCost ?? 0.1,
@@ -2157,65 +2347,10 @@ export class ConfigSetProcessor {
                     )
                   }
 
-                  // ── Mirror closed positions into pos_history ─────────────
-                  // Use only positions accepted by the idempotent list write;
-                  // a retry may calculate the same rows but must not duplicate
-                  // directional history or inflate Main/Real gates.
-                  const acceptedClosed = acceptedPositions.filter((p: PseudoPosition) => p.status === "closed")
-                  if (acceptedClosed.length > 0) {
-                    try {
-                      const pipeline = piClient.multi()
-                      const toMs = (t: unknown): number => {
-                        if (typeof t === "number") return t
-                        if (typeof t === "string") {
-                          const n = Number(t)
-                          if (Number.isFinite(n) && n > 0) return n
-                          const parsed = Date.parse(t)
-                          return Number.isFinite(parsed) ? parsed : 0
-                        }
-                        return 0
-                      }
-                      // Per-position drawdown time is still calculated from
-                      // the exact entry/exit pair. The batch writer only
-                      // combines commutative counters and the equivalent
-                      // rolling-list append; it never samples or drops rows.
-                      recordPosClosedBatch({
-                        connectionId: this.connectionId,
-                        entries: acceptedClosed
-                          .filter((p): p is PseudoPosition & { direction: "long" | "short" } =>
-                            p.direction === "long" || p.direction === "short",
-                          )
-                          .map((p) => {
-                          const entryMs = toMs(p.entry_time)
-                          const exitMs = toMs(p.exit_time)
-                          const drawdownMinutes =
-                            entryMs > 0 && exitMs > entryMs ? (exitMs - entryMs) / 60000 : 0
-                          const resultPct = Number(p.result) || 0
-                          return {
-                            symbol: p.symbol || symbol,
-                            indicationType: p.indication_type || config.type || "unknown",
-                            // Base reads pos_history by indication type
-                            // (direction/move/…), never by the strategy
-                            // family label, so write the buckets it reads.
-                            indicationTypes: HISTORIC_POS_HISTORY_INDICATION_TYPES,
-                            direction: p.direction,
-                            pnl: resultPct,
-                            pnlPct: resultPct,
-                            positionCostPct,
-                            drawdownMinutes,
-                            entryPrice: p.entry_price,
-                          }
-                          }),
-                        pipeline,
-                      })
-                      await (pipeline as any).exec()
-                    } catch (piErr) {
-                      console.warn(
-                        `[v0] [ConfigSetProcessor] pos_history mirror failed for ${config.id}:`,
-                        piErr instanceof Error ? piErr.message : String(piErr),
-                      )
-                    }
-                  }
+                  // The generic strategy grid is no measurement of any
+                  // indication type: its closes stay in the strategy lists and
+                  // the historic aggregates only. The Base gate's per-type
+                  // buckets are written by measureIndicationTypes().
 
                   return acceptedPositions.length
                 },

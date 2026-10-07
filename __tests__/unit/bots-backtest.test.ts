@@ -20,7 +20,7 @@ function synthetic(symbols: number, bars: number): Record<string, Candle[]> {
 describe("bot settings follow the operator's bounds", () => {
   test("defaults", () => {
     const d = defaultBotSettings("sandwich")
-    expect(d).toMatchObject({ symbolCount: 10, symbolRanking: "volatility_1h", minTakeProfitPct: 0.4, minStopLossPct: 0.5, trailingDistancePct: 0.3, volumeFactor: 1, rebaseRatio: 0.6 })
+    expect(d).toMatchObject({ symbolCount: 10, symbolRanking: "volatility_1h", minTakeProfitPct: 0.4, minStopLossPct: 0.6, trailingDistancePct: 0.3, volumeFactor: 1, rebaseRatio: 0.6 })
   })
   test("values are clamped and snapped to the configured steps", () => {
     const n = normalizeBotSettings("sandwich", { symbolCount: 37, minTakeProfitPct: 9, minStopLossPct: 0.1, trailingDistancePct: 0.44, volumeFactor: 0, backtestHours: 100 } as any)

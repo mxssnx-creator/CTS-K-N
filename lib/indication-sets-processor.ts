@@ -28,6 +28,7 @@
  * overrides.
  */
 
+import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import { getRedisClient, initRedis, getSettings, getAppSettings, setSettings } from "@/lib/redis-db"
 import { isServerlessDeploymentRuntime } from "@/lib/deployment-runtime"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -3061,7 +3062,12 @@ export class IndicationSetsProcessor {
       return { type: "common", total: 0, qualified: 0, configs: 0, disabled: true }
     }
 
-    let candles = this.getForwardCandles(marketData)
+    // The indicators are computed on the candles up to the decision point —
+    // the same causal history in realtime and in a historic replay. The
+    // forward window exists only to grade an outcome afterwards; computing
+    // the Common indicators on it (as before) let historic Sets see up to 64
+    // future bars, while realtime fell back to flat synthetic candles.
+    let candles = this.getHistoryCandles(marketData)
     if (candles.length === 0) {
       const prices = this.normalizePriceHistory(marketData)
       candles = prices.map((price, index) => ({
@@ -4263,10 +4269,12 @@ export class IndicationSetsProcessor {
     for (let i = 1; i <= horizon; i++) {
       const high = Number(candles[i].high ?? candles[i].close ?? candles[i].price ?? candles[i].open)
       const low = Number(candles[i].low ?? candles[i].close ?? candles[i].price ?? candles[i].open)
-      if (direction === "long" && high >= tp) { exit = tp; reason = "take_profit"; break }
+      // A bar touching both levels counts as a stop: its intrabar order is
+      // unknown (the per-type measurement uses the same rule).
       if (direction === "long" && low <= sl) { exit = sl; reason = "stop_loss"; break }
-      if (direction === "short" && low <= tp) { exit = tp; reason = "take_profit"; break }
+      if (direction === "long" && high >= tp) { exit = tp; reason = "take_profit"; break }
       if (direction === "short" && high >= sl) { exit = sl; reason = "stop_loss"; break }
+      if (direction === "short" && low <= tp) { exit = tp; reason = "take_profit"; break }
     }
     const gross = direction === "long" ? (exit - entry) / entry : (entry - exit) / entry
     const net = gross - cost
@@ -4291,6 +4299,28 @@ export class IndicationSetsProcessor {
         marketExitSituation: String(activeProtection.marketExitSituation),
       } : {}),
     }
+  }
+
+  /** Real OHLC candles up to the decision point, oldest first. */
+  private getHistoryCandles(marketData: any): any[] {
+    const raw = Array.isArray(marketData?.candles) ? marketData.candles : []
+    const asOfMs = Number(marketData?.__indicationSnapshotAsOfMs)
+    return raw
+      .map((candle: any) => ({
+        timestamp: Number(candle?.timestamp ?? candle?.time ?? candle?.t),
+        open: Number(candle?.open ?? candle?.close),
+        high: Number(candle?.high ?? candle?.close),
+        low: Number(candle?.low ?? candle?.close),
+        close: Number(candle?.close ?? candle?.price),
+        volume: Number(candle?.volume ?? 0) || 0,
+      }))
+      .filter((candle: any) =>
+        Number.isFinite(candle.timestamp) && candle.close > 0 && candle.high > 0 && candle.low > 0 &&
+        (!Number.isFinite(asOfMs) || candle.timestamp <= asOfMs))
+      .sort((left: any, right: any) => left.timestamp - right.timestamp)
+      // The stage window: the last ENGINE_STAGE_HISTORY_MINUTES minutes.
+      .filter((candle: any, _index: number, all: any[]) =>
+        candle.timestamp > all[all.length - 1].timestamp - ENGINE_STAGE_HISTORY_MINUTES * 60_000)
   }
 
   private getForwardCandles(marketData: any, openedAt?: number): any[] {

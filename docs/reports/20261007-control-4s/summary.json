@@ -1,0 +1,228 @@
+{
+  "title": "CTS-K-N control run — 4 symbols, 24 h prehistoric on real data (paper)",
+  "revision": "344b75e",
+  "connectionId": "bingx-x01",
+  "symbols": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "BCHUSDT",
+    "XRPUSDT"
+  ],
+  "prehistoricHours": 24,
+  "exactReplay": false,
+  "startedAt": "2026-10-07T01:40:04.455Z",
+  "passed": false,
+  "criteria": [
+    {
+      "name": "Prehistoric bootstrap completed for every symbol",
+      "pass": true,
+      "detail": "4/4 symbols (4 requested) after 30 s"
+    },
+    {
+      "name": "Prehistoric range covered by real market data",
+      "pass": true,
+      "detail": "24.00 of 24 h with data; sources bingx"
+    },
+    {
+      "name": "Base evaluated Sets in the realtime phase",
+      "pass": true,
+      "detail": "base 2608 · main 0 · real 0 · live 0"
+    },
+    {
+      "name": "No coverage errors (failed/slow endpoints, NaN, duplicate ids, stage 0)",
+      "pass": false,
+      "detail": "21 error finding(s) in 7 checks"
+    },
+    {
+      "name": "Stats, overview and status endpoints answered 200",
+      "pass": true,
+      "detail": "0 failed request(s) in 52 polls"
+    },
+    {
+      "name": "Engine kept running",
+      "pass": true,
+      "detail": "0 poll(s) without a running engine"
+    },
+    {
+      "name": "Memory bounded (RSS growth < 1 GiB in the realtime phase)",
+      "pass": true,
+      "detail": "growth 515 MiB, peak 1580 MiB"
+    },
+    {
+      "name": "Statistics latency p95 < 5 s",
+      "pass": true,
+      "detail": "82 ms"
+    }
+  ],
+  "outcome": [
+    {
+      "name": "Types at or above the Base threshold (whole range, all symbols)",
+      "value": "0/12",
+      "detail": "none reached 1.10"
+    },
+    {
+      "name": "Stages beyond Base evaluated",
+      "value": "no",
+      "detail": "main 0 · real 0 · live 0"
+    },
+    {
+      "name": "Paper trades closed",
+      "value": "0",
+      "detail": "no trade: no type × direction reached the Base threshold 1.10"
+    }
+  ],
+  "prehistoricCompleteAfterMs": 30149,
+  "realtimeObservedMs": 1504722,
+  "paper": {
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "net": 0,
+    "gross": 0,
+    "fees": 0,
+    "profitFactor": null,
+    "winRate": null,
+    "expectancy": null,
+    "avgWin": null,
+    "avgLoss": null,
+    "maxDrawdown": 0,
+    "activeHours": 0,
+    "profitableHours": 0
+  },
+  "bySymbol": [],
+  "byType": [],
+  "typeMeasurement": {
+    "basePfMinimum": 1.1,
+    "rows": [
+      {
+        "key": "active:long",
+        "closed": 6,
+        "wins": 0,
+        "losses": 6,
+        "netPctSum": -3.6767012395648937,
+        "meanNetPct": -0.6127835399274822,
+        "ratio": 0.38721645999999993,
+        "meetsBase": false
+      },
+      {
+        "key": "active:short",
+        "closed": 11,
+        "wins": 1,
+        "losses": 10,
+        "netPctSum": -4.813743098516583,
+        "meanNetPct": -0.437613008956053,
+        "ratio": 0.562386990909091,
+        "meetsBase": false
+      },
+      {
+        "key": "auto:long",
+        "closed": 16,
+        "wins": 4,
+        "losses": 12,
+        "netPctSum": -4.932966339883943,
+        "meanNetPct": -0.3083103962427464,
+        "ratio": 0.69168960375,
+        "meetsBase": false
+      },
+      {
+        "key": "auto:short",
+        "closed": 22,
+        "wins": 8,
+        "losses": 14,
+        "netPctSum": -3.0696286041742296,
+        "meanNetPct": -0.13952857291701043,
+        "ratio": 0.8604714272727274,
+        "meetsBase": false
+      },
+      {
+        "key": "direction:long",
+        "closed": 49,
+        "wins": 24,
+        "losses": 25,
+        "netPctSum": -6.0686626855346155,
+        "meanNetPct": -0.12385025888846155,
+        "ratio": 0.8761497412244896,
+        "meetsBase": false
+      },
+      {
+        "key": "direction:short",
+        "closed": 51,
+        "wins": 30,
+        "losses": 21,
+        "netPctSum": -2.734066355717906,
+        "meanNetPct": -0.053609144229762866,
+        "ratio": 0.9463908556862742,
+        "meetsBase": false
+      },
+      {
+        "key": "move:long",
+        "closed": 71,
+        "wins": 29,
+        "losses": 42,
+        "netPctSum": -13.068222957255058,
+        "meanNetPct": -0.184059478271198,
+        "ratio": 0.8159405218309852,
+        "meetsBase": false
+      },
+      {
+        "key": "move:short",
+        "closed": 77,
+        "wins": 39,
+        "losses": 38,
+        "netPctSum": -7.654945269297704,
+        "meanNetPct": -0.09941487362724291,
+        "ratio": 0.900585126363636,
+        "meetsBase": false
+      },
+      {
+        "key": "optimal:long",
+        "closed": 33,
+        "wins": 14,
+        "losses": 19,
+        "netPctSum": -4.59291354735429,
+        "meanNetPct": -0.13917919840467546,
+        "ratio": 0.8608208018181819,
+        "meetsBase": false
+      },
+      {
+        "key": "optimal:short",
+        "closed": 41,
+        "wins": 17,
+        "losses": 24,
+        "netPctSum": -3.0737476640032306,
+        "meanNetPct": -0.07496945521959099,
+        "ratio": 0.9250305451219512,
+        "meetsBase": false
+      },
+      {
+        "key": "trend:long",
+        "closed": 117,
+        "wins": 35,
+        "losses": 82,
+        "netPctSum": -30.36054565157463,
+        "meanNetPct": -0.25949184317585156,
+        "ratio": 0.7405081568376058,
+        "meetsBase": false
+      },
+      {
+        "key": "trend:short",
+        "closed": 118,
+        "wins": 48,
+        "losses": 70,
+        "netPctSum": -10.013643545729478,
+        "meanNetPct": -0.08486138598075829,
+        "ratio": 0.9151386138135583,
+        "meetsBase": false
+      }
+    ],
+    "rolling": {
+      "closes": 0,
+      "rows": []
+    }
+  },
+  "coverageErrors": 21,
+  "httpFailures": 0,
+  "rssGrowthMb": 515,
+  "rssPeakMb": 1580,
+  "statsLatencyP95Ms": 82
+}

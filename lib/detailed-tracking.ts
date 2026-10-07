@@ -169,7 +169,9 @@ export interface StrategyStageTracking {
     setsActivelyProcessing: number   // Sets alive this cycle (per-symbol snapshot)
     setsRunningNow: number           // ★ canonical "active": setKey ∈ active_config_keys
     setsWithOpenPositions: number    // Sets currently holding ≥ 1 open pseudo-position
-    setsProgressing: number          // Sets in active calculation this cycle
+    setsProgressing: number          // Base-VALID Sets with entries (never the emitted pool)
+    setsAwaitingHistory: number      // emitted Sets without enough measured closes yet
+    setsRejected: number             // measured Sets that failed the Base PF/DDT contract
     setsTotal: number                 // total Base Sets (cumulative)
     setsCurrent: number               // Base Sets in last cycle
     avgProfitFactor: number
@@ -737,10 +739,14 @@ export async function getStrategyTracking(
     rows,
     executionPolicy,
     base: {
-      setsActivelyProcessing: rows.base.totalOpen || baseActivelyProcessing,
-      setsRunningNow: rows.base.totalOpen,
-      setsWithOpenPositions: rows.base.totalOpen,
-      setsProgressing: Number(base.sets_progressing || base.created_sets || "0"),
+      // Processing / running / progressing count Base-VALID Sets only
+      // (lib/stage-funnel-contract.ts); the emitted pool is setsCurrent.
+      setsActivelyProcessing: rows.base.validOpen || baseActivelyProcessing,
+      setsRunningNow: rows.base.validOpen,
+      setsWithOpenPositions: rows.base.validOpen,
+      setsProgressing: sumFreshRow(base, "progressing", "sets_progressing"),
+      setsAwaitingHistory: sumFreshRow(base, "awaiting_history", "awaiting_history"),
+      setsRejected: sumFreshRow(base, "rejected", "rejected_sets"),
       setsTotal: Number(prog.strategies_base_total || "0"),
       setsCurrent: rows.base.total,
       avgProfitFactor: Number(base.avg_profit_factor || "0"),

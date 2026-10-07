@@ -46,6 +46,7 @@ import { SpecialTab } from "@/components/settings/tabs/special-tab"
 import { PageHeader } from "@/components/page-header"
 import { DEFAULT_SPECIAL_STRATEGY_SETTINGS } from "@/lib/special-strategy"
 import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
+import { publishAppSettingSaved, subscribeAppSettingSaved } from "@/lib/settings-sync-events"
 
 const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -581,7 +582,7 @@ const initialSettings: Settings = {
   quoteAsset: "USDT", // Moved to exchange tab default
 
   // ── Main Trade PF thresholds per stage (spec defaults) ───────────
-  // Base 0.80; Main/Real/Live 1.10 — operator-tunable via
+  // Every stage 1.10 (2026-10-07) — operator-tunable via
   // Settings → Strategy → Main → Profit Factor Thresholds. Read by
   // `lib/strategy-coordinator.ts` on every flow cycle (5s TTL cache).
   baseProfitFactor: MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
@@ -1087,7 +1088,8 @@ export default function SettingsPage() {
     // FIX: Ensure symbolOrderType default is applied
     symbolOrderType: initialSettings.symbolOrderType ?? "volatility_1h",
     // FIX: Ensure min_volume_enforcement default is applied
-    min_volume_enforcement: initialSettings.min_volume_enforcement ?? false, // Now defaults to false in initialSettings
+    // On by default, like the engine (lib/volume-calculator.ts minimumVolumeEnforced).
+    min_volume_enforcement: initialSettings.min_volume_enforcement ?? true,
     // Apply defaults for new indicator ranges
     rsiPeriodFrom: initialSettings.rsiPeriodFrom ?? 5,
     rsiPeriodTo: initialSettings.rsiPeriodTo ?? 20,
@@ -1537,6 +1539,13 @@ export default function SettingsPage() {
     // Placeholder for loading preset connections if needed in the future
   }
 
+  // A control that saves on its own (Auto indication card) updates the page
+  // snapshot too, so a later whole-page save does not write the old value back.
+  useEffect(() => subscribeAppSettingSaved(({ key, value }) => {
+    if (key !== "autoEnabled" || typeof value !== "boolean") return
+    setSettings((current) => (current.autoEnabled === value ? current : { ...current, autoEnabled: value }))
+  }), [])
+
   useEffect(() => {
     // Load connections when the component mounts or when the 'exchange' tab is active
     if (activeTab === "exchange") {
@@ -1689,6 +1698,9 @@ export default function SettingsPage() {
       }
       if (settingsData.settings && typeof settingsData.settings === "object") {
         setSettings((current) => ({ ...current, ...settingsData.settings }))
+        if (typeof settingsData.settings.autoEnabled === "boolean") {
+          publishAppSettingSaved("autoEnabled", settingsData.settings.autoEnabled)
+        }
       }
 
       if (databaseSizesChanged) {

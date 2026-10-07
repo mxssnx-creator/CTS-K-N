@@ -124,12 +124,19 @@ describe("the shared stack is wired into the Real overlay builder", () => {
     expect(src).toContain("if (this._coordinationSettings.blockSharedVolumeAdjustEnabled) {")
     // The per-direction loop survives as the else branch — exactly one of the
     // two paths runs, so a Set can never be sized twice.
-    expect(src).toContain("addCandidate(source, stacked.totalValid, \"global\")")
+    expect(src).toContain("addCandidate(source, stacked.totalValid, \"global\", stacked.multiplier)")
     expect(src).toContain("addCandidate(source, activeCount, \"global\")")
   })
 
   test("the operator's relation selection is normalised before use", () => {
     expect(src).toContain("normalizeBlockSharedRelations(this._coordinationSettings.blockSharedRelations)")
+  })
+
+  test("shared candidates are sized by the shared stack, not the per-Block ratio", () => {
+    // stackBlockSharedLanes applies the operator's shared ratio and cap; the
+    // volume loop must use that multiplier (it was computed and dropped).
+    expect(src).toContain("const blockCalculatedVolumeMultiplier = sharedVolumeMultiplier !== undefined")
+    expect(src).toContain("? Number(Math.max(0, sharedVolumeMultiplier - 1).toFixed(12))")
   })
 
   test("an empty stack falls through to no candidate rather than a zero-sized one", () => {

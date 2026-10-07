@@ -1,3 +1,4 @@
+import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
   normalizePositionCostPercent,
   POSITION_COST_PERCENT_DEFAULT,
@@ -12,7 +13,7 @@ export interface PseudoClosePnlInput {
   currentPrice: number
   quantity: number
   side: PseudoPositionSide | string
-  /** UI percent, e.g. 0.1 = 0.1% of entry notional; defaults to 0.1%. */
+  /** PositionCost, UI percent (0.1 = 0.1 %): the PF unit returned with the result; the charged cost is the real round trip. */
   positionCostPct?: number
 }
 
@@ -41,7 +42,11 @@ export function calculatePseudoClosePnl(input: PseudoClosePnlInput): PseudoClose
   const grossPnl = side === "long"
     ? (currentPrice - entryPrice) * quantity
     : (entryPrice - currentPrice) * quantity
-  const positionCost = notional * (positionCostPct / 100)
+  // The real round trip (lib/trading-round-trip-cost.ts), as a live close
+  // pays it. PositionCost is the PF unit and the sizing budget, not the fee:
+  // charging it (0.10 %) instead of the round trip (0.26 %) made every pseudo
+  // close — the Base gate's input — 0.16 % better than the market allows.
+  const positionCost = notional * (simulatedCloseCostPercent(positionCostPct) / 100)
   const netPnl = grossPnl - positionCost
   return {
     grossPnl,

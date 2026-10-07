@@ -17,6 +17,7 @@ import {
   Award,
   AlertTriangle,
 } from "lucide-react"
+import type { OutcomeSourceSummary } from "@/lib/outcome-source-summary"
 
 export interface PerformanceTier {
   avgProfitFactor: number
@@ -40,6 +41,28 @@ export interface PerformanceTier {
   avgNotionalUsd?: number
   totalClosed?: number
   openScanned?: number
+  /** Live connections: Sets judged on settled exchange results vs. the simulation ring. */
+  outcomeSource?: OutcomeSourceSummary | null
+  /** Live tier: Sets the live loss gate switched off after real losses. */
+  lossGateDeactivated?: number
+}
+
+function OutcomeSourceRow({ source }: { source?: OutcomeSourceSummary | null }) {
+  const live = Boolean(source?.fresh)
+  const title = live && source
+    ? `${source.exchangeJudged} Set(s) are judged only on settled exchange results (from real close no. ${source.minCloses} on). ` +
+      `${source.exchangePending} more already have real closes but fewer than ${source.minCloses}; they and all other Sets are judged on the simulation ring.`
+    : "No live exchange results were judged in the last 5 minutes (paper mode, engine stopped or no settled real close yet): Sets are judged on the simulation ring."
+  return (
+    <div className="flex items-baseline justify-between" title={title}>
+      <span className="text-[10px] text-muted-foreground">Results from</span>
+      <span className={`text-[11px] tabular-nums ${live && source && source.exchangeJudged > 0 ? "text-emerald-700 dark:text-emerald-400 font-medium" : "text-muted-foreground"}`}>
+        {live && source
+          ? `Exchange ${source.exchangeJudged} · pending ${source.exchangePending}`
+          : "Simulation"}
+      </span>
+    </div>
+  )
 }
 
 export interface PerformanceTiersData {
@@ -112,6 +135,8 @@ function TierCard({ keyName, tier }: { keyName: string; tier: PerformanceTier })
           </span>
         </div>
 
+        <OutcomeSourceRow source={tier.outcomeSource} />
+
         {/* Win rate */}
         <div className="flex items-baseline justify-between">
           <span className="text-[10px] text-muted-foreground flex items-center gap-1">
@@ -174,6 +199,12 @@ function TierCard({ keyName, tier }: { keyName: string; tier: PerformanceTier })
         {tier.isExecution && (
           <>
             <Separator className="my-1" />
+            {(tier.lossGateDeactivated || 0) > 0 && (
+              <div className="flex items-baseline justify-between" title="Sets the live loss gate switched off after a negative window of settled real closes">
+                <span className="text-[10px] text-muted-foreground">Loss gate off</span>
+                <span className="text-sm text-amber-700 dark:text-amber-400">{tier.lossGateDeactivated} Sets</span>
+              </div>
+            )}
             <div className="flex items-baseline justify-between">
               <span className="text-[10px] text-muted-foreground">Fill Rate</span>
               <span className="text-sm text-muted-foreground">{tier.fillRate ?? 0}%</span>
