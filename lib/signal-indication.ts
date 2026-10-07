@@ -1,3 +1,4 @@
+import { latestWilderRsi } from "@/lib/wilder-rsi"
 import { getRedisClient, initRedis, type RedisClientLike } from "@/lib/redis-db"
 import {
   DEFAULT_MIN_STOP_LOSS_PCT,
@@ -1385,22 +1386,8 @@ function ema(values: number[], period: number): number {
 }
 
 function rsi(values: number[], period = 14): number {
-  if (values.length < 2) return 50
-  const start = Math.max(1, values.length - period)
-  let gains = 0
-  let losses = 0
-  let samples = 0
-  for (let index = start; index < values.length; index++) {
-    const delta = values[index] - values[index - 1]
-    if (delta > 0) gains += delta
-    else losses -= delta
-    samples++
-  }
-  if (samples === 0) return 50
-  const averageGain = gains / samples
-  const averageLoss = losses / samples
-  if (averageLoss === 0) return averageGain > 0 ? 100 : 50
-  return 100 - 100 / (1 + averageGain / averageLoss)
+  // Wilder over the whole window (lib/wilder-rsi.ts), not a plain mean of the last changes.
+  return latestWilderRsi(values, Math.min(period, Math.max(2, values.length - 1)))
 }
 
 function atr(candles: SignalCandle[], period = 14): number {

@@ -2,6 +2,7 @@
  * Technical Indicators Library
  * Implements common trading indicators: RSI, MACD, Bollinger Bands, Parabolic SAR, etc.
  */
+import { latestWilderRsi } from "@/lib/wilder-rsi"
 import type { PresetIndicatorType } from "@/lib/preset-optimizer"
 import type { CommonIndicatorType } from "@/lib/common-indicator-config"
 import { evaluateTechnicalIndicators } from "@/lib/technical-indicators"
@@ -24,23 +25,7 @@ export class TechnicalIndicators {
    * Calculate RSI (Relative Strength Index)
    */
   static calculateRSI(prices: number[], period = 14): number {
-    if (!prices || prices.length === 0) return 50
-    if (prices.length < period + 1) return 50
-
-    const changes = []
-    for (let i = 1; i < prices.length; i++) {
-      changes.push(prices[i] - prices[i - 1])
-    }
-
-    const gains = changes.map((c) => (c > 0 ? c : 0))
-    const losses = changes.map((c) => (c < 0 ? Math.abs(c) : 0))
-
-    const avgGain = gains.slice(-period).reduce((sum, g) => sum + g, 0) / period
-    const avgLoss = losses.slice(-period).reduce((sum, l) => sum + l, 0) / period
-
-    if (avgLoss === 0) return avgGain > 0 ? 100 : 50
-    const rs = avgGain / avgLoss
-    return 100 - 100 / (1 + rs)
+    return latestWilderRsi(prices || [], period)
   }
 
   /**

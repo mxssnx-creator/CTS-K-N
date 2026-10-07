@@ -10,6 +10,7 @@
  * leaves 0.14 % net per win, so signal quality — not trade count — decides
  * whether a bot is profitable. The filters below exist for that reason.
  */
+import { wilderRsiSeries } from "@/lib/wilder-rsi"
 import { BOT_RISK_LEVELS, type BotRiskLevel, type BotSettings, type BotType } from "@/lib/bots/settings"
 
 export interface Candle { time: number; open: number; high: number; low: number; close: number; volume: number }
@@ -36,15 +37,8 @@ function atrPct(c: Candle[], period: number): number[] {
   return out
 }
 function rsi(closes: number[], period: number): number[] {
-  const out = new Array(closes.length).fill(NaN)
-  let gain = 0, loss = 0
-  for (let i = 1; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1]
-    const g = Math.max(d, 0), l = Math.max(-d, 0)
-    if (i <= period) { gain += g / period; loss += l / period; if (i === period) out[i] = 100 - 100 / (1 + gain / (loss || 1e-12)) }
-    else { gain = (gain * (period - 1) + g) / period; loss = (loss * (period - 1) + l) / period; out[i] = 100 - 100 / (1 + gain / (loss || 1e-12)) }
-  }
-  return out
+  // Wilder; a flat window is 50, not 0 (lib/wilder-rsi.ts).
+  return wilderRsiSeries(closes, period)
 }
 function rollingStd(values: number[], period: number): number[] {
   const out = new Array(values.length).fill(NaN)

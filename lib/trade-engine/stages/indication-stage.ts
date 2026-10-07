@@ -2,6 +2,7 @@
 // Independent calculation of technical analysis signals (RSI, MACD, EMA, etc.)
 // Output: Indication signals at specific timestamps
 
+import { latestWilderRsi } from "@/lib/wilder-rsi"
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import type { ExchangeConnection } from "@/lib/types"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
@@ -125,23 +126,7 @@ export async function processIndications(
  * Calculate RSI (Relative Strength Index)
  */
 function calculateRSI(data: any[], period: number = 14): number {
-  if (data.length < period + 1) return 50 // Default neutral
-
-  let gains = 0
-  let losses = 0
-
-  for (let i = data.length - period; i < data.length; i++) {
-    const change = data[i].close - data[i - 1].close
-    if (change > 0) gains += change
-    else losses += Math.abs(change)
-  }
-
-  const avgGain = gains / period
-  const avgLoss = losses / period
-  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss
-  const rsi = 100 - 100 / (1 + rs)
-
-  return Math.round(rsi * 100) / 100
+  return Math.round(latestWilderRsi(data.map((candle) => Number(candle?.close)), period) * 100) / 100
 }
 
 /**
