@@ -18,6 +18,13 @@
   - Axis TP/SL use the same entries measured and executed;
   - no second Block stop buffer.
 
+**Stage funnel (2026-10-07 ~23:30, binding):** processing / progressing / running count only gate-validated Sets (`docs/STAGE-FUNNEL-AND-PROCESSING.md`, `lib/stage-funnel-contract.*`), with a runtime guard, a verifier rule and tests. The prehistoric run leaves the Base gate with measured history:
+- a Set's own ring decides only once complete;
+- thin type buckets are backfilled up to 7 days;
+- the measurement status is visible in the stats API.
+
+The Micro/Minimum/Short/General/Long range classes are removed (operator decision). Operator direction: real edge first; no synthetic or gate-off runs.
+
 **Why the earlier PF 1.2–1.4 is gone (`scripts/pf-attribution.ts`):** the same 112,439 real trades (14 days, 15 symbols), with each fixed defect switched back on one at a time:
 
 | Variant | PF all | PF after Base gate |

@@ -40,6 +40,13 @@
   - Axis-TP/SL: Messung und Ausführung nutzen dieselben Entries.
   - Doppelter Block-Stop-Puffer entfernt.
 
+**Stufen-Funnel (verbindlich, 2026-10-07 ~23:30):** Processing/Progressing/Running zählen nur Gate-validierte Sets (`docs/STAGE-FUNNEL-AND-PROCESSING.md`, `lib/stage-funnel-contract.*`), mit Laufzeit-Guard, Verifier-Regel und Tests. Prehistoric liefert dem Base-Gate immer gemessene Historie:
+- eigener Ring entscheidet erst, wenn er vollständig ist;
+- dünne Typ-Buckets werden bis zu 7 Tage rückwärts aufgefüllt;
+- der Messstatus ist im Stats-API sichtbar.
+
+Range-Klassen Micro…Long entfernt (Operator). Operator-Richtung: zuerst echte Kante, keine synthetischen oder Gate-losen Läufe.
+
 **Herkunft des früheren PF 1,2–1,4 (`scripts/pf-attribution.ts`, gleiche 112.439 echte Trades):**
 - korrigiert 0,42;
 - alte 0,10 %-Kosten 0,71;
