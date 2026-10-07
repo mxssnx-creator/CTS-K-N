@@ -158,6 +158,7 @@ __tests__/unit/deploy-keeps-runtime-up.test.ts
 __tests__/unit/deploy-readiness-transient-halt.test.ts
 __tests__/unit/design-theme-consistency.test.ts
 __tests__/unit/detailed-logs-position-counts.test.ts
+__tests__/unit/direct-indications-direction.test.ts
 __tests__/unit/direct-trade-calculate-route.test.ts
 __tests__/unit/direct-trade-canonical-order.test.ts
 __tests__/unit/direct-trade-config-store.test.ts
@@ -375,6 +376,8 @@ __tests__/unit/prehistoric-bootstrap-handoff.test.ts
 __tests__/unit/prehistoric-progress-tracker.test.ts
 __tests__/unit/prehistoric-range-backfill.test.ts
 __tests__/unit/prehistoric-runtime-stability.test.ts
+__tests__/unit/prehistoric-type-measurement.test.ts
+__tests__/unit/prehistoric-type-replay.test.ts
 __tests__/unit/preset-config-display-contract.test.ts
 __tests__/unit/preset-optimizer.test.ts
 __tests__/unit/preset-pseudo-trailing-resilience.test.ts
@@ -1468,6 +1471,7 @@ lib/engine-progress-manager.ts
 lib/engine-progression-logs.ts
 lib/engine-refresh-queue.ts
 lib/engine-stage-ack.ts
+lib/engine-stage-history.ts
 lib/engine-structured-logging.ts
 lib/engine-system-verification.ts
 lib/engine-timings.ts
@@ -1619,6 +1623,7 @@ lib/pre-startup.ts
 lib/predefined-info-manager.ts
 lib/prehistoric-calculator.ts
 lib/prehistoric-progress-tracker.ts
+lib/prehistoric-type-measurement.ts
 lib/preset-config-generator.ts
 lib/preset-coordination-engine.ts
 lib/preset-crud-defaults.ts
@@ -1761,6 +1766,7 @@ lib/trade-engine/balanced-config-selection.ts
 lib/trade-engine/closed-position-aggregation.ts
 lib/trade-engine/config-set-processor.ts
 lib/trade-engine/coordination-metrics.ts
+lib/trade-engine/direct-indications.ts
 lib/trade-engine/engine-manager.ts
 lib/trade-engine/historic-replay-policy.ts
 lib/trade-engine/index.ts
@@ -1768,6 +1774,7 @@ lib/trade-engine/indication-processor-fixed.ts
 lib/trade-engine/live-sync-phase.ts
 lib/trade-engine/market-data-cache.ts
 lib/trade-engine/own-protection-orders.ts
+lib/trade-engine/prehistoric-type-replay.ts
 lib/trade-engine/progression-lock.ts
 lib/trade-engine/progression-writes.ts
 lib/trade-engine/pseudo-position-manager.ts

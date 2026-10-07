@@ -145,6 +145,7 @@ unit	__tests__/unit/deploy-keeps-runtime-up.test.ts
 unit	__tests__/unit/deploy-readiness-transient-halt.test.ts
 unit	__tests__/unit/design-theme-consistency.test.ts
 unit	__tests__/unit/detailed-logs-position-counts.test.ts
+unit	__tests__/unit/direct-indications-direction.test.ts
 unit	__tests__/unit/direct-trade-calculate-route.test.ts
 unit	__tests__/unit/direct-trade-canonical-order.test.ts
 unit	__tests__/unit/direct-trade-config-store.test.ts
@@ -362,6 +363,8 @@ unit	__tests__/unit/prehistoric-bootstrap-handoff.test.ts
 unit	__tests__/unit/prehistoric-progress-tracker.test.ts
 unit	__tests__/unit/prehistoric-range-backfill.test.ts
 unit	__tests__/unit/prehistoric-runtime-stability.test.ts
+unit	__tests__/unit/prehistoric-type-measurement.test.ts
+unit	__tests__/unit/prehistoric-type-replay.test.ts
 unit	__tests__/unit/preset-config-display-contract.test.ts
 unit	__tests__/unit/preset-optimizer.test.ts
 unit	__tests__/unit/preset-pseudo-trailing-resilience.test.ts
