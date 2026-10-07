@@ -123,8 +123,34 @@ async function main() {
     const gated = applyBaseGate(v.trades, POSITION_COST_PCT, GATE, (netPct, costPct) => movePctToMainTradePfRatio(netPct + REAL_COST_PCT - variantCost, costPct)).admitted
     return { key: v.key, label: v.label, all: book(v.trades), afterBaseGate: book(gated) }
   })
+  // Gross edge per type × direction (no cost), original and faded (the
+  // opposite side of the same move, same TP/SL distance swapped is not
+  // modelled; faded = negated gross move): where, if anywhere, is an edge?
+  const grossByBucket: Record<string, { trades: number; grossPf: number | null; fadedGrossPf: number | null; avgGrossPct: number }> = {}
+  {
+    const groups = new Map<string, number[]>()
+    for (const t of byKey.get("gross")!.trades) {
+      const key = `${t.type}:${t.direction}`
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(t.grossPct)
+    }
+    const pf = (values: number[]) => {
+      let gp = 0, gl = 0
+      for (const v of values) { if (v > 0) gp += v; else gl -= v }
+      return gl > 0 ? gp / gl : gp > 0 ? 99 : null
+    }
+    for (const [key, values] of [...groups.entries()].sort()) {
+      grossByBucket[key] = {
+        trades: values.length,
+        grossPf: pf(values),
+        fadedGrossPf: pf(values.map((v) => -v)),
+        avgGrossPct: values.reduce((a, b) => a + b, 0) / values.length,
+      }
+    }
+  }
   const meanRowPf = (() => { const t = byKey.get("corrected")!.trades; return t.reduce((s, x) => s + Number(x.profitFactor || 0), 0) / Math.max(1, t.length) })()
-  writeFileSync(outFile, JSON.stringify({ symbols, positionCostPct: POSITION_COST_PCT, realCostPct: REAL_COST_PCT, meanRowPf, rows }, null, 2))
+  writeFileSync(outFile, JSON.stringify({ symbols, positionCostPct: POSITION_COST_PCT, realCostPct: REAL_COST_PCT, meanRowPf, rows, grossByBucket }, null, 2))
+  for (const [key, b] of Object.entries(grossByBucket)) console.log(`${key.padEnd(16)} n=${String(b.trades).padStart(6)} grossPF=${b.grossPf?.toFixed(3)} fadedGrossPF=${b.fadedGrossPf?.toFixed(3)} avgGross=${b.avgGrossPct.toFixed(4)}%`)
   console.log(`mean row (indication) PF ${meanRowPf.toFixed(3)} → coin-flip win probability ${coinFlipWinProbability(meanRowPf).toFixed(3)}`)
   for (const r of rows) console.log(`${r.key.padEnd(10)} all: n=${r.all.trades} pf=${r.all.pf?.toFixed(3)} win=${((r.all.winRate ?? 0) * 100).toFixed(1)}%  | after Base gate: n=${r.afterBaseGate.trades} pf=${r.afterBaseGate.pf?.toFixed(3)}`)
   process.exit(0)
