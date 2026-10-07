@@ -69,7 +69,8 @@ describe("per-type prehistoric measurement on real minute bars", () => {
     expect(close.entryPrice).toBe(bars[89].close)
     expect(close.exitPrice).toBeCloseTo(close.entryPrice * 1.005, 10)
     expect(close.grossPct).toBeCloseTo(0.5, 10)
-    expect(close.netPct).toBeCloseTo(0.4, 10)
+    // Net of the real round trip (0.26 %), not the 0.10 % PositionCost.
+    expect(close.netPct).toBeCloseTo(0.24, 10)
     expect(result.closes.every((entry) => entry.direction === "long")).toBe(true)
   })
 
@@ -80,7 +81,7 @@ describe("per-type prehistoric measurement on real minute bars", () => {
     const close = independentDirection((await replayDirectIndicationTypes(baseInput(bars))).closes)
     expect(close.reason).toBe("stop_loss")
     expect(close.grossPct).toBeCloseTo(-0.6, 10)
-    expect(close.netPct).toBeCloseTo(-0.7, 10)
+    expect(close.netPct).toBeCloseTo(-0.86, 10)
   })
 
   test("a bar opening beyond the stop exits at its open", async () => {

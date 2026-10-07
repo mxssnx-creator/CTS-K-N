@@ -32,3 +32,8 @@ export function roundTripCostFraction(input: RoundTripCostInput = {}): number {
 export function roundTripCostPercent(input: RoundTripCostInput = {}): number {
   return roundTripCost.roundTripCostPercent(input)
 }
+
+/** max(real round trip, configured PositionCost): what a simulated close pays (PositionCost stays the PF unit). */
+export function simulatedCloseCostPercent(positionCostPct?: unknown): number {
+  return roundTripCost.simulatedCloseCostPercent(positionCostPct)
+}

@@ -8,7 +8,7 @@ import {
 } from "@/lib/trade-engine/admission-cooldown"
 import { markLiveSyncPhase, trackLiveSyncConnector } from "@/lib/trade-engine/live-sync-phase"
 import { effectiveLeverageCap, maxLeverageForStop, stopLossPercentForLeverage } from "@/lib/liquidation-safe-leverage"
-import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
+import { roundTripCostPercent, simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
 /**
@@ -4137,10 +4137,10 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
           ? {
               pnl: realizedPnl,
               // Live PnL is already venue-net and must not receive a second
-              // configured-cost deduction. Simulation retains its explicit
-              // deterministic PositionCost model.
+              // cost deduction. A simulated outcome is gross and pays the
+              // real round trip once (lib/trading-round-trip-cost.ts).
               pnlPct: simulatedOutcome
-                ? netMovePctAfterPositionCost(grossPnlPct, positionCostPct)
+                ? netMovePctAfterPositionCost(grossPnlPct, simulatedCloseCostPercent(positionCostPct))
                 : grossPnlPct,
               positionCostPct,
               drawdownMinutes: openedAt > 0 && closedAt > openedAt

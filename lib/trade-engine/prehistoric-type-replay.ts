@@ -32,6 +32,7 @@
  * processed. Signal (remote, realtime-only) cannot be replayed and is not
  * measured here.
  */
+import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { MAIN_TRADE_BASE_PF_RATIO_MIN, movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import {
@@ -69,7 +70,7 @@ export interface TypeReplayClose {
   stopLossPct: number
   /** Gross market move in percent, signed for the position side. */
   grossPct: number
-  /** Gross move minus PositionCost — what a pseudo close books. */
+  /** Gross move minus the real round-trip cost — what a pseudo close books. */
   netPct: number
   positionCostPct: number
   holdMinutes: number
@@ -244,7 +245,10 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
       takeProfitPct: position.takeProfitPct,
       stopLossPct: position.stopLossPct,
       grossPct,
-      netPct: grossPct - positionCostPct,
+      // Net of the real round trip (taker fees both sides plus slippage, the
+      // one definition in lib/trading-round-trip-cost.ts), as live pays it.
+      // PositionCost stays the PF unit (positionCostPct below), not the cost.
+      netPct: grossPct - simulatedCloseCostPercent(positionCostPct),
       positionCostPct,
       holdMinutes: (exitTime - position.entryTime) / MINUTE_MS,
       reason,
