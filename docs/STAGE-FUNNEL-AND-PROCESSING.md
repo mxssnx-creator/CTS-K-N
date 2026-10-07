@@ -52,7 +52,15 @@ Main, Real and Live count their own Sets, all of which descend from Base-valid p
   - `no_closes`;
   - `skipped:forced_simulation`;
   - `skipped:context_error:…`.
-- **Signal and Special** have no historic replay (remote, realtime-only). Their Sets wait for realtime closes, and this is reported, not hidden.
+- **Signal forward measurement** (`lib/trade-engine/signal-forward-measurement.ts`). Signal's sources are other venues' realtime candles, so it has no historic replay. Without its own measurement, Signal Sets deadlocked: they needed measured closes to pass Base, and only Base-valid Sets produce closes. In the 2026-10-07 verification run, 162 of 165 Base Sets per symbol were Signal Sets awaiting history.
+  - Realtime Signal entries are now graded forward on the venue's real 1-minute bars, without trading, under the same rules as the type measurement:
+    - Signal protection for the row's own risk;
+    - stop first;
+    - 4 h maximum hold;
+    - net of the real round trip.
+  - At most one open measurement per symbol × direction × source.
+  - Closes go into `pos_ring:{conn}:{symbol}:signal:{direction}`.
+  - Special is not produced by the direct indications and is not measured.
 
 ## Where the counts live
 

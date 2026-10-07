@@ -233,7 +233,7 @@ export async function refreshTypeMeasurement(
     nowMs,
   })
   if (bars.length === 0) return null
-  return advanceTypeMeasurement({
+  const advanced = await advanceTypeMeasurement({
     connectionId,
     symbol,
     bars,
@@ -242,6 +242,15 @@ export async function refreshTypeMeasurement(
     context,
     rolling: true,
   })
+  // Signal has no historic replay: its realtime entries are graded on the
+  // same completed bars (see signal-forward-measurement.ts).
+  const { resolveSignalForwardMeasurements } = await import("./signal-forward-measurement")
+  await resolveSignalForwardMeasurements({
+    connectionId,
+    symbol,
+    bars: bars.filter((bar: any) => Number(bar?.timestamp) + MINUTE_MS <= completedUntilMs),
+  }).catch(() => [])
+  return advanced
 }
 
 

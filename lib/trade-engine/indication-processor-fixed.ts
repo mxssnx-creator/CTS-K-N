@@ -1319,6 +1319,20 @@ export class IndicationProcessor {
         })
         if (!isCurrent()) return []
         indications.push(...signalIndications)
+        // Signal cannot be replayed historically; grade its realtime entries
+        // forward on real bars so the Base gate gets measured Signal history
+        // (lib/trade-engine/signal-forward-measurement.ts). Never trades.
+        if (signalIndications.length > 0) {
+          void import("./signal-forward-measurement")
+            .then(({ noteSignalForwardEntries }) => noteSignalForwardEntries({
+              connectionId: this.connectionId,
+              symbol,
+              indications: signalIndications,
+              price: currentClose,
+              positionCostPct,
+            }))
+            .catch(() => 0)
+        }
       }
 
       indications.push(...direct.afterSignal)
