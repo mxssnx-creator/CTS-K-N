@@ -326,6 +326,7 @@ __tests__/unit/market-data-second-coverage.test.ts
 __tests__/unit/market-data-synthetic-continuation.test.ts
 __tests__/unit/min-stop-loss-ratio.test.ts
 __tests__/unit/minimum-scales-with-variant.test.ts
+__tests__/unit/minimum-volume-enforcement.test.ts
 __tests__/unit/minute-scheduler-once-retry.test.ts
 __tests__/unit/missing-route-callers.test.ts
 __tests__/unit/monitor-live-health.test.ts
@@ -396,6 +397,7 @@ __tests__/unit/progression-scope.test.ts
 __tests__/unit/progression-stability.test.ts
 __tests__/unit/progression-stats-rows-and-lineage.test.ts
 __tests__/unit/protection-adopt-by-client-id.test.ts
+__tests__/unit/protection-allowed-range.test.ts
 __tests__/unit/protection-floor-migration.test.ts
 __tests__/unit/protection-floors.test.ts
 __tests__/unit/protection-ids-lost-update.test.ts
@@ -505,6 +507,7 @@ __tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
 __tests__/unit/status-canonical-position-counts.test.ts
+__tests__/unit/stop-loss-rejection-backoff.test.ts
 __tests__/unit/stopped-out-row-not-a-violation.test.ts
 __tests__/unit/strategy-axis-coordination.test.ts
 __tests__/unit/strategy-block-real-overlays.test.ts
@@ -1649,6 +1652,7 @@ lib/progression-limits-manager.ts
 lib/progression-live-snapshot.ts
 lib/progression-scope.ts
 lib/progression-state-manager.ts
+lib/protection-allowed-range.ts
 lib/protection-floor-migration.ts
 lib/protection-floors.ts
 lib/protection-slot-order-audit.ts
