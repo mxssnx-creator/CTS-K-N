@@ -41,12 +41,8 @@ const __DBGC = (message: string): void => {
 import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeMinuteBars } from "@/lib/market-data-loader"
 import { expandMinuteBarsToSeconds } from "@/lib/market-data-1s-backfill"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
-import { minuteBars, replayDirectIndicationTypes, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
-import { recordPosClosedBatch as recordTypeReplayCloses } from "@/lib/pos-history"
-import { isForcedSimulation } from "@/lib/real-trade-gates"
-import { setActiveProtectionFloors } from "@/lib/protection-floors"
-import { normalizePositionCostPercent } from "@/lib/position-cost"
-import { StepBasedIndicators } from "@/lib/step-based-indicators"
+import { minuteBars, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
+import { advanceTypeMeasurement, loadTypeMeasurementContext, type TypeMeasurementContext } from "./type-measurement"
 import {
   clearHistoricCalculationState,
   clearHistoricAggregateMarkers,
@@ -649,7 +645,7 @@ export class ConfigSetProcessor {
     // Per-type measurement context: the realtime indication settings, the
     // operator protection floors and PositionCost. Absent in a forced
     // simulation (synthetic prices are no measurement).
-    const typeReplayContext = await this.loadTypeReplayContext().catch((error) => {
+    const typeReplayContext = await loadTypeMeasurementContext(this.connectionId).catch((error) => {
       console.warn(
         `[v0] [ConfigSetProcessor] per-type measurement unavailable:`,
         error instanceof Error ? error.message : String(error),
@@ -1178,7 +1174,6 @@ export class ConfigSetProcessor {
           await this.measureIndicationTypes(symbol, replayBars, {
             rangeStartMs: effectiveStart.getTime(),
             rangeEndMs: effectiveEnd.getTime(),
-            generation: historicGeneration,
             context: typeReplayContext,
             assertActive: assertRunActive,
             totals: typeReplayCloses,
@@ -1820,33 +1815,12 @@ export class ConfigSetProcessor {
    * their aggregate markers and configuration identities remain separate.
    */
   /**
-   * What the per-type measurement needs: the realtime indication settings,
-   * PositionCost and the operator protection floors. Null in a forced
-   * simulation, whose generated prices measure nothing.
-   */
-  private async loadTypeReplayContext(): Promise<{ indicationSettings: any; positionCostPct: number } | null> {
-    if (isForcedSimulation()) return null
-    const [{ loadDirectIndicationSettings }, appSettings] = await Promise.all([
-      import("./indication-processor-fixed"),
-      getAppSettings().catch(() => null),
-    ])
-    const indicationSettings = await loadDirectIndicationSettings(this.connectionId)
-    // The Sets' stop-loss floor comes from the operator settings; the
-    // coordinator refreshes the same process-wide floors every cycle.
-    setActiveProtectionFloors((appSettings || {}) as Record<string, unknown>)
-    return {
-      indicationSettings,
-      positionCostPct: normalizePositionCostPercent(indicationSettings?.positionCost),
-    }
-  }
-
-  /**
-   * Replay one symbol's range (its real one-minute bars) with every
-   * indication type's own entry rules and the Sets' protection, then book
-   * the closes into the
-   * (symbol × type × direction) buckets the Base gate reads. Booked once per
-   * historic generation: the claim is taken only after a complete
-   * calculation, so a cancelled run neither loses nor doubles results.
+   * Measure one symbol's range (its real one-minute bars) with every
+   * indication type's own entry rules and the Sets' protection, and book the
+   * closes into the (symbol × type × direction) buckets the Base gate reads.
+   * The measurement continues from its stored state when there is one, so a
+   * repeated or restarted bootstrap never books a close twice; the engine
+   * heartbeat advances it afterwards (type-measurement.ts).
    */
   private async measureIndicationTypes(
     symbol: string,
@@ -1854,63 +1828,30 @@ export class ConfigSetProcessor {
     options: {
       rangeStartMs: number
       rangeEndMs: number
-      generation: string
-      context: { indicationSettings: any; positionCostPct: number }
+      context: TypeMeasurementContext
       assertActive: () => void
       totals: TypeReplayClose[]
     },
   ): Promise<void> {
-    const { context } = options
-    const { deriveProtectionFromProfitFactor } = await import("@/lib/strategy-coordinator")
     const startedAt = Date.now()
-    const result = await replayDirectIndicationTypes({
+    const advanced = await advanceTypeMeasurement({
+      connectionId: this.connectionId,
       symbol,
       bars,
       rangeStartMs: options.rangeStartMs,
       rangeEndMs: options.rangeEndMs,
-      positionCostPct: context.positionCostPct,
-      indicationSettings: context.indicationSettings,
-      // The dispatch path's protection for a direct indication row.
-      protectionFor: ({ profitFactor }) => {
-        const protection = deriveProtectionFromProfitFactor(profitFactor, context.positionCostPct)
-        return { takeProfitPct: protection.takeProfitPct, stopLossPct: protection.stopLossPct }
-      },
-      stepIndicatorsFor: (bars, timeframesMinutes) => StepBasedIndicators.calculateSummariesAsync(
-        bars,
-        timeframesMinutes,
-        context.indicationSettings?.commonIndicatorTypes,
-        context.indicationSettings?.commonSettings,
-      ),
+      context: options.context,
       assertActive: options.assertActive,
     })
-    options.assertActive()
-    const client = getRedisClient()
-    const markerKey = `prehistoric:type_measurement:${this.connectionId}:${symbol}:${options.generation || this.epoch}`
-    const claim = await (client as any).set(markerKey, String(Date.now()), { NX: true, EX: 7 * 24 * 60 * 60 }).catch(() => null)
-    const claimed = claim === "OK" || claim === true
-    if (claimed && result.closes.length > 0) {
-      const pipeline = client.multi()
-      recordTypeReplayCloses({
-        connectionId: this.connectionId,
-        pipeline,
-        // Chronological order: the ring stays newest-first.
-        entries: result.closes.map((close) => ({
-          symbol,
-          indicationType: close.type,
-          direction: close.direction,
-          pnl: close.netPct,
-          pnlPct: close.netPct,
-          positionCostPct: close.positionCostPct,
-          drawdownMinutes: close.holdMinutes,
-          entryPrice: close.entryPrice,
-        })),
-      })
-      await (pipeline as any).exec()
+    if (!advanced) {
+      console.log(`[v0] [ConfigSetProcessor] ${symbol}: per-type measurement busy (another advance holds it)`)
+      return
     }
-    if (claimed) options.totals.push(...result.closes)
+    const { result, resumed } = advanced
+    options.totals.push(...result.closes)
     console.log(
-      `[v0] [ConfigSetProcessor] ${symbol}: per-type measurement ${claimed ? "booked" : "already booked"} — ` +
-      `steps=${result.steps} autoSteps=${result.stepIndicatorCalls} closes=${result.closes.length} openAtEnd=${result.openAtEnd} ` +
+      `[v0] [ConfigSetProcessor] ${symbol}: per-type measurement ${resumed ? "resumed" : "started"} — ` +
+      `steps=${result.steps} autoSteps=${result.stepIndicatorCalls} closes=${result.closes.length} open=${result.openAtEnd} ` +
       `in ${Date.now() - startedAt}ms ${JSON.stringify(summarizeTypeReplay(result.closes))}`,
     )
   }

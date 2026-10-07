@@ -37,7 +37,7 @@ import { strategyVariantOutcomeKey } from "@/lib/pos-history"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { summarizeOutcomeSource } from "@/lib/outcome-source-summary"
-import { parseTypeMeasurement } from "@/lib/prehistoric-type-measurement"
+import { parseRollingTypeMeasurement, parseTypeMeasurement, typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
@@ -1327,6 +1327,10 @@ export async function GET(
     }
     const unscopedProgressionUsable = activeProgressionKey === scope.legacyProgressionKey || fallbackMatchesActive(progHash, legacyProgHash)
     const prehistoricHash: Record<string, string> = prehistoricHashRaw || {}
+    // Closes the per-type measurement booked in realtime (engine heartbeat).
+    const rollingTypeMeasurement = parseRollingTypeMeasurement(
+      ((await client.hgetall(typeMeasurementRollingKey(connectionId)).catch(() => null)) || {}) as Record<string, string>,
+    )
     const realtimeHash: Record<string, string>   = realtimeHashRaw   || {}
     // Constrain the engine-owned pointer to this connection's namespace so a
     // malformed/imported hash cannot turn the endpoint into an arbitrary-key
@@ -4588,6 +4592,7 @@ export async function GET(
         // What each indication type's Sets would have done over the range;
         // these closes seeded the Base gate's per-type buckets.
         typeMeasurement:        parseTypeMeasurement(prehistoricHash),
+        typeMeasurementRolling: rollingTypeMeasurement,
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
         configWork: {
           completed: n(prehistoricMeta.configWorkUnitsCompleted),

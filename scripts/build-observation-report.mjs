@@ -180,7 +180,9 @@ const typeMeasurement = statsFinal?.historic?.typeMeasurement ?? statsAfterPrehi
 // The engine's configured Base threshold; 1.10 is the system default.
 const basePfMinimum = Number(statsFinal?.connectionStageOverview?.base?.pfMinimum) || 1.1
 const BASE_HISTORY_MIN_COUNT = 5
-const typeMeasurementRows = Object.entries(typeMeasurement?.byTypeDirection || {})
+// Closes the measurement booked in realtime after the prehistoric run.
+const typeMeasurementRolling = statsFinal?.historic?.typeMeasurementRolling ?? null
+const measurementRows = (source) => Object.entries(source?.byTypeDirection || {})
   .map(([key, bucket]) => {
     const closed = Number(bucket?.closed) || 0
     const ratio = finite(Number(bucket?.positionCostRatio)) && bucket?.positionCostRatio !== null ? Number(bucket.positionCostRatio) : null
@@ -196,6 +198,8 @@ const typeMeasurementRows = Object.entries(typeMeasurement?.byTypeDirection || {
     }
   })
   .sort((left, right) => left.key.localeCompare(right.key))
+const typeMeasurementRows = measurementRows(typeMeasurement)
+const rollingMeasurementRows = measurementRows(typeMeasurementRolling)
 const historicTotal = Number(prehistoric.total ?? prehistoric.symbolsTotal) || symbolsTotal || 0
 
 const criteria = [
@@ -270,6 +274,14 @@ const outcome = [
         : "no trade although measured types reached the threshold: check the per-symbol buckets and the stage decisions",
   },
 ]
+
+function measurementTable(rows, emptyText) {
+  if (rows.length === 0) return `<p class="muted">${esc(emptyText)}</p>`
+  return `<div class="scroll"><table><thead><tr><th>Type · direction</th><th>Closes</th><th>W/L</th><th>Win rate</th><th>Net sum %</th><th>Mean net %</th><th>PositionCost ratio</th><th>Base gate (≥ ${fmt(basePfMinimum)}, n ≥ ${BASE_HISTORY_MIN_COUNT})</th></tr></thead><tbody>${rows.map((row) =>
+    `<tr><td>${esc(row.key)}</td><td>${row.closed}</td><td>${row.wins}/${row.losses}</td><td>${row.closed > 0 ? fmt((row.wins / row.closed) * 100, 1) : "—"}%</td>` +
+    `<td class="${tone(row.netPctSum)}">${signed(row.netPctSum, 3)}</td><td class="${tone(row.meanNetPct)}">${signed(row.meanNetPct, 4)}</td><td>${fmt(row.ratio, 4)}</td>` +
+    `<td class="${row.meetsBase ? "ok" : "bad"}">${row.meetsBase ? "reachable" : "below"}</td></tr>`).join("")}</tbody></table></div>`
+}
 
 function bookTable(rows, label) {
   if (rows.length === 0) return `<p class="muted">No closed paper trade.</p>`
@@ -393,13 +405,11 @@ ${lineChart({ series: stageSeries, yLabel: "Sets evaluated (basket snapshot)" })
 ${lineChart({ series: openSeries, yLabel: "open positions" })}
 
 <h2>Prehistoric measurement per indication type</h2>
-${typeMeasurementRows.length === 0
-  ? `<p class="muted">No per-type measurement recorded${typeMeasurement ? " (no closed position in the range)" : ""}.</p>`
-  : `<div class="scroll"><table><thead><tr><th>Type · direction</th><th>Closes</th><th>W/L</th><th>Win rate</th><th>Net sum %</th><th>Mean net %</th><th>PositionCost ratio</th><th>Base gate (≥ ${fmt(basePfMinimum)}, n ≥ ${BASE_HISTORY_MIN_COUNT})</th></tr></thead><tbody>${typeMeasurementRows.map((row) =>
-      `<tr><td>${esc(row.key)}</td><td>${row.closed}</td><td>${row.wins}/${row.losses}</td><td>${row.closed > 0 ? fmt((row.wins / row.closed) * 100, 1) : "—"}%</td>` +
-      `<td class="${tone(row.netPctSum)}">${signed(row.netPctSum, 3)}</td><td class="${tone(row.meanNetPct)}">${signed(row.meanNetPct, 4)}</td><td>${fmt(row.ratio, 4)}</td>` +
-      `<td class="${row.meetsBase ? "ok" : "bad"}">${row.meetsBase ? "reachable" : "below"}</td></tr>`).join("")}</tbody></table></div>`}
+${measurementTable(typeMeasurementRows, `No per-type measurement recorded${typeMeasurement ? " (no closed position in the range)" : ""}.`)}
 <p class="muted">Each type replayed with its own entry rules and the Sets' protection over the prehistoric range, net of PositionCost, aggregated over all symbols. The Base gate itself compares the newest ${BASE_HISTORY_MIN_COUNT}–25 closes of each symbol × type × direction bucket, so a type can still qualify for a single symbol.</p>
+<h3>Continued in realtime</h3>
+${measurementTable(rollingMeasurementRows, typeMeasurementRolling ? "No measured close in the realtime phase yet." : "The realtime continuation booked nothing in this run.")}
+<p class="muted">The engine heartbeat advances the same measurement over each newly completed minute, so the Base gate judges Sets on current results; ${typeMeasurementRolling ? `${typeMeasurementRolling.closes} close(s) booked in realtime` : "none booked"}.</p>
 
 <h2>Paper results</h2>
 ${lineChart({ series: [{ name: "cumulative net", color: "#2563eb", points: equityPoints }, { name: "drawdown", color: "#c0362c", points: drawdownPoints }], yLabel: "settlement units" })}
@@ -446,7 +456,7 @@ const summaryOut = {
   paper: { ...total, byHour: undefined, profitFactor: total.profitFactor === Infinity ? "Infinity" : total.profitFactor },
   bySymbol: bySymbol.map(({ byHour, ...row }) => ({ ...row, profitFactor: row.profitFactor === Infinity ? "Infinity" : row.profitFactor })),
   byType: byType.map(({ byHour, ...row }) => ({ ...row, profitFactor: row.profitFactor === Infinity ? "Infinity" : row.profitFactor })),
-  typeMeasurement: { basePfMinimum, rows: typeMeasurementRows },
+  typeMeasurement: { basePfMinimum, rows: typeMeasurementRows, rolling: { closes: typeMeasurementRolling?.closes ?? 0, rows: rollingMeasurementRows } },
   coverageErrors,
   httpFailures: httpFailures.length,
   rssGrowthMb: rssGrowth,

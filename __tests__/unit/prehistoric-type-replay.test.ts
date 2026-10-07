@@ -139,6 +139,53 @@ describe("per-type prehistoric measurement on real minute bars", () => {
     for (const [bars] of trendCalls.mock.calls as any[]) expect(bars).toHaveLength(90)
   })
 
+  test("two resumed calls equal one continuous replay", async () => {
+    // A wavy market with real wicks: positions open and close throughout.
+    const bars = series(300, 0, (index, shaped) => {
+      const close = 100 * (1 + 0.006 * Math.sin(index / 7) + 0.002 * Math.sin(index / 2.3))
+      const open = index === 0 ? close : 100 * (1 + 0.006 * Math.sin((index - 1) / 7) + 0.002 * Math.sin((index - 1) / 2.3))
+      return { ...shaped, open, close, high: Math.max(open, close) * 1.0015, low: Math.min(open, close) * 0.9985 }
+    })
+    const input = (overrides: Record<string, unknown>) => baseInput(bars, { maxHoldMs: 30 * MINUTE, ...overrides })
+    const continuous = await replayDirectIndicationTypes(input({}))
+    expect(continuous.closes.length).toBeGreaterThan(10)
+
+    const splitBar = bars[180].timestamp
+    const first = await replayDirectIndicationTypes(input({ rangeEndMs: splitBar + MINUTE }))
+    expect(first.lastBarMs).toBe(splitBar)
+    const second = await replayDirectIndicationTypes(input({
+      // Only the 90 bars of history before the next bar are needed.
+      bars: bars.slice(181 - 89),
+      rangeStartMs: splitBar,
+      initialOpen: first.open,
+      resumeAfterMs: first.lastBarMs,
+    }))
+    const key = (close: any) => `${close.type}|${close.direction}|${close.rule}|${close.entryTime}|${close.exitTime}|${close.reason}`
+    expect([...first.closes, ...second.closes].map(key)).toEqual(continuous.closes.map(key))
+    expect(second.open.map((position) => position.key).sort()).toEqual(continuous.open.map((position) => position.key).sort())
+    expect(second.lastBarMs).toBe(continuous.lastBarMs)
+  })
+
+  test("an incomplete last bar is left for the next call", async () => {
+    const bars = series(100, 0.001)
+    const result = await replayDirectIndicationTypes(baseInput(bars, { rangeEndMs: bars[99].timestamp + 30_000 }))
+    expect(result.lastBarMs).toBe(bars[98].timestamp)
+  })
+
+  test("corrupt stored positions are dropped, valid ones resume", async () => {
+    const bars = series(100, 0.001)
+    const result = await replayDirectIndicationTypes(baseInput(bars, {
+      initialOpen: [
+        { type: "move", direction: "sideways", rule: "default", entryTime: T0, entryPrice: 100, takeProfitPct: 0.5, stopLossPct: 0.6 },
+        { type: "move", direction: "long", rule: "default", entryTime: T0 + 10 * MINUTE, entryPrice: 99, takeProfitPct: 0.5, stopLossPct: 0.6 },
+      ],
+      resumeAfterMs: bars[9].timestamp,
+    }))
+    // The valid long (entry 99) reaches its target (99.495) within the rising bars.
+    expect(result.closes.find((close) => close.type === "move" && close.entryPrice === 99)?.reason).toBe("take_profit")
+    expect(result.closes.some((close) => close.entryTime === T0)).toBe(false)
+  })
+
   test("the summary uses the Base gate's PositionCost ratio", () => {
     const close = (netPct: number) => ({
       type: "move", direction: "long" as const, rule: "default", entryTime: 0, exitTime: 1, entryPrice: 1, exitPrice: 1,

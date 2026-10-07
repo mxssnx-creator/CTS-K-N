@@ -25,8 +25,12 @@
  *  - result: net of PositionCost, the same record a pseudo close writes.
  *
  * One open position per (type, direction, rule) at a time, like one pseudo
- * position per Set. Positions still open at the range end are not results.
- * Signal (remote, realtime-only) cannot be replayed and is not measured here.
+ * position per Set. Positions still open at the range end are not results
+ * yet: they are returned with the last processed bar, and a later call that
+ * passes them back (`initialOpen`, `resumeAfterMs`) continues exactly where
+ * this one stopped, as one continuous replay would. Only complete bars are
+ * processed. Signal (remote, realtime-only) cannot be replayed and is not
+ * measured here.
  */
 import { MAIN_TRADE_BASE_PF_RATIO_MIN, movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
@@ -87,6 +91,10 @@ export interface TypeReplayInput {
   /** Step-based indicator summaries for Auto; omitted = Auto is not measured. */
   stepIndicatorsFor?: (bars: ReplayCandle[], timeframesMinutes: number[]) => Promise<any>
   maxHoldMs?: number
+  /** Positions a previous call left open; they continue with the bars after `resumeAfterMs`. */
+  initialOpen?: readonly TypeReplayOpenPosition[]
+  /** The last bar a previous call processed: bars up to it only provide history. */
+  resumeAfterMs?: number
   /** Throws to cancel (superseded prehistoric generation). */
   assertActive?: () => void
 }
@@ -98,9 +106,13 @@ export interface TypeReplayResult {
   stepIndicatorCalls: number
   signals: Record<string, number>
   openAtEnd: number
+  /** Positions still open after the last processed bar (the state to resume from). */
+  open: TypeReplayOpenPosition[]
+  /** Timestamp of the last processed bar; null when none was processed. */
+  lastBarMs: number | null
 }
 
-interface OpenPosition {
+export interface TypeReplayOpenPosition {
   key: string
   type: string
   direction: "long" | "short"
@@ -109,6 +121,17 @@ interface OpenPosition {
   entryPrice: number
   takeProfitPct: number
   stopLossPct: number
+}
+
+/** A stored open position that can safely be resumed, or null. */
+export function normalizeOpenPosition(value: any): TypeReplayOpenPosition | null {
+  const direction = value?.direction === "long" || value?.direction === "short" ? value.direction : null
+  const type = String(value?.type || "")
+  const rule = String(value?.rule || "")
+  const numbers = [value?.entryTime, value?.entryPrice, value?.takeProfitPct, value?.stopLossPct].map(Number)
+  if (!direction || !type || !rule || !numbers.every((entry) => Number.isFinite(entry) && entry > 0)) return null
+  const [entryTime, entryPrice, takeProfitPct, stopLossPct] = numbers
+  return { key: `${type}|${direction}|${rule}`, type, direction, rule, entryTime, entryPrice, takeProfitPct, stopLossPct }
 }
 
 const MINUTE_MS = 60_000
@@ -183,8 +206,20 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
   const bars = normalizeBars(input.bars)
   const maxHoldMs = Math.max(MINUTE_MS, Number(input.maxHoldMs) || DEFAULT_MAX_HOLD_MS)
   const positionCostPct = Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1
-  const result: TypeReplayResult = { closes: [], steps: 0, stepIndicatorCalls: 0, signals: {}, openAtEnd: 0 }
-  if (bars.length < ENGINE_STAGE_HISTORY_MINUTES) return result
+  const open = new Map<string, TypeReplayOpenPosition>()
+  for (const raw of input.initialOpen || []) {
+    const position = normalizeOpenPosition(raw)
+    if (position) open.set(position.key, position)
+  }
+  const result: TypeReplayResult = {
+    closes: [], steps: 0, stepIndicatorCalls: 0, signals: {}, openAtEnd: 0, open: [], lastBarMs: null,
+  }
+  const finish = (): TypeReplayResult => {
+    result.open = [...open.values()]
+    result.openAtEnd = result.open.length
+    return result
+  }
+  if (bars.length === 0) return finish()
 
   const settings = input.indicationSettings || {}
   const coordinatedTimeframes = parseNumericSettingList(
@@ -193,9 +228,9 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
   ).map((value) => Math.max(1, Math.round(value)))
   const rangeStartMs = Number(input.rangeStartMs) || bars[0].timestamp
   const rangeEndMs = Number(input.rangeEndMs) || bars[bars.length - 1].timestamp + MINUTE_MS
-  const open = new Map<string, OpenPosition>()
+  const resumeAfterMs = Number(input.resumeAfterMs) || Number.NEGATIVE_INFINITY
 
-  const settle = (position: OpenPosition, exitTime: number, exitPrice: number, reason: ReplayCloseReason) => {
+  const settle = (position: TypeReplayOpenPosition, exitTime: number, exitPrice: number, reason: ReplayCloseReason) => {
     const side = position.direction === "long" ? 1 : -1
     const grossPct = ((exitPrice - position.entryPrice) / position.entryPrice) * 100 * side
     result.closes.push({
@@ -235,9 +270,13 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
 
   for (let index = 0; index < bars.length; index++) {
     const bar = bars[index]
-    settleExits(bar)
     const closedAt = bar.timestamp + MINUTE_MS
-    if (index + 1 < ENGINE_STAGE_HISTORY_MINUTES || closedAt < rangeStartMs || closedAt > rangeEndMs) continue
+    // History only (already processed by a previous call), or not complete yet.
+    if (bar.timestamp <= resumeAfterMs) continue
+    if (closedAt > rangeEndMs) break
+    settleExits(bar)
+    result.lastBarMs = bar.timestamp
+    if (index + 1 < ENGINE_STAGE_HISTORY_MINUTES || closedAt < rangeStartMs) continue
     // The stage contract: the 90 one-minute closes before the decision, complete.
     const history = bars.slice(index + 1 - ENGINE_STAGE_HISTORY_MINUTES, index + 1)
     if (bar.timestamp - history[0].timestamp !== (ENGINE_STAGE_HISTORY_MINUTES - 1) * MINUTE_MS) continue
@@ -291,8 +330,7 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
       })
     }
   }
-  result.openAtEnd = open.size
-  return result
+  return finish()
 }
 
 export interface TypeReplaySummary {

@@ -1,4 +1,4 @@
-import { parseTypeMeasurement } from "@/lib/prehistoric-type-measurement"
+import { parseRollingTypeMeasurement, parseTypeMeasurement } from "@/lib/prehistoric-type-measurement"
 
 /**
  * The stats route publishes the last prehistoric per-type measurement from
@@ -42,6 +42,36 @@ describe("parseTypeMeasurement", () => {
     expect(parsed).toEqual({
       closes: 0,
       byTypeDirection: { "move:long": { closed: 0, wins: 0, losses: 0, netPctSum: 0, positionCostRatio: null } },
+    })
+  })
+})
+
+describe("parseRollingTypeMeasurement", () => {
+  test("absent before the first realtime advance", () => {
+    expect(parseRollingTypeMeasurement({})).toBeNull()
+    expect(parseRollingTypeMeasurement(null)).toBeNull()
+  })
+
+  test("builds buckets from the counters and sums", () => {
+    expect(parseRollingTypeMeasurement({
+      closes: "3",
+      last_at: "1700000000000",
+      "n:trend:short": "2",
+      "w:trend:short": "1",
+      "l:trend:short": "1",
+      "net:trend:short": "0.2",
+      "ratio:trend:short": "2.2",
+      "n:move:long": "1",
+      "net:move:long": "-0.7",
+      "ratio:move:long": "0.3",
+      "n:bogus": "4",
+    })).toEqual({
+      closes: 3,
+      lastAt: 1700000000000,
+      byTypeDirection: {
+        "trend:short": { closed: 2, wins: 1, losses: 1, netPctSum: 0.2, positionCostRatio: 1.1 },
+        "move:long": { closed: 1, wins: 0, losses: 0, netPctSum: -0.7, positionCostRatio: 0.3 },
+      },
     })
   })
 })
