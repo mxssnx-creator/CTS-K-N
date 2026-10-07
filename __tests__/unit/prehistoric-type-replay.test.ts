@@ -1,4 +1,11 @@
-import { minuteBars, replayDirectIndicationTypes, summarizeTypeReplay, type ReplayCandle } from "@/lib/trade-engine/prehistoric-type-replay"
+import {
+  minuteBars,
+  minuteClosesOfSorted,
+  replayDirectIndicationTypes,
+  summarizeTypeReplay,
+  type ReplayCandle,
+} from "@/lib/trade-engine/prehistoric-type-replay"
+import { oneMinuteClosesOldestFirst } from "@/lib/trade-engine/direct-indications"
 import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 
 /**
@@ -90,6 +97,43 @@ describe("per-type prehistoric measurement", () => {
       (movePctToMainTradePfRatio(0.4, 0.1) * 2 + movePctToMainTradePfRatio(-0.7, 0.1)) / 3,
       10,
     )
+  })
+
+  test("the fast minute closes equal oneMinuteClosesOldestFirst on gaps and duplicate timestamps", () => {
+    let seed = 11
+    const random = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 }
+    const series: ReplayCandle[] = []
+    let timestamp = T0
+    for (let index = 0; index < 4 * 60 * 60; index++) {
+      // Mostly one candle per second, with gaps of up to two minutes and repeated timestamps.
+      const roll = random()
+      timestamp += roll < 0.002 ? Math.floor(random() * 120) * SECOND : roll < 0.01 ? 0 : SECOND
+      const close = 100 + random()
+      series.push({ timestamp, open: close, high: close, low: close, close, volume: 1 })
+    }
+    const timestamps = series.map((candle) => candle.timestamp)
+    const upper = (value: number) => timestamps.filter((candidate) => candidate <= value).length
+    for (let step = T0 + 91 * MINUTE; step <= timestamps[timestamps.length - 1]; step += 7 * MINUTE + 13 * SECOND) {
+      const end = upper(step)
+      const start = upper(step - 90 * MINUTE)
+      expect(minuteClosesOfSorted(series, start, end)).toEqual(oneMinuteClosesOldestFirst(series.slice(start, end)))
+    }
+  })
+
+  test("step indicators are computed only where Auto can fire", async () => {
+    // A flat market never passes the Common coordination: Auto cannot fire.
+    const flat = candles(100 * 60, 100 * 60, () => 0)
+    const flatCalls = jest.fn(async () => ({}))
+    const flatResult = await replayDirectIndicationTypes(baseInput(flat, { stepIndicatorsFor: flatCalls }))
+    expect(flatResult.steps).toBeGreaterThan(0)
+    expect(flatCalls).not.toHaveBeenCalled()
+    expect(flatResult.stepIndicatorCalls).toBe(0)
+    // A strong trend passes it; every computed summary is counted.
+    const trending = candles(100 * 60, 0, (after, base) => base * (1 + 0.00002 * (after + 1)))
+    const trendCalls = jest.fn(async () => ({}))
+    const trendResult = await replayDirectIndicationTypes(baseInput(trending, { stepIndicatorsFor: trendCalls }))
+    expect(trendCalls).toHaveBeenCalled()
+    expect(trendResult.stepIndicatorCalls).toBe(trendCalls.mock.calls.length)
   })
 
   test("one-minute bars aggregate seconds exactly", () => {

@@ -83,6 +83,24 @@ export function parseNumericSettingList(raw: unknown, fallback: readonly number[
   return parsed.length > 0 ? Array.from(new Set(parsed)) : [...fallback]
 }
 
+/**
+ * The Common multi-range coordination Auto is gated on. Auto can only fire
+ * when it passes, so a caller may skip the costly step-based indicator
+ * summaries whenever it does not.
+ */
+export function commonMultiRangeCoordinationFor(
+  pricesOldestFirst: number[],
+  positionCostPct: number,
+  indicationSettings: any,
+) {
+  return calculateMultiRangeCoordination({
+    pricesOldestFirst,
+    positionCostPct,
+    config: indicationSettings?.commonCoordination,
+    rangeUnit: "minutes",
+  })
+}
+
 export interface DirectIndicationCandle {
   open: number
   high: number
@@ -143,12 +161,11 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
       requireDirectionChange: indicationSettings.directionPostChangeOnly !== false,
       rangeUnit: "samples",
     })
-    const commonMultiRangeCoordination = calculateMultiRangeCoordination({
+    const commonMultiRangeCoordination = commonMultiRangeCoordinationFor(
       pricesOldestFirst,
       positionCostPct,
-      config: indicationSettings.commonCoordination,
-      rangeUnit: "minutes",
-    })
+      indicationSettings,
+    )
 
 
     // Determine direction from real price data:

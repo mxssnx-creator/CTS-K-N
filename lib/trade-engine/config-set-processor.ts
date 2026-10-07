@@ -1889,7 +1889,7 @@ export class ConfigSetProcessor {
     if (claimed) options.totals.push(...result.closes)
     console.log(
       `[v0] [ConfigSetProcessor] ${symbol}: per-type measurement ${claimed ? "booked" : "already booked"} — ` +
-      `steps=${result.steps} closes=${result.closes.length} openAtEnd=${result.openAtEnd} ` +
+      `steps=${result.steps} autoSteps=${result.stepIndicatorCalls} closes=${result.closes.length} openAtEnd=${result.openAtEnd} ` +
       `in ${Date.now() - startedAt}ms ${JSON.stringify(summarizeTypeReplay(result.closes))}`,
     )
   }

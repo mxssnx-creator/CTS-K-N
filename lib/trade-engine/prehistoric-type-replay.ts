@@ -25,8 +25,8 @@
 import { MAIN_TRADE_BASE_PF_RATIO_MIN, movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { ENGINE_STAGE_HISTORY_CANDLES, ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import {
+  commonMultiRangeCoordinationFor,
   computeDirectIndications,
-  oneMinuteClosesOldestFirst,
   parseNumericSettingList,
   timestampMs,
 } from "./direct-indications"
@@ -89,6 +89,8 @@ export interface TypeReplayInput {
 export interface TypeReplayResult {
   closes: TypeReplayClose[]
   steps: number
+  /** Steps at which Auto could fire and the step indicators were computed. */
+  stepIndicatorCalls: number
   signals: Record<string, number>
   openAtEnd: number
 }
@@ -141,6 +143,24 @@ function upperBound(timestamps: readonly number[], value: number): number {
   return low
 }
 
+/**
+ * oneMinuteClosesOldestFirst() for the replay's sorted, numeric candles in
+ * [startIndex, endIndex): the last close of each of the newest 90 minutes,
+ * oldest first. Same result without re-parsing and re-sorting 5,400 rows on
+ * every step.
+ */
+export function minuteClosesOfSorted(candles: readonly ReplayCandle[], startIndex: number, endIndex: number): number[] {
+  const closes: number[] = []
+  let minute = Number.NaN
+  for (let index = endIndex - 1; index >= startIndex && closes.length < ENGINE_STAGE_HISTORY_MINUTES; index--) {
+    const candleMinute = Math.floor(candles[index].timestamp / 60_000)
+    if (candleMinute === minute) continue
+    minute = candleMinute
+    closes.push(candles[index].close)
+  }
+  return closes.reverse()
+}
+
 /** One-minute OHLCV bars from 1-second candles (for the step indicators). */
 export function minuteBars(candles: readonly ReplayCandle[]): ReplayCandle[] {
   const bars: ReplayCandle[] = []
@@ -188,7 +208,7 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
   const stepMs = Math.max(1_000, Math.floor(Number(input.stepMs) || 60_000))
   const maxHoldMs = Math.max(60_000, Number(input.maxHoldMs) || DEFAULT_MAX_HOLD_MS)
   const positionCostPct = Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1
-  const result: TypeReplayResult = { closes: [], steps: 0, signals: {}, openAtEnd: 0 }
+  const result: TypeReplayResult = { closes: [], steps: 0, stepIndicatorCalls: 0, signals: {}, openAtEnd: 0 }
   if (candles.length === 0) return result
 
   const settings = input.indicationSettings || {}
@@ -255,14 +275,20 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
     const endIndex = upperBound(timestamps, stepTime)
     if (endIndex === 0) continue
     const startIndex = upperBound(timestamps, stepTime - windowMs)
-    const window = candles.slice(startIndex, endIndex)
-    const pricesOldestFirst = oneMinuteClosesOldestFirst(window)
+    const pricesOldestFirst = minuteClosesOfSorted(candles, startIndex, endIndex)
     if (pricesOldestFirst.length < ENGINE_STAGE_HISTORY_MINUTES) continue
+    const window = candles.slice(startIndex, endIndex)
     const current = window[window.length - 1]
-    // The step indicators resample to 1/5/15/30-minute bars; feeding the
-    // window's own one-minute bars gives the same bars at 1/60 of the work.
-    const stepIndicators = input.stepIndicatorsFor && settings.autoEnabled !== false
-      ? await input.stepIndicatorsFor(minuteBars(window), coordinatedTimeframes).catch(() => ({}))
+    // Auto is the only consumer of the step indicators and can only fire
+    // when the Common coordination passes, so the costly summaries are
+    // computed only then. They resample to 1/5/15/30-minute bars; feeding
+    // the window's own one-minute bars gives the same bars at 1/60 of the work.
+    const autoPossible = Boolean(input.stepIndicatorsFor) &&
+      settings.autoEnabled !== false &&
+      commonMultiRangeCoordinationFor(pricesOldestFirst, positionCostPct, settings).passed
+    if (autoPossible) result.stepIndicatorCalls++
+    const stepIndicators = autoPossible
+      ? await input.stepIndicatorsFor!(minuteBars(window), coordinatedTimeframes).catch(() => ({}))
       : {}
     const direct = computeDirectIndications({
       symbol: input.symbol,

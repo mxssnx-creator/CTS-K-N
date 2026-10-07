@@ -1,4 +1,4 @@
-import { computeDirectIndications } from "@/lib/trade-engine/direct-indications"
+import { commonMultiRangeCoordinationFor, computeDirectIndications } from "@/lib/trade-engine/direct-indications"
 
 /**
  * Every direct indication row must carry the side it trades: the coordinator
@@ -43,5 +43,27 @@ describe("direct indication rows carry their direction", () => {
     for (const row of rows) expect(["long", "short"]).toContain(row.metadata?.direction)
     const expected = name === "rising" ? "long" : "short"
     for (const row of combined) expect(row.metadata.direction).toBe(expected)
+  })
+})
+
+describe("Auto is gated on the Common multi-range coordination", () => {
+  const aligned = (direction: "long" | "short") => Object.fromEntries([1, 5, 15, 30].map((timeframe) => [
+    String(timeframe),
+    { summary: { direction, agreement: 0.9, strength: 0.8, signals: 6 }, indicators: {} },
+  ]))
+
+  test("a coordination that fails suppresses Auto even with aligned step indicators", () => {
+    const flat = Array.from({ length: 90 }, () => 100)
+    const input = { ...trendInput(flat), stepIndicators: aligned("long") }
+    expect(commonMultiRangeCoordinationFor(flat, 0.1, {}).passed).toBe(false)
+    const { beforeSignal } = computeDirectIndications(input)
+    expect(beforeSignal.some((row) => row.type === "auto")).toBe(false)
+  })
+
+  test("a passing coordination with aligned step indicators emits Auto", () => {
+    const rising = Array.from({ length: 90 }, (_, index) => 100 * (1 + 0.002 * index))
+    expect(commonMultiRangeCoordinationFor(rising, 0.1, {}).passed).toBe(true)
+    const { beforeSignal } = computeDirectIndications({ ...trendInput(rising), stepIndicators: aligned("long") })
+    expect(beforeSignal.filter((row) => row.type === "auto").map((row) => row.metadata.direction)).toEqual(["long"])
   })
 })
