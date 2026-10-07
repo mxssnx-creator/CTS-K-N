@@ -119,6 +119,9 @@ __tests__/unit/close-accounting-connections.test.ts
 __tests__/unit/close-adopted-positions.test.ts
 __tests__/unit/closeable-row-statuses.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
+__tests__/unit/connection-backtest-jobs.test.ts
+__tests__/unit/connection-backtest-ui-contract.test.ts
+__tests__/unit/connection-backtest.test.ts
 __tests__/unit/connection-card-stage-overview-contract.test.ts
 __tests__/unit/connection-change-audit.test.ts
 __tests__/unit/connection-coordinator.test.ts
@@ -337,6 +340,7 @@ __tests__/unit/navigation-and-pages.test.ts
 __tests__/unit/navigation-contract.test.ts
 __tests__/unit/no-fixed-sleeps-regression.test.ts
 __tests__/unit/no-foreign-quantity-adoption.test.ts
+__tests__/unit/no-market-data-run.test.ts
 __tests__/unit/normal-trailing-switch-matrix.test.ts
 __tests__/unit/observation-report.test.ts
 __tests__/unit/operator-defaults-20260929.test.ts
@@ -576,6 +580,7 @@ __tests__/unit/venue-position-close.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-factor-save-precedence.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
+__tests__/unit/wilder-rsi.test.ts
 __tests__/unit/x02-slot-protection-operator.test.ts
 app/active-exchange/layout.tsx
 app/active-exchange/page.tsx
@@ -618,6 +623,7 @@ app/api/bots/backtest/route.ts
 app/api/bots/route.ts
 app/api/broadcast/health/route.ts
 app/api/broadcast/stats/route.ts
+app/api/connections/[id]/backtest/route.ts
 app/api/connections/[id]/engine-states/route.ts
 app/api/connections/[id]/historic-test/route.ts
 app/api/connections/[id]/margin-call/route.ts
@@ -1103,6 +1109,8 @@ components/settings/active-advanced-indication-settings.tsx
 components/settings/add-connection-dialog.tsx
 components/settings/auto-indication-settings.tsx
 components/settings/bingx-credentials-dialog.tsx
+components/settings/connection-backtest-dialog.tsx
+components/settings/connection-backtest-section.tsx
 components/settings/connection-card.tsx
 components/settings/connection-edit-dialog.tsx
 components/settings/connection-info-dialog.tsx
@@ -1384,6 +1392,9 @@ lib/closeable-row-statuses.ts
 lib/common-indicator-config.ts
 lib/comprehensive-error-handler.ts
 lib/config.ts
+lib/connection-backtest-jobs.ts
+lib/connection-backtest-settings.ts
+lib/connection-backtest.ts
 lib/connection-concurrency-manager.ts
 lib/connection-coordinator.ts
 lib/connection-count-service.ts
@@ -1756,6 +1767,7 @@ lib/strategy-stage-accounting.ts
 lib/strategy-stage-relations.ts
 lib/strategy-volume-coordination.ts
 lib/structured-logging.ts
+lib/supported-exchanges.ts
 lib/symbol-capacity.ts
 lib/symbol-data-loader.ts
 lib/symbol-data-processor.ts
@@ -1834,6 +1846,7 @@ lib/venue-position-close.ts
 lib/volume-calculator.ts
 lib/websocket-data-loader.ts
 lib/websocket-server.ts
+lib/wilder-rsi.ts
 lib/workflow-event-handler.ts
 lib/workflow-logger.ts
 next-env.d.ts
@@ -1928,6 +1941,7 @@ scripts/limit-runtime-logs.sh
 scripts/local-redis.sh
 scripts/logistics-test-suite.mjs
 scripts/maintain-github-origin.sh
+scripts/maker-research.ts
 scripts/monitor-live-health.mjs
 scripts/monitor-prod-8h.sh
 scripts/next-build-race-classifier.mjs
