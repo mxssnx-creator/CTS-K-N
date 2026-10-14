@@ -7,14 +7,52 @@ import {
   type CommonIndicatorSettings,
   type CommonIndicatorType,
 } from "@/lib/common-indicator-config"
+import { summarizeCommonCategories, type CommonCategorySummary } from "@/lib/common-indicators/categories"
 import {
   createTechnicalIndicatorEvaluationContext,
   evaluateTechnicalIndicators,
-  resampleTechnicalCandles,
+  normalizeTechnicalCandles,
+  resampleNormalizedCandles,
   summarizeTechnicalIndicators,
+  type TechnicalCandle,
+  type TechnicalIndicatorEvaluationContext,
   type TechnicalIndicatorParameters,
   type TechnicalIndicatorResult,
 } from "@/lib/technical-indicators"
+
+/**
+ * One evaluation context per (input candle array, timeframe). Auto's step
+ * summaries and the exhaustive Common Set pass of the same symbol cycle read
+ * the same candle array, so its series (EMAs, RSIs, ATRs, …) are computed once
+ * per cycle instead of once per pass. Keyed by the array itself: the contexts
+ * are collected with the array, no TTL or size bound is needed.
+ */
+const TIMEFRAME_CONTEXTS = new WeakMap<object, Map<number, TechnicalIndicatorEvaluationContext>>()
+const NORMALIZED_INPUTS = new WeakMap<object, TechnicalCandle[]>()
+
+export function timeframeEvaluationContext(
+  candles: unknown[],
+  timeframeMinutes: number,
+): TechnicalIndicatorEvaluationContext {
+  let byTimeframe = TIMEFRAME_CONTEXTS.get(candles)
+  if (!byTimeframe) {
+    byTimeframe = new Map()
+    TIMEFRAME_CONTEXTS.set(candles, byTimeframe)
+  }
+  const cached = byTimeframe.get(timeframeMinutes)
+  if (cached) return cached
+  let normalized = NORMALIZED_INPUTS.get(candles)
+  if (!normalized) {
+    normalized = normalizeTechnicalCandles(candles)
+    NORMALIZED_INPUTS.set(candles, normalized)
+  }
+  const context = createTechnicalIndicatorEvaluationContext(
+    resampleNormalizedCandles(normalized, timeframeMinutes),
+    { normalized: true },
+  )
+  byTimeframe.set(timeframeMinutes, context)
+  return context
+}
 
 function round(value: number, decimals = 8): number {
   const scale = 10 ** decimals
@@ -246,8 +284,8 @@ export class StepBasedIndicators {
     let configurationCount = 0
 
     for (const timeframeMinutes of normalizedTimeframes) {
-      const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
-      const evaluationContext = createTechnicalIndicatorEvaluationContext(resampled)
+      const evaluationContext = timeframeEvaluationContext(candles, timeframeMinutes)
+      const resampled = evaluationContext.candles
       for (let start = 0; start < parameterVariants.length; start += boundedBatchSize) {
         const batch = parameterVariants.slice(start, start + boundedBatchSize).map(({ type, parameters }) => {
           const indicators = evaluateTechnicalIndicators(
@@ -298,7 +336,8 @@ export class StepBasedIndicators {
   ) {
     const results: Record<string, {
       indicators: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>>
-      summary: ReturnType<typeof summarizeTechnicalIndicators>
+      summary: CommonCategorySummary
+      typeSummary: ReturnType<typeof summarizeTechnicalIndicators>
       ma: number
       rsi: number
       macd: { macd: number; signal: number }
@@ -340,7 +379,9 @@ export class StepBasedIndicators {
       }
       results[String(timeframeMinutes)] = {
         indicators,
-        summary: summarizeTechnicalIndicators(indicators),
+        // Auto's vote: one vote per category (lib/common-indicators/categories.ts)
+        summary: summarizeCommonCategories(indicators),
+        typeSummary: summarizeTechnicalIndicators(indicators),
         ...compatibilityValues(indicators),
       }
     }
@@ -374,8 +415,8 @@ export class StepBasedIndicators {
     const boundedBatchSize = Math.max(1, Math.min(256, Math.floor(batchSize) || 32))
 
     for (const timeframeMinutes of normalizedTimeframes) {
-      const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
-      const evaluationContext = createTechnicalIndicatorEvaluationContext(resampled)
+      const evaluationContext = timeframeEvaluationContext(candles, timeframeMinutes)
+      const resampled = evaluationContext.candles
       const configurations: Array<{
         type: CommonIndicatorType
         parameters: TechnicalIndicatorParameters
@@ -411,7 +452,9 @@ export class StepBasedIndicators {
       )
       results[String(timeframeMinutes)] = {
         indicators,
-        summary: summarizeTechnicalIndicators(indicators),
+        // Auto's vote: one vote per category (lib/common-indicators/categories.ts)
+        summary: summarizeCommonCategories(indicators),
+        typeSummary: summarizeTechnicalIndicators(indicators),
         configurations,
         ...compatibilityValues(indicators),
       }
@@ -429,7 +472,8 @@ export class StepBasedIndicators {
   ) {
     const results: Record<string, {
       indicators: ReturnType<typeof evaluateTechnicalIndicators>
-      summary: ReturnType<typeof summarizeTechnicalIndicators>
+      summary: CommonCategorySummary
+      typeSummary: ReturnType<typeof summarizeTechnicalIndicators>
       configurations: Array<{
         type: CommonIndicatorType
         parameters: TechnicalIndicatorParameters
@@ -454,8 +498,8 @@ export class StepBasedIndicators {
     )].sort((left, right) => left - right)
 
     for (const timeframeMinutes of normalizedTimeframes) {
-      const resampled = resampleTechnicalCandles(candles, timeframeMinutes)
-      const evaluationContext = createTechnicalIndicatorEvaluationContext(resampled)
+      const evaluationContext = timeframeEvaluationContext(candles, timeframeMinutes)
+      const resampled = evaluationContext.candles
       const configurations = parameterVariants.map(({ type, parameters }) => {
         const indicators = evaluateTechnicalIndicators(
           resampled,
@@ -477,7 +521,9 @@ export class StepBasedIndicators {
       )
       results[String(timeframeMinutes)] = {
         indicators,
-        summary: summarizeTechnicalIndicators(indicators),
+        // Auto's vote: one vote per category (lib/common-indicators/categories.ts)
+        summary: summarizeCommonCategories(indicators),
+        typeSummary: summarizeTechnicalIndicators(indicators),
         configurations,
         ...compatibilityValues(indicators),
       }

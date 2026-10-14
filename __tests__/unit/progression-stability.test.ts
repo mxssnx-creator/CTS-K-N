@@ -82,12 +82,16 @@ describe('Progression State Manager - Stability Tests', () => {
           indications_active_advanced_count: '4',
           indications_signal_count: '7',
           indications_trend_count: '3',
+          indications_common_count: '11',
+          indications_special_count: '2',
         })
 
         const state = await ProgressionStateManager.getProgressionState(connectionId, 'main')
         expect(state.indicationsActiveAdvancedCount).toBe(4)
         expect(state.indicationsSignalCount).toBe(7)
         expect(state.indicationsTrendCount).toBe(3)
+        expect(state.indicationsCommonCount).toBe(11)
+        expect(state.indicationsSpecialCount).toBe(2)
       } finally {
         await client.del(scope.progressionKey, scope.legacyProgressionKey)
       }

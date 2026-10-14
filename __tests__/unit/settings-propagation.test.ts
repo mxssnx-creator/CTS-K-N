@@ -336,9 +336,12 @@ describe("System tab capacity controls", () => {
     )
 
     expect(source).toContain("Capacity & Stage Limits")
+    // symbolOrderType / numberOfSymbolsToSelect had no engine consumer (the
+    // engine reads the per-connection symbol_order / symbol_count), so the
+    // System tab no longer offers them as controls.
+    expect(source).not.toContain('handleSettingChange("symbolOrderType"')
+    expect(source).not.toContain('handleSettingChange("numberOfSymbolsToSelect"')
     for (const key of [
-      "symbolOrderType",
-      "numberOfSymbolsToSelect",
       "mainSymbols",
       "forcedSymbols",
       "setCompactionFloor",

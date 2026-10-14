@@ -29,11 +29,11 @@ import {
 afterEach(() => { setActiveProtectionFloors({}) })
 
 describe("protection floor normalization", () => {
-  test("defaults are 0.5 % for SL and trailing distance", () => {
-    expect(DEFAULT_MIN_STOP_LOSS_PCT).toBe(0.5)
-    expect(DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT).toBe(0.5)
-    expect(resolveProtectionFloors(undefined)).toEqual({ minStopLossPct: 0.5, minTrailingStopDistancePct: 0.5 })
-    expect(getActiveProtectionFloors()).toEqual({ minStopLossPct: 0.5, minTrailingStopDistancePct: 0.5 })
+  test("defaults are 0.6 % for SL and trailing distance (raised from 0.5 % on 2026-10-06)", () => {
+    expect(DEFAULT_MIN_STOP_LOSS_PCT).toBe(0.6)
+    expect(DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT).toBe(0.6)
+    expect(resolveProtectionFloors(undefined)).toEqual({ minStopLossPct: 0.6, minTrailingStopDistancePct: 0.6 })
+    expect(getActiveProtectionFloors()).toEqual({ minStopLossPct: 0.6, minTrailingStopDistancePct: 0.6 })
   })
 
   test("clamps into 0.05–10 and falls back on garbage", () => {
@@ -56,11 +56,11 @@ describe("protection floor normalization", () => {
   })
 
   test("floors raise tight distances and never lower wider ones", () => {
-    expect(applyStopLossFloorPct(0.2)).toBe(0.5)
+    expect(applyStopLossFloorPct(0.2)).toBe(0.6)
     expect(applyStopLossFloorPct(1.3)).toBe(1.3)
-    expect(applyTrailingDistanceFloorPct(0.1)).toBe(0.5)
+    expect(applyTrailingDistanceFloorPct(0.1)).toBe(0.6)
     expect(applyTrailingDistanceFloorPct(2)).toBe(2)
-    expect(applyTrailingDistanceFloorRatio(0.001)).toBeCloseTo(0.005, 12)
+    expect(applyTrailingDistanceFloorRatio(0.001)).toBeCloseTo(0.006, 12)
     expect(applyTrailingDistanceFloorRatio(0.1)).toBeCloseTo(0.1, 12)
     setActiveProtectionFloors({ minStopLossPct: 0.8, minTrailingStopDistancePct: 0.6 })
     expect(applyStopLossFloorPct(0.5)).toBe(0.8)
@@ -71,11 +71,11 @@ describe("protection floor normalization", () => {
 describe("Signal lane enforcement", () => {
   test("settings carry validated floors and raise the effective SL minimum", () => {
     const defaults = normalizeSignalIndicationSettings({})
-    expect(defaults.minStopLossPct).toBe(0.5)
-    expect(defaults.minTrailingStopDistancePct).toBe(0.5)
-    // Configured stopLossMinPct 0.2 is kept but the effective minimum is 0.5.
+    expect(defaults.minStopLossPct).toBe(0.6)
+    expect(defaults.minTrailingStopDistancePct).toBe(0.6)
+    // Configured stopLossMinPct 0.2 is kept but the effective minimum is 0.6.
     expect(defaults.stopLossMinPct).toBe(0.2)
-    expect(effectiveSignalStopLossMinPct(defaults)).toBe(0.5)
+    expect(effectiveSignalStopLossMinPct(defaults)).toBe(0.6)
     const wider = normalizeSignalIndicationSettings({ stopLossMinPct: 1.2, minStopLossPct: 0.5 })
     expect(effectiveSignalStopLossMinPct(wider)).toBe(1.2)
     const clamped = normalizeSignalIndicationSettings({ minStopLossPct: 99, minTrailingStopDistancePct: 0 })
@@ -84,7 +84,7 @@ describe("Signal lane enforcement", () => {
     expect(clamped.stopLossMaxPct).toBeGreaterThanOrEqual(10)
   })
 
-  test("the pre-existing 0.8 % Signal trailing floor stays in force above 0.5 %", () => {
+  test("the pre-existing 0.8 % Signal trailing floor stays in force above the 0.6 % floor", () => {
     const settings = normalizeSignalIndicationSettings({ trailingMinStopPct: 0.1 })
     expect(settings.trailingMinStopPct).toBe(SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR)
     const higher = normalizeSignalIndicationSettings({ trailingMinStopPct: 0.1, minTrailingStopDistancePct: 1.5 })
@@ -109,7 +109,7 @@ describe("Signal lane enforcement", () => {
       { ...base, sourceId: "b", stopLossPct: 0.25 },
       { ...base, sourceId: "c", stopLossPct: 0.3 },
     ] as any, settings)
-    expect(tight?.risk.stopLossPct).toBe(0.5)
+    expect(tight?.risk.stopLossPct).toBe(DEFAULT_MIN_STOP_LOSS_PCT)
     const wide = __signalIndicationTestUtils.lowStopConsensus([
       { ...base, sourceId: "a", stopLossPct: 0.9 },
       { ...base, sourceId: "b", stopLossPct: 0.9 },
@@ -120,22 +120,22 @@ describe("Signal lane enforcement", () => {
 
   test("persisted Signal risk and its live protection respect the SL floor", () => {
     const risk = normalizeSignalRisk({ stopLossPct: 0.2, takeProfitPct: 0.9, sourceIds: ["okx-swap"] })
-    expect(risk?.stopLossPct).toBe(0.5)
+    expect(risk?.stopLossPct).toBe(DEFAULT_MIN_STOP_LOSS_PCT)
     const kept = normalizeSignalRisk({ stopLossPct: 0.7, takeProfitPct: 0.9, sourceIds: ["okx-swap"] })
     expect(kept?.stopLossPct).toBe(0.7)
     const protection = deriveProtectionFromSignalRisk({
       stopLossPct: 0.3, takeProfitPct: 0.9, rewardRisk: 3, sourceIds: ["okx-swap"],
       agreement: 0.8, confidence: 0.8, generatedAt: Date.now(),
     })
-    expect(protection?.stopLossPct).toBe(0.5)
+    expect(protection?.stopLossPct).toBe(DEFAULT_MIN_STOP_LOSS_PCT)
   })
 })
 
 describe("Main lane enforcement", () => {
   const venueCosts = { takerFeeBpsPerSide: 5, estimatedSpreadBps: 2, estimatedMarketSlippageBps: 3, fundingHoldCostBufferBps: 1 }
 
-  test("PF-derived SL is floored at 0.5 % by default and follows the configured floor", () => {
-    expect(deriveProtectionFromProfitFactor(1.3, 0.1, 1, venueCosts).stopLossPct).toBe(0.5)
+  test("PF-derived SL is floored at the 0.6 % default and follows the configured floor", () => {
+    expect(deriveProtectionFromProfitFactor(1.3, 0.1, 1, venueCosts).stopLossPct).toBe(DEFAULT_MIN_STOP_LOSS_PCT)
     expect(deriveProtectionFromProfitFactor(1.3, 0.8, 1, venueCosts).stopLossPct).toBeCloseTo(0.8, 12)
     setActiveProtectionFloors({ minStopLossPct: 1 })
     expect(deriveProtectionFromProfitFactor(1.3, 0.1, 1, venueCosts).stopLossPct).toBe(1)

@@ -12,6 +12,7 @@ import {
 } from "@/lib/progression-scope"
 import { resolveDistributedEngineRuntime } from "@/lib/distributed-engine-runtime"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
+import { getSystemResourceMetrics } from "@/lib/system-resource-metrics"
 
 export const dynamic = "force-dynamic"
 export const dynamicParams = true
@@ -377,6 +378,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       detail = progression.detail || "Ready - toggle Enable on dashboard to start"
     }
     
+    // Historic timeframe intervals counted by the config-set processor on the
+    // engine-scoped prehistoric hash (current symbol generation only).
+    let historicIntervalsProcessed = 0
+
     // Get detailed prehistoric progress tracking
     let prehistoricProgress = {
       symbolsProcessed: 0,
@@ -428,6 +433,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           !activeSymbolSelectionEpoch ||
           progHash.symbol_selection_epoch === activeSymbolSelectionEpoch
         const prehistoricData = scopedEpochMatches ? rawPrehistoricData : {}
+        historicIntervalsProcessed = toNumber(prehistoricData.intervals_processed)
         const legacyPrehistoric = legacyEpochMatches ? rawLegacyPrehistoric : {}
         const processedSet =
           scopedEpochMatches && Array.isArray(prehistoricSymbolsSet)
@@ -651,7 +657,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         strategyEvaluatedBase: progressionState.strategyEvaluatedBase || parseInt(progHash.strategies_base_evaluated || "0", 10),
         strategyEvaluatedMain: progressionState.strategyEvaluatedMain || parseInt(progHash.strategies_main_evaluated || "0", 10),
         strategyEvaluatedReal: progressionState.strategyEvaluatedReal || parseInt(progHash.strategies_real_evaluated || "0", 10),
-        intervalsProcessed: toNumber(await client?.get(`intervals:${connectionId}:processed_count`).catch(() => 0)),
+        // `intervals:{id}:processed_count` is never written; the historic
+        // processor counts intervals on the prehistoric hash.
+        intervalsProcessed: historicIntervalsProcessed,
         engineRunning,
         // UI consumers historically read `isEngineRunning`; expose the same
         // durable running truth as `engineRunning` so hot-reload coordinator
@@ -693,6 +701,19 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         lastIndicationRun: engineState?.last_indication_run || null,
         lastStrategyRun: engineState?.last_strategy_run || null,
       },
+      // CPU and memory of the Node process serving this request (it runs the
+      // engine for every connection in the in-process deployment), so these
+      // are process-wide figures, not per-connection ones.
+      monitoring: (() => {
+        const resources = getSystemResourceMetrics()
+        return {
+          scope: "process",
+          cpuPercent: resources.cpuPercent,
+          memoryPercent: resources.memoryPercent,
+          rssBytes: resources.rssBytes,
+          measuredAt: new Date().toISOString(),
+        }
+      })(),
       recentLogs: recentLogs.slice(0, 20).map(log => ({
         timestamp: log.timestamp,
         level: log.level,

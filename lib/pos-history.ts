@@ -80,6 +80,11 @@ const OVERALL_BUCKET = "_overall"
 // in play (Real/Main eval counts + the 550 DDT cap) with headroom.
 const RING_CAP = 600
 
+/** The (symbol × type × direction) measured-close ring the Base gate reads. */
+export function posRingKey(connectionId: string, symbol: string, indicationType: string, direction: string): string {
+  return listKey(connectionId, symbol, indicationType, direction)
+}
+
 function listKey(
   connectionId: string,
   symbol: string,
@@ -149,6 +154,14 @@ export interface PosWindowStats {
   recentPnlPcts: number[]
   /** Per-row PositionCost percentages aligned with `recentPnlPcts`. */
   recentPositionCostPcts: number[]
+  /**
+   * Where the window's results come from. "exchange" = settled results of
+   * rows the venue executed (lib/live-set-outcomes.ts); "simulation" = the
+   * general ring of pseudo, paper and early real closes. Absent on legacy reads.
+   */
+  outcomeSource?: "exchange" | "simulation"
+  /** Settled real exchange closes known for this Set, also when below the switch-over count. */
+  exchangeCloses?: number
 }
 
 const EMPTY_WINDOW: PosWindowStats = {
@@ -232,32 +245,33 @@ export interface RecordPosClosedInput {
 }
 
 /**
- * Batched form of `recordPosClosed` for a completed Historic strategy pass.
+ * Batched form of `recordPosClosed` for a completed prehistoric measurement.
  *
- * Historic replay can produce hundreds of closed pseudo positions for one
- * strategy configuration. Queuing the single-position writer for each row
- * expands that into thousands of individual pipeline commands (two history
- * hashes plus two rolling lists per row). On the in-process Redis adapter all
- * of those commands execute on the same JavaScript event loop, which can
- * starve status/progression requests for many seconds. This input preserves
- * the same per-position rounding and rolling records, but aggregates the
- * commutative counters once per bucket and appends each ring in one operation.
+ * A prehistoric range can produce hundreds of closes for one symbol. Queuing
+ * the single-position writer for each row expands that into thousands of
+ * individual pipeline commands (two history hashes plus two rolling lists per
+ * row). On the in-process Redis adapter all of those commands execute on the
+ * same JavaScript event loop, which can starve status/progression requests for
+ * many seconds. This input preserves the same per-position rounding and
+ * rolling records, but aggregates the commutative counters once per bucket
+ * and appends each ring in one operation.
+ *
+ * Each row is booked into its own (symbol × type × direction) bucket only: it
+ * is evidence for the indication type that produced it, never for another.
  */
-export interface RecordPosClosedBatchEntry extends Omit<RecordPosClosedInput, "connectionId" | "pipeline"> {
-  /**
-   * Every (symbol × type × direction) bucket this one closed row is evidence
-   * for. Historic strategy simulation is indication-type agnostic, so it
-   * lists the Base indication types it measures; the row is written once per
-   * listed bucket and still counted exactly once in the overall rollup.
-   * Absent → the single `indicationType` bucket (live close semantics).
-   */
-  indicationTypes?: readonly string[]
-}
+export type RecordPosClosedBatchEntry = Omit<RecordPosClosedInput, "connectionId" | "pipeline">
 
 export interface RecordPosClosedBatchInput {
   connectionId: string
   entries: RecordPosClosedBatchEntry[]
   pipeline?: ReturnType<ReturnType<typeof getRedisClient>["multi"]>
+  /**
+   * The entries are OLDER than everything already in the rings (a backfill),
+   * given newest-first: they are appended at the ring's tail so the ring
+   * stays newest-first and the measured window keeps reading the latest
+   * closes. Counters add up the same either way.
+   */
+  older?: boolean
 }
 
 interface PosHistoryBatchAggregate {
@@ -323,6 +337,7 @@ function addClosedPositionToAggregate(
 function queuePosHistoryBatchAggregate(
   pipeline: ReturnType<ReturnType<typeof getRedisClient>["multi"]>,
   aggregate: PosHistoryBatchAggregate,
+  older = false,
 ): void {
   if (aggregate.count === 0) return
   pipeline.hincrby(aggregate.hash, "count", aggregate.count)
@@ -338,7 +353,8 @@ function queuePosHistoryBatchAggregate(
     pipeline.hincrby(aggregate.hash, "ddt_num_x10", aggregate.ddtX10)
   }
   pipeline.expire(aggregate.hash, TTL_SECONDS)
-  pipeline.lpush(aggregate.ring, ...aggregate.ringRecords)
+  if (older) pipeline.rpush(aggregate.ring, ...aggregate.ringRecords)
+  else pipeline.lpush(aggregate.ring, ...aggregate.ringRecords)
   pipeline.ltrim(aggregate.ring, 0, RING_CAP - 1)
   pipeline.expire(aggregate.ring, TTL_SECONDS)
 }
@@ -364,30 +380,24 @@ export function recordPosClosedBatch(input: RecordPosClosedBatchInput): void {
     const cleanDir = normalizeTradeDirection(entry.direction)
     if (!cleanDir) continue
     const cleanSymbol = entry.symbol || "unknown"
-    const cleanTypes = new Set(
-      entry.indicationTypes?.length
-        ? entry.indicationTypes.map((type) => type || "unknown")
-        : [entry.indicationType || "unknown"],
-    )
-    for (const cleanType of cleanTypes) {
-      const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
-      let bucket = perBucket.get(bucketKey)
-      if (!bucket) {
-        bucket = createPosHistoryBatchAggregate(
-          hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
-          listKey(connectionId, cleanSymbol, cleanType, cleanDir),
-        )
-        perBucket.set(bucketKey, bucket)
-      }
-      addClosedPositionToAggregate(bucket, entry)
+    const cleanType = entry.indicationType || "unknown"
+    const bucketKey = `${cleanSymbol}\u0000${cleanType}\u0000${cleanDir}`
+    let bucket = perBucket.get(bucketKey)
+    if (!bucket) {
+      bucket = createPosHistoryBatchAggregate(
+        hashKey(connectionId, cleanSymbol, cleanType, cleanDir),
+        listKey(connectionId, cleanSymbol, cleanType, cleanDir),
+      )
+      perBucket.set(bucketKey, bucket)
     }
+    addClosedPositionToAggregate(bucket, entry)
     addClosedPositionToAggregate(overall, entry)
   }
 
   for (const aggregate of perBucket.values()) {
-    queuePosHistoryBatchAggregate(client, aggregate)
+    queuePosHistoryBatchAggregate(client, aggregate, input.older === true)
   }
-  queuePosHistoryBatchAggregate(client, overall)
+  queuePosHistoryBatchAggregate(client, overall, input.older === true)
 
   if (owned) {
     ;(client as any).exec().catch(() => {})
@@ -428,9 +438,14 @@ export function recordPosClosed(input: RecordPosClosedInput): void {
   const cleanSymbol = symbol || "unknown"
   const cleanType   = indicationType || "unknown"
 
-  const win  = pnl > 0
-  const grossProfit = Math.max(0,  pnl)
-  const grossLoss   = Math.max(0, -pnl)
+  // Writers differ in the unit of `pnl` (a pseudo close books USDT, the
+  // per-type measurement has no notional and books percent, a simulated
+  // live row books the gross move). The signed net percent is the one unit
+  // every writer supplies, so outcome and PF use it whenever it is present.
+  const outcome = pnlPct !== null && pnlPct !== undefined && Number.isFinite(Number(pnlPct)) ? Number(pnlPct) : pnl
+  const win  = outcome > 0
+  const grossProfit = Math.max(0,  outcome)
+  const grossLoss   = Math.max(0, -outcome)
   const ddt         = Math.max(0,  drawdownMinutes)
   
   // Pseudo positions are closed with a fixed 0.1% notional cost already
@@ -653,17 +668,21 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
     // if parts.length >= 3, new format (pnl|cost|ddt)
     const cost = parts.length >= 3 ? Number(parts[1]) : 0
     const ddt = Number(parts.length >= 3 ? parts[2] : parts[1])
-    const pnlPct = parts.length >= 5 ? Number(parts[3]) : Number.NaN
+    // An empty field (a row written without a ratio) is absent, not 0 %.
+    const pnlPct = parts.length >= 5 && parts[3] !== "" ? Number(parts[3]) : Number.NaN
     const positionCostPct = parts.length >= 5 ? Number(parts[4]) : Number.NaN
     
     if (Number.isFinite(pnl)) {
       n++
-      recentPnls.push(pnl)
-      if (pnl > 0) {
+      // One unit per window: the signed net percent when the record carries
+      // it (every current writer does), else the legacy quote-currency PnL.
+      const outcome = Number.isFinite(pnlPct) ? pnlPct : pnl
+      recentPnls.push(outcome)
+      if (outcome > 0) {
         wins++
-        num += pnl
+        num += outcome
       } else {
-        den += -pnl
+        den += -outcome
       }
       // Accumulate position costs for all positions (wins & losses)
       if (Number.isFinite(cost) && cost > 0) {
@@ -677,8 +696,10 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
         recentPnlPcts.push(pnlPct)
         recentPositionCostPcts.push(positionCostPct)
       }
-      // DDT averaged over the SAME window sample as PF.
-      if (Number.isFinite(ddt) && ddt > 0) {
+      // DDT averaged over the SAME window sample as PF — closes that never
+      // went into drawdown count with 0 (9 × 0 min and 1 × 120 min average 12
+      // minutes, not 120).
+      if (Number.isFinite(ddt) && ddt >= 0) {
         ddtSum += ddt
         ddtCount++
       }
@@ -1302,16 +1323,14 @@ const RECORD_STRATEGY_CLOSE_OUTCOMES_LUA = `
   return inserted
 `
 
-async function recordStrategyCloseOutcomes(
-  client: ReturnType<typeof getRedisClient>,
-  connectionId: string,
-  positionId: string,
-  memberships: string[],
-  outcome?: StrategyPositionCloseOutcome,
-): Promise<void> {
+/**
+ * One ring record ("pnl|cost|ddt|pnlPct|positionCostPct") for a terminal
+ * result. Shared by the general Set ring and the exchange-only ring
+ * (lib/live-set-outcomes.ts) so both windows are derived identically.
+ */
+export function strategyOutcomeRecord(outcome: StrategyPositionCloseOutcome): string | null {
   const pnl = Number(outcome?.pnl)
-  if (memberships.length === 0 || !Number.isFinite(pnl)) return
-
+  if (!Number.isFinite(pnl)) return null
   const ddt = Math.max(0, Number(outcome?.drawdownMinutes || 0))
   const pnlPct = Number(outcome?.pnlPct)
   const positionCostPct = Number(outcome?.positionCostPct)
@@ -1319,13 +1338,24 @@ async function recordStrategyCloseOutcomes(
     Number.isFinite(pnlPct) &&
     Number.isFinite(positionCostPct) &&
     positionCostPct > 0
-  const record = [
+  return [
     pnl.toFixed(6),
     "0",
     ddt.toFixed(3),
     hasCanonicalRatio ? pnlPct.toFixed(8) : "",
     hasCanonicalRatio ? positionCostPct.toFixed(8) : "",
   ].join("|")
+}
+
+async function recordStrategyCloseOutcomes(
+  client: ReturnType<typeof getRedisClient>,
+  connectionId: string,
+  positionId: string,
+  memberships: string[],
+  outcome?: StrategyPositionCloseOutcome,
+): Promise<void> {
+  const record = outcome ? strategyOutcomeRecord(outcome) : null
+  if (memberships.length === 0 || record === null) return
   const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
   const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
   const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
@@ -1491,6 +1521,28 @@ export async function markStrategyPositionInactive(
     return deactivated > 0
   } catch {
     return false
+  }
+}
+
+/**
+ * Book a result that settled AFTER its row closed (close-accounting cron) into
+ * the Set result rings. The close itself booked nothing because the venue had
+ * not returned the settlement yet, so without this the result was lost to
+ * every later PF/DDT window. Close ids (positionId|setKey) keep it exactly-once
+ * against the close path and against replays.
+ */
+export async function recordStrategySetCloseOutcome(
+  connectionId: string,
+  positionId: string,
+  setKeys: string[],
+  outcome: StrategyPositionCloseOutcome,
+): Promise<void> {
+  const memberships = Array.from(new Set(setKeys.map(String).filter(Boolean)))
+  if (!connectionId || !positionId || memberships.length === 0) return
+  try {
+    await recordStrategyCloseOutcomes(getRedisClient(), connectionId, positionId, memberships, outcome)
+  } catch {
+    // Best effort like the close path; the exchange-only ring is booked separately.
   }
 }
 

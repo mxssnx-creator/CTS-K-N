@@ -393,29 +393,31 @@ export async function GET(request: Request) {
         const historicSymbolsKey = hasScopedPrehistoric
           ? `${scope.prehistoricKey}:symbols`
           : `prehistoric:${conn.id}:symbols`
-        const [indicationsByType, strategyCounts, strategyEvaluations, basePseudoCount, mainPseudoCount, realPseudoCount, baseDirection, baseMove, baseActive, baseActiveAdvanced, baseSpecial, baseOptimal, baseCommon, baseSignal, baseTrend, livePositionsCount, prehistoricSymbols, processedIntervalsRaw] =
+        // Position counts come from the indexes the running engine maintains,
+        // read with cardinality commands only: PseudoPositionManager's open
+        // set and its per-direction sets (default + signal-trailing lane), and
+        // the LiveStage's open-position list. The former base_/main_/real_pseudo
+        // and positions:{id}:live keys are written only by legacy modules the
+        // TradeEngineManager never runs, so they always read 0.
+        const pseudoDirectionKey = (side: "long" | "short", lane = "") =>
+          `pseudo_positions:${conn.id}:active_by_direction:${side}${lane}`
+        const [indicationsByType, strategyCounts, strategyEvaluations, pseudoOpenCount, pseudoLongDefault, pseudoLongTrailing, pseudoShortDefault, pseudoShortTrailing, liveOpenIndexCount, prehistoricSymbols] =
           await Promise.all([
             countIndicationsByType(client, conn.id),
             countStrategiesByType(client, conn.id, symbols),
             getStrategyEvaluationCounters(client, conn.id),
-            client.scard(`base_pseudo:${conn.id}`).catch(() => 0),
-            client.scard(`main_pseudo:${conn.id}`).catch(() => 0),
-            client.scard(`real_pseudo:${conn.id}`).catch(() => 0), // active/open validated Real stage only (reconciled)
-            client.scard(`base_pseudo:${conn.id}:direction`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:move`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:active`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:active_advanced`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:special`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:optimal`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:common`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:signal`).catch(() => 0),
-            client.scard(`base_pseudo:${conn.id}:trend`).catch(() => 0),
-            client.scard(`positions:${conn.id}:live`).catch(() => 0),
+            client.scard(`pseudo_positions:${conn.id}`).catch(() => 0),
+            client.scard(pseudoDirectionKey("long")).catch(() => 0),
+            client.scard(pseudoDirectionKey("long", ":signal_trailing")).catch(() => 0),
+            client.scard(pseudoDirectionKey("short")).catch(() => 0),
+            client.scard(pseudoDirectionKey("short", ":signal_trailing")).catch(() => 0),
+            client.llen(`live:positions:${conn.id}`).catch(() => 0),
             client.scard(historicSymbolsKey).catch(() => 0),
-            client.get(`intervals:${conn.id}:processed_count`).catch(() => 0),
           ])
 
-        const processedIntervals = toNumber(processedIntervalsRaw)
+        // Historic intervals are counted on the prehistoric hash by the
+        // config-set processor; `intervals:{id}:processed_count` is never written.
+        const processedIntervals = toNumber(prehistoricHash.intervals_processed)
         const now = Date.now()
         const dashboardEnabled = isTruthy(conn.is_enabled_dashboard)
         const heartbeatAgeMs = heartbeatAt > 0 ? Math.max(0, now - heartbeatAt) : null
@@ -573,22 +575,11 @@ export async function GET(request: Request) {
           strategyCounts,
           strategyEvaluations,
           pseudoCounts: {
-            base: basePseudoCount,
-            main: mainPseudoCount,
-            real: realPseudoCount,
+            open: toNumber(pseudoOpenCount),
+            long: toNumber(pseudoLongDefault) + toNumber(pseudoLongTrailing),
+            short: toNumber(pseudoShortDefault) + toNumber(pseudoShortTrailing),
           },
-          basePseudoByIndication: {
-            direction: baseDirection,
-            move: baseMove,
-            active: baseActive,
-            active_advanced: baseActiveAdvanced,
-            special: baseSpecial,
-            optimal: baseOptimal,
-            common: baseCommon,
-            signal: baseSignal,
-            trend: baseTrend,
-          },
-          livePositions: livePositionsCount,
+          livePositions: toNumber(liveOpenIndexCount),
           signalCapacity: {
             total: signalCapacityTotal,
             long: toNumber(signalCapacityRaw.long),
@@ -745,14 +736,13 @@ export async function GET(request: Request) {
 
     const aggregatedPseudo = perConnection.reduce(
       (acc, item) => {
-        acc.base += item.pseudoCounts.base
-        acc.main += item.pseudoCounts.main
-        acc.real += item.pseudoCounts.real
+        acc.open += item.pseudoCounts.open
+        acc.long += item.pseudoCounts.long
+        acc.short += item.pseudoCounts.short
         return acc
       },
-      { base: 0, main: 0, real: 0 },
+      { open: 0, long: 0, short: 0 },
     )
-    const normalizedPseudoHierarchy = { ...aggregatedPseudo }
 
     const aggregatedPrehistoric = perConnection.reduce(
       (acc, item) => {
@@ -846,22 +836,6 @@ export async function GET(request: Request) {
     const simulatedWinRate = aggregatedLive.simulatedPositionsClosed > 0
       ? Math.round((aggregatedLive.simulatedWins / aggregatedLive.simulatedPositionsClosed) * 1000) / 10
       : 0
-
-    const basePseudoByIndication = perConnection.reduce(
-      (acc, item) => {
-        acc.direction += item.basePseudoByIndication.direction
-        acc.move += item.basePseudoByIndication.move
-        acc.active += item.basePseudoByIndication.active
-        acc.active_advanced += item.basePseudoByIndication.active_advanced
-        acc.special += item.basePseudoByIndication.special
-        acc.optimal += item.basePseudoByIndication.optimal
-        acc.common += item.basePseudoByIndication.common
-        acc.signal += item.basePseudoByIndication.signal
-        acc.trend += item.basePseudoByIndication.trend
-        return acc
-      },
-      { direction: 0, move: 0, active: 0, active_advanced: 0, special: 0, optimal: 0, common: 0, signal: 0, trend: 0 },
-    )
 
     const unifiedLogs = [...auditLogs, ...systemLogs, ...logs]
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
@@ -1063,13 +1037,15 @@ export async function GET(request: Request) {
         perConnection.reduce((sum, item) => sum + item.strategiesEvaluated, 0) ||
         aggregatedStrategyCounts.main ||
         strategyCycles,
+      // Open pseudo (evaluation) positions. Base, Main and Real filter Sets
+      // that share this one pseudo ledger, so there is no per-stage store to
+      // split it by; it is split by direction instead.
       pseudoPositions: {
-        base: normalizedPseudoHierarchy.base,
-        main: normalizedPseudoHierarchy.main,
-        real: normalizedPseudoHierarchy.real,
-        // Cascade pipeline — NOT a sum. `total` is the final-stage (Real) count;
-        // Base and Main are intermediate filter stages of the SAME pseudo-positions.
-        total: normalizedPseudoHierarchy.real,
+        open: aggregatedPseudo.open,
+        long: aggregatedPseudo.long,
+        short: aggregatedPseudo.short,
+        total: aggregatedPseudo.open,
+        source: "pseudo-position-manager-open-index",
       },
       // Extended stats
       prehistoricSymbols: aggregatedPrehistoric.symbols,
@@ -1084,15 +1060,11 @@ export async function GET(request: Request) {
         real: aggregatedStrategyEvaluations.real || aggregatedStrategyCounts.real,
       },
       strategyPassedByType: aggregatedStrategyEvaluations.passed,
-      pseudoPositionsByType: {
-        baseByIndication: basePseudoByIndication,
-      },
-      pseudoPositionsRaw: {
-        base: aggregatedPseudo.base,
-        main: aggregatedPseudo.main,
-        real: aggregatedPseudo.real,
-      },
+      // Rows in the LiveStage open-position index. The index also holds
+      // simulated and not (yet) filled rows; executed exposure is reported
+      // by liveExecution below.
       livePositions,
+      livePositionsSource: "live-stage-open-index",
       // Detailed Live execution metrics — orders, positions, fill & win rates
       liveExecution: {
         ...aggregatedLive,

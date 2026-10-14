@@ -1,8 +1,10 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { getAllConnections, initRedis, isConnectionAssignedToMain } from "@/lib/redis-db"
 import { POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
 import { buildLiveFamilyStatistics } from "@/lib/live-family-statistics"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 import type { TradeHistoryRow } from "@/lib/trade-history"
+import { GET as getTradeHistory } from "@/app/api/trading/trade-history/route"
 
 export const dynamic = "force-dynamic"
 
@@ -14,13 +16,17 @@ export const dynamic = "force-dynamic"
  * coordinate, so an expectation and an outcome are directly comparable rather
  * than being two different definitions of "profit factor".
  *
- * Rows come from the existing trade-history endpoint so there is exactly one
+ * Rows come from the existing trade-history handler so there is exactly one
  * assembly path for realised trades — a second one would drift from it and
- * quietly report different numbers on the same data.
+ * quietly report different numbers on the same data. The handler is invoked
+ * in-process (no HTTP round trip back into this server) and keeps its own
+ * serialized read-model cache.
  */
+const CONNECTION_READ_CONCURRENCY = 4
+
 async function loadRows(origin: string, connectionId: string, limit: number): Promise<TradeHistoryRow[]> {
   const url = `${origin}/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=${limit}`
-  const response = await fetch(url, { cache: "no-store" }).catch(() => null)
+  const response = await getTradeHistory(new NextRequest(url)).catch(() => null)
   if (!response?.ok) return []
   const payload = await response.json().catch(() => null)
   const rows = Array.isArray(payload?.rows) ? payload.rows : []
@@ -46,17 +52,18 @@ export async function GET(request: Request) {
         .map((connection: any) => String(connection.id || ""))
         .filter(Boolean)
 
-  const perConnection: Array<{ connectionId: string; rows: number; report: ReturnType<typeof buildLiveFamilyStatistics> }> = []
-  const allRows: TradeHistoryRow[] = []
-  for (const connectionId of connectionIds) {
-    const rows = await loadRows(url.origin, connectionId, limit)
-    allRows.push(...rows)
-    perConnection.push({
-      connectionId,
-      rows: rows.length,
-      report: buildLiveFamilyStatistics(rows, positionCostPercent),
-    })
-  }
+  // Bounded parallel reads; results keep the connection order.
+  const rowsByConnection = await mapWithConcurrency(
+    connectionIds,
+    CONNECTION_READ_CONCURRENCY,
+    (connectionId) => loadRows(url.origin, connectionId, limit),
+  )
+  const allRows: TradeHistoryRow[] = rowsByConnection.flat()
+  const perConnection = connectionIds.map((connectionId, index) => ({
+    connectionId,
+    rows: rowsByConnection[index].length,
+    report: buildLiveFamilyStatistics(rowsByConnection[index], positionCostPercent),
+  }))
 
   const combined = buildLiveFamilyStatistics(allRows, positionCostPercent)
   return NextResponse.json({

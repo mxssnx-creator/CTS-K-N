@@ -107,3 +107,5 @@ version	name	source
 106	106-compound-block-steps-and-neutral-pf-factor	lib/redis-migrations.ts
 107	107-base-pf-and-real-live-row-defaults	lib/redis-migrations.ts
 108	108-independent-additive-block-counts	lib/redis-migrations.ts
+109	109-protection-floor-defaults-0-6	lib/redis-migrations.ts
+110	110-stage-pf-defaults-1-10	lib/redis-migrations.ts

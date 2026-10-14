@@ -2,7 +2,10 @@
  * Technical Indicators Library
  * Implements common trading indicators: RSI, MACD, Bollinger Bands, Parabolic SAR, etc.
  */
-import type { PresetIndicatorType } from "@/lib/preset-optimizer"
+import { latestWilderRsi } from "@/lib/wilder-rsi"
+import { toCommonParameters, type PresetIndicatorType } from "@/lib/preset-optimizer"
+import { createCommonSeriesContext } from "@/lib/common-indicators/context"
+import { getCommonRule } from "@/lib/common-indicators/registry"
 import type { CommonIndicatorType } from "@/lib/common-indicator-config"
 import { evaluateTechnicalIndicators } from "@/lib/technical-indicators"
 
@@ -24,23 +27,7 @@ export class TechnicalIndicators {
    * Calculate RSI (Relative Strength Index)
    */
   static calculateRSI(prices: number[], period = 14): number {
-    if (!prices || prices.length === 0) return 50
-    if (prices.length < period + 1) return 50
-
-    const changes = []
-    for (let i = 1; i < prices.length; i++) {
-      changes.push(prices[i] - prices[i - 1])
-    }
-
-    const gains = changes.map((c) => (c > 0 ? c : 0))
-    const losses = changes.map((c) => (c < 0 ? Math.abs(c) : 0))
-
-    const avgGain = gains.slice(-period).reduce((sum, g) => sum + g, 0) / period
-    const avgLoss = losses.slice(-period).reduce((sum, l) => sum + l, 0) / period
-
-    if (avgLoss === 0) return avgGain > 0 ? 100 : 50
-    const rs = avgGain / avgLoss
-    return 100 - 100 / (1 + rs)
+    return latestWilderRsi(prices || [], period)
   }
 
   /**
@@ -242,139 +229,53 @@ export class TechnicalIndicators {
   }
 
   /**
-   * Generate trading signal from indicator
+   * Generate a trading signal from a close-only price series. The prices are
+   * turned into candles (open = previous close, a small synthetic wick) — use
+   * generateSignalFromCandles whenever real OHLCV is available. Every type is
+   * the shared Common rule (lib/common-indicators/registry.ts) with the
+   * preset's own parameters, so the preset runtime reads what the optimizer
+   * tuned and what the live engine executes.
    */
   static generateSignal(indicator: IndicatorConfig, prices: number[]): IndicatorSignal {
-    const currentPrice = prices[prices.length - 1]
+    return this.generateSignalFromCandles(indicator, closeOnlyCandles(prices))
+  }
 
-    switch (indicator.type) {
-      case "rsi": {
-        const rsi = this.calculateRSI(prices, indicator.params.period || 14)
-        const oversold = indicator.params.oversold || 30
-        const overbought = indicator.params.overbought || 70
-
-        if (rsi < oversold) {
-          return {
-            type: "rsi",
-            strength: (oversold - rsi) / oversold,
-            direction: "long",
-            value: rsi,
-            timestamp: new Date(),
-          }
-        } else if (rsi > overbought) {
-          return {
-            type: "rsi",
-            strength: (rsi - overbought) / (100 - overbought),
-            direction: "short",
-            value: rsi,
-            timestamp: new Date(),
-          }
-        }
-        return { type: "rsi", strength: 0, direction: "neutral", value: rsi, timestamp: new Date() }
-      }
-
-      case "macd": {
-        const macd = this.calculateMACD(prices)
-        const strength = Math.min(Math.abs(macd.histogram) / currentPrice, 1)
-
-        return {
-          type: "macd",
-          strength,
-          direction: macd.histogram > 0 ? "long" : macd.histogram < 0 ? "short" : "neutral",
-          value: macd.histogram,
-          timestamp: new Date(),
-        }
-      }
-
-      case "bollinger": {
-        const bb = this.calculateBollingerBands(prices, indicator.params.period || 20, indicator.params.stdDev || 2)
-        const position = (currentPrice - bb.lower) / (bb.upper - bb.lower)
-
-        if (position < 0.2) {
-          return {
-            type: "bollinger",
-            strength: 1 - position / 0.2,
-            direction: "long",
-            value: position,
-            timestamp: new Date(),
-          }
-        } else if (position > 0.8) {
-          return {
-            type: "bollinger",
-            strength: (position - 0.8) / 0.2,
-            direction: "short",
-            value: position,
-            timestamp: new Date(),
-          }
-        }
-        return { type: "bollinger", strength: 0, direction: "neutral", value: position, timestamp: new Date() }
-      }
-
-      case "psar":
-      case "sar": {
-        const highs = prices.map((p) => p * 1.01) // Approximate highs
-        const lows = prices.map((p) => p * 0.99) // Approximate lows
-        const sar = this.calculateParabolicSAR(highs, lows)
-
-        const distance = Math.abs(currentPrice - sar.sar) / currentPrice
-        const strength = Math.min(distance * 10, 1)
-
-        return {
-          type: "sar",
-          strength,
-          direction: sar.trend === "up" ? "long" : "short",
-          value: sar.sar,
-          timestamp: new Date(),
-        }
-      }
-
-      case "adx": {
-        const highs = prices.map((p) => p * 1.01) // Approximate highs
-        const lows = prices.map((p) => p * 0.99) // Approximate lows
-        const adx = this.calculateADX(highs, lows, prices, indicator.params.period || 14)
-
-        const strength = Math.min(adx.adx / 50, 1) // Normalize to 0-1
-
-        return {
-          type: "adx",
-          strength,
-          direction: adx.plusDI > adx.minusDI ? "long" : adx.minusDI > adx.plusDI ? "short" : "neutral",
-          value: adx.adx,
-          timestamp: new Date(),
-        }
-      }
-
-      default: {
-        const rawType = String(indicator.type)
-        const canonicalType = (rawType === "sar" ? "psar" : rawType) as CommonIndicatorType
-        const candles = prices.map((price, index) => {
-          const previous = prices[Math.max(0, index - 1)] || price
-          const spread = Math.max(Math.abs(price - previous), price * 0.0001)
-          return {
-            timestamp: index,
-            open: previous,
-            high: Math.max(previous, price) + spread * 0.1,
-            low: Math.min(previous, price) - spread * 0.1,
-            close: price,
-            volume: Math.max(1, Math.abs(price - previous) * 1_000),
-          }
-        })
-        const period = indicator.params.period ||
-          indicator.params.kPeriod ||
-          indicator.params.long ||
-          indicator.params.longPeriod ||
-          14
-        const evaluated = evaluateTechnicalIndicators(candles, period, [canonicalType])
-        const signal = evaluated[canonicalType]
-        return {
-          type: indicator.type,
-          strength: signal?.strength || 0,
-          direction: signal?.direction || "neutral",
-          value: signal?.value || 0,
-          timestamp: new Date(),
-        }
-      }
+  /** The shared Common rule of the indicator at the last candle (real OHLCV). */
+  static generateSignalFromCandles(indicator: IndicatorConfig, candles: unknown[]): IndicatorSignal {
+    const rawType = String(indicator.type)
+    const canonicalType = (rawType === "sar" ? "psar" : rawType) as CommonIndicatorType
+    const parameters = toCommonParameters(indicator.type, numericParams(indicator.params))
+    const evaluated = evaluateTechnicalIndicators(candles, 14, [canonicalType], { [canonicalType]: parameters })
+    const signal = evaluated[canonicalType]
+    return {
+      type: indicator.type,
+      strength: signal?.strength || 0,
+      direction: signal?.direction || "neutral",
+      value: signal?.value || 0,
+      timestamp: new Date(),
     }
+  }
+
+  /**
+   * The indicator's reading at every candle (causal: bar i reads bars 0..i),
+   * computed once over the series instead of re-evaluating a window per bar.
+   */
+  static signalSeriesFromCandles(
+    indicator: IndicatorConfig,
+    candles: unknown[],
+  ): Array<{ direction: "long" | "short" | "neutral"; strength: number; value: number }> {
+    const rule = getCommonRule(String(indicator.type))
+    const context = createCommonSeriesContext(candles)
+    const output = new Array(context.length).fill(null).map(() => ({ direction: "neutral" as const, strength: 0, value: 0 }))
+    if (!rule) return output
+    const params = rule.resolve(toCommonParameters(indicator.type, numericParams(indicator.params)), 14)
+    const warmup = rule.warmup(params)
+    const series: Array<{ direction: "long" | "short" | "neutral"; strength: number; value: number }> = output
+    for (let index = Math.max(0, warmup - 1); index < context.length; index++) {
+      const sample = rule.at(context, params, index)
+      if (sample) series[index] = { direction: sample.direction, strength: Math.max(0, Math.min(1, sample.strength)), value: sample.value }
+    }
+    return series
   }
 
   /**
@@ -404,4 +305,38 @@ export class TechnicalIndicators {
  */
 export function calculateIndicators(prices: number[], indicators: IndicatorConfig[]): IndicatorSignal[] {
   return indicators.map((indicator) => TechnicalIndicators.generateSignal(indicator, prices))
+}
+
+/** As calculateIndicators, on real OHLCV candles (preferred). */
+export function calculateIndicatorsFromCandles(candles: unknown[], indicators: IndicatorConfig[]): IndicatorSignal[] {
+  return indicators.map((indicator) => TechnicalIndicators.generateSignalFromCandles(indicator, candles))
+}
+
+/**
+ * Close-only prices as candles: open = previous close, a wick of 10 % of the
+ * close-to-close move (at least 0.01 % of the price) and a volume that grows
+ * with the move. Only for callers that have no OHLCV.
+ */
+function closeOnlyCandles(prices: number[]) {
+  return prices.map((price, index) => {
+    const previous = prices[Math.max(0, index - 1)] || price
+    const spread = Math.max(Math.abs(price - previous), price * 0.0001)
+    return {
+      timestamp: index,
+      open: previous,
+      high: Math.max(previous, price) + spread * 0.1,
+      low: Math.min(previous, price) - spread * 0.1,
+      close: price,
+      volume: Math.max(1, Math.abs(price - previous) * 1_000),
+    }
+  })
+}
+
+function numericParams(params: Record<string, unknown> | undefined): Record<string, number> {
+  const output: Record<string, number> = {}
+  for (const [key, value] of Object.entries(params || {})) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) output[key] = parsed
+  }
+  return output
 }

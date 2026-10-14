@@ -7,6 +7,7 @@ import { getConnection } from "@/lib/redis-db"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import type { Connection } from "@/lib/db-types"
 import { normalizeMarketType } from "@/lib/market-types"
+import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { createHash } from "node:crypto"
 import {
   isForexBridgeSelected,
@@ -42,6 +43,7 @@ function isBingXVirtualFundsConnection(connection: { id?: string } | null | unde
 export class ExchangeConnectorFactory {
   private static instance: ExchangeConnectorFactory
   private connectors: Map<string, BaseExchangeConnector> = new Map()
+  private publicMarketDataConnectors: Map<string, { fingerprint: string; connector: BaseExchangeConnector }> = new Map()
   private connectorFingerprints: Map<string, string> = new Map()
   private unavailableConnectorFingerprints: Map<string, { fingerprint: string; retryAt: number }> = new Map()
   
@@ -281,7 +283,41 @@ export class ExchangeConnectorFactory {
     return this.createConnector(connection as Connection, options)
   }
   
+  /**
+   * A connector for PUBLIC market data of a connection that has no usable
+   * credentials. Production builds no trading connector without keys (and
+   * only falls back to the simulated connector when production simulation
+   * is enabled), which left a paper connection without any real price even
+   * though klines and recent trades are public. This connector carries no
+   * credentials, lives in its own cache and is never returned by
+   * getOrCreateConnector, so no order, balance or position path can reach
+   * it. Forced simulation and forex keep their own sources (null here).
+   */
+  async getPublicMarketDataConnector(connectionId: string): Promise<BaseExchangeConnector | null> {
+    if (isForcedSimulation()) return null
+    const connection = await getConnection(connectionId).catch(() => null)
+    if (!connection) return null
+    const exchange = this.resolveExchangeName(connection as Connection)
+    if (exchange === "instaforex") return null
+    const fingerprint = this.buildFingerprint({ ...(connection as Connection), api_key: "", api_secret: "" } as Connection)
+    const cached = this.publicMarketDataConnectors.get(connectionId)
+    if (cached && cached.fingerprint === fingerprint) return cached.connector
+    try {
+      const credentials = { ...this.buildCredentials(connection as Connection), apiKey: "", apiSecret: "", apiPassphrase: "" }
+      const connector = await createExchangeConnector(exchange, credentials, { publicMarketDataOnly: true })
+      this.publicMarketDataConnectors.set(connectionId, { fingerprint, connector })
+      return connector
+    } catch (error) {
+      console.warn(
+        `[ExchangeConnectorFactory] public market-data connector unavailable for ${connectionId}:`,
+        error instanceof Error ? error.message : String(error),
+      )
+      return null
+    }
+  }
+
   removeConnector(connectionId: string): void {
+    this.publicMarketDataConnectors.delete(connectionId)
     for (const key of new Set([
       ...this.connectors.keys(),
       ...this.connectorFingerprints.keys(),
@@ -295,6 +331,7 @@ export class ExchangeConnectorFactory {
   }
   
   clearAll(): void {
+    this.publicMarketDataConnectors.clear()
     this.connectors.clear()
     this.connectorFingerprints.clear()
     this.unavailableConnectorFingerprints.clear()

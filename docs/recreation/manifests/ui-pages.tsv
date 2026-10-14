@@ -19,14 +19,14 @@ route	dynamic_segments	imported_components	source
 /monitoring		emergency-stop-button,monitoring/backup-manager,monitoring/monitoring-alerts,monitoring/trade-engine-status,page-header,pnl-dashboard,system/system-verification-panel,ui/badge,ui/button,ui/card,ui/input,ui/scroll-area,ui/select,ui/tabs	app/monitoring/page.tsx
 /monitoring-advanced		page-scaffold,ui/badge,ui/card,ui/tabs	app/monitoring-advanced/page.tsx
 /portfolios		dashboard/orders-history,dashboard/portfolio-overview,dashboard/positions-table,page-scaffold	app/portfolios/page.tsx
-/portfolios/[id]	[id]	dashboard/portfolio-metrics,dashboard/positions-table,dashboard/risk-settings,page-scaffold,ui/button	app/portfolios/[id]/page.tsx
+/portfolios/[id]	[id]	dashboard/portfolio-metrics,dashboard/positions-table,page-scaffold,ui/button	app/portfolios/[id]/page.tsx
 /presets		page-header,ui/button,ui/card,ui/input,ui/label,ui/slider,ui/switch	app/presets/page.tsx
 /register		ui/button,ui/card,ui/input,ui/label	app/register/page.tsx
 /sets		page-scaffold,ui/badge,ui/button,ui/card,ui/dialog,ui/input,ui/label,ui/select,ui/slider,ui/switch,ui/textarea	app/sets/page.tsx
 /settings		auth-guard,page-header,settings/auto-indication-settings,settings/connection-settings-header,settings/exchange-connection-manager,settings/install-manager,settings/logs-viewer,settings/overall-control-orders-setting,settings/statistics-overview,settings/tabs/exchange-tab,settings/tabs/indication-tab,settings/tabs/overall-tab,settings/tabs/special-tab,settings/tabs/strategy-tab,settings/tabs/system-tab,ui/badge,ui/button,ui/card,ui/input,ui/label,ui/select,ui/separator,ui/slider,ui/switch,ui/tabs	app/settings/page.tsx
 /settings/connections			app/settings/connections/page.tsx
 /settings/indications/auto		ui/button,ui/card,ui/input,ui/label,ui/switch	app/settings/indications/auto/page.tsx
-/settings/indications/common		ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/common/page.tsx
+/settings/indications/common		ui/badge,ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/common/page.tsx
 /settings/indications/main		ui/badge,ui/button,ui/card,ui/checkbox,ui/input,ui/label,ui/slider,ui/switch	app/settings/indications/main/page.tsx
 /settings/indications/optimal		ui/alert,ui/button,ui/card,ui/checkbox,ui/input,ui/label	app/settings/indications/optimal/page.tsx
 /settings/indications/signal		settings/signal-indication-settings	app/settings/indications/signal/page.tsx

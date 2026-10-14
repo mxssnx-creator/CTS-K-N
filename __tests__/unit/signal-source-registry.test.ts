@@ -368,6 +368,8 @@ describe("Signal source registry and low-stop calculation", () => {
     const settings = normalizeSignalIndicationSettings({
       minimumSourceSignals: 3,
       minimumAgreement: 0.6,
+      // Isolate the prioritisation from the operator SL floor (0.6 % default).
+      minStopLossPct: 0.05,
     })
     const base = {
       sourceName: "source",

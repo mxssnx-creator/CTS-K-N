@@ -6,21 +6,17 @@ import {
   recordPosClosedBatch,
   type RecordPosClosedBatchEntry,
 } from "@/lib/pos-history"
-import {
-  HISTORIC_POS_HISTORY_INDICATION_TYPES,
-  STRATEGY_INDICATION_TYPES,
-} from "@/lib/strategy-indication-policy"
 
 // A fresh database has no live closes. Base only qualifies from measured
-// history, so prehistoric closes must land in the exact buckets Base reads:
-// pos_ring:{conn}:{symbol}:{indicationType}:{direction} with Base types.
+// history, so the prehistoric per-type measurement books its closes into the
+// exact buckets Base reads, pos_ring:{conn}:{symbol}:{indicationType}:{direction},
+// each close into the bucket of the type that produced it.
 const MIN_COUNT = 5
 
-function prehistoricCloses(count: number, withBaseTypes: boolean): RecordPosClosedBatchEntry[] {
+function prehistoricCloses(count: number, indicationType: string): RecordPosClosedBatchEntry[] {
   return Array.from({ length: count }, (_, i) => ({
     symbol: "BCHUSDT",
-    indicationType: "MA_Cross", // strategy family label from StrategyConfig.type
-    ...(withBaseTypes && { indicationTypes: HISTORIC_POS_HISTORY_INDICATION_TYPES }),
+    indicationType,
     direction: "long" as const,
     pnl: i % 2 === 0 ? 0.4 : -0.2,
     pnlPct: i % 2 === 0 ? 0.4 : -0.2,
@@ -55,41 +51,40 @@ describe("Base measured-history bootstrap from prehistoric closes", () => {
     }
   })
 
-  test("pre-fix keying (strategy family label only) reproduces the deadlock", async () => {
+  test("a generic strategy family label qualifies no Base type", async () => {
     const connectionId = `prefix-${Date.now()}-${Math.random()}`
-    await write(connectionId, prehistoricCloses(12, false))
+    await write(connectionId, prehistoricCloses(12, "MA_Cross"))
     const rejections = await baseRejections(connectionId)
     expect(rejections.get("direction")).toBe(`base_awaiting_measured_history: 0 < ${MIN_COUNT}`)
     expect(rejections.get("move")).toBe(`base_awaiting_measured_history: 0 < ${MIN_COUNT}`)
   })
 
-  test("prehistoric closes keyed to Base buckets qualify Base; signal and empty buckets stay rejected", async () => {
+  test("a type's measured closes qualify only that type; other types and Signal stay rejected", async () => {
     const connectionId = `fixed-${Date.now()}-${Math.random()}`
-    await write(connectionId, prehistoricCloses(12, true))
+    await write(connectionId, [...prehistoricCloses(12, "direction"), ...prehistoricCloses(7, "move")])
     const rejections = await baseRejections(connectionId)
     expect(rejections.get("direction")).toBeNull()
     expect(rejections.get("move")).toBeNull()
-    expect(rejections.get("active")).toBeNull()
+    // No fan-out: Active was not measured, so its own bucket stays empty.
+    expect(rejections.get("active")).toBe(`base_awaiting_measured_history: 0 < ${MIN_COUNT}`)
     // Signal is realtime-only external consensus; replay never measures it.
     expect(rejections.get("signal")).toBe(`base_awaiting_measured_history: 0 < ${MIN_COUNT}`)
-    // Other symbols/directions without history remain gated.
-    const shortWindows = await getPosWindowBatch(connectionId, "BCHUSDT", [
+    // Each bucket holds exactly its own closes.
+    const windows = await getPosWindowBatch(connectionId, "BCHUSDT", [
+      { indicationType: "direction", direction: "long" },
+      { indicationType: "move", direction: "long" },
       { indicationType: "direction", direction: "short" },
-    ])
-    expect(baseMeasuredHistoryRejection(shortWindows.get("direction|short"), MIN_COUNT))
+    ], 25)
+    expect(windows.get("direction|long")?.count).toBe(12)
+    expect(windows.get("move|long")?.count).toBe(7)
+    expect(baseMeasuredHistoryRejection(windows.get("direction|short"), MIN_COUNT))
       .toBe(`base_awaiting_measured_history: 0 < ${MIN_COUNT}`)
     // Too little history is still rejected.
     const thinConnection = `thin-${Date.now()}-${Math.random()}`
-    await write(thinConnection, prehistoricCloses(MIN_COUNT - 1, true))
+    await write(thinConnection, prehistoricCloses(MIN_COUNT - 1, "direction"))
     expect((await baseRejections(thinConnection)).get("direction"))
       .toBe(`base_awaiting_measured_history: ${MIN_COUNT - 1} < ${MIN_COUNT}`)
-    // Fan-out into type buckets does not inflate the connection rollup.
-    await expect(getPosWindowOverall(connectionId, 600)).resolves.toMatchObject({ count: 12 })
-  })
-
-  test("historic buckets cover every Base type except realtime-only Signal", () => {
-    expect([...HISTORIC_POS_HISTORY_INDICATION_TYPES].sort()).toEqual(
-      STRATEGY_INDICATION_TYPES.filter((t) => t !== "signal").sort(),
-    )
+    // The connection rollup counts every close once.
+    await expect(getPosWindowOverall(connectionId, 600)).resolves.toMatchObject({ count: 19 })
   })
 })

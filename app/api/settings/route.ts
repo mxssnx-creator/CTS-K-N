@@ -69,6 +69,8 @@ import {
   validateProtectionFloorInput,
 } from "@/lib/protection-floors"
 import { liveConfigLossPolicy, normalizeLiveConfigLossWindow } from "@/lib/live-config-loss-policy"
+import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES, normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
+import { COMMON_INDICATOR_TYPES } from "@/lib/common-indicator-config"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -175,6 +177,9 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
   if (normalized.liveConfigLossWindow !== undefined) {
     normalized.liveConfigLossWindow = normalizeLiveConfigLossWindow(normalized.liveConfigLossWindow)
   }
+  if (normalized.liveOutcomeMinCloses !== undefined) {
+    normalized.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(normalized.liveOutcomeMinCloses)
+  }
   if (normalized.liveConfigAutoDeactivateEnabled !== undefined) {
     normalized.liveConfigAutoDeactivateEnabled = liveConfigLossPolicy(normalized).enabled
   }
@@ -257,6 +262,7 @@ function getDefaultSettings(): Record<string, any> {
     overall_control_orders_only: false,
     liveConfigAutoDeactivateEnabled: true,
     liveConfigLossWindow: 12,
+    liveOutcomeMinCloses: DEFAULT_LIVE_OUTCOME_MIN_CLOSES,
     ...flattenSpecialSettings(DEFAULT_SPECIAL_STRATEGY_SETTINGS),
     ...defaultStrategyIndicationVariantSettings(),
     mainEngineIntervalMs: 700,
@@ -427,10 +433,7 @@ function getDefaultSettings(): Record<string, any> {
     presetTrailStepRatio: 0.5,
     presetAutoGenerate: true,
     presetAutoSelect: true,
-    presetIndicatorTypes: [
-      "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
-      "psar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
-    ],
+    presetIndicatorTypes: [...COMMON_INDICATOR_TYPES],
     presetMaxIndicatorVariants: 4,
     presetMaxSignalsPerVariant: 48,
     presetMaxCandlesPerRun: 6000,

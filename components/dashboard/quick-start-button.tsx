@@ -1,11 +1,11 @@
 "use client"
 
 import { buildConnectionMutationEventDetail, dispatchConnectionMutationEvents } from "@/lib/connection-events"
-import React, { useEffect, useState } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Zap, Loader2, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react"
+import { Zap, Loader2, CheckCircle2, AlertCircle, RefreshCw, X } from "lucide-react"
 import { toast } from "@/lib/simple-toast"
 import { DetailedLoggingDialog } from "./detailed-logging-dialog"
 import { QuickstartOverviewDialog } from "./quickstart-overview-dialog"
@@ -16,6 +16,8 @@ import { QuickstartFullSystemTestDialog } from "./quickstart-full-system-test-di
 import { EngineProcessingLogDialog } from "./engine-processing-log-dialog"
 import { useExchange } from "@/lib/exchange-context"
 import { QUICKSTART_ENABLE_TIMEOUT_MS } from "@/lib/quickstart-timeouts"
+import { usePoll } from "@/hooks/use-poll"
+import { stageSnapshotCount, stageSnapshotFreshness, type OverviewStage } from "./quickstart-overview-snapshot"
 
 interface QuickStartButtonProps {
   onQuickStartComplete?: () => void
@@ -45,6 +47,10 @@ interface FunctionalOverview {
     realStrategies: number
     liveStrategies: number
   }
+  stageSnapshots?: Record<OverviewStage, {
+    coveredSymbols: number
+    freshSymbols: number
+  }>
 }
 
 interface OverallStats {
@@ -92,6 +98,15 @@ const ENABLE_STEP_LABEL = "Enable selected Main Connection"
 const DEFAULT_FETCH_TIMEOUT_MS = 12_000
 const MIGRATION_STEP_TIMEOUT_MS = 60_000
 const COORDINATOR_START_TIMEOUT_MS = 35_000
+// The functional overview is a live read model: refresh it while it is shown
+// (paused while the browser tab is hidden) instead of freezing the first read.
+const OVERVIEW_POLL_INTERVAL_MS = 10_000
+const OVERVIEW_STAGES: Array<{ stage: OverviewStage; label: string }> = [
+  { stage: "base", label: "Base" },
+  { stage: "main", label: "Main" },
+  { stage: "real", label: "Real" },
+  { stage: "live", label: "Live" },
+]
 
 type QuickStartRequestBody = {
   action: "enable"
@@ -179,6 +194,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
   const [isRunning, setIsRunning] = useState(false)
   const [functionalOverview, setFunctionalOverview] = useState<FunctionalOverview | null>(null)
   const [overallStats, setOverallStats] = useState<OverallStats | null>(null)
+  const [overviewVisible, setOverviewVisible] = useState(false)
   const [steps, setSteps] = useState<QuickStartStep[]>([
     { id: "init",    name: "Initialize System",              status: "pending" },
     { id: "migrate", name: "Run Migrations",                 status: "pending" },
@@ -260,8 +276,29 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
     }
   }
 
+  const loadFunctionalOverview = useCallback(async () => {
+    const res = await fetch("/api/trade-engine/functional-overview", { cache: "no-store" }).catch(() => null)
+    if (!res?.ok) return
+    const d = await res.json().catch(() => null)
+    if (d && !d.error) setFunctionalOverview(d)
+  }, [])
+
+  // Polls only while the overview is shown; usePoll clears the timer on
+  // unmount and when the panel is hidden.
+  usePoll(loadFunctionalOverview, {
+    intervalMs: OVERVIEW_POLL_INTERVAL_MS,
+    enabled: overviewVisible,
+  })
+
+  const hideOverview = () => {
+    setOverviewVisible(false)
+    setFunctionalOverview(null)
+    setOverallStats(null)
+  }
+
   const handleQuickStart = async () => {
     setIsRunning(true)
+    setOverviewVisible(false)
     setFunctionalOverview(null)
     setSteps(prev => prev.map(s => ({ ...s, status: "pending", message: undefined })))
 
@@ -376,16 +413,9 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
 
       toast.success(`Quick Start complete — ${displayConnectionName()} processing requested.`)
 
-      // Fetch functional overview in background
-      try {
-        const res = await timedFetch("/api/trade-engine/functional-overview", {}, 6000)
-        if (res.ok) {
-          const d = await res.json()
-          setFunctionalOverview(d)
-        }
-      } catch {
-        // Non-critical: overview unavailable
-      }
+      // Show the functional overview; it is read now and then refreshed
+      // every OVERVIEW_POLL_INTERVAL_MS while visible.
+      setOverviewVisible(true)
 
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("engine-state-changed", { detail: { running: true } }))
@@ -508,10 +538,21 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
           </ul>
         </div>
 
-        {/* Functional Overview - Displayed after successful completion */}
+        {/* Functional Overview - shown after a successful QuickStart, refreshed while visible */}
         {(functionalOverview || overallStats) && (
           <div className="rounded border border-green-200 bg-green-50 p-3 text-xs dark:border-green-900 dark:bg-green-950/25">
-            <p className="mb-2 font-semibold text-green-700 dark:text-green-400">Functional Overview (System Ready):</p>
+            <div className="mb-2 flex items-start justify-between gap-2">
+              <div>
+                <p className="font-semibold text-green-700 dark:text-green-400">Functional Overview</p>
+                <p className="text-[10px] text-muted-foreground">
+                  Stage figures are the last-observed per-symbol basket snapshot · refreshes every{" "}
+                  {OVERVIEW_POLL_INTERVAL_MS / 1000}s
+                </p>
+              </div>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={hideOverview} aria-label="Hide overview">
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
             <div className="grid grid-cols-1 gap-2 text-gray-700 dark:text-gray-200 sm:grid-cols-2">
               {functionalOverview && (
                 <>
@@ -519,28 +560,26 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
                     <span className="font-medium">Symbols Active:</span> {functionalOverview.symbolsActive}
                   </div>
                   <div>
-                    <span className="font-medium">Indication Cycles (since engine start):</span> {functionalOverview.counts?.indicationCycles || functionalOverview.indicationsCalculated}
+                    <span className="font-medium">Indication Cycles (since engine start):</span> {functionalOverview.counts?.indicationCycles ?? functionalOverview.indicationsCalculated}
                   </div>
                   <div>
-                    <span className="font-medium">Strategy Cycles (since engine start):</span> {functionalOverview.counts?.strategyCycles || 0}
+                    <span className="font-medium">Strategy Cycles (since engine start):</span> {functionalOverview.counts?.strategyCycles ?? "—"}
                   </div>
                   <div>
-                    <span className="font-medium">Strategies Evaluated (this cycle):</span> {functionalOverview.strategiesEvaluated}
+                    <span className="font-medium">Strategies Evaluated (basket snapshot):</span> {functionalOverview.strategiesEvaluated}
                   </div>
-                  <div>
-                    <span className="font-medium">Base Strategies (this cycle):</span> {functionalOverview.counts?.baseStrategies || (functionalOverview.baseSetsCreated ? "Active" : "0")}
-                  </div>
-                  <div>
-                    <span className="font-medium">Main Strategies (this cycle):</span> {functionalOverview.counts?.mainStrategies || (functionalOverview.mainSetsCreated ? "Active" : "0")}
-                  </div>
-                  <div>
-                    <span className="font-medium">Real Strategies (this cycle):</span> {functionalOverview.counts?.realStrategies || (functionalOverview.realSetsCreated ? "Active" : "0")}
-                  </div>
-                  <div>
-                    <span className="font-medium">Live Strategies (this cycle):</span> {functionalOverview.counts?.liveStrategies || (functionalOverview.liveSetsCreated ? "Active" : "0")}
-                  </div>
+                  {OVERVIEW_STAGES.map(({ stage, label }) => {
+                    const count = stageSnapshotCount(functionalOverview, stage)
+                    const freshness = stageSnapshotFreshness(functionalOverview, stage)
+                    return (
+                      <div key={stage} title={count === null ? "No observed stage rows yet" : freshness ?? undefined}>
+                        <span className="font-medium">{label} Sets (basket snapshot):</span> {count ?? "—"}
+                        {freshness && <span className="ml-1 text-[10px] text-muted-foreground">({freshness})</span>}
+                      </div>
+                    )
+                  })}
                   <div className="col-span-2">
-                    <span className="font-medium">DB Position Entries:</span> {functionalOverview.positionsEntriesCreated}
+                    <span className="font-medium">DB Position Entries (pseudo open + live):</span> {functionalOverview.positionsEntriesCreated}
                   </div>
                 </>
               )}
@@ -551,7 +590,7 @@ export function QuickStartButton({ onQuickStartComplete }: QuickStartButtonProps
         {/* Data Overview - Comprehensive prehistoric and processing stats */}
         {overallStats && (
           <div className="space-y-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/25">
-            <p className="mb-2 font-semibold text-amber-700 dark:text-amber-400">Data Overview (Prehistoric & Processing):</p>
+            <p className="mb-2 font-semibold text-amber-700 dark:text-amber-400">Data Overview (Prehistoric & Processing, at QuickStart):</p>
             
             {/* Prehistoric Data */}
             <div className="grid grid-cols-2 gap-2">

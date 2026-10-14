@@ -1,15 +1,18 @@
 /**
- * System-wide protection floors (operator instruction 2026-09-27):
- *   - minimum stop-loss distance        0.5 %
- *   - minimum trailing-stop distance    0.5 %
+ * System-wide protection floors (operator instruction 2026-09-27, both 0.5 %;
+ * raised by operator instruction 2026-10-06):
+ *   - minimum stop-loss distance        0.6 %
+ *   - minimum trailing-stop distance    0.6 %
  *
  * Floors only ever RAISE a distance. A configured/derived value that is
  * already wider is left unchanged, and a pre-existing higher lane floor
  * (for example the Signal dynamic trailing floor of 0.8 %) stays in force.
  * Percent units: 0.5 = 0.5 %.
  */
-export const DEFAULT_MIN_STOP_LOSS_PCT = 0.5
-export const DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT = 0.5
+export const DEFAULT_MIN_STOP_LOSS_PCT = 0.6
+export const DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT = 0.6
+/** The defaults before 2026-10-06; a stored value equal to these is migrated to the new defaults. */
+export const PREVIOUS_DEFAULT_PROTECTION_FLOOR_PCT = 0.5
 export const PROTECTION_FLOOR_MIN_PCT = 0.05
 export const PROTECTION_FLOOR_MAX_PCT = 10
 

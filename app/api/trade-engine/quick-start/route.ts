@@ -11,6 +11,7 @@ import { getAllConnections, getConnection, initRedis, updateConnectionState, set
 import { API_VERSIONS } from "@/lib/system-version"
 import { logProgressionEvent, getProgressionLogs } from "@/lib/engine-progression-logs"
 import { createExchangeConnector } from "@/lib/exchange-connectors"
+import { isSupportedConnectorExchange } from "@/lib/supported-exchanges"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
@@ -295,6 +296,9 @@ async function handlePost(request: Request) {
     }
     const canUseRequestedConnection = (c: any) => {
       if (!c) return false
+      // No connector, no market data: a run on such a connection would
+      // "complete" without evaluating anything (MEXC, 2026-10-07).
+      if (!isExplicitSimulatedConnection(c) && !isSupportedConnectorExchange(normalizeQuickstartExchange(c))) return false
       // An explicitly selected connection is always safe to use when the UI
       // has requested Paper mode.  Credential availability is an execution
       // concern only for real orders; rejecting a credentialless BingX

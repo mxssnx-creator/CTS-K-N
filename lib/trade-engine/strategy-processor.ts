@@ -416,6 +416,10 @@ export class StrategyProcessor {
           setsFailed: result.failedEvaluation,
           avgProfitFactor: result.avgProfitFactor.toFixed(2),
           avgDrawdownTime: `${Math.round(result.avgDrawdownTime)}min`,
+          ...(result.type === "base" && result.awaitingHistory !== undefined ? {
+            awaitingHistory: result.awaitingHistory,
+            measuredAvgProfitFactor: (result.measuredAvgProfitFactor ?? 0).toFixed(2),
+          } : {}),
           ...(result.type === "live" ? {
             dispatchSelected: result.dispatchSelected ?? 0,
             dispatchSuppressed: result.dispatchSuppressed ?? 0,

@@ -38,7 +38,7 @@ export interface BotSettings {
   symbolCount: number          // 10–50 step 10, default 10
   symbolRanking: SymbolRanking // default 1H volatility
   minTakeProfitPct: number     // 0.2–1.6 step 0.2, default 0.4
-  minStopLossPct: number       // 0.4–0.8, default 0.5 (of market price)
+  minStopLossPct: number       // 0.4–0.8, default 0.6 (of market price; system floor raised 2026-10-06)
   trailingDistancePct: number  // 0.2–0.6, default 0.3 (activation distance)
   volumeFactor: number         // 1–10, default 1
   /** Re-base the position unit once balance grows by this ratio (0.6 = +60 %). */
@@ -55,7 +55,7 @@ export interface BotSettings {
 export const BOT_BOUNDS = {
   symbolCount: { min: 10, max: 50, step: 10, default: 10 },
   minTakeProfitPct: { min: 0.2, max: 1.6, step: 0.2, default: 0.4 },
-  minStopLossPct: { min: 0.4, max: 0.8, step: 0.1, default: 0.5 },
+  minStopLossPct: { min: 0.4, max: 0.8, step: 0.1, default: 0.6 },
   trailingDistancePct: { min: 0.2, max: 0.6, step: 0.1, default: 0.3 },
   volumeFactor: { min: 1, max: 10, step: 1, default: 1 },
   backtestHours: { min: 12, max: 72, step: 12, default: 24 },

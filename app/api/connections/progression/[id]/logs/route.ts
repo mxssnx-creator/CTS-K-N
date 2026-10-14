@@ -55,9 +55,10 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
       structuredLogs = []
     }
 
-    // Read per-type indication counts directly from the live progression hash.
-    // statistics-tracker writes these as HINCRBY every indication cycle, so they are
-    // always more current than the flat indications:{connId}:count key.
+    // Per-type indication counters are HINCRBY fields written by the engine
+    // every indication cycle (`indications_{type}_count`). They are read
+    // through the canonical progression reader; Common and Special are not
+    // exposed there yet, so those two come from the scoped hash directly.
     let progHashForLogs: Record<string, string> = {}
     try {
       await ensureScopedProgressionFromLegacy(client, connectionId, engineType)
@@ -66,14 +67,14 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
       progHashForLogs = {}
     }
     const indicationsByType = {
-      direction: toNumber(progHashForLogs["indications_direction_count"]),
-      move:      toNumber(progHashForLogs["indications_move_count"]),
-      active:    toNumber(progHashForLogs["indications_active_count"]),
-      active_advanced: toNumber(progHashForLogs["indications_active_advanced_count"]),
-      optimal:   toNumber(progHashForLogs["indications_optimal_count"]),
-      auto:      toNumber(progHashForLogs["indications_auto_count"]),
-      signal:    toNumber(progHashForLogs["indications_signal_count"]),
-      trend:     toNumber(progHashForLogs["indications_trend_count"]),
+      direction: toNumber(progressionState.indicationsDirectionCount),
+      move:      toNumber(progressionState.indicationsMoveCount),
+      active:    toNumber(progressionState.indicationsActiveCount),
+      active_advanced: toNumber(progressionState.indicationsActiveAdvancedCount),
+      optimal:   toNumber(progressionState.indicationsOptimalCount),
+      auto:      toNumber(progressionState.indicationsAutoCount),
+      signal:    toNumber(progressionState.indicationsSignalCount),
+      trend:     toNumber(progressionState.indicationsTrendCount),
       common:    toNumber(progHashForLogs["indications_common_count"]),
       special:   toNumber(progHashForLogs["indications_special_count"]),
     }
@@ -90,42 +91,40 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
           connectionId,
         }))
 
-    // Fetch progression hash to get accurate stage counts from strategy-coordinator
-    const progHashForSetCounts = (await client.hgetall(`progression_lifecycle:${connectionId}`).catch(() => ({}))) || {}
-
+    // Stage Set totals are the strategy-coordinator's `strategies_{stage}_total`
+    // progression counters (the former `progression_lifecycle:{id}` hash is
+    // never written). Historic symbols live in the engine-scoped SADD set;
+    // the unscoped set is only a fallback for installations that have not
+    // created the scoped namespace yet.
+    const baseSetCount = toNumber(progressionState.strategiesBaseTotal)
+    const mainSetCount = toNumber(progressionState.strategiesMainTotal)
+    const realSetCount = toNumber(progressionState.strategiesRealTotal)
+    const scopedPrehistoricSymbolsKey = `${scope.prehistoricKey}:symbols`
     const [
-      prehistoricSymbolsSet,
-      baseSetCount,
-      mainSetCount,
-      realSetCount,
-      indicationDirectionCount,
-      indicationMoveCount,
-      indicationActiveCount,
-      indicationActiveAdvancedCount,
-      indicationOptimalCount,
-      indicationSignalCount,
-      indicationTrendCount,
+      scopedPrehistoricSymbols,
+      scopedPrehistoricSymbolsExist,
+      legacyPrehistoricSymbols,
+      historicIntervalsProcessed,
+      schemaVersion,
       redisDbSize,
       redisMemoryInfo,
     ] = await Promise.all([
+      client.scard(scopedPrehistoricSymbolsKey).catch(() => 0),
+      client.exists(scopedPrehistoricSymbolsKey).catch(() => 0),
       client.scard(`prehistoric:${connectionId}:symbols`).catch(() => 0),
-      // Base stage count from progression hash — sets promoted by Base stage
-      toNumber((progHashForSetCounts as Record<string, string>).strategies_base_total || "0"),
-      // Main stage count from progression hash — sets fanned out by Main stage
-      toNumber((progHashForSetCounts as Record<string, string>).strategies_main_total || "0"),
-      // Real stage count comes from progression hash (strategies_real_total), NOT Redis key count.
-      // This is the authoritative source set by strategy-coordinator when Real stage evaluates.
-      toNumber((progHashForSetCounts as Record<string, string>).strategies_real_total || "0"),
-      toNumber(await client.get(`indications:${connectionId}:direction:evaluated`).catch(() => 0)),
-      toNumber(await client.get(`indications:${connectionId}:move:evaluated`).catch(() => 0)),
-      toNumber(await client.get(`indications:${connectionId}:active:evaluated`).catch(() => 0)),
-      toNumber(await client.get(`indications:${connectionId}:active_advanced:evaluated`).catch(() => 0)),
-      toNumber(await client.get(`indications:${connectionId}:optimal:evaluated`).catch(() => 0)),
-      toNumber(await client.get(`indications:${connectionId}:signal:evaluated`).catch(() => 0)),
-      toNumber(await client.get(`indications:${connectionId}:trend:evaluated`).catch(() => 0)),
+      // Historic intervals are counted by the config-set processor on the
+      // prehistoric hash; `intervals:{id}:processed_count` is never written.
+      client.hget(scope.prehistoricKey, "intervals_processed").catch(() => null),
+      client.get("_schema_version").catch(() => null),
       client.dbSize().catch(() => 0),
       client.info().catch(() => ""),
     ])
+    const prehistoricSymbolsSet = toNumber(scopedPrehistoricSymbolsExist) > 0
+      ? toNumber(scopedPrehistoricSymbols)
+      : toNumber(legacyPrehistoricSymbols)
+    const indicationCycleCount = toNumber(progressionState.indicationCycleCount)
+    const strategyCycleCount = toNumber(progressionState.strategyCycleCount)
+    const realtimeCycleCount = toNumber(progressionState.realtimeCycleCount)
 
     const usedMemoryLine = String(redisMemoryInfo)
       .split("\n")
@@ -142,8 +141,10 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
       structuredLogs,
       structuredLogsCount: structuredLogs.length,
       progressionState: {
-        cyclesCompleted: sanitizeNonNegative(Math.max(progressionState.cyclesCompleted, Number(engineState?.indication_cycle_count || 0))),
-        successfulCycles: sanitizeNonNegative(Math.max(progressionState.successfulCycles, Number(engineState?.strategy_cycle_count || 0))),
+        // Cycle counters are kept out of trade_engine_state by the engine; the
+        // progression counters are the only source.
+        cyclesCompleted: sanitizeNonNegative(progressionState.cyclesCompleted),
+        successfulCycles: sanitizeNonNegative(progressionState.successfulCycles),
         failedCycles: sanitizeNonNegative(progressionState.failedCycles),
         totalTrades: sanitizeNonNegative(progressionState.totalTrades),
         successfulTrades: sanitizeNonNegative(progressionState.successfulTrades),
@@ -153,9 +154,11 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
         lastCycleTime: progressionState.lastCycleTime,
         prehistoricCyclesCompleted: sanitizeNonNegative(progressionState.prehistoricCyclesCompleted),
         prehistoricPhaseActive: progressionState.prehistoricPhaseActive,
-        realtimeCycleCount: sanitizeNonNegative(engineState?.realtime_cycle_count),
+        indicationCycleCount: sanitizeNonNegative(indicationCycleCount),
+        strategyCycleCount: sanitizeNonNegative(strategyCycleCount),
+        realtimeCycleCount: sanitizeNonNegative(realtimeCycleCount),
         cycleTimeMs: sanitizeNonNegative(engineState?.last_cycle_duration),
-        intervalsProcessed: sanitizeNonNegative(await client.get(`intervals:${connectionId}:processed_count`).catch(() => 0)),
+        intervalsProcessed: sanitizeNonNegative(historicIntervalsProcessed),
         indicationsCount: sanitizeNonNegative(
           // Prefer the live progression hash total; fall back to the flat counter
           indicationsByTypeTotal > 0
@@ -167,13 +170,16 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
         strategyEvaluatedBase: sanitizeNonNegative(await client.get(`strategies:${connectionId}:base:evaluated`).catch(() => 0)),
         strategyEvaluatedMain: sanitizeNonNegative(await client.get(`strategies:${connectionId}:main:evaluated`).catch(() => 0)),
         strategyEvaluatedReal: sanitizeNonNegative(await client.get(`strategies:${connectionId}:real:evaluated`).catch(() => 0)),
-        indicationEvaluatedDirection: sanitizeNonNegative(indicationDirectionCount),
-        indicationEvaluatedMove: sanitizeNonNegative(indicationMoveCount),
-        indicationEvaluatedActive: sanitizeNonNegative(indicationActiveCount),
-        indicationEvaluatedActiveAdvanced: sanitizeNonNegative(indicationActiveAdvancedCount),
-        indicationEvaluatedOptimal: sanitizeNonNegative(indicationOptimalCount),
-        indicationEvaluatedSignal: sanitizeNonNegative(indicationSignalCount),
-        indicationEvaluatedTrend: sanitizeNonNegative(indicationTrendCount),
+        // Cumulative indications produced per type since run start (the
+        // former `indications:{id}:{type}:evaluated` keys are never written).
+        indicationEvaluatedDirection: sanitizeNonNegative(indicationsByType.direction),
+        indicationEvaluatedMove: sanitizeNonNegative(indicationsByType.move),
+        indicationEvaluatedActive: sanitizeNonNegative(indicationsByType.active),
+        indicationEvaluatedActiveAdvanced: sanitizeNonNegative(indicationsByType.active_advanced),
+        indicationEvaluatedOptimal: sanitizeNonNegative(indicationsByType.optimal),
+        indicationEvaluatedAuto: sanitizeNonNegative(indicationsByType.auto),
+        indicationEvaluatedSignal: sanitizeNonNegative(indicationsByType.signal),
+        indicationEvaluatedTrend: sanitizeNonNegative(indicationsByType.trend),
         prehistoricSymbolsProcessed: sanitizeNonNegative(engineState?.config_set_symbols_processed),
         prehistoricCandlesProcessed: sanitizeNonNegative(engineState?.config_set_candles_processed),
         prehistoricSymbolsProcessedCount: sanitizeNonNegative(prehistoricSymbolsSet || engineState?.config_set_symbols_processed),
@@ -189,11 +195,13 @@ async function buildLogsResponse(request: NextRequest, { params }: { params: Pro
         setsTotalCount: sanitizeNonNegative(realSetCount),
         redisDbEntries: sanitizeNonNegative(redisDbSize),
         redisDbSizeMb: Number(dbSizeMb.toFixed(2)),
+        // Applied Redis schema (migration) version; null when never migrated.
+        schemaVersion: schemaVersion === null || schemaVersion === undefined ? null : sanitizeNonNegative(schemaVersion),
         processingCompleteness: {
-          prehistoricLoaded: !!(engineState?.prehistoric_data_loaded === true || engineState?.prehistoric_data_loaded === "1"),
-          indicationsRunning: sanitizeNonNegative(engineState?.indication_cycle_count) > 0,
-          strategiesRunning: sanitizeNonNegative(engineState?.strategy_cycle_count) > 0,
-          realtimeRunning: sanitizeNonNegative(engineState?.realtime_cycle_count) > 0,
+          prehistoricLoaded: !!(engineState?.prehistoric_data_loaded === true || engineState?.prehistoric_data_loaded === "1" || engineState?.prehistoric_data_loaded === "true"),
+          indicationsRunning: indicationCycleCount > 0,
+          strategiesRunning: strategyCycleCount > 0,
+          realtimeRunning: realtimeCycleCount > 0,
           hasErrors: sanitizeNonNegative(engineState?.config_set_errors) > 0,
         },
       },

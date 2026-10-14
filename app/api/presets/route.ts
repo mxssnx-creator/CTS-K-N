@@ -3,6 +3,7 @@ import { query, execute } from "@/lib/db"
 import { nanoid } from "nanoid"
 import { SystemLogger } from "@/lib/system-logger"
 import { getSettings } from "@/lib/redis-db"
+import { isTruthyFlag } from "@/lib/boolean-utils"
 import {
   PRESET_DEFAULT_INDICATION_RANGES,
   PRESET_DEFAULT_INDICATION_TYPES,
@@ -82,17 +83,21 @@ export async function GET(request: NextRequest) {
         : [0.5, 1.0, 1.5, 2.0],
       dca_levels: preset.dca_levels ? JSON.parse(preset.dca_levels) : [3, 5, 7],
       volume_factors: normalizePresetVolumeFactors(preset.volume_factors),
-      trailing_enabled: preset.trailing_enabled === true,
-      block_adjustment_enabled: preset.block_adjustment_enabled === true,
-      dca_adjustment_enabled: preset.dca_adjustment_enabled === true,
-      backtest_enabled: preset.backtest_enabled === true,
+      // The Redis SQL shim stores every column as a string ("true"/"false"),
+      // so a strict `=== true` turned every stored flag into false.
+      trailing_enabled: isTruthyFlag(preset.trailing_enabled),
+      block_adjustment_enabled: isTruthyFlag(preset.block_adjustment_enabled),
+      dca_adjustment_enabled: isTruthyFlag(preset.dca_adjustment_enabled),
+      backtest_enabled: isTruthyFlag(preset.backtest_enabled),
       is_active: requestedConnectionId
         ? String(preset.id) === activePresetId
-        : preset.is_active === true,
-      is_predefined: preset.is_predefined === true,
+        : isTruthyFlag(preset.is_active),
+      is_predefined: isTruthyFlag(preset.is_predefined),
     }))
 
-    return NextResponse.json(activeOnly && requestedConnectionId
+    // The shim ignores the WHERE clause of the list query, so the active-only
+    // filter is applied to the parsed flags for both scopes.
+    return NextResponse.json(activeOnly
       ? validatedPresets.filter((preset) => preset.is_active)
       : validatedPresets)
   } catch (error) {

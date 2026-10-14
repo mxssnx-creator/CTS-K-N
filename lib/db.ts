@@ -318,20 +318,29 @@ async function routeQuery(queryText: string, params: any[] = []): Promise<{ rows
             rowCount: 0,
           }
         }
-        const id = nanoid()
         const client = getRedisClient()
-        
+        // Extract column names from INSERT statement
+        const columnsMatch = q.match(/\(([^)]+)\)/i)
+        const columns = columnsMatch
+          ? columnsMatch[1].split(',').map(c => c.trim().toLowerCase())
+          : []
+        // A caller that supplies the primary key reads the row back by it
+        // (`SELECT ... WHERE id = $1`); storing it under a generated key made
+        // that read empty, e.g. POST /api/presets answered with no body.
+        const idIndex = columns.indexOf("id")
+        const suppliedId = idIndex >= 0 && idIndex < params.length
+          ? String(params[idIndex] ?? "").trim()
+          : ""
+        const id = suppliedId || nanoid()
+
         if (table === "settings" || table === "config") {
           if (params.length >= 2) {
             await redisSetSettings(String(params[0]), params[1])
           }
         } else {
           await client.sadd(table, String(id))
-          
-          // Extract column names from INSERT statement
-          const columnsMatch = q.match(/\(([^)]+)\)/i)
+
           if (columnsMatch && params.length > 0) {
-            const columns = columnsMatch[1].split(',').map(c => c.trim().toLowerCase())
             const data: Record<string, any> = { id }
             
             // Map params to columns (skip VALUES placeholder positions)

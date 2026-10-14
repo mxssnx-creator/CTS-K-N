@@ -19,6 +19,7 @@ import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { MarginCallPanel } from "@/components/settings/margin-call-panel"
 import { HistoricTestSection } from "@/components/settings/historic-test-section"
 import { HistoricTestStatsPanel } from "@/components/settings/historic-test-stats-panel"
+import { ConnectionBacktestSection } from "./connection-backtest-section"
 import { DEFAULT_HISTORIC_TEST_SETTINGS, normalizeHistoricTestSettings, type HistoricTestSettings } from "@/lib/historic-test-settings"
 import {
   EXCHANGE_SYMBOL_COUNT_MAX,
@@ -355,6 +356,9 @@ export function ConnectionSettingsDialog({
   const saveSequenceRef = useRef(0)
   const saveInFlightRef = useRef(false)
   const saveAbortControllerRef = useRef<AbortController | null>(null)
+  // Symbols exactly as loaded from the server; a save re-sends them only when
+  // the operator changed them (see saveAll).
+  const loadedSymbolsCfgRef = useRef<SymbolsSettings | null>(null)
 
   // ── Indications & Strategies state (per channel) ────────────────
   const [indMain,   setIndMain]   = useState<ChannelProfile>(DEFAULT_MAIN_INDICATION_PROFILE)
@@ -560,6 +564,7 @@ export function ConnectionSettingsDialog({
     setExchangeKey(String(exchange || "bingx").toLowerCase())
     setOverview({ ...DEFAULT_OVERVIEW_SETTINGS })
     setSymbolsCfg({ ...DEFAULT_SYMBOLS_SETTINGS, symbols: [] })
+    loadedSymbolsCfgRef.current = null
     setSymbolInput("")
     setSymbolResolutionSource(undefined)
     setIndMain(DEFAULT_MAIN_INDICATION_PROFILE)
@@ -615,11 +620,13 @@ export function ConnectionSettingsDialog({
           overallControlOrdersOnly: overallControlOrdersOnly(settings),
           useSystemCloseOnly: parseStoredBoolean(settings.use_system_close_only ?? settings.useSystemCloseOnly, false),
         })
-        setSymbolsCfg({
+        const loadedSymbols: SymbolsSettings = {
           symbols: Array.isArray(settings.symbols) ? settings.symbols : [],
           symbolOrder: (settings.symbol_order as SymbolOrder) || "volatility_1h",
           symbolCount: Number(settings.symbol_count) || 20,
-        })
+        }
+        setSymbolsCfg(loadedSymbols)
+        loadedSymbolsCfgRef.current = loadedSymbols
         const rawActive = conn.active_symbols || settings.active_symbols
         const parsedActive: string[] = (() => {
           if (Array.isArray(rawActive)) return rawActive.filter(Boolean)
@@ -797,6 +804,15 @@ export function ConnectionSettingsDialog({
     const timeoutId = window.setTimeout(() => controller.abort(), 45_000)
     setSaving(true)
     try {
+      // Re-sending an unchanged auto-ranked selection made the server re-rank
+      // it, and a moved ranking restarted the historic phase on every save
+      // (e.g. a leverage-only change). Send the symbol group only when edited.
+      const loadedSymbols = loadedSymbolsCfgRef.current
+      const symbolsEdited =
+        !loadedSymbols ||
+        loadedSymbols.symbolOrder !== symbolsCfg.symbolOrder ||
+        loadedSymbols.symbolCount !== symbolsCfg.symbolCount ||
+        loadedSymbols.symbols.join("|") !== symbolsCfg.symbols.join("|")
       const payload = {
         // Overview
         volume_factor_live:   overview.volumeFactorLive,
@@ -814,11 +830,13 @@ export function ConnectionSettingsDialog({
         use_system_close_only: overview.useSystemCloseOnly,
         useSystemCloseOnly:    overview.useSystemCloseOnly, // backwards-compat alias
         // Symbols
-        symbols:      symbolsCfg.symbols,
-        symbol_order: symbolsCfg.symbolOrder,
-        symbol_count: symbolsCfg.symbolCount,
-        symbol_source: symbolResolutionSource,
-        symbols_confirmed: symbolsCfg.symbolOrder === "manual",
+        ...(symbolsEdited ? {
+          symbols:      symbolsCfg.symbols,
+          symbol_order: symbolsCfg.symbolOrder,
+          symbol_count: symbolsCfg.symbolCount,
+          symbol_source: symbolResolutionSource,
+          symbols_confirmed: symbolsCfg.symbolOrder === "manual",
+        } : {}),
         // Strategies (per channel)
         strategies: {
           main: enforceStrategyChannelPipeline(stratMain),
@@ -1189,7 +1207,7 @@ export function ConnectionSettingsDialog({
         onOpenChange(nextOpen)
       }}
     >
-      <DialogContent className="max-w-3xl h-[90dvh] max-h-[90dvh] overflow-hidden flex flex-col p-0 [&>button]:z-10">
+      <DialogContent className="max-w-3xl sm:max-w-3xl h-[90dvh] max-h-[90dvh] overflow-hidden flex flex-col p-0 [&>button]:z-10">
         {/* Header */}
         <DialogHeader className="px-5 pt-4 pb-3 border-b shrink-0">
           <div className="flex items-center gap-2">
@@ -1632,6 +1650,9 @@ export function ConnectionSettingsDialog({
                     exchangeOptions={["bingx", "bybit", "binance"]}
                   />
                   <HistoricTestStatsPanel connectionId={connectionId} />
+
+                  {/* ── Backtest ── */}
+                  <ConnectionBacktestSection connectionId={connectionId} exchange={exchangeKey} symbols={symbolsCfg.symbols} />
                 </TabsContent>
 
                 {/* LIVE ─────────────────────────────────────────── */}

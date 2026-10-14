@@ -54,7 +54,7 @@ import {
   readDirectTradeConfigsAtIndexes,
 } from "@/lib/direct-trade-config-store"
 import { normalizePositionCostPercent, POSITION_COST_PERCENT_DEFAULT } from "@/lib/position-cost"
-import { normalizeMainTradePfRatio } from "@/lib/main-trade-profit-factor"
+import { normalizeMainTradePfRatio, PREVIOUS_MAIN_TRADE_STAGE_PF_DEFAULT } from "@/lib/main-trade-profit-factor"
 import { DEFAULT_DCA_PROFILE, normalizeDcaProfile, type DcaProfile } from "@/lib/dca-strategy"
 import {
   buildDirectTradeOpenPositionStage,
@@ -235,7 +235,7 @@ const DEFAULT_STATE: DirectTradeState = {
   keepEnabledPosCount: 12,
   deactivatePosCount: 16,
   minProfitFactor: DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT,
-  fullHistoryPfDefaultsVersion: 2,
+  fullHistoryPfDefaultsVersion: 3,
   positionCapacityDefaultsVersion: 1,
   minRecentProfitFactor: DIRECT_TRADE_RECENT_PF_DEFAULT,
   recentEvaluationPositions: 12,
@@ -434,17 +434,24 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
           : clampOpenPositionLimit(persisted?.maxTotalPositions, DEFAULT_STATE.maxTotalPositions),
         positionCapacityDefaultsVersion: 1,
         slRatioStep: clampStopLossRatioStep(persisted?.slRatioStep, DEFAULT_STATE.slRatioStep),
+        // Version 2 replaced the legacy 0.8/4 and 10/25 defaults; version 3
+        // moves the former shipped 1.30 stage default to the current one.
+        // Any other persisted value is an explicit operator choice.
         minProfitFactor: normalizeMainTradePfRatio(
-          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
-            && [0.8, 4].includes(Number(persisted?.minProfitFactor))
+          ((Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
+            && [0.8, 4].includes(Number(persisted?.minProfitFactor)))
+          || ((Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 3
+            && Number(persisted?.minProfitFactor) === PREVIOUS_MAIN_TRADE_STAGE_PF_DEFAULT)
             ? DIRECT_TRADE_FULL_HISTORY_PF_DEFAULT
             : persisted?.minProfitFactor,
           DEFAULT_STATE.minProfitFactor,
         ),
-        fullHistoryPfDefaultsVersion: 2,
+        fullHistoryPfDefaultsVersion: 3,
         minRecentProfitFactor: normalizeMainTradePfRatio(
-          (Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
-            && [10, 25].includes(Number(persisted?.minRecentProfitFactor))
+          ((Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 2
+            && [10, 25].includes(Number(persisted?.minRecentProfitFactor)))
+          || ((Number(persisted?.fullHistoryPfDefaultsVersion) || 0) < 3
+            && Number(persisted?.minRecentProfitFactor) === PREVIOUS_MAIN_TRADE_STAGE_PF_DEFAULT)
             ? DIRECT_TRADE_RECENT_PF_DEFAULT
             : persisted?.minRecentProfitFactor,
           DEFAULT_STATE.minRecentProfitFactor,

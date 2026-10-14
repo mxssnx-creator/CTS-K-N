@@ -22,9 +22,16 @@ for i = 3, #ARGV do
   end
 end
 if #acceptedEntries > 0 then
-  local appendResult = redis.pcall('LPUSH', KEYS[1], unpack(acceptedEntries))
-  if type(appendResult) == 'table' and appendResult.err then
-    return redis.error_reply(appendResult.err)
+  -- unpack() of a large batch exceeds Lua's stack ("too many results to
+  -- unpack": whole ADL indication groups were lost). LPUSH inserts its
+  -- arguments one after another, so pushing in chunks gives the same list.
+  local chunk = 1000
+  for first = 1, #acceptedEntries, chunk do
+    local last = math.min(first + chunk - 1, #acceptedEntries)
+    local appendResult = redis.pcall('LPUSH', KEYS[1], unpack(acceptedEntries, first, last))
+    if type(appendResult) == 'table' and appendResult.err then
+      return redis.error_reply(appendResult.err)
+    end
   end
   redis.call('LTRIM', KEYS[1], 0, tonumber(ARGV[1]) - 1)
 end

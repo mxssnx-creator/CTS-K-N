@@ -16,6 +16,7 @@ import {
   type FunctionalOverviewStageSnapshot,
 } from "@/lib/functional-overview-stage-snapshot"
 import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
+import { getCanonicalSymbolSelection } from "@/lib/trade-engine/symbol-selection-ownership"
 
 export const dynamic = "force-dynamic"
 export const revalidate = 0
@@ -93,6 +94,7 @@ export async function GET() {
           scopedPrehistoricSymbols,
           scopedPrehistoricExists,
           legacyPrehistoricSymbols,
+          symbolSelection,
         ] = await Promise.all([
           Promise.all(progressionKeys.map((key) =>
             client.hgetall(key).catch(() => ({})),
@@ -107,6 +109,7 @@ export async function GET() {
           client.scard(`${progressionScope.prehistoricKey}:symbols`).catch(() => 0),
           client.exists(`${progressionScope.prehistoricKey}:symbols`).catch(() => 0),
           client.scard(`prehistoric:${connectionId}:symbols`).catch(() => 0),
+          getCanonicalSymbolSelection(connectionId).catch(() => null),
         ])
         // `progressionReadKeys` is ordered by runtime authority. Merge
         // field-by-field so a rolling deployment can retain fresh counters
@@ -123,16 +126,23 @@ export async function GET() {
         const prehistoricSymbols = finite(scopedPrehistoricExists) > 0
           ? finite(scopedPrehistoricSymbols)
           : finite(legacyPrehistoricSymbols)
-        const activeSymbols = resolveOverviewActiveSymbols(
-          connection as Record<string, unknown>,
-          progression as Record<string, unknown>,
-        )
+        // The basket the engine trades: operator settings first, force_symbols
+        // first. The raw connection hash can hold a stale selected_symbols
+        // (production showed 9 while the engine ran 25), so it is only the
+        // fallback when the canonical selection cannot be read.
+        const activeSymbols = symbolSelection && symbolSelection.symbols.length > 0
+          ? new Set(symbolSelection.symbols.map((symbol) => symbol.toUpperCase()))
+          : resolveOverviewActiveSymbols(
+              connection as Record<string, unknown>,
+              progression as Record<string, unknown>,
+            )
         const ledger = await readResultLedger(client, connectionId).catch(() => null)
         const executedLive = ledger && ledger.meta.complete
           ? (() => { const book = computeResultBook(ledger.entries); return { open: book.open, closed: book.closed } })()
           : null
         return {
           progression: progression as Record<string, string>,
+          configuredSymbols: activeSymbols,
           stages: {
             base: aggregateFunctionalOverviewStage(base as Record<string, string>, { activeSymbols }),
             main: aggregateFunctionalOverviewStage(main as Record<string, string>, { activeSymbols }),
@@ -167,9 +177,13 @@ export async function GET() {
       prehistoricSymbolsProcessed += row.prehistoricSymbols
     }
 
-    const activeSymbols = new Set<string>()
+    const configuredSymbols = new Set<string>()
+    for (const row of connectionRows) {
+      for (const symbol of row.configuredSymbols) configuredSymbols.add(symbol)
+    }
+    const symbolsWithRows = new Set<string>()
     for (const stage of Object.values(totals)) {
-      for (const symbol of stage.symbols) activeSymbols.add(symbol)
+      for (const symbol of stage.symbols) symbolsWithRows.add(symbol)
     }
     const averagePf = (stage: StageName): number | null =>
       totals[stage].pfWeight > 0
@@ -177,13 +191,22 @@ export async function GET() {
         : null
 
     return NextResponse.json({
-      symbolsActive: activeSymbols.size,
+      // Active = the configured basket the engines trade. Symbols that already
+      // have stage rows are reported separately: rows lag a new basket, a
+      // paused engine or a long Historic pass.
+      symbolsActive: configuredSymbols.size,
+      symbolsConfigured: configuredSymbols.size,
+      symbolsWithRows: symbolsWithRows.size,
       indicationsCalculated: totalIndicationCycles,
-      strategiesEvaluated:
-        totals.base.evaluated +
-        totals.main.evaluated +
-        totals.real.evaluated +
-        totals.live.evaluated,
+      // Real-stage evaluations, the definition /stats and the dashboards use:
+      // Main holds Base's related descendants, so stages must not be summed.
+      strategiesEvaluated: totals.real.evaluated,
+      strategiesEvaluatedByStage: {
+        base: totals.base.evaluated,
+        main: totals.main.evaluated,
+        real: totals.real.evaluated,
+        live: totals.live.evaluated,
+      },
       baseSetsCreated: totals.base.created > 0,
       mainSetsCreated: totals.main.created > 0,
       realSetsCreated: totals.real.created > 0,

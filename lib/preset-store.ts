@@ -1,5 +1,6 @@
 import {
   DEFAULT_PRESET_OPTIMIZER_SETTINGS,
+  PRESET_INDICATOR_TYPES,
   aggregateCandles,
   normalizeCandles,
   normalizePresetOptimizerSettings,
@@ -950,17 +951,40 @@ export async function selectOptimizedPreset(input: {
   return { ...preset, selected: true }
 }
 
-function inferIndicationType(realPosition: Record<string, any>): string | null {
-  const direct = realPosition.indicationType || realPosition.indication_type
-  if (direct) return String(direct).toLowerCase()
-  const key = String(realPosition.setKey || realPosition.parentSetKey || "").toLowerCase()
-  return PRESET_TYPE_ALIASES.find((type) => key.includes(type)) || null
-}
+/** Common types by lower-case name ("williamsr" → "williamsR", "sar" → "psar"). */
+const PRESET_TYPE_BY_LOWER_NAME: ReadonlyMap<string, PresetIndicatorType> = new Map([
+  ...PRESET_INDICATOR_TYPES.map((type) => [type.toLowerCase(), type] as const),
+  ["sar", "psar" as PresetIndicatorType] as const,
+])
 
-const PRESET_TYPE_ALIASES: PresetIndicatorType[] = [
-  "bollinger", "stochastic", "macd", "rsi", "ema", "sma", "ma", "adx", "atr",
-  "psar", "sar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
-]
+const canonicalPresetType = (value: unknown): PresetIndicatorType | null =>
+  PRESET_TYPE_BY_LOWER_NAME.get(String(value || "").trim().toLowerCase()) || null
+
+/**
+ * The Common type of a position: its own indication type, else the type
+ * segment of its Common Set key
+ * (`indication_set:{conn}:{symbol}:common:{dir}:{type}:tf…`). Matching whole
+ * key segments exactly — the former substring match read "MATICUSDT" as
+ * "ma", every "emaTrend" key as "ema", and lowercased "williamsR" so it never
+ * matched its stored selection.
+ */
+export function inferIndicationType(realPosition: Record<string, any>): string | null {
+  const direct = canonicalPresetType(realPosition.indicationType || realPosition.indication_type)
+  if (direct) return direct
+  for (const raw of [realPosition.setKey, realPosition.parentSetKey]) {
+    const segments = String(raw || "").split(":")
+    const common = segments.indexOf("common")
+    if (common >= 0) {
+      const type = canonicalPresetType(segments[common + 2])
+      if (type) return type
+    }
+    for (const segment of segments) {
+      const type = canonicalPresetType(segment)
+      if (type) return type
+    }
+  }
+  return null
+}
 
 export async function resolveSelectedPresetForPosition(
   connectionId: string,

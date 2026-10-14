@@ -10,6 +10,9 @@ import {
   rangeValues,
   type PresetCandle,
 } from "@/lib/preset-optimizer"
+import { COMMON_INDICATOR_TYPES } from "@/lib/common-indicator-config"
+import { syntheticCandles } from "@/lib/common-indicators/synthetic"
+import { evaluateTechnicalIndicators } from "@/lib/technical-indicators"
 
 describe("preset optimizer", () => {
   test("uses a net PositionCost basis for every candidate result", () => {
@@ -77,7 +80,7 @@ describe("preset optimizer", () => {
       blockActiveRealEnabled: true,
       blockActiveLiveEnabled: true,
     })
-    expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.indicatorTypes).toHaveLength(17)
+    expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.indicatorTypes).toEqual([...COMMON_INDICATOR_TYPES])
     expect(DEFAULT_PRESET_OPTIMIZER_SETTINGS.indicatorTypes).toEqual(
       expect.arrayContaining(["stochastic", "obv", "psar", "fibonacci", "vwap"]),
     )
@@ -309,5 +312,29 @@ describe("preset optimizer", () => {
       drawdownTimeHours: 0,
       eligible: true,
     })
+  })
+
+  test("every Common type is an optimizer type whose entries are the live rule's directional bars", () => {
+    const candles = syntheticCandles("AAA-USDT", 5, 2_000, Date.UTC(2026, 9, 1), 11)
+    const configurations = buildCommonIndicatorConfigurations({}, normalizePresetOptimizerSettings({
+      indicatorTypes: [...COMMON_INDICATOR_TYPES],
+      maxIndicatorVariantsPerType: 1,
+    }))
+    const generated = new Set(configurations.map((configuration) => configuration.type))
+    expect([...COMMON_INDICATOR_TYPES].filter((type) => !generated.has(type))).toEqual([])
+    const silent: string[] = []
+    for (const configuration of configurations.filter((item) => item.params.timeframeMinutes === 5)) {
+      const signals = generatePresetSignals(candles, configuration, 10_000)
+      if (signals.length === 0) silent.push(configuration.type)
+      // the optimizer's entry at bar i is the live last-bar direction of the series cut after bar i
+      const { timeframeMinutes: _timeframe, ...params } = configuration.params
+      for (const signal of signals.filter((_, position) => position % 97 === 0)) {
+        const live = evaluateTechnicalIndicators(
+          candles.slice(0, signal.index + 1), 14, [configuration.type as any], { [configuration.type]: params } as any,
+        )[configuration.type as keyof typeof live]
+        expect([configuration.type, live?.direction]).toEqual([configuration.type, signal.direction])
+      }
+    }
+    expect(silent.length).toBeLessThan(15)
   })
 })

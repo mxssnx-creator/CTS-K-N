@@ -6,9 +6,12 @@ const sourceFile = (name: string) =>
 
 describe("market-data history contract", () => {
   it("keeps the 90-minute stage window larger than the old 61-row cap", async () => {
-    const source = await readFile(sourceFile("lib/trade-engine/indication-processor-fixed.ts"), "utf8")
+    // oneMinuteClosesOldestFirst lives with the shared direct indication rules.
+    const source = await readFile(sourceFile("lib/trade-engine/direct-indications.ts"), "utf8")
     expect(source).toContain("slice(-ENGINE_STAGE_HISTORY_MINUTES)")
     expect(source).not.toContain("slice(-61)")
+    const processor = await readFile(sourceFile("lib/trade-engine/indication-processor-fixed.ts"), "utf8")
+    expect(processor).not.toContain("slice(-61)")
   })
 
   it("does not rewrite prehistoric chunks from a realtime-tail refresh", async () => {

@@ -528,6 +528,7 @@ import {
   historicReplayNeedsRealtimeWarmup,
   resolveHistoricReplayMode,
 } from "./historic-replay-policy"
+import { refreshTypeMeasurement } from "./type-measurement"
 
 /**
  * Main realtime symbol work overlaps Redis/market-data waits with a small,
@@ -827,6 +828,9 @@ export class TradeEngineManager {
   private healthCheckTimer?: NodeJS.Timeout
   private heartbeatTimer?: NodeJS.Timeout
   private currentEngineType = "main"
+  // The per-type measurement advances one symbol per minute (heartbeat).
+  private typeMeasurementInFlight = false
+  private typeMeasurementCursor = 0
 
   // Throttle for the settings-dirty Redis read in the indication tick.
   // The flag is set by the UI (rare) but read on every tick — at 20 Hz
@@ -2786,6 +2790,19 @@ export class TradeEngineManager {
       ) {
         throw new Error(
           `Historic bootstrap incomplete: ${processingResult.symbolsProcessed}/${processingResult.symbolsTotal} symbols, ${processingResult.errors} error(s)`,
+        )
+      }
+      // A symbol without candles still counts as processed. When no symbol
+      // had any, nothing was evaluated (e.g. an exchange without a market-data
+      // connector) and the run must not be published as complete or move the
+      // engine to Live; the catch path records the failure and retries.
+      if (
+        processingResult.symbolsTotal > 0 &&
+        (Number(processingResult.candlesProcessed) <= 0 ||
+          Number(processingResult.symbolsWithoutData) >= processingResult.symbolsTotal)
+      ) {
+        throw new Error(
+          `Historic bootstrap loaded no market data: ${processingResult.symbolsWithoutData}/${processingResult.symbolsTotal} symbols without candles`,
         )
       }
       await logProgressionEvent(this.connectionId, "prehistoric_processed", processingResult.errors > 0 ? "warning" : "info", `Prehistoric complete: ${processingResult.indicationResults} indications, ${processingResult.strategyPositions} strategies`, {
@@ -6057,7 +6074,35 @@ export class TradeEngineManager {
           console.warn(`[v0] [Heartbeat] Market data refresh failed:`, refreshErr instanceof Error ? refreshErr.message : String(refreshErr))
         }
       }
+
+      // Every 60s, continue the per-type measurement of one symbol over its
+      // newly completed minutes, so the Base gate judges Sets on current
+      // results instead of the bootstrap's (see type-measurement.ts).
+      if (heartbeatCount % 6 === 0) void this.advanceTypeMeasurement()
     }, 10000)
+  }
+
+  private async advanceTypeMeasurement(): Promise<void> {
+    if (this.typeMeasurementInFlight) return
+    this.typeMeasurementInFlight = true
+    try {
+      const symbols = await this.getSymbols()
+      if (symbols.length === 0) return
+      const symbol = symbols[this.typeMeasurementCursor % symbols.length]
+      this.typeMeasurementCursor = (this.typeMeasurementCursor + 1) % symbols.length
+      const advanced = await refreshTypeMeasurement(this.connectionId, symbol)
+      if (advanced && advanced.result.closes.length > 0) {
+        logRuntimeInfo(
+          `engine:${this.connectionId}:type-measurement`,
+          60_000,
+          `[v0] [TypeMeasurement] ${symbol}: +${advanced.result.closes.length} measured closes, ${advanced.result.openAtEnd} open`,
+        )
+      }
+    } catch (error) {
+      console.warn(`[v0] [TypeMeasurement] advance failed:`, error instanceof Error ? error.message : String(error))
+    } finally {
+      this.typeMeasurementInFlight = false
+    }
   }
 
   /**

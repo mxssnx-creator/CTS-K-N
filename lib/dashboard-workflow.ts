@@ -1,6 +1,8 @@
-import { getAllConnections, getAppSettings, getConnectionPositions, getConnectionTrades, getRedisClient, getSettings, initRedis } from "@/lib/redis-db"
+import { getAllConnections, getAppSettings, getRedisClient, getSettings, initRedis } from "@/lib/redis-db"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
 import { getProgressionLogs } from "@/lib/engine-progression-logs"
+import { buildProgressionScope, progressionReadKeys } from "@/lib/progression-scope"
+import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
 import {
   hasConnectionCredentials,
   isConnectionDashboardEnabled,
@@ -157,21 +159,31 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
 
   if (focusConnection) {
     const connId = focusConnection.id
+    const rawFocus = allConnections.find((connection: any) => connection.id === connId) as any
+    const scope = buildProgressionScope(connId, String(rawFocus?.engine_type || rawFocus?.engineType || "main"))
 
-    const [progression, positions, trades, logs, engineState, progHash] = await Promise.all([
+    const [progression, executionSummary, logs, engineState, progressionHashes] = await Promise.all([
       ProgressionStateManager.getProgressionState(connId),
-      getConnectionPositions(connId),
-      getConnectionTrades(connId),
+      // Positions and trades come from the canonical execution summary, as in
+      // the status route; the idx:*:connection:* indexes are never written.
+      getLiveExecutionSummary(connId).catch(() => null),
       // Dashboard polling must never force the shared buffered log queue to
       // Redis. The periodic flusher owns durability while this request reads
       // the latest persisted snapshot without blocking current engine work.
       getProgressionLogs(connId, { flush: false }),
       getSettings(`trade_engine_state:${connId}`),
-      // progression:{connId} is a raw hash updated EVERY cycle — primary source for live counts
-      client.hgetall(`progression:${connId}`).catch(() => ({})),
+      // Updated every cycle: the long-lived engine increments the engine-
+      // scoped hash, the bounded owner the legacy one. Merge field by field
+      // in runtime-authority order, as /stats does.
+      Promise.all(progressionReadKeys(scope).map((key) =>
+        client.hgetall(key).catch(() => ({} as Record<string, string>)),
+      )),
     ])
 
-    const ph = (progHash || {}) as Record<string, string>
+    const ph = progressionHashes.reduce<Record<string, string>>(
+      (merged, hash) => ({ ...((hash || {}) as Record<string, string>), ...merged }),
+      {},
+    )
 
     // Cycle counts: prefer live progression hash (updated every cycle) over engine state
     // (engine state is only persisted every 50-100 cycles)
@@ -181,7 +193,9 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     const strategyCycles =
       parseInt(ph.strategy_cycle_count || "0", 10) ||
       Number((engineState as any)?.strategy_cycle_count || 0)
-    const realtimeCycles = Number((engineState as any)?.realtime_cycle_count || 0)
+    const realtimeCycles =
+      parseInt(ph.realtime_cycle_count || "0", 10) ||
+      Number((engineState as any)?.realtime_cycle_count || 0)
 
     // Indication counts: use counter keys (engine writes incr counters, not sets)
     const totalIndicationsCount = parseInt(ph.indications_count || "0", 10)
@@ -219,18 +233,31 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
     // symbol. Scanning those keys made every Logistics poll O(total Redis
     // keys), which could starve the server under a full configuration matrix.
     // The canonical symbol membership set is bounded and is also what
-    // QuickStart uses for this current-coverage metric.
-    const prehistoricSymbols = await client.scard(`prehistoric:${connId}:symbols`).catch(() => 0)
+    // QuickStart uses for this current-coverage metric. The Historic writer
+    // fills the engine-scoped set; the legacy set only counts on
+    // installations that never created the scoped one.
+    const [scopedPrehistoricSymbols, scopedPrehistoricExists, legacyPrehistoricSymbols, scopedIntervals, legacyIntervals] =
+      await Promise.all([
+        client.scard(`${scope.prehistoricKey}:symbols`).catch(() => 0),
+        client.exists(`${scope.prehistoricKey}:symbols`).catch(() => 0),
+        client.scard(`prehistoric:${connId}:symbols`).catch(() => 0),
+        // config-set-processor counts processed intervals in the scoped
+        // prehistoric hash; the old string key has no writer left.
+        client.hget(scope.prehistoricKey, "intervals_processed").catch(() => null),
+        client.get(`intervals:${connId}:processed_count`).catch(() => null),
+      ])
+    const prehistoricSymbols = Number(scopedPrehistoricExists) > 0
+      ? Number(scopedPrehistoricSymbols) || 0
+      : Number(legacyPrehistoricSymbols) || 0
     const prehistoricDataSize = prehistoricSymbols
 
-    // Intervals processed: stored as string counter
     const intervalsProcessed =
-      parseInt(await client.get(`intervals:${connId}:processed_count`).catch(() => "0") as string || "0", 10)
+      parseInt(String(scopedIntervals ?? legacyIntervals ?? "0"), 10) || 0
 
     connectionMetrics = {
       progression,
-      positions: positions.length,
-      trades: trades.length,
+      positions: executionSummary?.totalPositions ?? 0,
+      trades: executionSummary?.totalTrades ?? 0,
       logs: logs.slice(0, 50),
       engineCycles: {
         indication: indicationCycles,
@@ -282,7 +309,7 @@ async function buildDashboardWorkflowSnapshot(preferredConnectionId?: string) {
           // survivors only; summing the three would multi-count the same items.
           total: realSets,
         },
-        livePositions: 0,
+        livePositions: executionSummary?.openPositions ?? 0,
       },
     }
   }

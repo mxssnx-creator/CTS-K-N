@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Dialog,
   DialogContent,
@@ -51,10 +51,11 @@ interface ProgressSummary {
   strategyCycles: number
   totalIndicationsCalculated: number
   totalStrategiesEvaluated: number
+  /** Open pseudo (evaluation) positions; Base/Main/Real share this ledger. */
   pseudoPositions: {
-    base: number
-    main: number
-    real: number
+    open: number
+    long: number
+    short: number
     total: number
   }
   // Extended stats
@@ -87,17 +88,7 @@ interface ProgressSummary {
     main: number
     real: number
   }
-  pseudoPositionsByType: {
-    baseByIndication: {
-      direction: number
-      move: number
-      active: number
-      active_advanced: number
-      optimal: number
-      signal: number
-      trend: number
-    }
-  }
+  /** Rows in the LiveStage open-position index (includes simulated/unfilled rows). */
   livePositions: number
   // Live Exchange execution — aggregated from progression counters (no exchange history call)
   liveExecution?: {
@@ -138,6 +129,8 @@ interface ProgressSummary {
   warnings: number
 }
 
+const DETAILED_LOGS_REFRESH_MS = 10_000
+
 export function DetailedLoggingDialog() {
   const { selectedConnectionId, selectedExchange } = useExchange()
   const [open, setOpen] = useState(false)
@@ -148,7 +141,14 @@ export function DetailedLoggingDialog() {
   const [filter, setFilter] = useState<string>("all")
   const [activeTab, setActiveTab] = useState<"logs" | "data">("logs")
 
+  const fetchInFlightRef = useRef(false)
+
   const fetchLogs = useCallback(async () => {
+    // One request at a time: the route reads several hashes per connection and
+    // can take longer than the refresh period under load.
+    if (fetchInFlightRef.current) return
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return
+    fetchInFlightRef.current = true
     setLoading(true)
     try {
       const params = new URLSearchParams()
@@ -164,15 +164,18 @@ export function DetailedLoggingDialog() {
     } catch {
       // non-critical
     } finally {
+      fetchInFlightRef.current = false
       setLoading(false)
     }
   }, [selectedConnectionId, selectedExchange])
 
-  // Auto-refresh every 3 seconds while the dialog is open so the data panel stays live.
+  // Auto-refresh every 10 seconds while the dialog is open and the tab is
+  // visible; the engine publishes these figures per cycle, so faster polling
+  // only adds load.
   useEffect(() => {
     if (!open) return
     fetchLogs()
-    const interval = setInterval(fetchLogs, 3000)
+    const interval = setInterval(fetchLogs, DETAILED_LOGS_REFRESH_MS)
     return () => clearInterval(interval)
   }, [open, fetchLogs])
 
@@ -306,11 +309,11 @@ export function DetailedLoggingDialog() {
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-xs font-semibold text-blue-700">
                       <Layers className="h-4 w-4" />
-                      Intervals Processed
+                      Historic Intervals Processed
                     </div>
                     <div className="bg-blue-50 rounded p-2 text-center">
                       <div className="text-blue-700 font-bold text-lg">{summary.intervalsProcessed}</div>
-                      <div className="text-muted-foreground text-[10px]">Total Intervals</div>
+                      <div className="text-muted-foreground text-[10px]">Prehistoric timeframe intervals</div>
                     </div>
                   </div>
 
@@ -491,71 +494,31 @@ export function DetailedLoggingDialog() {
                     </div>
                   </div>
 
-                  {/* Pseudo Positions */}
+                  {/* Pseudo Positions — one open ledger shared by Base/Main/Real */}
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-xs font-semibold text-green-700">
                       <GitBranch className="h-4 w-4" />
-                      Pseudo Positions
+                      Open Positions
                     </div>
                     <div className="grid grid-cols-4 gap-1">
-                      <div className="bg-green-50 rounded p-2 text-center">
-                        <div className="text-green-700 font-bold">{summary.pseudoPositions.base}</div>
-                        <div className="text-muted-foreground text-[8px]">Base</div>
+                      <div className="bg-green-50 rounded p-2 text-center" title="Open pseudo (evaluation) positions. Base, Main and Real filter Sets that share this one ledger, so it has no per-stage split.">
+                        <div className="text-green-700 font-bold">{summary.pseudoPositions.open}</div>
+                        <div className="text-muted-foreground text-[8px]">Pseudo open</div>
                       </div>
                       <div className="bg-green-50 rounded p-2 text-center">
-                        <div className="text-green-700 font-bold">{summary.pseudoPositions.main}</div>
-                        <div className="text-muted-foreground text-[8px]">Main</div>
+                        <div className="text-green-700 font-bold">{summary.pseudoPositions.long}</div>
+                        <div className="text-muted-foreground text-[8px]">Pseudo long</div>
                       </div>
                       <div className="bg-green-50 rounded p-2 text-center">
-                        <div className="text-green-700 font-bold">{summary.pseudoPositions.real}</div>
-                        <div className="text-muted-foreground text-[8px]">Real</div>
+                        <div className="text-green-700 font-bold">{summary.pseudoPositions.short}</div>
+                        <div className="text-muted-foreground text-[8px]">Pseudo short</div>
                       </div>
-                      <div className="bg-green-50 rounded p-2 text-center">
+                      <div className="bg-green-50 rounded p-2 text-center" title="Rows in the Live stage open-position index, including simulated and not yet filled rows. Executed exchange positions are listed under Live execution.">
                         <div className="text-green-700 font-bold">{summary.livePositions}</div>
-                        <div className="text-muted-foreground text-[8px]">Live</div>
+                        <div className="text-muted-foreground text-[8px]">Live rows (open index)</div>
                       </div>
                     </div>
                   </div>
-
-                  {/* Base Positions by Indication Type */}
-                  {summary.pseudoPositionsByType?.baseByIndication && (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2 text-xs font-semibold text-cyan-700">
-                        <GitBranch className="h-4 w-4" />
-                        Base Pseudo by Indication Type
-                      </div>
-                      <div className="grid grid-cols-2 sm:grid-cols-7 gap-1">
-                        <div className="bg-cyan-50 rounded p-2 text-center">
-                          <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.direction}</div>
-                          <div className="text-muted-foreground text-[8px]">Direction</div>
-                        </div>
-                        <div className="bg-cyan-50 rounded p-2 text-center">
-                          <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.move}</div>
-                          <div className="text-muted-foreground text-[8px]">Move</div>
-                        </div>
-                        <div className="bg-cyan-50 rounded p-2 text-center">
-                          <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.active}</div>
-                          <div className="text-muted-foreground text-[8px]">Active</div>
-                        </div>
-                        <div className="bg-cyan-50 rounded p-2 text-center">
-                          <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.active_advanced}</div>
-                          <div className="text-muted-foreground text-[8px]">Active Adv</div>
-                        </div>
-                          <div className="bg-cyan-50 rounded p-2 text-center">
-                            <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.optimal}</div>
-                            <div className="text-muted-foreground text-[8px]">Optimal</div>
-                          </div>
-                          <div className="bg-cyan-50 rounded p-2 text-center">
-                            <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.signal}</div>
-                            <div className="text-muted-foreground text-[8px]">Signal</div>
-                          </div>
-                          <div className="bg-cyan-50 rounded p-2 text-center">
-                            <div className="text-cyan-700 font-bold">{summary.pseudoPositionsByType.baseByIndication.trend}</div>
-                            <div className="text-muted-foreground text-[8px]">Trend</div>
-                          </div>
-                      </div>
-                    </div>
-                  )}
 
                   {/* Cycle Duration */}
                   <div className="space-y-2">
@@ -764,30 +727,18 @@ export function DetailedLoggingDialog() {
               <div className="rounded bg-muted p-2">Realtime active connections: <span className="font-semibold">{summary.realtimeRunningConnections || 0}</span></div>
             </div>
             
-            {/* Pseudo Positions Breakdown */}
-            <div className="mt-2 grid grid-cols-4 gap-2 text-xs">
+            {/* Open positions: one pseudo ledger + the Live stage open index */}
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
               <div className="bg-muted rounded p-2">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Base Positions:</span>
-                  <span className="font-mono font-semibold">{summary.pseudoPositions.base}</span>
+                  <span className="text-muted-foreground">Pseudo positions open:</span>
+                  <span className="font-mono font-semibold">{summary.pseudoPositions.open}</span>
                 </div>
               </div>
               <div className="bg-muted rounded p-2">
                 <div className="flex justify-between">
-                  <span className="text-muted-foreground">Main Positions:</span>
-                  <span className="font-mono font-semibold">{summary.pseudoPositions.main}</span>
-                </div>
-              </div>
-              <div className="bg-muted rounded p-2">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Real Positions:</span>
-                  <span className="font-mono font-semibold">{summary.pseudoPositions.real}</span>
-                </div>
-              </div>
-              <div className="bg-muted rounded p-2">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Total:</span>
-                  <span className="font-mono font-semibold text-green-600">{summary.pseudoPositions.total}</span>
+                  <span className="text-muted-foreground">Live rows (open index):</span>
+                  <span className="font-mono font-semibold">{summary.livePositions}</span>
                 </div>
               </div>
             </div>

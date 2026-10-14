@@ -6,6 +6,8 @@
  * Supports: RSI, MACD, Bollinger Bands, EMA, ATR, Momentum, Divergence
  */
 
+import { latestWilderRsi } from "@/lib/wilder-rsi"
+import { ema as emaSeries } from "@/lib/common-indicators/kn-math"
 import { getRedisClient } from "@/lib/redis-db"
 // shim: existing code uses redisDb.set/get; map to InlineLocalRedis instance.
 const redisDb = {
@@ -38,26 +40,7 @@ export class IndicatorCalculator {
    * Calculate RSI (Relative Strength Index)
    */
   calculateRSI(prices: number[], period: number = 14): number {
-    if (prices.length < period + 1) return 50 // Neutral if not enough data
-
-    let gainSum = 0
-    let lossSum = 0
-
-    for (let i = prices.length - period; i < prices.length; i++) {
-      const change = prices[i] - prices[i - 1]
-      if (change > 0) gainSum += change
-      else lossSum += Math.abs(change)
-    }
-
-    const avgGain = gainSum / period
-    const avgLoss = lossSum / period
-
-    if (avgLoss === 0) return avgGain === 0 ? 50 : 100
-
-    const rs = avgGain / avgLoss
-    const rsi = 100 - (100 / (1 + rs))
-
-    return Math.round(rsi * 100) / 100
+    return Math.round(latestWilderRsi(prices, period) * 100) / 100
   }
 
   /**
@@ -73,21 +56,16 @@ export class IndicatorCalculator {
     signal: number
     histogram: number
   } {
-    const ema12 = this.calculateEMA(prices, fastPeriod)
-    const ema26 = this.calculateEMA(prices, slowPeriod)
-    const macd = ema12 - ema26
-
-    const macdValues: number[] = []
-    for (let i = 0; i < Math.min(prices.length, 100); i++) {
-      const slice = prices.slice(Math.max(0, prices.length - i - slowPeriod - 50))
-      if (slice.length >= slowPeriod) {
-        const e12 = this.calculateEMA(slice, fastPeriod)
-        const e26 = this.calculateEMA(slice, slowPeriod)
-        macdValues.push(e12 - e26)
-      }
-    }
-
-    const signal = macdValues.length > 0 ? this.calculateEMA(macdValues.reverse(), signalPeriod) : macd
+    // The same MACD the Common "macd" rule reads: EMA(fast) − EMA(slow) as a
+    // series and its EMA(signal) — the former per-window re-seeding produced a
+    // signal line that was not an EMA of the MACD line.
+    const fast = emaSeries(prices, fastPeriod)
+    const slow = emaSeries(prices, slowPeriod)
+    const line = prices.map((_, index) => fast[index] - slow[index])
+    const signalLine = emaSeries(line, signalPeriod)
+    const last = prices.length - 1
+    const macd = last >= 0 ? line[last] : 0
+    const signal = last >= 0 ? signalLine[last] : 0
     const histogram = macd - signal
 
     return {

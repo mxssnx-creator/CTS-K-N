@@ -33,8 +33,9 @@ import { workloadConcurrency } from "@/lib/runtime-parallelism"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { normalizeMarketSymbol, normalizeMarketType, getDefaultSymbolsForMarket, type MarketType } from "@/lib/market-types"
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
-import { mergeSecondsWithMinuteBackfill, ONE_SECOND_BACKFILL_WINDOW_S } from "@/lib/market-data-1s-backfill"
+import { expandMinuteBarsToSeconds, mergeSecondsWithMinuteBackfill, ONE_SECOND_BACKFILL_WINDOW_S } from "@/lib/market-data-1s-backfill"
 import { marketDataKey } from "@/lib/market-data-keys"
+import { ENGINE_STAGE_HISTORY_CANDLES, ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import type { ExchangeTicker } from "@/lib/exchange-connectors/base-connector"
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 
@@ -117,12 +118,9 @@ export async function withMarketDataFetchDeadline<T>(
   }
 }
 
-// Main/Real coordinates are calculated on one-minute closes even though the
-// engine's canonical market-data feed is 1s.  Keep one authoritative minimum
-// here so startup, realtime indication processing, and cache validation agree:
-// 90 one-minute bars require 5,400 one-second samples.
-export const ENGINE_STAGE_HISTORY_MINUTES = 90
-export const ENGINE_STAGE_HISTORY_CANDLES = ENGINE_STAGE_HISTORY_MINUTES * 60
+// Main/Real coordinates are calculated on one-minute closes (see
+// lib/engine-stage-history.ts for the authoritative constants).
+export { ENGINE_STAGE_HISTORY_CANDLES, ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 
 export interface SecondHistoryCoverage {
   complete: boolean
@@ -420,6 +418,17 @@ async function readSyntheticHistory(
 }
 
 /**
+ * The connection's trading connector, or — when it has no usable credentials
+ * and production builds none — a credential-less connector for the venue's
+ * public market data. A paper connection then prices on the real market
+ * instead of having no price at all.
+ */
+async function marketDataConnector(connectionId: string) {
+  return (await exchangeConnectorFactory.getOrCreateConnector(connectionId))
+    ?? (await exchangeConnectorFactory.getPublicMarketDataConnector(connectionId))
+}
+
+/**
  * Fetch real OHLCV data from exchange
  * Uses only the explicitly selected connection. An omitted scope is rejected
  * so a venue cannot silently publish into another connection's market-data
@@ -493,7 +502,7 @@ async function fetchRealMarketData(
           const canonicalSymbol = marketType === "forex"
             ? normalizeForexSymbol(symbol)
             : normalizeMarketSymbol(symbol, marketType)
-          const connector = await exchangeConnectorFactory.getOrCreateConnector(String(conn.id))
+          const connector = await marketDataConnector(String(conn.id))
           const sourceTimeframe = marketType === "forex" && /^1s(econd)?$/i.test(String(timeframe).trim())
             ? "M1"
             : timeframe
@@ -549,6 +558,80 @@ async function fetchRealMarketData(
     console.error("[v0] [MarketData] Error fetching real market data:", error)
   return null
 }
+}
+
+/** Longest range paged from one-minute klines (the BingX connector reads at most 24 × 500 bars). */
+const RANGE_BACKFILL_MAX_MINUTES = 12_000
+
+/**
+ * The venue's REAL one-minute bars of a prehistoric range [startMs, endMs),
+ * minute-aligned and oldest first. Nothing here is synthetic: a paper/preview
+ * process (FORCE_SIMULATED), a synthetic stored series, forex (M1 history)
+ * and a failed venue read all return [].
+ */
+export async function loadRangeMinuteBars(
+  symbol: string,
+  options: { connectionId: string; startMs: number; endMs: number; nowMs?: number },
+): Promise<MarketDataCandle[]> {
+  const startMs = Math.floor(Number(options.startMs) / 60_000) * 60_000
+  const endMs = Number(options.endMs)
+  const connectionId = String(options.connectionId || "").trim()
+  if (!connectionId || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return []
+  if (isForcedSimulation()) return []
+  try {
+    const connection = await getConnection(connectionId).catch(() => null)
+    if (!connection) return []
+    const marketType = normalizeMarketType(connection.market_type ?? connection.asset_class, connection.exchange)
+    if (marketType === "forex") return []
+    // Never splice real bars into a synthetic paper series.
+    const envelopeRaw = await getClient().get(marketDataKey(symbol, "1s", connectionId)).catch(() => null)
+    if (typeof envelopeRaw === "string") {
+      try {
+        if (JSON.parse(envelopeRaw)?.source === "synthetic") return []
+      } catch { /* an unreadable envelope says nothing about the source */ }
+    }
+    const canonicalSymbol = normalizeMarketSymbol(symbol, marketType)
+    const nowMs = Number(options.nowMs) || Date.now()
+    const minutes = Math.min(RANGE_BACKFILL_MAX_MINUTES, Math.ceil((nowMs - startMs) / 60_000) + 2)
+    const bars = await withMarketDataFetchDeadline(async () => {
+      const connector = await marketDataConnector(connectionId)
+      return connector ? connector.getOHLCV(canonicalSymbol, "1m", minutes) : null
+    }, `Range backfill ${connectionId}:${canonicalSymbol}`)
+    if (!Array.isArray(bars) || bars.length === 0) return []
+    const byMinute = new Map<number, MarketDataCandle>()
+    for (const bar of bars as MarketDataCandle[]) {
+      const minute = Math.floor(Number(bar?.timestamp) / 60_000) * 60_000
+      const values = [bar?.open, bar?.high, bar?.low, bar?.close].map(Number)
+      if (!Number.isFinite(minute) || minute < startMs || minute >= endMs) continue
+      if (!values.every((value) => Number.isFinite(value) && value > 0)) continue
+      byMinute.set(minute, { ...bar, timestamp: minute })
+    }
+    return [...byMinute.values()].sort((left, right) => left.timestamp - right.timestamp)
+  } catch (error) {
+    logRuntimeWarning(
+      `market-data:${connectionId}:range-backfill`,
+      60_000,
+      `[v0] [MarketData] ${symbol}: prehistoric range backfill failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return []
+  }
+}
+
+/**
+ * Real one-second candles for the part of a prehistoric range that is older
+ * than the stored history. The loader keeps only the stage window (about 120
+ * minutes of seconds), so a longer prehistoric range (8 h by default, up to
+ * 50 h) used to be evaluated over that window only. The missing older part is
+ * filled from the venue's REAL one-minute bars (loadRangeMinuteBars) resolved
+ * to seconds — the same resolution the 120-minute backfill uses.
+ */
+export async function loadRangeSecondsFromMinuteBars(
+  symbol: string,
+  options: { connectionId: string; startMs: number; endMs: number; nowMs?: number },
+): Promise<MarketDataCandle[]> {
+  const bars = await loadRangeMinuteBars(symbol, options)
+  if (bars.length === 0) return []
+  return expandMinuteBarsToSeconds(bars, Math.floor(Number(options.startMs) / 60_000) * 60_000, Number(options.endMs))
 }
 
 const DEFAULT_ENGINE_MARKET_SYMBOLS = [

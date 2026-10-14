@@ -48,6 +48,8 @@ interface Position {
   status: "open" | "closing" | "closed"
   /** Paper/simulated live row; consumers must keep it out of real statistics. */
   simulated?: boolean
+  /** Which ledger the row comes from: strategy pseudo positions or live positions. */
+  source?: "pseudo" | "live"
 }
 
 function generateMockPositions(connectionId: string, count: number = 25): Position[] {
@@ -132,6 +134,10 @@ function normalise(raw: Record<string, any>): Position | null {
     stopLossPrice: slPrice > 0 ? slPrice : undefined,
     createdAt: String(raw.opened_at || raw.entry_time || raw.created_at || new Date().toISOString()),
     status: (status === "open" || status === "closing" || status === "closed") ? status : "open",
+    // A strategy pseudo position is a paper evaluation, never venue exposure.
+    // Unmarked, the Statistics page counted it as a real open position.
+    simulated: true,
+    source: "pseudo",
   }
 }
 
@@ -229,6 +235,7 @@ function normaliseLivePosition(raw: Record<string, any>): Position | null {
     createdAt: String(raw.createdAt || raw.created_at || new Date().toISOString()),
     status: isLiveOpenStatus(status) ? "open" : "closed",
     simulated: isSimulatedPosition(raw),
+    source: "live",
   }
 }
 

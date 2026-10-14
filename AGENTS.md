@@ -59,6 +59,13 @@ precedence over stale workspace paths in older notes.
   canonical revision, backups, gate results, remote state, and any pending
   safety work so a new chat can continue without relying on session history.
 
+- Stage funnel rule (operator decision 2026-10-07, binding): processing,
+  progressing and running counts include only gate-validated Sets (Base-valid
+  and their Main/Real/Live descendants), never the emitted pool. Every such
+  counter goes through `lib/stage-funnel-contract.*`; see
+  `docs/STAGE-FUNNEL-AND-PROCESSING.md`. The prehistoric run must leave the
+  Base gate with measured history (type measurement plus backfill).
+
 ## Optional Feature Guides
 
 When users request features beyond the base template, check for available recipes in `.kilocode/recipes/`.

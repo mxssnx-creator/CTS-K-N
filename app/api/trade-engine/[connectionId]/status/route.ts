@@ -111,17 +111,24 @@ export async function GET(
 
     const status = connectionRunning ? "running" : isGloballyPaused ? "paused" : "stopped"
 
-    // Cycle metrics from progression state
-    const progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType).catch(() => ({
-      cyclesCompleted: 0,
-      successfulCycles: 0,
-      failedCycles: 0,
-    }))
+    // Cycle counters are atomic hincrby fields of the progression hash. The
+    // engine deliberately keeps them out of trade_engine_state (see
+    // engine-manager's snapshot notes), so they are read through the
+    // canonical progression reader only.
+    const progressionState = await ProgressionStateManager.getProgressionState(connectionId, engineType)
+      .catch(() => ProgressionStateManager.getDefaultState(connectionId))
 
-    const cyclesCompleted = Number(progression.cycles_completed || progressionState.cyclesCompleted || 0)
-    const indCycles = Number(engineState.indication_cycle_count || engineState.ind_cycles || 0)
-    const stratCycles = Number(engineState.strategy_cycle_count || engineState.strat_cycles || 0)
-    const realtimeCycles = Number(progression.realtime_cycle_count || engineState.realtime_cycle_count || engineState.rt_cycles || cyclesCompleted)
+    const cyclesCompleted = Number(progressionState.cyclesCompleted || 0)
+    const indCycles = Number(progressionState.indicationCycleCount || 0)
+    const stratCycles = Number(progressionState.strategyCycleCount || 0)
+    const realtimeCycles = Number(progressionState.realtimeCycleCount || 0)
+    // Indication, strategy and realtime work run in one shared pipeline cycle,
+    // so its recorded success rate is the honest per-component figure; there
+    // is no rate before the first recorded cycle.
+    const pipelineSuccessRate = cyclesCompleted > 0
+      ? Math.round(Number(progressionState.cycleSuccessRate || 0))
+      : null
+    const pipelineFailedCycles = Number(progressionState.failedCycles || 0)
     const canonicalCycleSlowCount = Number(
       progression.canonical_cycle_slow_count || progression.canonical_cycle_budget_exceeded_count || 0,
     )
@@ -180,29 +187,27 @@ export async function GET(
           indications: {
             status: componentStatus,
             lastCycleDuration: indAvg,
-            errorCount: 0,
-            successRate: progressionState.successfulCycles > 0
-              ? Math.round((progressionState.successfulCycles / Math.max(progressionState.cyclesCompleted, 1)) * 100)
-              : 100,
+            errorCount: pipelineFailedCycles,
+            successRate: pipelineSuccessRate,
           },
           strategies: {
             status: componentStatus,
             lastCycleDuration: stratAvg,
-            errorCount: 0,
-            successRate: 100,
+            errorCount: pipelineFailedCycles,
+            successRate: pipelineSuccessRate,
           },
           realtime: {
             status: componentStatus,
             lastCycleDuration: rtAvg,
-            errorCount: 0,
-            successRate: 100,
+            errorCount: pipelineFailedCycles,
+            successRate: pipelineSuccessRate,
           },
         },
       },
       progression: {
         cycles_completed: cyclesCompleted,
         successful_cycles: progressionState.successfulCycles || 0,
-        failed_cycles: progressionState.failedCycles || 0,
+        failed_cycles: pipelineFailedCycles,
       },
     })
   } catch (error) {

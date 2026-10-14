@@ -5,7 +5,6 @@ export const dynamic = "force-dynamic"
 import { useState, useEffect } from "react"
 import { useParams } from "next/navigation"
 import { PortfolioMetrics } from "@/components/dashboard/portfolio-metrics"
-import { RiskSettings } from "@/components/dashboard/risk-settings"
 import { PositionsTable } from "@/components/dashboard/positions-table"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft } from "lucide-react"
@@ -18,7 +17,6 @@ export default function PortfolioDetailPage() {
   const portfolioId = Number.parseInt(String(params?.id ?? ""), 10)
 
   const [metrics, setMetrics] = useState<any>(null)
-  const [riskLimits, setRiskLimits] = useState<any>(null)
   const [positions, setPositions] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -39,12 +37,9 @@ export default function PortfolioDetailPage() {
         setMetrics(metricsData.data)
       }
 
-      // Fetch risk limits
-      const limitsResponse = await fetch(`/api/portfolios/${portfolioId}/risk-limits`)
-      const limitsData = await limitsResponse.json()
-      if (limitsData.success) {
-        setRiskLimits(limitsData.data)
-      }
+      // Portfolio risk limits are not offered: there is no route or storage
+      // for them and nothing in the engine would enforce them (the unused
+      // RiskManager was their only reader).
 
       // Fetch positions
       const positionsResponse = await fetch(`/api/positions?portfolio_id=${portfolioId}`)
@@ -56,23 +51,6 @@ export default function PortfolioDetailPage() {
       console.error("[v0] Error fetching portfolio data:", error)
     } finally {
       setLoading(false)
-    }
-  }
-
-  const handleUpdateRiskLimits = async (newLimits: any) => {
-    try {
-      const response = await fetch(`/api/portfolios/${portfolioId}/risk-limits`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newLimits),
-      })
-
-      const data = await response.json()
-      if (data.success) {
-        setRiskLimits(newLimits)
-      }
-    } catch (error) {
-      console.error("[v0] Error updating risk limits:", error)
     }
   }
 
@@ -94,7 +72,7 @@ export default function PortfolioDetailPage() {
           </Link>
           <div>
             <h2 className="text-sm font-semibold">Portfolio #{Number.isFinite(portfolioId) ? portfolioId : "—"}</h2>
-            <p className="text-xs text-muted-foreground">Performance metrics and persisted risk limits</p>
+            <p className="text-xs text-muted-foreground">Performance metrics and positions</p>
           </div>
         </div>
 
@@ -108,10 +86,6 @@ export default function PortfolioDetailPage() {
         )}
 
         {Number.isSafeInteger(portfolioId) && portfolioId > 0 && metrics && <PortfolioMetrics metrics={metrics} />}
-
-        {riskLimits && (
-          <RiskSettings portfolioId={portfolioId} currentLimits={riskLimits} onUpdate={handleUpdateRiskLimits} />
-        )}
 
         {Number.isSafeInteger(portfolioId) && portfolioId > 0 && <PositionsTable positions={positions} />}
     </div>

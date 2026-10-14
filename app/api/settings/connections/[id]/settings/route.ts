@@ -326,6 +326,41 @@ function normalizeUnlimitedPipeline<T extends Record<string, any>>(settings: T):
   return settings
 }
 
+const SYMBOL_SELECTION_REQUEST_KEYS = [
+  "symbols",
+  "symbol_order",
+  "symbol_count",
+  "symbol_source",
+  "symbols_confirmed",
+] as const
+
+/**
+ * The dialog saves its complete snapshot, so the mere presence of the symbol
+ * fields is no symbol edit. Compare them with the stored selection exactly as
+ * the engine resolves it (GET hands the dialog that basket): an unchanged auto
+ * order re-ranked on every save and a moved ranking bumped the selection epoch,
+ * restarting the historic phase although only e.g. leverage had changed.
+ */
+function symbolSelectionRequestChanged(
+  request: Record<string, any>,
+  current: Record<string, any>,
+  connection: Record<string, any>,
+): boolean {
+  const resolved = resolveCanonicalSymbols(connection, current)
+  const stored = resolved.count > 0 ? withCanonicalForcedSymbols(resolved.symbols) : []
+  const sortedKey = (symbols: unknown[]) => symbols.map(String).sort().join("|")
+  if (Array.isArray(request.symbols) && sortedKey(request.symbols) !== sortedKey(stored)) return true
+  if (
+    typeof request.symbol_order === "string" &&
+    request.symbol_order !== String(current.symbol_order ?? connection.symbol_order ?? "")
+  ) return true
+  if (request.symbol_count !== undefined) {
+    const storedCount = stored.length > 0 ? stored.length : Number(current.symbol_count ?? connection.symbol_count)
+    if (Number(request.symbol_count) !== storedCount) return true
+  }
+  return false
+}
+
 function pickProgressionVisibleSettings(settings: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [key, value] of Object.entries(settings)) {
@@ -893,6 +928,11 @@ export async function PATCH(
     }
 
     const current = parseStoredConnectionSettings(connection.connection_settings)
+    // An unchanged symbol group is not an edit: drop it before merging so it
+    // can neither re-rank the basket nor be reported as a changed field.
+    if (!symbolSelectionRequestChanged(settings, current, connection as Record<string, any>)) {
+      for (const key of SYMBOL_SELECTION_REQUEST_KEYS) delete settings[key]
+    }
 
     const merged = normalizeUnlimitedPipeline(normalizeIdentityVolumeFactors(
       mergeConnectionSettings(current, settings),

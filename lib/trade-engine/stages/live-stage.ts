@@ -1,4 +1,5 @@
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
+import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
 import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
@@ -7,7 +8,7 @@ import {
 } from "@/lib/trade-engine/admission-cooldown"
 import { markLiveSyncPhase, trackLiveSyncConnector } from "@/lib/trade-engine/live-sync-phase"
 import { effectiveLeverageCap, maxLeverageForStop, stopLossPercentForLeverage } from "@/lib/liquidation-safe-leverage"
-import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
+import { roundTripCostPercent, simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
 /**
@@ -121,7 +122,9 @@ import {
 import {
   markStrategyPositionInactive,
   recordStrategyPositionEntry,
+  recordStrategySetCloseOutcome,
 } from "@/lib/pos-history"
+import { recordLiveSetOutcome, settledLiveSetOutcome } from "@/lib/live-set-outcomes"
 import { netMovePctAfterPositionCost } from "@/lib/main-trade-profit-factor"
 import {
   inferRealStrategyVariant,
@@ -205,7 +208,7 @@ import {
 import { logRuntimeError, logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { archiveClosedLivePositionAnalytics } from "@/lib/live-position-analytics-archive"
 import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrency"
-import { scanRedisSetMembers } from "@/lib/redis-scan"
+import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 import {
   BINGX_CONTROL_ORDER_LIMIT,
   ControlOrderCapacityBudget,
@@ -295,7 +298,12 @@ function optionalBoundedInteger(value: unknown, max = 18): number | undefined {
 
 function normalizeLiveInstrumentRules(raw: Record<string, unknown> | null | undefined): LiveInstrumentRules {
   const source = raw || {}
-  const quantity = normalizeExchangeQuantityRules(source)
+  const contractQuantity = normalizeExchangeQuantityRules(source)
+  // A minimum the venue enforced in a 101400 rejection outranks the contract.
+  const observedMinimum = firstFinitePositive(source.minQuantityObserved)
+  const quantity = observedMinimum && observedMinimum > Number(contractQuantity.minQuantity || 0)
+    ? { ...contractQuantity, minQuantity: observedMinimum }
+    : contractQuantity
   const pricePrecision = optionalBoundedInteger(
     source.pricePrecision ?? source.price_precision,
   )
@@ -337,6 +345,26 @@ function bingXEnvironmentInfo(connector: any): { environment: string; baseUrl: s
       : null
   } catch {
     return null
+  }
+}
+
+/**
+ * A minimum quantity the venue enforced in a 101400 rejection. It is stored
+ * next to the contract rules (which the 15-minute contract refresh rewrites)
+ * as `minQuantityObserved`, and the cached rules of the symbol are dropped so
+ * the next entry already sizes with it.
+ */
+async function rememberVenueMinimumQuantity(symbol: string, connectionId: string, minQuantity: number): Promise<void> {
+  const normalizedSymbol = String(symbol || "").trim().toUpperCase().replace(/[-/_:]/g, "")
+  if (!normalizedSymbol || !(minQuantity > 0)) return
+  const client = getRedisClient() as any
+  await client.hset(tradingPairKey(normalizedSymbol, connectionId), {
+    minQuantityObserved: String(minQuantity),
+    minQuantityObservedAt: new Date().toISOString(),
+    minQuantityObservedSource: "101400_error_extraction",
+  }).catch(() => undefined)
+  for (const key of [...bingXInstrumentRulesCache.keys()]) {
+    if (key.endsWith(`|${normalizedSymbol}`)) bingXInstrumentRulesCache.delete(key)
   }
 }
 
@@ -388,7 +416,9 @@ async function loadExchangeQuantityRules(
         ...stored,
         quantityStep: fetched.quantityStep,
         quantityPrecision: fetched.quantityPrecision,
-        minQuantity: fetched.minQuantity,
+        // A minimum the venue enforced in a 101400 rejection outranks a
+        // smaller contract figure.
+        minQuantity: Math.max(fetched.minQuantity, firstFinitePositive(stored.minQuantityObserved) || 0),
         minNotionalUsdt: fetched.minNotionalUsdt,
         pricePrecision,
         priceTick: 10 ** -pricePrecision,
@@ -1490,7 +1520,14 @@ export interface LivePosition {
   entryAccountingComplete?: boolean
   entrySettlementOrderIds?: string[]
   realizedPnlComplete?: boolean
-  realizedPnlSource?: "exchange_settlement" | "exchange_fills_incomplete_fees" | "exchange_unresolved" | "simulation_model"
+  realizedPnlSource?:
+    | "exchange_settlement"
+    | "exchange_fills_incomplete_fees"
+    | "exchange_unresolved"
+    | "simulation_model"
+    // written later by the close-accounting cron (lib/close-accounting-backfill.ts)
+    | "exchange_settlement_deferred"
+    | "venue_position_history"
   settledOrderIds?: string[]
   /** PositionCost percentage captured at entry for canonical PF-ratio history. */
   positionCostPct?: number
@@ -1528,6 +1565,15 @@ export interface LivePosition {
   // storms when a position's price oscillates at the 0.25% drift boundary.
   stopLossLastArmedAt?: number
   takeProfitLastArmedAt?: number
+  /**
+   * Ticks the stop keeps from the mark price (allowed SL range, default 2);
+   * raised after an unexplained venue rejection of the stop.
+   */
+  protectionMarkBufferTicks?: number
+  /** After a venue rejection of the stop, no new attempt before this epoch-ms. */
+  stopLossRetryAfter?: number
+  /** Consecutive venue rejections of the stop (drives the backoff). */
+  stopLossRejectCount?: number
   assignedStopLoss?: number
   assignedTakeProfit?: number
   /** Venue-confirmed protected quantity for each independent control leg. */
@@ -2895,6 +2941,19 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     ...(parseRedisBoolean(hash.combinedPosCounts) !== undefined && {
       combinedPosCounts: parseRedisBoolean(hash.combinedPosCounts),
     }),
+    // Accounting flags come back from the hash as "true"/"false" strings.
+    // Left as strings, `=== true` rejected every settled row read from Redis
+    // (no Set-ring booking, no live loss-gate sample) and `!== false` /
+    // `=== false` treated an unsettled "false" row as settled.
+    ...(parseRedisBoolean(hash.realizedPnlComplete) !== undefined && {
+      realizedPnlComplete: parseRedisBoolean(hash.realizedPnlComplete),
+    }),
+    ...(parseRedisBoolean(hash.entryAccountingComplete) !== undefined && {
+      entryAccountingComplete: parseRedisBoolean(hash.entryAccountingComplete),
+    }),
+    ...(parseRedisBoolean(hash.pnlAccountingComplete) !== undefined && {
+      pnlAccountingComplete: parseRedisBoolean(hash.pnlAccountingComplete),
+    }),
     ...(parseRedisBoolean(hash.posCountsTargetFlat) !== undefined && {
       posCountsTargetFlat: parseRedisBoolean(hash.posCountsTargetFlat),
     }),
@@ -3026,6 +3085,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "stopLossLastArmedAt",
     "takeProfitLastArmedAt",
     "securityStopLastArmedAt",
+    "protectionMarkBufferTicks",
+    "stopLossRetryAfter",
+    "stopLossRejectCount",
     "assignedStopLoss",
     "assignedTakeProfit",
     "stopLossArmedQuantity",
@@ -3438,7 +3500,8 @@ async function rebuildSignalAdmissionIndexes(
   // Slot sets (positions): recomputed exactly from the active rows. The
   // per-symbol row sets of index version 2 are obsolete and removed.
   try {
-    for (const obsolete of (await client.keys(`${indexKey}:symbol:*`).catch(() => [])) || []) await client.del(obsolete).catch(() => 0)
+    // Paged SCAN throughout: these sweeps run on the sync path, and KEYS blocks Redis across the whole keyspace.
+    for (const obsolete of (await scanRedisKeys(client, `${indexKey}:symbol:*`, { count: 1000 }).catch(() => [])) || []) await client.del(obsolete).catch(() => 0)
     const activeSlots = new Map<string, { symbol: string; direction: "long" | "short"; ids: string[] }>()
     for (const position of active) {
       const direction = position.direction as "long" | "short"
@@ -3451,7 +3514,7 @@ async function rebuildSignalAdmissionIndexes(
     const longSlotsKey = signalPositionAdmissionSlotsDirectionKey(connectionId, "long")
     const shortSlotsKey = signalPositionAdmissionSlotsDirectionKey(connectionId, "short")
     // Row sets of slots: remove members that are no longer active rows.
-    for (const slotKey of (await client.keys(`${indexKey}:slot:*`).catch(() => [])) || []) {
+    for (const slotKey of (await scanRedisKeys(client, `${indexKey}:slot:*`, { count: 1000 }).catch(() => [])) || []) {
       const members = (await scanRedisSetMembers(client, slotKey, { count: 250 }).catch(() => [])).map(String)
       const stale = members.filter((id) => !activeIds.has(id))
       if (stale.length > 0) await client.srem(slotKey, ...stale).catch(() => 0)
@@ -4074,10 +4137,10 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
           ? {
               pnl: realizedPnl,
               // Live PnL is already venue-net and must not receive a second
-              // configured-cost deduction. Simulation retains its explicit
-              // deterministic PositionCost model.
+              // cost deduction. A simulated outcome is gross and pays the
+              // real round trip once (lib/trading-round-trip-cost.ts).
               pnlPct: simulatedOutcome
-                ? netMovePctAfterPositionCost(grossPnlPct, positionCostPct)
+                ? netMovePctAfterPositionCost(grossPnlPct, simulatedCloseCostPercent(positionCostPct))
                 : grossPnlPct,
               positionCostPct,
               drawdownMinutes: openedAt > 0 && closedAt > openedAt
@@ -4091,6 +4154,16 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       // Only settled exchange outcomes feed the permanent per-Set loss gate.
       // Accounting corrections/replayed closes are idempotent in the ledger.
       await recordLiveConfigOutcome(position)
+      // The exchange-only Set rings the coordinator judges live Sets by. A
+      // paper/pseudo or still-unsettled row books nothing here; a late
+      // settlement arrives through settleDeferredLiveRow().
+      await recordLiveSetOutcome(position as unknown as Record<string, any>, { notionalUsd: notional }).catch((error) => {
+        logRuntimeWarning(
+          `live-set-outcome:${position.connectionId}`,
+          60_000,
+          `${LOG_PREFIX} exchange Set outcome booking failed: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
     } else {
       await upsertRedisListHead(client, openIndexKey, position.id)
       if (slotIndexKey) {
@@ -9342,6 +9415,22 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
     if (!Number.isFinite(desiredSl)) desiredSl = 0
   }
 
+  // The venue accepts a stop only on the protective side of the mark and
+  // inside the liquidation price: place it at the nearest allowed price
+  // instead of having it rejected (lib/protection-allowed-range.ts).
+  if (desiredSl > 0) {
+    const allowed = allowedStopLossPrice({
+      direction,
+      entryPrice: fillPrice,
+      stopPrice: desiredSl,
+      markPrice: Number(pos.exchangeData?.markPrice ?? pos.markPrice) || null,
+      liquidationPrice: Number(pos.exchangeData?.liquidationPrice ?? pos.liquidationPrice) || null,
+      priceTick: Number(pos.priceTick) || null,
+      minMarkTicks: Number(pos.protectionMarkBufferTicks) || undefined,
+    })
+    if (allowed.adjusted) desiredSl = allowed.stopPrice
+  }
+
   // A take profit below the round-trip cost is a guaranteed loss even when it
   // WINS. Production on X01: TAKEUSDT TP 0.205 % and SPXUSDT TP 0.20 % against
   // a 0.26 % round trip — every such win booked about -0.06 %. The target must
@@ -9633,6 +9722,32 @@ async function getCachedSystemCloseOnly(connectionId: string): Promise<boolean> 
 
 async function getCachedOverallControlOrdersOnly(connectionId: string): Promise<boolean> {
   return (await getCachedProtectionPolicy(connectionId)).overallControlOrdersOnly
+}
+
+/**
+ * Reconcile backoff after a venue rejected the stop-loss for no recognised
+ * reason (not crossed, quota or quantity): 15 s, 30 s, then 60 s between
+ * attempts, each with a wider distance to the mark (10, 20, 30 … ticks, at
+ * most 50). A successful placement clears it.
+ */
+export const STOP_LOSS_REJECTION_BACKOFF_MS = [15_000, 30_000, 60_000] as const
+
+export function noteStopLossRejection(pos: LivePosition, nowMs: number = Date.now()): number {
+  const count = Math.max(0, Math.floor(Number(pos.stopLossRejectCount) || 0)) + 1
+  const delayMs = STOP_LOSS_REJECTION_BACKOFF_MS[Math.min(count, STOP_LOSS_REJECTION_BACKOFF_MS.length) - 1]
+  pos.stopLossRejectCount = count
+  pos.stopLossRetryAfter = nowMs + delayMs
+  pos.protectionMarkBufferTicks = Math.min(50, Math.max(10 * count, Number(pos.protectionMarkBufferTicks) || 0))
+  return delayMs
+}
+
+export function stopLossRetryPending(pos: LivePosition, nowMs: number = Date.now()): boolean {
+  return Number(pos.stopLossRetryAfter) > nowMs
+}
+
+function clearStopLossRejection(pos: LivePosition): void {
+  pos.stopLossRejectCount = 0
+  pos.stopLossRetryAfter = 0
 }
 
 function setSystemProtectionLeg(pos: LivePosition, leg: ProtectionOrderLeg, enabled: boolean): void {
@@ -10437,6 +10552,9 @@ async function updateProtectionOrders(
       // always bypass the cooldown — arming a missing order is never a no-op.
       desiredSl > 0 &&
       !pendingSlBlocksPlacement &&
+      // A venue rejection backs off (stopLossRejectionBackoff) instead of
+      // re-placing every tick; the system-side close covers the stop meanwhile.
+      !stopLossRetryPending(pos) &&
       (
         !pos.stopLossOrderId
           ? true  // no order at all → arm immediately regardless of cooldown
@@ -10521,6 +10639,7 @@ async function updateProtectionOrders(
         result.changed = true
         result.slPlaced = true
         setSystemProtectionLeg(pos, "stop_loss", false)
+        clearStopLossRejection(pos)
         if (capacityBudget) pos.controlOrderCapacity = capacityBudget.snapshot()
         if (pos.pendingProtectionOrders) delete pos.pendingProtectionOrders.stopLoss
       } else {
@@ -10528,6 +10647,14 @@ async function updateProtectionOrders(
         pos.stopLossOrderId = undefined
         pos.stopLossPrice = 0
         setProtectionLegArmedQuantity(pos, "stop_loss", 0)
+        if (id === null) {
+          // An unexplained rejection: the next attempt keeps a wider distance
+          // to the mark (computeDesiredProtectionPrices → allowedStopLossPrice)
+          // and waits instead of re-sending the same price every tick.
+          const delayMs = noteStopLossRejection(pos)
+          result.changed = true
+          pushStep(pos, "stop_loss_rejected_backoff", false, `SL ${desiredSl} rejected; retry in ${Math.round(delayMs / 1000)}s with ${pos.protectionMarkBufferTicks} mark ticks`)
+        }
       }
     }
   })()
@@ -12532,9 +12659,9 @@ export async function sweepResolvedUnconfirmedEntryHolds(
   rows: ReadonlyArray<Record<string, any>>,
   now: number = Date.now(),
 ): Promise<string[]> {
-  if (!client || typeof client.keys !== "function") return []
+  if (!client || (typeof client.scan !== "function" && typeof client.keys !== "function")) return []
   const prefix = `live:entry-rollback-cooldown:${connectionId}:`
-  const keys: string[] = ((await client.keys(`${prefix}*`).catch(() => [])) || []).map(String)
+  const keys: string[] = ((await scanRedisKeys(client, `${prefix}*`, { count: 1000 }).catch(() => [])) || []).map(String)
   if (keys.length === 0) return []
   const occupied = occupiedSlotKeysOf(rows)
   const cleared: string[] = []
@@ -12562,8 +12689,8 @@ export async function sweepEmptySlotProtectionHalts(
   connectionId: string,
   rows: ReadonlyArray<Record<string, any>>,
 ): Promise<string[]> {
-  if (!client || typeof client.keys !== "function") return []
-  const keys: string[] = ((await client.keys(`live:entry-protection-halt:${connectionId}:slot:*`).catch(() => [])) || []).map(String)
+  if (!client || (typeof client.scan !== "function" && typeof client.keys !== "function")) return []
+  const keys: string[] = ((await scanRedisKeys(client, `live:entry-protection-halt:${connectionId}:slot:*`, { count: 1000 }).catch(() => [])) || []).map(String)
   if (keys.length === 0) return []
   const occupied = new Set<string>()
   for (const row of rows || []) {
@@ -15356,7 +15483,9 @@ export async function executeLivePosition(
       const cappedNotional = positionNotionalUsd(livePosition, cappedQuantity, currentPrice)
       if (!(cappedQuantity > 0) || cappedNotional > maxExecutionNotionalUsd + 1e-8 || cappedQuantity < liveInstrumentRules.minQuantity) {
         livePosition.status = "error"
-        livePosition.statusReason = `Live entry refused: executable quantity exceeds the ${maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd.toFixed(2) : "configured"} USD exposure ceiling`
+        livePosition.statusReason = cappedQuantity > 0 && cappedQuantity < liveInstrumentRules.minQuantity
+          ? `Live entry refused: the venue minimum ${liveInstrumentRules.minQuantity} exceeds the ${maxExecutionNotionalUsd.toFixed(2)} USD exposure ceiling (venue_minimum_exceeds_ceiling)`
+          : `Live entry refused: executable quantity exceeds the ${maxExecutionNotionalUsd > 0 ? maxExecutionNotionalUsd.toFixed(2) : "configured"} USD exposure ceiling`
         pushStep(livePosition, "volume_cap", false, livePosition.statusReason)
         await savePosition(livePosition)
         await recordExecutionPreflightFailure()
@@ -15384,7 +15513,9 @@ export async function executeLivePosition(
           const budgetQuantity = unitNotional > 0 && Number.isFinite(allowedNotional) ? roundQuantityDown(allowedNotional / unitNotional, liveInstrumentRules) : 0
           if (!(budgetQuantity > 0) || budgetQuantity < liveInstrumentRules.minQuantity) {
             livePosition.status = "error"
-            livePosition.statusReason = `Live entry refused: account stop-loss risk budget ${budgetPercent}% of ${balanceUsd.toFixed(2)} USD is used (open stop risk ${openRiskUsd.toFixed(2)} USD)`
+            livePosition.statusReason = budgetQuantity > 0 && budgetQuantity < liveInstrumentRules.minQuantity
+              ? `Live entry refused: the venue minimum ${liveInstrumentRules.minQuantity} exceeds the remaining account stop-loss risk budget (${budgetPercent}% of ${balanceUsd.toFixed(2)} USD, open stop risk ${openRiskUsd.toFixed(2)} USD) (venue_minimum_exceeds_ceiling)`
+              : `Live entry refused: account stop-loss risk budget ${budgetPercent}% of ${balanceUsd.toFixed(2)} USD is used (open stop risk ${openRiskUsd.toFixed(2)} USD)`
             pushStep(livePosition, "risk_budget", false, livePosition.statusReason)
             await savePosition(livePosition)
             await recordExecutionPreflightFailure()
@@ -16419,14 +16550,9 @@ export async function executeLivePosition(
               await savePosition(livePosition).catch(() => {})
               return livePosition
             }
-            const { setSettings } = await import("@/lib/redis-db")
-            
-            // Save the corrected minimum for future cycles
-            await setSettings(tradingPairKey(realPosition.symbol, connectionId), {
-              min_order_size: minQty,
-              updated_at: new Date().toISOString(),
-              source: "101400_error_extraction",
-            })
+            // Save the corrected minimum where the quantity rules and the
+            // volume calculator read it (setSettings would prefix the key).
+            await rememberVenueMinimumQuantity(realPosition.symbol, connectionId, minQty)
             
             console.warn(
               `${LOG_PREFIX} [101400 Correction] Detected minimum ${minQty} > current ${computedVolume.toFixed(8)} for ${realPosition.symbol}; retrying in same cycle`,
@@ -16876,7 +17002,7 @@ export async function executeLivePosition(
       const initialProtection = computeDesiredProtectionPrices(livePosition)
       const protectionDirection = resolveLivePositionDirection(livePosition)
       const priceTick = Number(livePosition.priceTick || 0)
-      const slPrice = normalizeProtectionTriggerPrice(
+      let slPrice = normalizeProtectionTriggerPrice(
         initialProtection.desiredSl,
         priceTick,
         protectionDirection,
@@ -16933,7 +17059,7 @@ export async function executeLivePosition(
       const tpClientOrderId = tpPrice > 0 && !livePosition.takeProfitOrderId && tpCapacity.allowed
         ? await prepareProtectionSubmission(livePosition, "takeProfit", tpPrice, livePosition.executedQuantity)
         : undefined
-      const [slPlacement, tpPlacement] = await Promise.all([
+      const [initialSlPlacement, tpPlacement] = await Promise.all([
         (slPrice > 0 && !livePosition.stopLossOrderId && slCapacity.allowed)
           ? placeProtectionOrder(
               exchangeConnector,
@@ -16969,6 +17095,53 @@ export async function executeLivePosition(
                 : 0,
             }),
       ])
+      // An unexplained venue rejection of the stop (not crossed, quota or
+      // quantity): refresh mark and liquidation, keep a wider distance from
+      // the mark and place it once more at the nearest allowed price before
+      // the entry is treated as unprotectable.
+      let slPlacement = initialSlPlacement
+      if (slPrice > 0 && slCapacity.allowed && !livePosition.stopLossOrderId && initialSlPlacement.orderId === null) {
+        try {
+          const exPos = typeof exchangeConnector.getPosition === "function"
+            ? await exchangeConnector.getPosition(realPosition.symbol, realPosition.direction as "long" | "short")
+            : null
+          if (exPos) {
+            livePosition.exchangeData = {
+              ...(livePosition.exchangeData || {}),
+              markPrice: (exPos as any).markPrice,
+              liquidationPrice: (exPos as any).liquidationPrice,
+            }
+          }
+          livePosition.protectionMarkBufferTicks = Math.max(10, Number(livePosition.protectionMarkBufferTicks) || 0)
+          const retryPrice = normalizeProtectionTriggerPrice(
+            computeDesiredProtectionPrices(livePosition).desiredSl,
+            priceTick,
+            protectionDirection,
+            "stop_loss",
+          )
+          if (retryPrice > 0 && retryPrice !== slPrice) {
+            pushStep(livePosition, "stop_loss_allowed_range", true, `stop rejected at ${slPrice}; re-placing at the allowed ${retryPrice}`)
+            const retryClientOrderId = await prepareProtectionSubmission(livePosition, "stopLoss", retryPrice, livePosition.executedQuantity)
+            const retried = await placeProtectionOrder(
+              exchangeConnector,
+              realPosition.symbol,
+              sideClose,
+              livePosition.executedQuantity,
+              retryPrice,
+              "StopLoss",
+              realPosition.direction,
+              retryClientOrderId,
+            )
+            slPlacement = retried
+            slPrice = retryPrice
+          }
+        } catch (error) {
+          console.warn(
+            `${LOG_PREFIX} StopLoss allowed-range retry failed for ${realPosition.symbol}:`,
+            error instanceof Error ? error.message : String(error),
+          )
+        }
+      }
       const slOrderId = slPlacement.orderId
       const tpOrderId = tpPlacement.orderId
 
@@ -18321,6 +18494,96 @@ export function controlCloseSlippagePct(
   return Math.round(worse * 100 * 1e4) / 1e4
 }
 
+function closedRowNotionalUsd(position: LivePosition): number {
+  const quantity = Math.max(
+    Number(position.totalExecutedQuantity || 0),
+    Number(position.closedQuantity || 0),
+    Number(position.executedQuantity || 0),
+  )
+  const averageEntry = Number(position.averageExecutionPrice || position.entryPrice || 0)
+  return quantity > 0 && averageEntry > 0 ? positionNotionalUsd(position, quantity, averageEntry) : 0
+}
+
+/**
+ * Signal source/lane quality from one closed row, exactly once per position
+ * (signal-indication marker). A real close is venue-net, so no PositionCost is
+ * deducted again; a paper close keeps its modelled cost.
+ */
+async function recordClosedRowSignalOutcome(
+  position: LivePosition,
+  liveExchange: boolean,
+  pnlOverride?: number,
+): Promise<void> {
+  const direction = resolveLivePositionDirection(position)
+  if (position.realizedPnlComplete !== true || !direction || !position.signalRisk?.sourceIds?.length) return
+  const pnl = pnlOverride !== undefined && Number.isFinite(pnlOverride) ? pnlOverride : Number(position.realizedPnL)
+  if (!Number.isFinite(pnl)) return
+  const notional = closedRowNotionalUsd(position)
+  const signalAppSettings = await getAppSettings().catch(() => ({} as any))
+  const positionCostPct = Math.max(
+    0.000001,
+    Number(
+      signalAppSettings?.positionCost ??
+      signalAppSettings?.exchangePositionCost ??
+      signalAppSettings?.exchange_position_cost,
+    ) || 0.1,
+  )
+  await recordSignalPerformanceOutcome({
+    connectionId: position.connectionId,
+    positionId: position.id,
+    symbol: position.symbol,
+    direction,
+    pnl,
+    pnlPct: notional > 0 ? (pnl / notional) * 100 : 0,
+    pnlPctIsNet: liveExchange,
+    positionCostPct,
+    sourceIds: position.signalRisk.sourceIds,
+    signalLanes: position.signalRisk.signalLanes,
+    liveExchange,
+    closedAt: position.closedAt || Date.now(),
+  }).catch((error) => {
+    console.warn(
+      `${LOG_PREFIX} Signal outcome attribution failed for ${position.id}:`,
+      error instanceof Error ? error.message : error,
+    )
+  })
+}
+
+/**
+ * A closed real row whose settlement arrived after the close: the
+ * close-accounting cron writes it straight into the hash, bypassing
+ * savePosition, so every consumer that skipped the row as unresolved at close
+ * time books it here — the general and the exchange-only Set rings, the live
+ * loss gate, Block/DCA recovery and Signal quality. Each consumer is
+ * exactly-once per position, so a replay, or a row that was already complete
+ * when it closed, changes nothing.
+ */
+export async function settleDeferredLiveRow(
+  connectionId: string,
+  positionId: string,
+): Promise<{ booked: boolean; sets: number }> {
+  await initRedis()
+  const client = getRedisClient()
+  const position = await readLivePositionSnapshot(client, connectionId, positionId)
+  if (!position) return { booked: false, sets: 0 }
+  const notional = closedRowNotionalUsd(position)
+  const outcome = settledLiveSetOutcome(position as unknown as Record<string, any>, connectionId, notional)
+  if (!outcome) return { booked: false, sets: 0 }
+  // The same members recordConfirmedStrategyEntry registered at the fill.
+  const memberKeys = position.combinedPosCounts
+    ? [...new Set((position.accumulatedSetKeys || []).map(String).filter(Boolean))]
+    : [...new Set([position.setKey, ...(position.accumulatedSetKeys || [])].map((key) => String(key || "")).filter(Boolean))]
+  await recordStrategySetCloseOutcome(connectionId, position.id, memberKeys, outcome)
+  const sets = await recordLiveSetOutcome(position as unknown as Record<string, any>, {
+    connectionId,
+    notionalUsd: notional,
+  })
+  await recordLiveConfigOutcome(position)
+  await advanceBlockCountPausesOnPositionClose(client, position)
+  await recordClosedRowSignalOutcome(position, true)
+  return { booked: true, sets }
+}
+
 export async function closeLivePosition(
   connectionId: string,
   livePositionId: string,
@@ -19031,7 +19294,9 @@ export async function closeLivePosition(
     position.status = "closed"
     position.closedAt = Date.now()
     position.updatedAt = Date.now()
-    position.realizedPnL = Math.round(pnl * 100) / 100
+    // Same precision as the reconcile close: minimum-volume rows settle in
+    // fractions of a cent, and rounding to cents stored them as 0.00.
+    position.realizedPnL = Math.round(pnl * 1e8) / 1e8
     position.totalExecutedQuantity = qty
     position.closedQuantity = qty
     // Closed-history rows retain the complete traded quantity while open
@@ -19053,6 +19318,18 @@ export async function closeLivePosition(
     position.closeOrderId = String(
       confirmedCloseOrderId || ledgerCloseOrderId || position.closeOrderId || "",
     ).trim() || undefined
+    // The close is attributed to the row's own control order by id and its
+    // slippage measured against that order's armed price; the terminal reset
+    // below clears both, so they are captured first (afterwards no close was
+    // ever named stop_loss/take_profit and slippage was always empty).
+    const closingControls = {
+      stopLossOrderId: position.stopLossOrderId,
+      takeProfitOrderId: position.takeProfitOrderId,
+      securityStopOrderId: position.securityStopOrderId,
+      stopLossPrice: position.stopLossPrice,
+      takeProfitPrice: position.takeProfitPrice,
+      securityStopPrice: position.securityStopPrice,
+    }
     position.pendingSystemAction = undefined
     position.systemCloseRetry = undefined
     position.pendingQuantityMutation = undefined
@@ -19085,7 +19362,10 @@ export async function closeLivePosition(
     // statistics could not tell a stop from a target from a foreign close. The
     // ids are the coordination: whichever control order id the closing order
     // carries names the reason.
-    position.closeReason = attributeCloseReasonByOrderId(position, closeReason)
+    position.closeReason = attributeCloseReasonByOrderId(
+      { ...closingControls, closeOrderId: position.closeOrderId, orderId: position.orderId },
+      closeReason,
+    )
     // Persist the actual exit price so the stats route and trade-history
     // table can show the real close price without needing to back-derive
     // it from realizedPnL. This is the definitive source of truth for
@@ -19097,7 +19377,12 @@ export async function closeLivePosition(
     const accountedClosePrice = isSimulationClose ? closePrice : lastActualExecutionPrice
     if (accountedClosePrice > 0) position.closePrice = Math.round(accountedClosePrice * 1e8) / 1e8
     {
-      const slippage = controlCloseSlippagePct(position)
+      const slippage = controlCloseSlippagePct({
+        ...closingControls,
+        direction: position.direction,
+        closePrice: position.closePrice,
+        closeReason: position.closeReason,
+      })
       if (slippage !== null) (position as any).closeSlippagePct = slippage
     }
     
@@ -19171,39 +19456,14 @@ export async function closeLivePosition(
         await incrementMetric(connectionId, "live_positions_closed_count")
         if (position.realizedPnlComplete && pnl > 0) await incrementMetric(connectionId, "live_wins_count")
       }
-      const closedDirection = resolveLivePositionDirection(position)
       // A Signal/default or Signal/Block leg may have joined a position whose
       // primary owner is another indication type. Attribution follows the
       // durable Signal risk/source lineage, not the first leg's label.
-      if (position.realizedPnlComplete && closedDirection && position.signalRisk?.sourceIds?.length) {
-        const signalAppSettings = await getAppSettings().catch(() => ({} as any))
-        const positionCostPct = Math.max(
-          0.000001,
-          Number(
-            signalAppSettings?.positionCost ??
-            signalAppSettings?.exchangePositionCost ??
-            signalAppSettings?.exchange_position_cost,
-          ) || 0.1,
-        )
-        await recordSignalPerformanceOutcome({
-          connectionId,
-          positionId: position.id,
-          symbol: position.symbol,
-          direction: closedDirection,
-          pnl,
-          pnlPct: notional > 0 ? (pnl / notional) * 100 : 0,
-          positionCostPct,
-          sourceIds: position.signalRisk.sourceIds,
-          signalLanes: position.signalRisk.signalLanes,
-          liveExchange: originalStatus !== "simulated" && Boolean(exchangeConnector),
-          closedAt: position.closedAt || Date.now(),
-        }).catch((error) => {
-          console.warn(
-            `${LOG_PREFIX} Signal outcome attribution failed for ${position.id}:`,
-            error instanceof Error ? error.message : error,
-          )
-        })
-      }
+      await recordClosedRowSignalOutcome(
+        position,
+        originalStatus !== "simulated" && Boolean(exchangeConnector),
+        pnl,
+      )
       // Only count as exchange-close failure when the connector actually
       // failed. `already_closed` means the exchange-side state already
       // matches our intent (SL/TP fired first), and `skipped` means we
@@ -20784,6 +21044,17 @@ export async function reconcileLivePositions(
           pos.quantity = lifetimeQuantityAtClose
           pos.remainingQuantity = 0
           pos.realizedPnL = Math.round(realizedPnl * 1e8) / 1e8
+          // Captured before the reset below: the order that flattened the slot
+          // names the close (stop / target / security) and its armed price
+          // measures the slippage. A shared security stop counts as this row's.
+          const externalClosingControls = {
+            stopLossOrderId: pos.stopLossOrderId,
+            takeProfitOrderId: pos.takeProfitOrderId,
+            securityStopOrderId: sharedSecurityOrderId || pos.securityStopOrderId,
+            stopLossPrice: pos.stopLossPrice,
+            takeProfitPrice: pos.takeProfitPrice,
+            securityStopPrice: pos.securityStopPrice || Number(inheritedSecurity?.securityStopPrice || 0),
+          }
           pos.pendingProtectionOrders = undefined
           pos.stopLossOrderId = undefined
           pos.takeProfitOrderId = undefined
@@ -20806,7 +21077,19 @@ export async function reconcileLivePositions(
           pos.aggregateProtectionOwner = false
           pos.aggregateProtectionQuantity = 0
           if (exitPrice > 0) pos.closePrice = Math.round(exitPrice * 1e8) / 1e8
-          pos.closeReason = pos.closeReason || "exchange_reconciliation"
+          pos.closeReason = attributeCloseReasonByOrderId(
+            { ...externalClosingControls, closeOrderId: pos.closeOrderId, orderId: pos.orderId },
+            pos.closeReason || "exchange_reconciliation",
+          )
+          {
+            const slippage = controlCloseSlippagePct({
+              ...externalClosingControls,
+              direction: pos.direction,
+              closePrice: pos.closePrice,
+              closeReason: pos.closeReason,
+            })
+            if (slippage !== null) (pos as any).closeSlippagePct = slippage
+          }
           pushStep(
             pos,
             "close",
@@ -20829,6 +21112,8 @@ export async function reconcileLivePositions(
           // Persists the JSON snapshot + moves the index + sets the marker.
           await savePosition(pos)
           await advanceBlockCountPausesOnPositionClose(client, pos)
+          // Venue-side stops, targets and liquidations are real results too.
+          await recordClosedRowSignalOutcome(pos, true)
 
           const progKey = `progression:${connectionId}`
           const writes: Promise<any>[] = [

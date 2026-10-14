@@ -987,7 +987,7 @@ export function QuickstartOverviewDialog() {
             {stats?.activeProgressing?.strategies && (
               <div className="rounded-md border p-3 space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="font-semibold">Active Progressing — Per Stage</span>
+                  <span className="font-semibold" title="Validated Sets only: Base counts Sets that passed the Base gate (measured history, PF ≥ threshold); Main, Real and Live count their descendants.">Active Progressing — Per Stage (validated Sets)</span>
                   <span className="text-muted-foreground tabular-nums">
                     {fmt(stats.activeProgressing.strategies.total?.sets ?? 0)} sets ·
                     {" "}{fmt(stats.activeProgressing.strategies.total?.trackings ?? 0)} tracked ·

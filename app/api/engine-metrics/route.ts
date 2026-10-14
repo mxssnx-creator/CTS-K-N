@@ -1,16 +1,23 @@
 import { NextRequest, NextResponse } from "next/server"
-import { getProgressManager } from "@/lib/engine-progress-manager"
-import { IndicationEvaluator } from "@/lib/indication-evaluator"
-import { StrategyEvaluator } from "@/lib/strategy-evaluator"
-import { MetricsAggregator } from "@/lib/metrics-aggregator"
-import { getEngineLogger } from "@/lib/engine-logger"
+import { getRedisClient, initRedis } from "@/lib/redis-db"
+import { readResultLedger } from "@/lib/results/ledger"
+import { buildEnginePerformance } from "./engine-performance"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
+
+/**
+ * GET /api/engine-metrics?connectionId=...
+ *
+ * Realized profit factor, win rate and drawdown of a connection, computed from
+ * its results ledger (executed, settled own positions). The former response
+ * came from a MetricsAggregator over evaluators created fresh for every
+ * request, which the running engine never feeds, so every figure was 0.
+ */
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const connectionId = searchParams.get("connectionId")
+    const connectionId = String(searchParams.get("connectionId") || searchParams.get("connection_id") || "").trim()
 
     if (!connectionId) {
       return NextResponse.json(
@@ -19,17 +26,18 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const progressManager = getProgressManager(connectionId)
-    const logger = getEngineLogger(connectionId)
-    
-    // Create evaluators (in real implementation, these would be shared instances)
-    const indicationEvaluator = new IndicationEvaluator(connectionId)
-    const strategyEvaluator = new StrategyEvaluator(connectionId)
-    const metricsAggregator = new MetricsAggregator(connectionId, indicationEvaluator, strategyEvaluator, logger)
+    await initRedis()
+    const ledger = await readResultLedger(getRedisClient(), connectionId).catch(() => null)
 
-    const uiMetrics = await metricsAggregator.getUIMetrics()
-
-    return NextResponse.json({ metrics: uiMetrics })
+    return NextResponse.json(
+      {
+        success: true,
+        connectionId,
+        performance: buildEnginePerformance(ledger),
+        timestamp: new Date().toISOString(),
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    )
   } catch (error) {
     console.error("[EngineMetrics] Error:", error)
     return NextResponse.json(
