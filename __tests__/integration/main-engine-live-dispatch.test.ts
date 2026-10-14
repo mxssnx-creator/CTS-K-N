@@ -3195,4 +3195,111 @@ describe("Main Trade Engine Real → Live dispatch", () => {
       expect(Number(short.stopLossPrice)).toBeGreaterThan(100)
     })
   })
+
+  // Last on purpose: live-stage keeps short-lived in-process venue/control
+  // caches per connection that a 70-symbol burst would leave for later tests.
+  test("70-symbol burst: every entry is protected, closes once and leaves no venue exposure or control order", async () => {
+    const { executeLivePosition, closeLivePosition, reconcileLivePositions } = await import("@/lib/trade-engine/stages/live-stage")
+    // close (reduce-only) orders settle at the venue; entries fill at 100
+    const settlements = new Map<string, any>()
+    let closeSeq = 0
+    mockReadOrderSettlement.mockImplementation(async (_connector: any, _symbol: string, orderId: string) =>
+      settlements.get(String(orderId)) || null)
+    placeOrder.mockImplementation(async (
+      symbol: string, _side: string, quantity: number, _price: number | undefined, _type: string, options: Record<string, any> = {},
+    ) => {
+      if (options.reduceOnly !== true) {
+        return { success: true, orderId: `bingx-entry-${symbol}`, status: "filled", filledQty: quantity, filledPrice: 100 }
+      }
+      const orderId = `bingx-close-${symbol}-${++closeSeq}`
+      // the reduce fill flattens the slot at the venue
+      venueQuantityOverrides.set(`${symbol.replace(/[^A-Z0-9]/g, "")}:${options.positionSide === "SHORT" ? "short" : "long"}`, 0)
+      settlements.set(orderId, {
+        orderId, symbol, filledQuantity: quantity, averageFillPrice: 102, grossRealizedPnl: quantity * 2,
+        tradingFee: 0, netRealizedPnl: quantity * 2, netIncludesEntryFee: false, source: "bingx_fill_history",
+        settledAt: Date.now(), fills: [],
+      })
+      return { success: true, orderId, status: "filled", filledQty: quantity, filledPrice: 102 }
+    })
+    // own symbols: live-stage keeps in-process per-slot state that later tests' BTCUSDT rows must not see
+    const symbols = Array.from({ length: 70 }, (_, index) => `S${String(index).padStart(3, "0")}USDT`)
+    const candidate = (symbol: string, index: number) => ({
+      id: `real-70-${index}`,
+      connectionId: connection.id,
+      symbol,
+      direction: "long",
+      quantity: 0,
+      entryPrice: 100,
+      leverage: 2,
+      stopLoss: 1,
+      takeProfit: 2,
+      indicationType: "direction",
+      setKey: `${symbol}:direction:long#default`,
+      parentSetKey: `${symbol}:direction:long`,
+      setVariant: "default",
+      status: "pending",
+      timestamp: Date.now(),
+    } as any)
+    const startedAt = performance.now()
+    // All 70 arrive at once. The connection-wide protection admission defers
+    // what it cannot protect right now (before any venue call); the engine
+    // re-dispatches those on its next cycle, as these rounds do.
+    const opened: any[] = await Promise.all(symbols.map((symbol, index) =>
+      executeLivePosition(connection.id, candidate(symbol, index), recordingConnector)))
+    let deferredRounds = 0
+    for (let round = 0; round < 10 && opened.some((position) => position.status !== "open"); round++) {
+      deferredRounds++
+      const pending = opened.map((position, index) => ({ position, index })).filter(({ position }) => position.status !== "open")
+      for (const { position } of pending) {
+        expect(position.status).toBe("rejected")
+        expect((position.progression || []).some((step: any) => step.step === "entry_protection_admission" && !step.success)).toBe(true)
+      }
+      const retried = await Promise.all(pending.map(({ index }) =>
+        executeLivePosition(connection.id, candidate(symbols[index], index), recordingConnector)))
+      pending.forEach(({ index }, offset) => { opened[index] = retried[offset] })
+    }
+    const openMs = performance.now() - startedAt
+    expect(opened.every((position) => position.status === "open")).toBe(true)
+    expect(new Set(opened.map((position) => position.id)).size).toBe(70)
+    expect(placeOrder.mock.calls.filter((call: any[]) => call[5]?.reduceOnly !== true)).toHaveLength(70)
+    expect(opened.every((position) => position.securityStopOrderId || position.stopLossOrderId)).toBe(true)
+    expect(opened.every((position) => position.stopLossOrderId && position.takeProfitOrderId)).toBe(true)
+    expect(persistedActiveRows()).toHaveLength(70)
+    // control orders are bounded; the 70 entries still open within a few dispatch rounds
+    expect(deferredRounds).toBeLessThanOrEqual(5)
+    expect(openMs).toBeLessThan(60_000)
+
+    // half are closed by the engine through the connector (reduce order, then
+    // the venue confirms the slot is flat); the other half are closed at the
+    // venue outside the engine. Reconciliation settles both.
+    for (const position of opened.slice(0, 35)) {
+      const closing = await closeLivePosition(connection.id, position.id, 102, recordingConnector, "manual_dashboard_close")
+      expect(closing).toMatchObject({ status: "closed", closeReason: "manual_dashboard_close", closeOrderId: expect.stringContaining("bingx-close-") })
+    }
+    for (const position of opened) venueQuantityOverrides.set(`${position.symbol}:long`, 0)
+    const reconcile = () =>
+      reconcileLivePositions(connection.id, recordingConnector, { skipSimulatedSweep: true, skipOrphanAdoption: true } as any)
+    for (let cycle = 0; cycle < 10 && persistedActiveRows().length > 0; cycle++) await reconcile()
+    expect(persistedActiveRows()).toHaveLength(0)
+    expect(venueOpenOrderSnapshot()).toEqual([])
+    const closedIds = lists.get(`live:positions:${connection.id}:closed`) || []
+    expect(new Set(closedIds).size).toBe(70)
+    expect(closedIds).toHaveLength(70)
+    expect(lists.get(`live:positions:${connection.id}`) || []).toEqual([])
+
+    // exactly once: replayed closes and further reconciliation book nothing more
+    const ringLengths = () => opened.map((position) =>
+      (lists.get(`strategy_set_result_ring:${connection.id}:${position.setKey}`) || []).length)
+    const before = ringLengths()
+    expect(before.every((length) => length <= 1)).toBe(true)
+    for (const position of opened) {
+      await expect(closeLivePosition(connection.id, position.id, 102, recordingConnector, "replay")).resolves.toBeNull()
+    }
+    await reconcile()
+    await reconcile()
+    expect(ringLengths()).toEqual(before)
+    expect(lists.get(`live:positions:${connection.id}:closed`)).toHaveLength(70)
+    // no reduce order beyond one per engine-closed row
+    expect(placeOrder.mock.calls.length).toBeLessThanOrEqual(70 + 35)
+  }, 120_000)
 })
