@@ -25,6 +25,7 @@ import { typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
 import {
   normalizeOpenPosition,
   replayDirectIndicationTypes,
+  typeReplayWarmupMinutes,
   type TypeReplayOpenPosition,
   type TypeReplayResult,
 } from "./prehistoric-type-replay"
@@ -155,7 +156,7 @@ export async function advanceTypeMeasurement(input: AdvanceTypeMeasurementInput)
           : null) ?? deriveProtectionFromProfitFactor(profitFactor, context.positionCostPct)
         return { takeProfitPct: protection.takeProfitPct, stopLossPct: protection.stopLossPct }
       },
-      stepIndicatorsFor: (bars, timeframesMinutes) => StepBasedIndicators.calculateSummariesAsync(
+      stepIndicatorSeries: (bars, timeframesMinutes) => StepBasedIndicators.createSummarySeries(
         bars,
         timeframesMinutes,
         context.indicationSettings?.commonIndicatorTypes,
@@ -319,7 +320,7 @@ export async function backfillTypeMeasurement(input: TypeMeasurementBackfillInpu
     if (buckets.every((bucket) => counts[bucket] >= minCount)) break
     input.assertActive?.()
     const startMs = endMs - stepMs
-    const bars = await loadBars(startMs - ENGINE_STAGE_HISTORY_MINUTES * MINUTE_MS, endMs)
+    const bars = await loadBars(startMs - typeReplayWarmupMinutes(context.indicationSettings) * MINUTE_MS, endMs)
     hours += stepMs / 3_600_000
     if (!bars || bars.length === 0) break
     const result = await replayDirectIndicationTypes({
@@ -335,7 +336,7 @@ export async function backfillTypeMeasurement(input: TypeMeasurementBackfillInpu
           : null) ?? deriveProtectionFromProfitFactor(profitFactor, context.positionCostPct)
         return { takeProfitPct: protection.takeProfitPct, stopLossPct: protection.stopLossPct }
       },
-      stepIndicatorsFor: (stepBars, timeframesMinutes) => StepBasedIndicators.calculateSummariesAsync(
+      stepIndicatorSeries: (stepBars, timeframesMinutes) => StepBasedIndicators.createSummarySeries(
         stepBars,
         timeframesMinutes,
         context.indicationSettings?.commonIndicatorTypes,

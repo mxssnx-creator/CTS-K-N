@@ -136,8 +136,15 @@ describe("per-type prehistoric measurement on real minute bars", () => {
     const trending = await replayDirectIndicationTypes(baseInput(series(120, 0.1), { stepIndicatorsFor: trendCalls }))
     expect(trendCalls).toHaveBeenCalled()
     expect(trending.stepIndicatorCalls).toBe(trendCalls.mock.calls.length)
-    // Auto reads exactly the 90 bars of the decision.
-    for (const [bars] of trendCalls.mock.calls as any[]) expect(bars).toHaveLength(90)
+    // Auto reads the anchored Common window ending at the decision bar (here
+    // shorter than the window: every bar from the first one).
+    const trendBars = series(120, 0.1)
+    for (const [bars] of trendCalls.mock.calls as any[]) {
+      const last = bars[bars.length - 1]
+      expect(bars[0]).toEqual(trendBars[0])
+      expect(bars).toHaveLength((last.timestamp - trendBars[0].timestamp) / MINUTE + 1)
+      expect(bars.length).toBeGreaterThanOrEqual(90)
+    }
   })
 
   test("two resumed calls equal one continuous replay", async () => {
