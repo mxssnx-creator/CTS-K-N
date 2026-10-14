@@ -527,6 +527,7 @@ __tests__/unit/statistics-history-snapshot.test.ts
 __tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
+__tests__/unit/stats-canonical.test.ts
 __tests__/unit/status-canonical-position-counts.test.ts
 __tests__/unit/stop-loss-rejection-backoff.test.ts
 __tests__/unit/stopped-out-row-not-a-violation.test.ts
@@ -1793,6 +1794,7 @@ lib/startup-validation.ts
 lib/statistics-overview-current-counts.ts
 lib/statistics-symbol-rows.ts
 lib/statistics-tracker.ts
+lib/stats-canonical.ts
 lib/step-based-indicators.ts
 lib/stoploss-ratio-range.ts
 lib/strategies.ts
