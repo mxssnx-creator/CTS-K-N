@@ -944,7 +944,9 @@ async function main() {
   }
 
   const livePositionsPath =
-    `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500`
+    // Paper rows are listed only with includeSimulated=1 (route default since 37d58ca);
+    // without it the simulated lifecycle checks below always saw an empty book.
+    `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=500&includeSimulated=1`
   const endpointSchedules = [
     // Match the actual independent UI consumers instead of synchronously
     // hammering every route on the verifier's two-second bookkeeping cadence.

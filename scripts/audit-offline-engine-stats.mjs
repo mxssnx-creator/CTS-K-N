@@ -15,7 +15,7 @@ export function statsRoutes(connectionId) {
   return [
     `/api/connections/progression/${id}/stats`,
     `/api/trading/trade-history?connection_id=${id}&limit=500`,
-    `/api/trading/live-positions?connection_id=${id}&closedLimit=500`,
+    `/api/trading/live-positions?connection_id=${id}&closedLimit=500&includeSimulated=1`,
     `/api/trading/stats?connection_id=${id}`,
     `/api/trading/engine-stats?connection_id=${id}`,
     `/api/positions/stats?connection_id=${id}`,
@@ -90,8 +90,23 @@ export async function sampleOnce({ baseUrl, redis, connectionId, serverPid }) {
     if (r.json) for (const p of findNonFinite(r.json)) nanPaths.push(`${r.path.split("?")[0]} ${p}`)
   }
   const { open, closed } = await ledgerIds(redis, connectionId)
+  // The paper rows are only listed with includeSimulated=1 (live-positions
+  // route); the runtime block of the progression stats carries the event-loop
+  // and memory telemetry of the server process.
+  const progression = results.find((r) => r.path.startsWith("/api/connections/progression/"))?.json || {}
+  const runtime = progression?.runtime || progression?.data?.runtime || null
+  const realtime = progression?.realtime || progression?.data?.realtime || {}
   return {
     at: new Date().toISOString(),
+    runtime: runtime ? {
+      heapUsedMB: runtime.memory?.heapUsedMB ?? null,
+      rssMB: runtime.memory?.rssMB ?? null,
+      eventLoop: runtime.eventLoop || null,
+      eventLoopLifetime: runtime.eventLoopLifetime || null,
+      pressureLevel: runtime.concurrency?.pressureLevel ?? null,
+    } : null,
+    avgCycleTimeMs: Number.isFinite(Number(realtime?.avgCycleTimeMs)) ? Number(realtime.avgCycleTimeMs) : null,
+    routeMs: Object.fromEntries(results.map((r) => [r.path.split("?")[0], r.ms])),
     rssMb: processTreeRssMb(serverPid),
     redisKeys: await redis.dbSize(),
     redisUsedMb: Math.round(Number((/used_memory:(\d+)/.exec(await redis.info("memory")) || [])[1] || 0) / 1048576),
@@ -121,7 +136,7 @@ export async function runAudit({ baseUrl, redis, connectionId, symbols }) {
   if (dupClosed) issues.push(`closed index has ${dupClosed} duplicate ids`)
   if (both.length) issues.push(`${both.length} ids present in both open and closed index: ${both.slice(0, 5)}`)
 
-  const lp = await getJson(baseUrl, `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=5000`)
+  const lp = await getJson(baseUrl, `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=5000&includeSimulated=1`)
   const th = await getJson(baseUrl, `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=5000`)
   const prog = await getJson(baseUrl, `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)
   info.routes = { livePositions: lp.status, tradeHistory: th.status, progression: prog.status }
