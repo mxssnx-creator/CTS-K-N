@@ -70,6 +70,7 @@ import {
 } from "@/lib/protection-floors"
 import { liveConfigLossPolicy, normalizeLiveConfigLossWindow } from "@/lib/live-config-loss-policy"
 import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES, normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
+import { COMMON_INDICATOR_TYPES } from "@/lib/common-indicator-config"
 
 /**
  * Fan out a "settings_changed" progression log event AND a settings-
@@ -432,10 +433,7 @@ function getDefaultSettings(): Record<string, any> {
     presetTrailStepRatio: 0.5,
     presetAutoGenerate: true,
     presetAutoSelect: true,
-    presetIndicatorTypes: [
-      "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
-      "psar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
-    ],
+    presetIndicatorTypes: [...COMMON_INDICATOR_TYPES],
     presetMaxIndicatorVariants: 4,
     presetMaxSignalsPerVariant: 48,
     presetMaxCandlesPerRun: 6000,

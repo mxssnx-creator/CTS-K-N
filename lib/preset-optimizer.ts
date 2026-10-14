@@ -266,11 +266,22 @@ function normalizeRange(
   return { min, max, step }
 }
 
+/**
+ * A stored type list that is still the former 17-type default (with or
+ * without the legacy "sar" alias) gains every type added since — new Common
+ * types are on by default. A list the operator customised is kept as it is.
+ */
+export function expandLegacyDefaultIndicatorTypes(types: readonly string[]): string[] {
+  const listed = new Set(types.map((type) => (type === "sar" ? "psar" : type)))
+  const isFormerDefault = listed.size === LEGACY_COMMON_INDICATOR_TYPES.length &&
+    LEGACY_COMMON_INDICATOR_TYPES.every((type) => listed.has(type))
+  return isFormerDefault ? [...PRESET_INDICATOR_TYPES] : [...types]
+}
+
 export function normalizePresetOptimizerSettings(raw: Record<string, unknown> = {}): PresetOptimizerSettings {
   const d = DEFAULT_PRESET_OPTIMIZER_SETTINGS
   const indicatorTypes = Array.isArray(raw.indicatorTypes)
-    ? raw.indicatorTypes
-        .map(String)
+    ? expandLegacyDefaultIndicatorTypes(raw.indicatorTypes.map(String))
         .map((type) => type === "sar" ? "psar" : type)
         .filter((type): type is PresetIndicatorType =>
           VALID_PRESET_INDICATOR_TYPES.includes(type as PresetIndicatorType))

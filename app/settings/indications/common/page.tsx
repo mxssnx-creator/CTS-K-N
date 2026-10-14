@@ -4,16 +4,22 @@ export const dynamic = "force-dynamic"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
-import { Activity, BarChart3, RefreshCw, Save, SlidersHorizontal } from "lucide-react"
+import { Activity, BarChart3, ChevronDown, ChevronRight, RefreshCw, Save, Search, SlidersHorizontal } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
+  COMMON_INDICATOR_CATEGORIES,
+  COMMON_INDICATOR_CATEGORY_LABELS,
   COMMON_INDICATOR_DEFINITIONS,
   DEFAULT_COMMON_INDICATION_SETTINGS,
+  commonIndicatorParameterConfigurations,
   normalizeCommonIndicationSettings,
+  type CommonIndicatorCategory,
+  type CommonIndicatorDefinition,
   type CommonCoordinationSettings,
   type CommonIndicatorSettings,
   type CommonIndicationSettingsDocument,
@@ -30,6 +36,19 @@ function parseList(value: string, fallback: number[]): number[] {
   return parsed.length > 0 ? parsed : fallback
 }
 
+/** Default tuples of one type under the current settings (each runs on every timeframe, long and short). */
+function tupleCount(definition: CommonIndicatorDefinition, indicator: CommonIndicatorSettings): number {
+  return indicator.enabled ? commonIndicatorParameterConfigurations(definition, indicator).length : 0
+}
+
+function matchesSearch(definition: CommonIndicatorDefinition, query: string): boolean {
+  if (!query) return true
+  const haystack = [definition.type, definition.label, definition.description, ...(definition.sources || [])]
+    .join(" ")
+    .toLowerCase()
+  return query.toLowerCase().split(/\s+/).every((word) => haystack.includes(word))
+}
+
 export default function CommonIndicationsSettingsPage() {
   const [settings, setSettings] = useState<CommonIndicationSettingsDocument>(
     () => normalizeCommonIndicationSettings(DEFAULT_COMMON_INDICATION_SETTINGS),
@@ -37,6 +56,8 @@ export default function CommonIndicationsSettingsPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [search, setSearch] = useState("")
+  const [openCategories, setOpenCategories] = useState<Set<CommonIndicatorCategory>>(() => new Set())
 
   const loadSettings = useCallback(async () => {
     setIsLoading(true)
@@ -66,6 +87,33 @@ export default function CommonIndicationsSettingsPage() {
     ).length,
     [settings],
   )
+
+  const totalTuples = useMemo(
+    () => COMMON_INDICATOR_DEFINITIONS.reduce((sum, definition) =>
+      sum + tupleCount(definition, settings[definition.storageKey] as CommonIndicatorSettings), 0),
+    [settings],
+  )
+
+  const setCategoryEnabled = (category: CommonIndicatorCategory, enabled: boolean) => {
+    setSettings((current) => {
+      const next = { ...current }
+      for (const definition of COMMON_INDICATOR_DEFINITIONS) {
+        if (definition.category !== category) continue
+        next[definition.storageKey] = { ...(current[definition.storageKey] as CommonIndicatorSettings), enabled }
+      }
+      return next
+    })
+    setDirty(true)
+  }
+
+  const toggleCategory = (category: CommonIndicatorCategory) => {
+    setOpenCategories((current) => {
+      const next = new Set(current)
+      if (next.has(category)) next.delete(category)
+      else next.add(category)
+      return next
+    })
+  }
 
   const updateIndicator = (
     storageKey: string,
@@ -153,6 +201,12 @@ export default function CommonIndicationsSettingsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md border bg-muted/40 px-2 py-1 text-xs">
             {enabledCount}/{COMMON_INDICATOR_DEFINITIONS.length} enabled
+          </span>
+          <span
+            className="rounded-md border bg-muted/40 px-2 py-1 text-xs"
+            title="Enabled parameter tuples; each runs on every configured timeframe, long and short"
+          >
+            {totalTuples.toLocaleString()} tuples × {coordination.timeframesMinutes.length} timeframes
           </span>
           <Button variant="outline" size="sm" asChild>
             <Link href="/statistics/indications/common">
@@ -252,12 +306,14 @@ export default function CommonIndicationsSettingsPage() {
             />
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">Minimum signals</Label>
+            <Label className="text-xs" title="Auto counts one vote per indicator category">
+              Minimum agreeing categories
+            </Label>
             <Input
               className="h-8 text-xs"
               type="number"
               min={1}
-              max={COMMON_INDICATOR_DEFINITIONS.length}
+              max={COMMON_INDICATOR_CATEGORIES.length}
               value={coordination.minimumSignals}
               onChange={(event) => updateCoordination("minimumSignals", Number(event.target.value))}
             />
@@ -275,103 +331,172 @@ export default function CommonIndicationsSettingsPage() {
             />
           </div>
           <div className="rounded-md border bg-muted/30 p-2 text-[11px] text-muted-foreground">
-            Default: 1/5/15/30m · 2/2.5/3 steps · +0.5 drawdown scale · 3s validated cooldown per exact config/direction.
+            Default: 1/5/15/30m · 2/2.5/3 steps · +0.5 drawdown scale · 1s validated cooldown per exact config/direction.
+            Auto votes once per category (majority of its enabled types).
           </div>
         </CardContent>
       </Card>
 
-      <div className="grid gap-3 xl:grid-cols-2">
-        {COMMON_INDICATOR_DEFINITIONS.map((definition) => {
-          const indicator = settings[definition.storageKey] as CommonIndicatorSettings
-          return (
-            <Card key={definition.storageKey} className={indicator.enabled ? "border-emerald-500/25" : "opacity-80"}>
-              <CardHeader className="p-3 pb-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <CardTitle className="flex items-center gap-2 text-sm">
-                      <Activity className="h-3.5 w-3.5" />
-                      {definition.label}
-                    </CardTitle>
-                    <CardDescription className="mt-1 text-[11px] leading-4">
-                      {definition.description}
-                    </CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id={`${definition.storageKey}-enabled`}
-                      checked={indicator.enabled}
-                      onCheckedChange={(checked) => updateIndicator(definition.storageKey, (current) => ({
-                        ...current,
-                        enabled: checked === true,
-                      }))}
-                    />
-                    <Label htmlFor={`${definition.storageKey}-enabled`} className="text-xs">Enabled</Label>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2 p-3 pt-0">
-                <div className="grid grid-cols-[minmax(100px,1fr)_repeat(3,minmax(64px,0.7fr))] gap-1 text-[10px] font-medium uppercase text-muted-foreground">
-                  <span>Parameter</span><span>From</span><span>To</span><span>Step</span>
-                </div>
-                {Object.entries(definition.parameters).map(([parameter, parameterDefinition]) => {
-                  const configured = indicator[parameter] as CommonNumericRange
+      <div className="flex items-center gap-2 rounded-xl border bg-card/70 p-3">
+        <Search className="h-4 w-4 text-muted-foreground" />
+        <Input
+          className="h-8 text-xs"
+          placeholder="Search indicators (name, type or CTS-A-O id)…"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
+
+      {COMMON_INDICATOR_CATEGORIES.map((category) => {
+        const definitions = COMMON_INDICATOR_DEFINITIONS.filter((definition) =>
+          definition.category === category && matchesSearch(definition, search.trim()))
+        if (definitions.length === 0) return null
+        const all = COMMON_INDICATOR_DEFINITIONS.filter((definition) => definition.category === category)
+        const enabled = all.filter((definition) =>
+          (settings[definition.storageKey] as CommonIndicatorSettings).enabled).length
+        const tuples = all.reduce((sum, definition) =>
+          sum + tupleCount(definition, settings[definition.storageKey] as CommonIndicatorSettings), 0)
+        const open = openCategories.has(category) || search.trim().length > 0
+        return (
+          <section key={category} className="space-y-3 rounded-xl border bg-card/40 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                className="flex items-center gap-2 text-left"
+                onClick={() => toggleCategory(category)}
+                aria-expanded={open}
+              >
+                {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                <span className="text-sm font-semibold">{COMMON_INDICATOR_CATEGORY_LABELS[category].label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {enabled}/{all.length} enabled · {tuples.toLocaleString()} tuples
+                </span>
+              </button>
+              <div className="flex items-center gap-2">
+                <span className="hidden text-[11px] text-muted-foreground md:inline">
+                  {COMMON_INDICATOR_CATEGORY_LABELS[category].description}
+                </span>
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setCategoryEnabled(category, true)}>
+                  Enable all
+                </Button>
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setCategoryEnabled(category, false)}>
+                  Disable all
+                </Button>
+              </div>
+            </div>
+            {open ? (
+              <div className="grid gap-3 xl:grid-cols-2">
+                {definitions.map((definition) => {
+                  const indicator = settings[definition.storageKey] as CommonIndicatorSettings
                   return (
-                    <div
-                      key={parameter}
-                      className="grid grid-cols-[minmax(100px,1fr)_repeat(3,minmax(64px,0.7fr))] items-center gap-1"
-                    >
-                      <Label className="truncate text-[11px]">{parameterDefinition.label}</Label>
-                      {(["from", "to", "step"] as const).map((field) => (
-                        <Input
-                          key={field}
-                          className="h-7 px-2 text-[11px]"
-                          type="number"
-                          min={parameterDefinition.min}
-                          max={parameterDefinition.max}
-                          step={parameterDefinition.minimumStep}
-                          value={configured[field]}
-                          onChange={(event) =>
-                            updateRange(definition.storageKey, parameter, field, event.target.value)}
-                        />
-                      ))}
-                    </div>
+                    <Card key={definition.storageKey} className={indicator.enabled ? "border-emerald-500/25" : "opacity-80"}>
+                        <CardHeader className="p-3 pb-2">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <CardTitle className="flex items-center gap-2 text-sm">
+                                <Activity className="h-3.5 w-3.5" />
+                                {definition.label}
+                                <Badge variant="outline" className="h-4 px-1 text-[9px] font-normal uppercase">
+                                  {definition.kind}
+                                </Badge>
+                                {definition.requiresWallClock ? (
+                                  <Badge variant="outline" className="h-4 px-1 text-[9px] font-normal" title="Needs UTC wall-clock bars (sessions, quarter hours or the previous day)">
+                                    UTC
+                                  </Badge>
+                                ) : null}
+                              </CardTitle>
+                              <CardDescription className="mt-1 text-[11px] leading-4">
+                                {definition.description}
+                                {definition.sources?.length ? (
+                                  <span className="block text-[10px] text-muted-foreground/80">
+                                    CTS-A-O: {definition.sources.join(", ")}
+                                  </span>
+                                ) : null}
+                                <span className="block text-[10px] text-muted-foreground/80">
+                                  {tupleCount(definition, indicator)} tuple(s) per timeframe
+                                </span>
+                              </CardDescription>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                id={`${definition.storageKey}-enabled`}
+                                checked={indicator.enabled}
+                                onCheckedChange={(checked) => updateIndicator(definition.storageKey, (current) => ({
+                                  ...current,
+                                  enabled: checked === true,
+                                }))}
+                              />
+                              <Label htmlFor={`${definition.storageKey}-enabled`} className="text-xs">Enabled</Label>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="space-y-2 p-3 pt-0">
+                          <div className="grid grid-cols-[minmax(100px,1fr)_repeat(3,minmax(64px,0.7fr))] gap-1 text-[10px] font-medium uppercase text-muted-foreground">
+                            <span>Parameter</span><span>From</span><span>To</span><span>Step</span>
+                          </div>
+                          {Object.entries(definition.parameters).map(([parameter, parameterDefinition]) => {
+                            const configured = indicator[parameter] as CommonNumericRange
+                            return (
+                              <div
+                                key={parameter}
+                                className="grid grid-cols-[minmax(100px,1fr)_repeat(3,minmax(64px,0.7fr))] items-center gap-1"
+                              >
+                                <Label className="truncate text-[11px]">{parameterDefinition.label}</Label>
+                                {(["from", "to", "step"] as const).map((field) => (
+                                  <Input
+                                    key={field}
+                                    className="h-7 px-2 text-[11px]"
+                                    type="number"
+                                    min={parameterDefinition.min}
+                                    max={parameterDefinition.max}
+                                    step={parameterDefinition.minimumStep}
+                                    value={configured[field]}
+                                    onChange={(event) =>
+                                      updateRange(definition.storageKey, parameter, field, event.target.value)}
+                                  />
+                                ))}
+                              </div>
+                            )
+                          })}
+                          <div className="grid grid-cols-2 gap-2 border-t pt-2">
+                            <div className="space-y-1">
+                              <Label className="text-[10px]">Check interval (s)</Label>
+                              <Input
+                                className="h-7 text-[11px]"
+                                type="number"
+                                min={0.1}
+                                step={0.1}
+                                value={indicator.interval}
+                                onChange={(event) => updateIndicator(definition.storageKey, (current) => ({
+                                  ...current,
+                                  interval: Number(event.target.value),
+                                }))}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <Label className="text-[10px]">Validated timeout (s)</Label>
+                              <Input
+                                className="h-7 text-[11px]"
+                                type="number"
+                                min={0}
+                                step={0.1}
+                                value={indicator.timeout}
+                                onChange={(event) => updateIndicator(definition.storageKey, (current) => ({
+                                  ...current,
+                                  timeout: Number(event.target.value),
+                                }))}
+                              />
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
                   )
                 })}
-                <div className="grid grid-cols-2 gap-2 border-t pt-2">
-                  <div className="space-y-1">
-                    <Label className="text-[10px]">Check interval (s)</Label>
-                    <Input
-                      className="h-7 text-[11px]"
-                      type="number"
-                      min={0.1}
-                      step={0.1}
-                      value={indicator.interval}
-                      onChange={(event) => updateIndicator(definition.storageKey, (current) => ({
-                        ...current,
-                        interval: Number(event.target.value),
-                      }))}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-[10px]">Validated timeout (s)</Label>
-                    <Input
-                      className="h-7 text-[11px]"
-                      type="number"
-                      min={0}
-                      step={0.1}
-                      value={indicator.timeout}
-                      onChange={(event) => updateIndicator(definition.storageKey, (current) => ({
-                        ...current,
-                        timeout: Number(event.target.value),
-                      }))}
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )
-        })}
-      </div>
+              </div>
+            ) : null}
+          </section>
+        )
+      })}
     </div>
   )
 }

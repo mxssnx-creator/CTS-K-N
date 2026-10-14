@@ -47,6 +47,7 @@ import { PageHeader } from "@/components/page-header"
 import { DEFAULT_SPECIAL_STRATEGY_SETTINGS } from "@/lib/special-strategy"
 import { defaultStrategyIndicationVariantSettings } from "@/lib/strategy-indication-policy"
 import { publishAppSettingSaved, subscribeAppSettingSaved } from "@/lib/settings-sync-events"
+import { COMMON_INDICATOR_TYPES } from "@/lib/common-indicator-config"
 
 const EXCHANGE_MAX_POSITIONS: Record<string, number> = {
   bybit: 500,
@@ -715,10 +716,7 @@ const initialSettings: Settings = {
   presetTrailStepRatio: 0.5,
   presetAutoGenerate: true,
   presetAutoSelect: true,
-  presetIndicatorTypes: [
-    "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
-    "psar", "sar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
-  ],
+  presetIndicatorTypes: [...COMMON_INDICATOR_TYPES],
   presetMaxIndicatorVariants: 4,
   presetMaxSignalsPerVariant: 48,
   presetMaxCandlesPerRun: 6000,
@@ -1042,10 +1040,7 @@ export default function SettingsPage() {
     presetTrailStepRatio: initialSettings.presetTrailStepRatio ?? 0.5,
     presetAutoGenerate: initialSettings.presetAutoGenerate ?? true,
     presetAutoSelect: initialSettings.presetAutoSelect ?? true,
-    presetIndicatorTypes: initialSettings.presetIndicatorTypes ?? [
-      "ma", "rsi", "macd", "bollinger", "ema", "sma", "stochastic", "adx", "atr",
-      "psar", "sar", "cci", "adl", "fibonacci", "roc", "williamsR", "obv", "vwap",
-    ],
+    presetIndicatorTypes: initialSettings.presetIndicatorTypes ?? [...COMMON_INDICATOR_TYPES],
     presetMaxIndicatorVariants: initialSettings.presetMaxIndicatorVariants ?? 4,
     presetMaxSignalsPerVariant: initialSettings.presetMaxSignalsPerVariant ?? 48,
     presetMaxCandlesPerRun: initialSettings.presetMaxCandlesPerRun ?? 6000,

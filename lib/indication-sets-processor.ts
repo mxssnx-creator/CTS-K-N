@@ -43,6 +43,7 @@ import { concurrencyFromEnv, mapWithConcurrency } from "@/lib/bounded-concurrenc
 import { logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import {
   DEFAULT_COMMON_INDICATION_SETTINGS,
+  commonIndicatorStorageKey,
   enabledCommonIndicatorTypes,
   normalizeCommonIndicationSettings,
   type CommonCoordinationSettings,
@@ -2220,11 +2221,15 @@ export class IndicationSetsProcessor {
     const indicationName =
       commonType ||
       String(candidate.indication?.metadata?.name || type || "unknown")
+    // Common settings are stored by storage key (psar lives under
+    // "parabolicSAR"); reading them by type silently ignored such a type's
+    // configured timeout and interval.
+    const commonStorageKey = commonType ? commonIndicatorStorageKey(commonType) : ""
     const configuredCommonTimeoutSeconds = Number(
-      (this.commonSettings?.[commonType] as any)?.timeout,
+      (this.commonSettings?.[commonStorageKey] as any)?.timeout,
     )
     const configuredCommonIntervalSeconds = Number(
-      (this.commonSettings?.[commonType] as any)?.interval,
+      (this.commonSettings?.[commonStorageKey] as any)?.interval,
     )
     const timeoutMs = type === "common"
       ? Math.max(

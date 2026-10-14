@@ -1,3 +1,4 @@
+import { COMMON_INDICATOR_DEFINITION_BY_TYPE } from "@/lib/common-indicator-config"
 /**
  * Calculate indication parameter ranges based on 50% from default value
  * with dynamic step sizes based on value magnitude
@@ -142,7 +143,17 @@ export const INDICATOR_DEFAULTS = {
  * Get default parameters for an indicator type
  */
 export function getIndicatorDefaults(indicatorType: string): Record<string, IndicationParameterRange> {
-  return INDICATOR_DEFAULTS[indicatorType as keyof typeof INDICATOR_DEFAULTS] || {}
+  const legacy = INDICATOR_DEFAULTS[indicatorType as keyof typeof INDICATOR_DEFAULTS]
+  if (legacy) return legacy
+  // Common types added later read their ranges from the catalogue.
+  const definition = COMMON_INDICATOR_DEFINITION_BY_TYPE.get(indicatorType)
+  if (!definition) return {}
+  return Object.fromEntries(Object.entries(definition.parameters).map(([key, parameter]) => [key, {
+    min: parameter.default.from,
+    max: parameter.default.to,
+    step: parameter.default.step,
+    default: parameter.default.from,
+  }]))
 }
 
 /**

@@ -285,9 +285,10 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
       return best
     })()
 
-    // Auto uses the full enabled Common catalogue (including OBV and
-    // Stochastic) on every configured range. A higher range only counts
-    // when both its internal indicator vote and the PositionCost-relative
+    // Auto uses the full enabled Common catalogue on every configured range,
+    // one vote per Common category (lib/common-indicators/categories.ts), so
+    // minimumSignals / minAgreement count agreeing categories. A higher range
+    // only counts when both its category vote and the PositionCost-relative
     // coordination point in the same market direction.
     const autoAlignment = (() => {
       try {
@@ -311,7 +312,9 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
             agreement: Number(summary?.agreement) || 0,
             strength: Number(summary?.strength) || 0,
             signals: Number(summary?.signals) || 0,
-            indicators: step?.indicators || {},
+            // the per-category votes (one per family); the per-type map of 129
+            // Common types is not copied into every Auto row
+            categories: summary?.categories || {},
           }
         }).filter((window) =>
           window.direction &&
