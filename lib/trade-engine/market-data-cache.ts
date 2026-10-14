@@ -16,7 +16,10 @@ const CACHE = new Map<string, { data: any; timestamp: number }>()
 // High-frequency TTL: 200ms ensures fresh data each indication cycle (1000ms interval)
 // but avoids redundant Redis round-trips within the same cycle across parallel symbol processing
 const CACHE_TTL = 200 // ms
-const CACHE_MAX_ENTRIES = 64
+// Must exceed the symbol basket (70 symbols per connection): below it the
+// per-cycle prefetch evicted its own oldest entries, and every evicted symbol
+// paid an individual Redis round-trip in the same cycle.
+const CACHE_MAX_ENTRIES = 256
 
 function setBoundedCache(symbol: string, data: any, timestamp = Date.now()): void {
   CACHE.delete(symbol)
@@ -143,14 +146,15 @@ const SETTINGS_CACHE_TTL = 5000 // ms
 // once and reuse the parsed+sorted array across cycles. The cache key is the
 // symbol; a cheap length signature (raw string length) invalidates the entry
 // only when the underlying blob actually changes (e.g. a reload writes a
-// different candle count). Bounded to a handful of symbols — the engine only
-// ever replays its configured symbol set.
+// different candle count). Bounded to the configured symbol set — the engine
+// only ever replays that set, and the bound sits above a 70-symbol basket so
+// one pass never evicts entries it is about to reuse.
 const PARSED_CANDLES_CACHE = new Map<
   string,
   { candles: any[]; sig: number; timestamp: number }
 >()
 const PARSED_CANDLES_TTL = 5 * 60_000 // 5 min — defensive eviction
-const PARSED_CANDLES_MAX_ENTRIES = 64
+const PARSED_CANDLES_MAX_ENTRIES = 256
 
 interface HistoricChunkRange {
   start: number
