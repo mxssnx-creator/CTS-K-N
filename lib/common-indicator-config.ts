@@ -2,9 +2,30 @@
  * Canonical common-indicator catalogue shared by Settings, the Main engine,
  * and the Preset optimizer. Keeping one catalogue prevents a newly supported
  * indicator from appearing in only one execution path.
+ *
+ * The 17 original types are defined here; the types ported from CTS-A-O come
+ * from lib/common-indicators/catalog.ts (pure data). Every type has exactly one
+ * causal rule in lib/common-indicators/registry.ts.
  */
+import {
+  COMMON_CATALOG,
+  COMMON_CATALOG_TYPES,
+  type CommonCatalogEntry,
+  type CommonCatalogType,
+} from "@/lib/common-indicators/catalog"
+import {
+  COMMON_INDICATOR_CATEGORIES,
+  type CommonIndicatorCategory,
+} from "@/lib/common-indicators/types"
 
-export const COMMON_INDICATOR_TYPES = [
+export {
+  COMMON_INDICATOR_CATEGORIES,
+  COMMON_INDICATOR_CATEGORY_LABELS,
+  type CommonIndicatorCategory,
+} from "@/lib/common-indicators/types"
+
+/** The 17 original Common types, in their historic order. */
+export const LEGACY_COMMON_INDICATOR_TYPES = [
   "ma",
   "sma",
   "ema",
@@ -24,7 +45,14 @@ export const COMMON_INDICATOR_TYPES = [
   "vwap",
 ] as const
 
-export type CommonIndicatorType = (typeof COMMON_INDICATOR_TYPES)[number]
+export type LegacyCommonIndicatorType = (typeof LEGACY_COMMON_INDICATOR_TYPES)[number]
+export type CommonIndicatorType = LegacyCommonIndicatorType | CommonCatalogType
+
+/** Every Common type: the 17 original ones first, then the CTS-A-O ports. */
+export const COMMON_INDICATOR_TYPES: readonly CommonIndicatorType[] = [
+  ...LEGACY_COMMON_INDICATOR_TYPES,
+  ...COMMON_CATALOG_TYPES,
+]
 
 export interface CommonNumericRange {
   from: number
@@ -69,7 +97,17 @@ export interface CommonIndicatorDefinition {
   label: string
   description: string
   enabled: boolean
+  /** family for the Settings grouping and the Auto vote (one vote per category) */
+  category: CommonIndicatorCategory
+  /** "state" holds a reading every bar; "event" fires on bars and is kept for `keep` bars */
+  kind: "state" | "event"
   parameters: Record<string, ParameterDefinition>
+  /** ordering constraints between parameters, e.g. ["fast", "<", "slow"] */
+  constraints?: ReadonlyArray<readonly [string, "<" | "<=", string]>
+  /** CTS-A-O source ids of a ported type */
+  sources?: readonly string[]
+  /** needs wall-clock bars (sessions, quarter hours or UTC days) */
+  requiresWallClock?: boolean
 }
 
 const range = (
@@ -88,7 +126,27 @@ const range = (
   minimumStep,
 })
 
-export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] = [
+const LEGACY_CATEGORY: Record<LegacyCommonIndicatorType, CommonIndicatorCategory> = {
+  ma: "trend",
+  sma: "trend",
+  ema: "trend",
+  macd: "momentum",
+  rsi: "oscillator",
+  bollinger: "volatility",
+  stochastic: "oscillator",
+  adx: "trend",
+  atr: "volatility",
+  psar: "trend",
+  cci: "oscillator",
+  adl: "volume",
+  fibonacci: "structure",
+  roc: "momentum",
+  williamsR: "oscillator",
+  obv: "volume",
+  vwap: "volume",
+}
+
+const LEGACY_COMMON_INDICATOR_DEFINITIONS: ReadonlyArray<Omit<CommonIndicatorDefinition, "category" | "kind">> = [
   {
     type: "ma",
     storageKey: "ma",
@@ -281,7 +339,42 @@ export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] 
       deviationPct: range("Deviation %", 0.1, 1, 0.1, 0.01, 20, 0.01),
     },
   },
-] as const
+]
+
+function catalogDefinition(entry: CommonCatalogEntry): CommonIndicatorDefinition {
+  return {
+    type: entry.type as CommonIndicatorType,
+    storageKey: entry.type,
+    label: entry.label,
+    description: entry.description,
+    // New types are enabled by default (operator decision, October 2026).
+    enabled: true,
+    category: entry.category,
+    kind: entry.kind,
+    parameters: entry.parameters,
+    constraints: entry.constraints,
+    sources: entry.sources,
+    requiresWallClock: entry.requiresWallClock,
+  }
+}
+
+export const COMMON_INDICATOR_DEFINITIONS: readonly CommonIndicatorDefinition[] = [
+  ...LEGACY_COMMON_INDICATOR_DEFINITIONS.map((definition) => ({
+    ...definition,
+    category: LEGACY_CATEGORY[definition.type as LegacyCommonIndicatorType],
+    kind: "state" as const,
+  })),
+  ...COMMON_CATALOG.map((entry) => catalogDefinition(entry as CommonCatalogEntry)),
+]
+
+export const COMMON_INDICATOR_DEFINITION_BY_TYPE: ReadonlyMap<string, CommonIndicatorDefinition> = new Map(
+  COMMON_INDICATOR_DEFINITIONS.map((definition) => [definition.type, definition]),
+)
+
+/** The Settings storage key of a Common type (psar is stored as "parabolicSAR"). */
+export function commonIndicatorStorageKey(type: string): string {
+  return COMMON_INDICATOR_DEFINITION_BY_TYPE.get(type === "sar" ? "psar" : type)?.storageKey || type
+}
 
 export const DEFAULT_COMMON_COORDINATION_SETTINGS: CommonCoordinationSettings = {
   enabled: true,
@@ -378,7 +471,14 @@ export function commonIndicatorParameterConfigurations(
       values.map((value) => ({ ...combination, [key]: value })),
     )
   }
+  const constraints = definition.constraints || []
   return combinations.filter((parameters) => {
+    for (const [left, operator, right] of constraints) {
+      const a = parameters[left]
+      const b = parameters[right]
+      if (!Number.isFinite(a) || !Number.isFinite(b)) continue
+      if (operator === "<" ? !(a < b) : !(a <= b)) return false
+    }
     const short = parameters.shortPeriod
     const long = parameters.longPeriod
     if (Number.isFinite(short) && Number.isFinite(long) && short >= long) return false
@@ -437,7 +537,8 @@ export function normalizeCommonIndicationSettings(raw: unknown): CommonIndicatio
       minimumSignals: Math.round(clamp(
         finite(coordinationRaw.minimumSignals, DEFAULT_COMMON_COORDINATION_SETTINGS.minimumSignals),
         1,
-        COMMON_INDICATOR_TYPES.length,
+        // Auto votes per category (lib/common-indicators/categories.ts).
+        COMMON_INDICATOR_CATEGORIES.length,
       )),
       shortDifferenceRatio: clamp(
         finite(coordinationRaw.shortDifferenceRatio, DEFAULT_COMMON_COORDINATION_SETTINGS.shortDifferenceRatio),
@@ -454,7 +555,9 @@ export function normalizeCommonIndicationSettings(raw: unknown): CommonIndicatio
     const settings: CommonIndicatorSettings = {
       enabled: bool(candidate.enabled, definition.enabled),
       interval: clamp(finite(candidate.interval, 1), 0.1, 3_600),
-      timeout: clamp(finite(candidate.timeout, 3), 0, 3_600),
+      // The default timeout is 1 s (migration 092 moved stored 3 s values to
+      // 1 s); a type missing from a stored document must not fall back to 3 s.
+      timeout: clamp(finite(candidate.timeout, 1), 0, 3_600),
     }
     for (const [key, parameter] of Object.entries(definition.parameters)) {
       const candidateRange = candidate[key] && typeof candidate[key] === "object"

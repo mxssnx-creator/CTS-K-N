@@ -1,5 +1,25 @@
 import { MAX_INDICATION_WINDOW } from "@/lib/constants"
 import { calculateIndicationConfigurationCounts } from "@/lib/indication-configuration-counts"
+import {
+  COMMON_INDICATOR_DEFINITIONS,
+  DEFAULT_COMMON_INDICATION_SETTINGS,
+  commonIndicatorParameterConfigurations,
+  type CommonIndicatorSettings,
+} from "@/lib/common-indicator-config"
+
+// Every default Common parameter tuple: 1,899 for the 17 original types plus
+// 426 for the types ported from CTS-A-O (129 types).
+const defaultCommonTuples = COMMON_INDICATOR_DEFINITIONS.reduce((sum, definition) =>
+  sum + commonIndicatorParameterConfigurations(
+    definition,
+    DEFAULT_COMMON_INDICATION_SETTINGS[definition.storageKey] as CommonIndicatorSettings,
+  ).length, 0)
+
+/** Common settings with only `ma` enabled (every other type off). */
+const onlyMa = Object.fromEntries(COMMON_INDICATOR_DEFINITIONS.map((definition) => [
+  definition.storageKey,
+  { enabled: definition.type === "ma" },
+]))
 
 describe("indication configuration counts", () => {
   it("matches the processor's exhaustive default, Common and Signal grids", () => {
@@ -7,10 +27,11 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 5 (then evaluate every integer through 30).
-    expect(result.totalPossibleSets).toBe(44_296)
-    expect(result.totalEvaluationConfigurations).toBe(14_428)
+    expect(defaultCommonTuples).toBe(2_325)
+    expect(result.totalPossibleSets).toBe(47_704)
+    expect(result.totalEvaluationConfigurations).toBe(16_132)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
-    expect(result.settings.enabledCommonIndicators).toBe(17)
+    expect(result.settings.enabledCommonIndicators).toBe(129)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
       direction: 1_590,
       move: 1_590,
@@ -21,7 +42,8 @@ describe("indication configuration counts", () => {
       auto: 0,
       signal: 15_228,
       trend: 102,
-      common: 15_192,
+      // timeframes × tuples × long/short
+      common: 4 * defaultCommonTuples * 2,
     })
     expect(result.types.find((type) => type.type === "active")).toMatchObject({
       params: {
@@ -80,23 +102,7 @@ describe("indication configuration counts", () => {
       },
       {
         coordination: { timeframesMinutes: [1] },
-        ma: { enabled: true },
-        sma: { enabled: false },
-        ema: { enabled: false },
-        macd: { enabled: false },
-        rsi: { enabled: false },
-        bollinger: { enabled: false },
-        stochastic: { enabled: false },
-        adx: { enabled: false },
-        atr: { enabled: false },
-        parabolicSAR: { enabled: false },
-        cci: { enabled: false },
-        adl: { enabled: false },
-        fibonacci: { enabled: false },
-        roc: { enabled: false },
-        williamsR: { enabled: false },
-        obv: { enabled: false },
-        vwap: { enabled: false },
+        ...onlyMa,
       },
     )
 

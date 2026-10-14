@@ -50,7 +50,7 @@ describe("one-minute timeframe", () => {
 
 describe("every RSI copy uses the canonical implementation", () => {
   const { readFileSync } = require("node:fs") as typeof import("node:fs")
-  for (const file of ["lib/technical-indicators.ts", "lib/bots/backtest.ts", "lib/signal-indication.ts", "lib/direct-trade-coordination.ts", "lib/indicators.ts", "lib/indicators/calculator.ts", "lib/trade-engine/stages/indication-stage.ts"]) {
+  for (const file of ["lib/common-indicators/kn-math.ts", "lib/common-indicators/ao/math.ts", "lib/bots/backtest.ts", "lib/signal-indication.ts", "lib/direct-trade-coordination.ts", "lib/indicators.ts", "lib/indicators/calculator.ts", "lib/trade-engine/stages/indication-stage.ts"]) {
     test(file, () => expect(readFileSync(file, "utf8")).toMatch(/from "@\/lib\/wilder-rsi"/))
   }
 })
