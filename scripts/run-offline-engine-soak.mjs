@@ -364,7 +364,9 @@ try {
     await sleep(500)
   }
   const connections = await (await fetch(`${baseUrl}/api/connections`)).json()
-  const connectionId = String(process.env.OFFLINE_CONNECTION_ID || connections?.connections?.[0]?.id || "")
+  // the base BingX connection by default: /api/connections order is not stable
+  const listed = (connections?.connections || []).map((row) => String(row?.id || ""))
+  const connectionId = String(process.env.OFFLINE_CONNECTION_ID || (listed.includes("bingx-x01") ? "bingx-x01" : listed[0]) || "")
   const verifier = spawn(process.execPath, ["scripts/verify-prod-soak.mjs"], {
     cwd: process.cwd(),
     env: {
