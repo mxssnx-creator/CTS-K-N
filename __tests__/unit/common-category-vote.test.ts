@@ -11,6 +11,7 @@ import { summarizeCommonCategories } from "@/lib/common-indicators/categories"
 import { syntheticCandles } from "@/lib/common-indicators/synthetic"
 import { IndicationSetsProcessor } from "@/lib/indication-sets-processor"
 import { expandLegacyDefaultIndicatorTypes } from "@/lib/preset-optimizer"
+import { inferIndicationType } from "@/lib/preset-store"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
 
 const reading = (direction: "long" | "short" | "neutral", strength = 0.5) => ({ direction, strength })
@@ -106,8 +107,6 @@ describe("Preset type lists", () => {
 })
 
 describe("Preset selection resolves a position's exact Common type", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { inferIndicationType } = require("@/lib/preset-store") as typeof import("@/lib/preset-store")
   test("reads the type segment of the Common Set key, never a substring of the symbol", () => {
     expect(inferIndicationType({
       setKey: "indication_set:c1:MATICUSDT:common:long:rsi:tf5:p%7B%7D",

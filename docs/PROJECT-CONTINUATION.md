@@ -1,5 +1,39 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Continuation — 2026-10-14 (Claude cloud session, branch `claude/funny-carson-jk9atm`, stacked on #559)
+
+**Where:** cloud container checkout `/home/user/CTS-K-N`. There is no `/workspace` canonical checkout, no Chisel tunnel and no exchange credentials here.
+- The branch starts at #559's head and integrates that work unchanged.
+- Checkpoint before the edits: `/var/backups/cts-kn/20261014T122651Z-pre-common-expansion` (verified).
+- The container exports `BINGX_API_KEY`/`BINGX_API_SECRET` and `FORCE_LIVE=1`. Every test and run here unset them and blocked outbound network.
+
+**Done (details and the full catalogue in `docs/common-indicators.md`):**
+- **Shared rules:** every Common type is one causal rule shared by live Common Sets, Auto, the Preset optimizer and the preset runtime.
+  - The 17 original types are bit-identical; this is pinned by an equivalence test.
+  - ATR's baseline now uses the configured period (intended).
+- **112 ported types:** from CTS-A-O (classic families, research 1–3, single-symbol Micro), enabled by default (operator decision).
+  - 129 types and 2,325 default tuples per timeframe.
+  - Stable-02 is excluded (it belongs to CTS-G).
+  - The Micro market relations are excluded (they need the symbol universe).
+- **Auto votes per category** (six categories).
+- **Fixes:**
+  - Common cooldown read by storage key;
+  - 1 s timeout fallback;
+  - preset type inference by Set-key segment;
+  - the optimizer and runtime semantics now match live;
+  - aligned optimizer aggregation.
+- **Settings → Common** is grouped by category.
+
+**Next, in order:**
+1. A 1m Common history of about 30 h for the 15m/30m warm-up (drafted, not yet wired).
+2. The performance items with a before/after benchmark.
+3. A Common Set → Live lifecycle integration test.
+4. A paper run on public BingX data.
+5. A 14-day historic measurement of every Common type (base and stress cost), as an HTML report.
+6. After the merge: reinstall merged `main` remotely and verify HTTP, UI and stats. Then run the X02 Prod-VST lifecycle with minimum virtual volume. X01 and Bybit stay read-only.
+
+No production-readiness claim.
+
 ## Continuation — 2026-10-07 ~23:00 UTC (Claude cloud session, branch `claude/zen-fermat-gswxt7`, draft PR #559)
 
 **Where:** cloud container checkout `/home/user/CTS-K-N`. The published state is the GitHub branch `claude/zen-fermat-gswxt7`; it is not merged and not deployed. No exchange writes happened (paper on public BingX data). Checkpoints were created with `scripts/create-checkpoint.sh` (container-local `/var/backups/cts-kn`).

@@ -1,5 +1,47 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-10-14 (Claude Cloud-Sitzung, Branch `claude/funny-carson-jk9atm`, gestapelt auf #559)
+
+**Arbeitsort:** Cloud-Container `/home/user/CTS-K-N` (nicht die kanonische `/workspace/CTS-K-N`; kein Chisel, keine Exchange-Zugänge). Der Branch beginnt auf dem Kopf von #559 (`claude/zen-fermat-gswxt7`) und integriert dessen Arbeit unverändert. **Gemergt nur über den GitHub-PR, nicht deployed.** Checkpoint vor den Änderungen: `/var/backups/cts-kn/20261014T122651Z-pre-common-expansion` (VERIFIED). Kein Exchange-Zugriff.
+
+**Achtung Umgebung:** Der Container setzt `BINGX_API_KEY`, `BINGX_API_SECRET` und `FORCE_LIVE=1`. Alle Tests und Läufe dieser Sitzung liefen ohne diese Variablen (`env -u BINGX_API_KEY -u BINGX_API_SECRET -u FORCE_LIVE`) und mit Netzwerk-Isolation. Lokale Redis-Tests brauchen `redis-server` auf Port 6399.
+
+**Erledigt (mit Tests, siehe `docs/common-indicators.md`):**
+- **Eine kausale Regel je Common-Typ** (`lib/common-indicators/registry.ts`), gelesen von Live-Common (letzte Bar), Auto, Preset-Optimizer (jede Bar) und Preset-Laufzeit.
+  - Die 17 Originaltypen bleiben bitgleich (Äquivalenztest gegen eingefrorene #559-Implementierung).
+  - Bewusste Korrektur: ATR-Baseline nutzt die konfigurierte Periode.
+- **112 Typen aus CTS-A-O portiert** (klassische Familien, Research 1–3, Micro Einzelsymbol), alle standardmäßig aktiv (Operator-Entscheidung).
+  - **129 Typen** in 6 Kategorien, 2.325 Default-Tupel je Timeframe.
+  - **Stable-02 nicht portiert:** gehört zu CTS-G.
+  - **Micro-Marktrelationen nicht portiert:** brauchen das Symbol-Universum.
+- **Auto stimmt je Kategorie ab:** `minimumSignals` ≤ 6 zählt Kategorien.
+- **Optimizer und Preset-Laufzeit:** dieselben Regeln, echte OHLCV, ausgerichtete Aggregation. Die frühere Semantik-Abweichung (CCI/VWAP Momentum vs. Reversion, Fibonacci, ATR, RSI) ist behoben.
+- **Weitere Fehler behoben:**
+  - Common-Cooldown liest jetzt per Storage-Key (psar).
+  - Timeout-Fallback ist 1 s statt 3 s.
+  - Preset-Typerkennung über Set-Key-Segmente (MATICUSDT ≠ ma).
+- **Settings → Common:** nach Kategorien gruppiert, mit Suche und Kategorie-Schaltern.
+
+**Offen (nächste Schritte, in dieser Reihenfolge):**
+1. **Common-1m-Historie (~30 h)** für 15m/30m-Warm-up: Entwurf liegt vor, ist aber noch nicht verdrahtet. Vorgesehen:
+   - Backfill über `loadRangeMinuteBars`;
+   - Fortschreibung aus 1s-Kerzen;
+   - Redis `market_data:{conn}:{symbol}:common_1m`;
+   - Replay kausal bis `asOfMs`.
+2. **Performance:**
+   - Koordinations-Wiederverwendung;
+   - Trend-Tail-Scan;
+   - Paper-Live-Loop ohne Voll-Hydration je 200 ms;
+   - Fingerprint-Memo;
+   - `Math.max(...arr)` ersetzen;
+   - Benchmark vorher/nachher.
+3. **Integrationstest** Common-Set → Live: Öffnen, Fill, SL/TP, Trailing, Schließen, Statistik.
+4. **Paper-Lauf** auf öffentlichen BingX-Daten.
+5. **14-Tage-Historienmessung** aller Common-Typen (Base- und Stress-Kosten) als HTML-Bericht.
+6. **Nach Merge:** gemergtes `main` remote reinstallieren und HTTP/UI/Statistik prüfen. Danach den X02-Prod-VST-Lebenszyklustest mit virtuellem Mindestvolumen fahren; X01 und Bybit bleiben read-only.
+
+Keine Produktionsreife behauptet.
+
 ## Fortsetzungsstand — 2026-10-07 ~23:00 UTC (Claude Cloud-Sitzung, Branch `claude/zen-fermat-gswxt7`, Draft-PR #559)
 
 **Arbeitsort:** Cloud-Container `/home/user/CTS-K-N` (nicht die kanonische `/workspace/CTS-K-N`); alle Änderungen über GitHub-Branch `claude/zen-fermat-gswxt7` (PR #559, Draft). Checkpoints nur via `scripts/create-checkpoint.sh` unter `/var/backups/cts-kn` (Container-lokal). **Nicht deployed, nicht gemergt.** Kein Exchange-Write in dieser Sitzung (Paper auf öffentlichen BingX-Daten; X02-VST-Lauf noch offen).
