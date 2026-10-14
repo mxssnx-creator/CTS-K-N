@@ -6,6 +6,7 @@ e2e	__tests__/e2e/progression-flow.test.ts
 integration	__tests__/integration/live-order-service.test.ts
 integration	__tests__/integration/main-engine-live-dispatch.test.ts
 integration	__tests__/integration/outcome-set-ceiling.test.ts
+integration	__tests__/integration/paper-lifecycle-70-symbols.test.ts
 integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
 operator-tool	__tests__/diagnostic-cleanup.ts
@@ -107,9 +108,12 @@ unit	__tests__/unit/close-accounting-connections.test.ts
 unit	__tests__/unit/close-adopted-positions.test.ts
 unit	__tests__/unit/closeable-row-statuses.test.ts
 unit	__tests__/unit/coherent-stage-thresholds.test.ts
+unit	__tests__/unit/common-auto-series.test.ts
 unit	__tests__/unit/common-category-vote.test.ts
+unit	__tests__/unit/common-history.test.ts
 unit	__tests__/unit/common-indicators-catalog.test.ts
 unit	__tests__/unit/common-indicators-legacy-equivalence.test.ts
+unit	__tests__/unit/common-rule-prefix-stability.test.ts
 unit	__tests__/unit/connection-backtest-jobs.test.ts
 unit	__tests__/unit/connection-backtest-ui-contract.test.ts
 unit	__tests__/unit/connection-backtest.test.ts
@@ -228,6 +232,7 @@ unit	__tests__/unit/halt-retires-on-own-book.test.ts
 unit	__tests__/unit/handoff-slot-halt.test.ts
 unit	__tests__/unit/health-route-liveness-budget.test.ts
 unit	__tests__/unit/health-runtime-contract.test.ts
+unit	__tests__/unit/historic-candle-tail-cache.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
 unit	__tests__/unit/historic-four-hour-stats.test.ts
 unit	__tests__/unit/historic-profit-factor.test.ts
@@ -314,6 +319,7 @@ unit	__tests__/unit/manual-close-not-reopened.test.ts
 unit	__tests__/unit/margin-call-route.test.ts
 unit	__tests__/unit/margin-call.test.ts
 unit	__tests__/unit/market-data-1s-backfill.test.ts
+unit	__tests__/unit/market-data-cache-capacity.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
@@ -362,6 +368,7 @@ unit	__tests__/unit/portfolio-risk-budget.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
 unit	__tests__/unit/position-book-stats.test.ts
+unit	__tests__/unit/position-context-fingerprint-memo.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/position-index-established-with-hash.test.ts
