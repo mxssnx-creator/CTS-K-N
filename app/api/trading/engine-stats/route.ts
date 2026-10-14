@@ -54,14 +54,27 @@ export async function GET(req: NextRequest) {
     const indicationCycleCount = parseInt(progHash.indication_cycle_count || "0", 10)
     const indicationsCount     = parseInt(progHash.indications_count     || "0", 10)
 
-    // Per-type indication counts stored as indications_{type}_count
+    // Per-type indication counts, one unit (created indications) and the same
+    // source order as /api/connections/progression/{id}/stats: the standalone
+    // `indications:{id}:{type}:count` counter, else the progression hash
+    // field `indications_{type}_count`, so both routes show the same number.
     const indicationsByType: Record<string, number> = {}
-    for (const [field, val] of Object.entries(progHash)) {
+    const typeNames = new Set<string>(["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"])
+    for (const field of Object.keys(progHash)) {
       if (field.startsWith("indications_") && field.endsWith("_count") && field !== "indications_count") {
-        const typeName = field.replace("indications_", "").replace("_count", "")
-        indicationsByType[typeName] = parseInt(String(val || "0"), 10)
+        typeNames.add(field.replace("indications_", "").replace("_count", ""))
       }
     }
+    await Promise.all([...typeNames].map(async (typeName) => {
+      const standalone = typeof (redis as any).get === "function"
+        ? await Promise.resolve((redis as any).get(`indications:${connectionId}:${typeName}:count`)).catch(() => null)
+        : null
+      const value = standalone !== null && standalone !== undefined
+        ? Number(standalone)
+        : Number(progHash[`indications_${typeName}_count`] || 0)
+      if (Number.isFinite(value) && value > 0) indicationsByType[typeName] = Math.floor(value)
+      else if (`indications_${typeName}_count` in progHash || (standalone !== null && standalone !== undefined)) indicationsByType[typeName] = 0
+    }))
 
     // ── 2. Read strategy counts ──────────────────────────────────────────────────
     // PRIMARY: progression hash. Live total is cumulative selected/created Live

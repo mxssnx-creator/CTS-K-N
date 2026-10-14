@@ -51,7 +51,7 @@ async function main() {
       }
       return { takeProfitPct: 0, stopLossPct: 0 }
     },
-    stepIndicatorsFor: (history, timeframes) => StepBasedIndicators.calculateSummariesAsync(
+    stepIndicatorSeries: (history, timeframes) => StepBasedIndicators.createSummarySeries(
       history, timeframes, settings?.commonIndicatorTypes, settings?.commonSettings,
     ),
   })

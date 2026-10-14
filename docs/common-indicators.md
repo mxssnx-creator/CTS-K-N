@@ -65,6 +65,41 @@ How the A-O variants map onto K-N:
 AGENTS.md rule that defaults change only after validated positive results. Every category can be switched off in
 Settings → Common.
 
+## Completed minutes, the Common history and replay
+
+Operator decision (2026-10-14): live Common and Auto evaluate **completed
+one-minute bars only**. The forming minute and any 5m / 15m / 30m bucket that
+is still forming are never read, so a Common Set or an Auto vote cannot
+repaint within its bar and live equals the Preset optimizer and the replay.
+Signals can therefore arrive up to one bar later than before.
+
+- **History** (`lib/common-indicators/history.ts`). Per connection and symbol
+  a store of completed minutes. It is backfilled from the venue's real 1m
+  klines (`loadRangeMinuteBars`; nothing under forced simulation), at most once
+  per 10 minutes; gaps after a restart are filled and stored minutes win. It is
+  extended incrementally from the live 1s feed and persisted to
+  `market_data:{conn}:{symbol}:common_1m` every 5 minutes (TTL 36 h, 256
+  symbols in process).
+- **Anchored window.** Common reads a window that starts on the hour and
+  covers `COMMON_HISTORY_MINUTES` (default 1,800 = 30 h, 90–2,880) to +59
+  minutes. Every decision within one hour reads a prefix of the same series.
+- **Per-minute caching.** The view (and its key) only changes when a minute
+  completes. Auto's grid summaries are cached per view key and only computed
+  when Auto can fire (Auto enabled and its Common coordination passing); the
+  exhaustive Set snapshot is keyed by the same view (TTL 120 s). Auto's own
+  direction, PF and coordination read the completed minutes too.
+- **Replay in one pass** (`StepBasedIndicators.createSummarySeries`). The type
+  measurement, its backfill and the connection backtest compute each anchor
+  hour's series once and read it at every bar, instead of evaluating the full
+  grid per bar. This is exact: every Common rule is prefix-stable (checked for
+  all 129 types in `common-rule-prefix-stability.test.ts`), and
+  `common-auto-series.test.ts` compares the series with per-bar windows and a
+  whole replay both ways. Replays load the anchored window as warm-up.
+- **Stress runs.** Under forced simulation `COMMON_HISTORY_SIMULATED_BACKFILL=1`
+  fills the window with synthetic minutes joined to the first live price, so a
+  fresh paper engine evaluates the same window length as a real one. Never for
+  trading.
+
 ## Auto: one vote per category
 
 Types belong to six categories: trend, momentum, oscillator (reversion), volatility & breaks, volume & flow,
