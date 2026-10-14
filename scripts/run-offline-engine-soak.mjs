@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import process from "node:process"
 import { createClient } from "redis"
-import { runAudit, sampleOnce } from "./audit-offline-engine-stats.mjs"
+import { runAudit, runConsistencyAudit, sampleOnce } from "./audit-offline-engine-stats.mjs"
 
 // The engine always puts these four first (lib/forced-symbols.ts) and the
 // verifier compares the published basket in exact order.
@@ -346,12 +346,16 @@ function markdown(summary, verifierExit) {
     row("Set keys (total / per symbol min–median–max)", summary.setInventory ? `${summary.setInventory.total} / ${summary.setInventory.perSymbolMin}–${summary.setInventory.perSymbolMedian}–${summary.setInventory.perSymbolMax} (${summary.setInventory.symbolsWithSets} symbols)` : "–"),
     row("Paper positions open / closed", `${summary.positions.open} / ${summary.positions.closed}`),
     row("Audit issues / server alerts / sample failures", `${summary.auditIssues} / ${summary.serverAlerts} / ${summary.sampleFailures}`),
+    row("Cross-route consistency issue kinds (samples affected)", `${summary.consistencyIssueKinds ?? "–"} (${summary.consistencySamplesWithIssues ?? "–"})`),
     "",
+    ...(summary.consistencyIssues?.length ? ["Consistency issues:", "", ...summary.consistencyIssues.map((issue) => `- ${issue}`), ""] : []),
   ].join("\n")
 }
 
 let exitCode = 0
 const samples = []
+let consistencyPrevious = null
+const consistencyIssues = new Map()
 let verifierExit = null
 const prober = startLivenessProber()
 const soakStartedAt = Date.now()
@@ -388,6 +392,11 @@ try {
   while (!done) {
     const sample = await sampleOnce({ baseUrl, redis, connectionId, serverPid: server.pid }).catch((e) => ({ error: String(e) }))
     if (!sample.error) sample.pass = await progressionPassFields(connectionId)
+    // one value per statistic across routes, monotonic counters, 0..100 %
+    const consistency = await runConsistencyAudit({ baseUrl, connectionId, previous: consistencyPrevious }).catch((e) => ({ issues: [`consistency audit failed: ${e}`], snapshot: consistencyPrevious }))
+    consistencyPrevious = consistency.snapshot
+    sample.consistencyIssues = consistency.issues
+    for (const issue of consistency.issues) consistencyIssues.set(issue.replace(/[0-9.]+/g, "#"), issue)
     samples.push(sample)
     const last = samples.at(-1)
     console.error(
@@ -399,8 +408,13 @@ try {
   }
   prober.stop()
   const audit = await runAudit({ baseUrl, redis, connectionId, symbols: SYMBOLS })
+  const finalConsistency = await runConsistencyAudit({ baseUrl, connectionId, previous: null }).catch((e) => ({ issues: [`consistency audit failed: ${e}`] }))
+  for (const issue of finalConsistency.issues) consistencyIssues.set(issue.replace(/[0-9.]+/g, "#"), issue)
   const inventory = await setInventory(connectionId).catch((error) => ({ error: String(error) }))
   const summary = summarize({ samples, liveness: prober.latencies, audit, inventory, startedAt: soakStartedAt })
+  summary.consistencyIssueKinds = consistencyIssues.size
+  summary.consistencyIssues = [...consistencyIssues.values()].slice(0, 40)
+  summary.consistencySamplesWithIssues = samples.filter((sample) => (sample.consistencyIssues || []).length > 0).length
   const report = {
     label, normal: normalOff ? "off" : "on", symbols: SYMBOLS.length, symbolList: SYMBOLS, durationMs, verifierExit,
     summary, samples, liveness: prober.latencies, cycleDiagnostics: cycleDiagnostics.slice(-400), audit,
@@ -410,7 +424,7 @@ try {
   writeFileSync(reportPath, JSON.stringify(report, null, 2))
   writeFileSync(reportMdPath, markdown(summary, verifierExit))
   console.log(JSON.stringify({ verifierExit, auditIssues: audit.issues, serverAlerts: serverLog.length, reportPath, reportMdPath, summary }, null, 2))
-  if (verifierExit !== 0 || audit.issues.length > 0 || serverLog.length > 0) exitCode = 1
+  if (verifierExit !== 0 || audit.issues.length > 0 || serverLog.length > 0 || consistencyIssues.size > 0) exitCode = 1
 } catch (error) {
   console.error(`${tag} failed:`, error?.stack || error)
   exitCode = 1
