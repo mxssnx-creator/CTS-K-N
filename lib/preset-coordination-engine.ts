@@ -7,7 +7,7 @@
 
 import { sql, execute } from "@/lib/db"
 import type { PresetType, PresetConfigurationSet, PresetCoordinationResult } from "@/lib/types-preset-coordination"
-import { calculateIndicators, type IndicatorConfig } from "./indicators"
+import { TechnicalIndicators, calculateIndicatorsFromCandles, type IndicatorConfig } from "./indicators"
 // Plain `crypto` — Edge build aliases this to `false` via `next.config.mjs`.
 import * as crypto from "crypto"
 import { PresetPseudoPositionManager } from "./preset-pseudo-position-manager"
@@ -470,13 +470,21 @@ export class PresetCoordinationEngine {
       // candles available before its entry; a single final-candle signal would
       // not produce a meaningful historical trade series.
       setImmediate(() => {
+        // Real OHLCV rows (oldest first); the shared Common rule is evaluated
+        // once over the series and read per bar — bar i reads bars 0..i only.
         const rows = historicalData
-          .map((d) => ({
-            price: Number(d.close),
-            timestamp: toEpochMilliseconds(d.timestamp ?? d.time),
-          }))
-          .filter((row) => row.price > 0)
-        const prices = rows.map((row) => row.price)
+          .map((d) => {
+            const close = Number(d.close)
+            return {
+              timestamp: toEpochMilliseconds(d.timestamp ?? d.time),
+              open: Number(d.open ?? d.close) || close,
+              high: Number(d.high ?? d.close) || close,
+              low: Number(d.low ?? d.close) || close,
+              close,
+              volume: Number(d.volume ?? 0) || 0,
+            }
+          })
+          .filter((row) => row.close > 0)
         const indicatorConfig: IndicatorConfig = {
           type: configSet.indication_type as IndicatorConfig["type"],
           params: indicationParams,
@@ -485,15 +493,16 @@ export class PresetCoordinationEngine {
           .map(Number)
           .filter((value) => Number.isFinite(value) && value > 0)
         const lookback = Math.min(300, Math.max(32, Math.floor(Math.max(...configuredPeriods, 14) * 2)))
+        const series = TechnicalIndicators.signalSeriesFromCandles(indicatorConfig, rows)
         const signals: any[] = []
-        for (let index = Math.max(lookback, 1); index < prices.length - 1; index += 1) {
-          const window = prices.slice(Math.max(0, index - lookback + 1), index + 1)
-          const [signal] = calculateIndicators(window, [indicatorConfig])
+        for (let index = Math.max(lookback, 1); index < rows.length - 1; index += 1) {
+          const signal = series[index]
           if (signal && signal.direction !== "neutral" && Number(signal.strength) > 0) {
             signals.push({
+              type: indicatorConfig.type,
               ...signal,
               index,
-              timestamp: rows[index]?.timestamp || signal.timestamp,
+              timestamp: rows[index]?.timestamp || new Date(),
             })
           }
         }
@@ -1334,8 +1343,7 @@ export class PresetCoordinationEngine {
     }
     if (candles.length < 20) return { direction: "neutral", strength: 0 }
     this.currentMarketCache.set(result.symbol, { fetchedAt: now, candles: candles.slice(-300) })
-    const prices = candles.map((row: any) => Number(row.close)).filter((price: number) => price > 0)
-    const [signal] = calculateIndicators(prices, [{
+    const [signal] = calculateIndicatorsFromCandles(candles, [{
       type: result.indication_type as IndicatorConfig["type"],
       params: result.indication_params || {},
     }])

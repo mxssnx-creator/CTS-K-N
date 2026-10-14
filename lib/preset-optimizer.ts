@@ -4,33 +4,29 @@ import {
   signedResultRToMainTradePfRatio,
 } from "@/lib/main-trade-profit-factor"
 import {
+  COMMON_INDICATOR_DEFINITIONS,
+  COMMON_INDICATOR_TYPES,
+  LEGACY_COMMON_INDICATOR_TYPES,
+  type CommonIndicatorDefinition,
+  type CommonIndicatorType,
+} from "@/lib/common-indicator-config"
+import { createCommonSeriesContext } from "@/lib/common-indicators/context"
+import { commonRuleStates, getCommonRule } from "@/lib/common-indicators/registry"
+import {
   BLOCK_COUNT_MAX,
   BLOCK_INCREMENT_STEPS_MAX,
   normalizeBlockProfitFactorRatio,
 } from "@/lib/block-count-state"
 
-export const PRESET_INDICATOR_TYPES = [
-  "ma",
-  "rsi",
-  "macd",
-  "bollinger",
-  "ema",
-  "sma",
-  "stochastic",
-  "adx",
-  "atr",
-  "psar",
-  "cci",
-  "adl",
-  "fibonacci",
-  "roc",
-  "williamsR",
-  "obv",
-  "vwap",
-] as const
+/**
+ * Every Common type is an optimizer type: the 17 original ones and the types
+ * ported from CTS-A-O (lib/common-indicator-config.ts). The optimizer and the
+ * live engine evaluate the same causal rule (lib/common-indicators/registry.ts).
+ */
+export const PRESET_INDICATOR_TYPES: readonly CommonIndicatorType[] = COMMON_INDICATOR_TYPES
 
 /** `sar` remains readable for legacy presets but is not generated twice. */
-export type PresetIndicatorType = (typeof PRESET_INDICATOR_TYPES)[number] | "sar"
+export type PresetIndicatorType = CommonIndicatorType | "sar"
 const VALID_PRESET_INDICATOR_TYPES: readonly PresetIndicatorType[] = [
   ...PRESET_INDICATOR_TYPES,
   "sar",
@@ -359,13 +355,46 @@ export function normalizeCandles(rawCandles: unknown[]): PresetCandle[] {
   return [...byTimestamp.values()].sort((a, b) => a.timestamp - b.timestamp)
 }
 
+/** Wall-clock bar lengths (minutes) the aggregation may use; every Common timeframe is a multiple of one of them. */
+const ALIGNED_AGGREGATION_MINUTES = [1, 2, 3, 5, 10, 15, 30, 60, 120, 240, 480, 1440] as const
+
 /**
  * Aggregate instead of sampling individual rows so intra-bucket highs/lows are
  * retained for TP/SL and trailing-hit tests. This is the memory bound used for
  * 1–14 day optimization runs.
+ *
+ * Wall-clock series are aggregated into UTC-aligned bars of the smallest
+ * standard length that fits `maxPoints`, stamped with the bar's open time, so
+ * timeframes and time-anchored rules keep their meaning (14 days of 1m bars
+ * become 5m bars instead of "every 4 rows"). Index-ordered input keeps the
+ * row-count buckets.
  */
 export function aggregateCandles(candles: PresetCandle[], maxPoints: number): PresetCandle[] {
   if (candles.length <= maxPoints) return candles
+  const first = candles[0].timestamp
+  const last = candles[candles.length - 1].timestamp
+  if (first > 10_000_000_000) {
+    for (const minutes of ALIGNED_AGGREGATION_MINUTES) {
+      const bucketMs = minutes * 60_000
+      if (Math.floor(last / bucketMs) - Math.floor(first / bucketMs) + 1 > maxPoints) continue
+      const result: PresetCandle[] = []
+      let bucket = Number.NaN
+      for (const candle of candles) {
+        const next = Math.floor(candle.timestamp / bucketMs)
+        if (next !== bucket) {
+          bucket = next
+          result.push({ ...candle, timestamp: next * bucketMs })
+          continue
+        }
+        const target = result[result.length - 1]
+        if (candle.high > target.high) target.high = candle.high
+        if (candle.low < target.low) target.low = candle.low
+        target.close = candle.close
+        target.volume += candle.volume
+      }
+      return result
+    }
+  }
   const bucketSize = Math.ceil(candles.length / maxPoints)
   const result: PresetCandle[] = []
   for (let offset = 0; offset < candles.length; offset += bucketSize) {
@@ -410,6 +439,22 @@ function selectRangeValues(raw: unknown, fallback: NumericPresetRange, _batchSiz
   }))
 }
 
+const DEFINITION_BY_TYPE: ReadonlyMap<string, CommonIndicatorDefinition> = new Map(
+  COMMON_INDICATOR_DEFINITIONS.map((definition) => [definition.type, definition]),
+)
+const LEGACY_TYPES: ReadonlySet<string> = new Set(LEGACY_COMMON_INDICATOR_TYPES)
+
+/** The catalogue's ordering constraints (fast < slow, tenkan < kijun < senkou, …) of a type. */
+function satisfiesDefinitionConstraints(type: PresetIndicatorType, params: Record<string, number>): boolean {
+  for (const [left, operator, right] of DEFINITION_BY_TYPE.get(type)?.constraints || []) {
+    const a = params[left]
+    const b = params[right]
+    if (!Number.isFinite(a) || !Number.isFinite(b)) continue
+    if (operator === "<" ? !(a < b) : !(a <= b)) return false
+  }
+  return true
+}
+
 function latinVariants(
   type: PresetIndicatorType,
   parameters: Record<string, number[]>,
@@ -438,7 +483,7 @@ function latinVariants(
     const acceleration = params.acceleration
     const maximum = params.maximum
     if (Number.isFinite(acceleration) && Number.isFinite(maximum) && acceleration > maximum) return false
-    return true
+    return satisfiesDefinitionConstraints(type, params)
   })
   const limit = Math.max(1, Math.floor(batchSize))
   if (valid.length <= limit) return valid
@@ -629,438 +674,88 @@ export function buildCommonIndicatorConfigurations(
     deviationPct: selectRangeValues(vwap.deviationPct, { min: 0.1, max: 1, step: 0.1 }, max),
   })
 
+  // The types ported from CTS-A-O use their catalogue parameter names and ranges.
+  for (const definition of COMMON_INDICATOR_DEFINITIONS) {
+    if (LEGACY_TYPES.has(definition.type)) continue
+    const record = indicatorRecord(commonSettings, definition.storageKey)
+    add(definition.type, definition.storageKey, Object.fromEntries(
+      Object.entries(definition.parameters).map(([key, parameter]) => [
+        key,
+        selectRangeValues(record[key], {
+          min: parameter.default.from,
+          max: parameter.default.to,
+          step: parameter.default.step,
+        }, max),
+      ]),
+    ))
+  }
+
   return configurations
 }
 
 type PresetSignalDirection = "long" | "short" | null
 
-function simpleMovingAverageSeries(values: number[], periodInput: number): number[] {
-  const period = Math.max(1, Math.round(periodInput))
-  const result = new Array<number>(values.length).fill(0)
-  let sum = 0
-  for (let index = 0; index < values.length; index++) {
-    sum += values[index]
-    if (index >= period) sum -= values[index - period]
-    result[index] = sum / Math.min(period, index + 1)
+/**
+ * Optimizer parameter names of the 17 original types (persisted presets keep
+ * them) → the Common catalogue names the shared rules read.
+ */
+export function toCommonParameters(type: PresetIndicatorType, params: Record<string, number>): Record<string, number> {
+  const canonical: Record<string, number> = { ...params }
+  const alias = (from: string, to: string) => {
+    if (Number.isFinite(params[from]) && !Number.isFinite(params[to])) canonical[to] = params[from]
   }
-  return result
+  switch (type) {
+    case "ma":
+    case "ema":
+    case "sma":
+    case "adl":
+    case "obv":
+      alias("short", "shortPeriod")
+      alias("long", "longPeriod")
+      alias("period", "shortPeriod")
+      break
+    case "macd":
+      alias("fast", "fastPeriod")
+      alias("slow", "slowPeriod")
+      alias("signal", "signalPeriod")
+      break
+    case "stochastic":
+      alias("period", "kPeriod")
+      break
+    default:
+      break
+  }
+  return canonical
 }
 
-function exponentialMovingAverageSeries(values: number[], periodInput: number): number[] {
-  if (values.length === 0) return []
-  const period = Math.max(1, Math.round(periodInput))
-  const multiplier = 2 / (period + 1)
-  const result = new Array<number>(values.length).fill(0)
-  result[0] = values[0]
-  for (let index = 1; index < values.length; index++) {
-    result[index] = values[index] * multiplier + result[index - 1] * (1 - multiplier)
-  }
-  return result
-}
-
-function wilderRsiSeries(candles: PresetCandle[], periodInput: number): number[] {
-  const period = Math.max(2, Math.round(periodInput))
-  const result = new Array<number>(candles.length).fill(50)
-  if (candles.length <= period) return result
-  let averageGain = 0
-  let averageLoss = 0
-  for (let index = 1; index <= period; index++) {
-    const change = candles[index].close - candles[index - 1].close
-    if (change > 0) averageGain += change
-    else averageLoss -= change
-  }
-  averageGain /= period
-  averageLoss /= period
-  const value = () => averageLoss === 0
-    ? averageGain > 0 ? 100 : 50
-    : 100 - 100 / (1 + averageGain / averageLoss)
-  result[period] = value()
-  for (let index = period + 1; index < candles.length; index++) {
-    const change = candles[index].close - candles[index - 1].close
-    const gain = Math.max(0, change)
-    const loss = Math.max(0, -change)
-    averageGain = (averageGain * (period - 1) + gain) / period
-    averageLoss = (averageLoss * (period - 1) + loss) / period
-    result[index] = value()
-  }
-  return result
-}
-
-function trueRange(candles: PresetCandle[], index: number): number {
-  if (index <= 0) return candles[0] ? candles[0].high - candles[0].low : 0
-  const candle = candles[index]
-  const previousClose = candles[index - 1].close
-  return Math.max(
-    candle.high - candle.low,
-    Math.abs(candle.high - previousClose),
-    Math.abs(candle.low - previousClose),
-  )
-}
-
-function wilderAtrSeries(candles: PresetCandle[], periodInput: number): number[] {
-  const period = Math.max(2, Math.round(periodInput))
-  const result = new Array<number>(candles.length).fill(0)
-  if (candles.length === 0) return result
-  let running = 0
-  for (let index = 1; index < candles.length; index++) {
-    const tr = trueRange(candles, index)
-    if (index <= period) {
-      running += tr
-      result[index] = running / index
-    } else {
-      result[index] = (result[index - 1] * (period - 1) + tr) / period
-    }
-  }
-  return result
-}
-
-function wilderAdxSeries(
-  candles: PresetCandle[],
-  periodInput: number,
-): { adx: number[]; plusDi: number[]; minusDi: number[] } {
-  const period = Math.max(3, Math.round(periodInput))
-  const adx = new Array<number>(candles.length).fill(0)
-  const plusDi = new Array<number>(candles.length).fill(0)
-  const minusDi = new Array<number>(candles.length).fill(0)
-  let smoothedTr = 0
-  let smoothedPlus = 0
-  let smoothedMinus = 0
-  let adxSeed = 0
-  let adxSeedCount = 0
-  let currentAdx = 0
-  for (let index = 1; index < candles.length; index++) {
-    const upMove = candles[index].high - candles[index - 1].high
-    const downMove = candles[index - 1].low - candles[index].low
-    const plusDm = upMove > downMove && upMove > 0 ? upMove : 0
-    const minusDm = downMove > upMove && downMove > 0 ? downMove : 0
-    const tr = trueRange(candles, index)
-    if (index <= period) {
-      smoothedTr += tr
-      smoothedPlus += plusDm
-      smoothedMinus += minusDm
-      if (index < period) continue
-    } else {
-      smoothedTr = smoothedTr - smoothedTr / period + tr
-      smoothedPlus = smoothedPlus - smoothedPlus / period + plusDm
-      smoothedMinus = smoothedMinus - smoothedMinus / period + minusDm
-    }
-    plusDi[index] = smoothedTr > 0 ? (smoothedPlus / smoothedTr) * 100 : 0
-    minusDi[index] = smoothedTr > 0 ? (smoothedMinus / smoothedTr) * 100 : 0
-    const diTotal = plusDi[index] + minusDi[index]
-    const dx = diTotal > 0 ? (Math.abs(plusDi[index] - minusDi[index]) / diTotal) * 100 : 0
-    if (adxSeedCount < period) {
-      adxSeed += dx
-      adxSeedCount++
-      if (adxSeedCount === period) currentAdx = adxSeed / period
-    } else {
-      currentAdx = (currentAdx * (period - 1) + dx) / period
-    }
-    if (adxSeedCount >= period) adx[index] = currentAdx
-  }
-  return { adx, plusDi, minusDi }
-}
-
-function parabolicSarDirections(
-  candles: PresetCandle[],
-  accelerationInput: number,
-  maximumInput: number,
-): PresetSignalDirection[] {
-  const directions = new Array<PresetSignalDirection>(candles.length).fill(null)
-  if (candles.length < 2) return directions
-  const acceleration = clamp(finite(accelerationInput, 0.02), 0.001, 1)
-  const maximum = Math.max(acceleration, clamp(finite(maximumInput, 0.2), acceleration, 1))
-  let rising = candles[1].close >= candles[0].close
-  let sar = rising
-    ? Math.min(candles[0].low, candles[1].low)
-    : Math.max(candles[0].high, candles[1].high)
-  let extreme = rising
-    ? Math.max(candles[0].high, candles[1].high)
-    : Math.min(candles[0].low, candles[1].low)
-  let factor = acceleration
-  directions[1] = rising ? "long" : "short"
-  for (let index = 2; index < candles.length; index++) {
-    let nextSar = sar + factor * (extreme - sar)
-    if (rising) {
-      nextSar = Math.min(nextSar, candles[index - 1].low, candles[index - 2].low)
-      if (candles[index].low < nextSar) {
-        rising = false
-        nextSar = extreme
-        extreme = candles[index].low
-        factor = acceleration
-      } else if (candles[index].high > extreme) {
-        extreme = candles[index].high
-        factor = Math.min(maximum, factor + acceleration)
-      }
-    } else {
-      nextSar = Math.max(nextSar, candles[index - 1].high, candles[index - 2].high)
-      if (candles[index].high > nextSar) {
-        rising = true
-        nextSar = extreme
-        extreme = candles[index].high
-        factor = acceleration
-      } else if (candles[index].low < extreme) {
-        extreme = candles[index].low
-        factor = Math.min(maximum, factor + acceleration)
-      }
-    }
-    sar = nextSar
-    directions[index] = rising ? "long" : "short"
-  }
-  return directions
-}
-
-function accumulationDistributionSeries(candles: PresetCandle[]): number[] {
-  const values = new Array<number>(candles.length).fill(0)
-  for (let index = 0; index < candles.length; index++) {
-    const candle = candles[index]
-    const range = candle.high - candle.low
-    const multiplier = range > 0
-      ? ((candle.close - candle.low) - (candle.high - candle.close)) / range
-      : 0
-    values[index] = (values[index - 1] || 0) + multiplier * candle.volume
-  }
-  return values
-}
-
-function onBalanceVolumeSeries(candles: PresetCandle[]): number[] {
-  const values = new Array<number>(candles.length).fill(0)
-  for (let index = 1; index < candles.length; index++) {
-    const volumeDirection = candles[index].close > candles[index - 1].close
-      ? 1
-      : candles[index].close < candles[index - 1].close
-        ? -1
-        : 0
-    values[index] = values[index - 1] + volumeDirection * candles[index].volume
-  }
-  return values
-}
-
-function rollingVwapSeries(candles: PresetCandle[], periodInput: number): number[] {
-  const period = Math.max(1, Math.round(periodInput))
-  const values = new Array<number>(candles.length).fill(0)
-  let priceVolume = 0
-  let volume = 0
-  for (let index = 0; index < candles.length; index++) {
-    const typical = (candles[index].high + candles[index].low + candles[index].close) / 3
-    priceVolume += typical * candles[index].volume
-    volume += candles[index].volume
-    if (index >= period) {
-      const old = candles[index - period]
-      const oldTypical = (old.high + old.low + old.close) / 3
-      priceVolume -= oldTypical * old.volume
-      volume -= old.volume
-    }
-    values[index] = volume > 0 ? priceVolume / volume : candles[index].close
-  }
-  return values
-}
-
+/**
+ * Entry series of one configuration: the shared Common rule's causal state —
+ * the same rule the live engine reads at the last bar. Live creates the
+ * configuration's Set on every cycle while its state holds, so every bar with
+ * a direction is a candidate entry here too (generatePresetSignals samples
+ * them evenly over the window).
+ */
 function buildSignalSeries(
   candles: PresetCandle[],
   config: PresetIndicatorConfiguration,
 ): PresetSignalDirection[] {
   const result = new Array<PresetSignalDirection>(candles.length).fill(null)
-  const closes = candles.map((candle) => candle.close)
-  const p = config.params
-  if (candles.length === 0) return result
-
-  switch (config.type) {
-    case "rsi": {
-      const values = wilderRsiSeries(candles, p.period || 14)
-      for (let index = 0; index < candles.length; index++) {
-        if (values[index] <= (p.oversold || 30)) result[index] = "long"
-        else if (values[index] >= (p.overbought || 70)) result[index] = "short"
-      }
-      break
-    }
-    case "macd": {
-      const fast = Math.max(2, Math.round(p.fast || 12))
-      const slow = Math.max(fast + 1, Math.round(p.slow || 26))
-      const fastEma = exponentialMovingAverageSeries(closes, fast)
-      const slowEma = exponentialMovingAverageSeries(closes, slow)
-      const macd = closes.map((_, index) => fastEma[index] - slowEma[index])
-      const signal = exponentialMovingAverageSeries(macd, Math.max(2, Math.round(p.signal || 9)))
-      for (let index = 1; index < candles.length; index++) {
-        if (macd[index] > signal[index] && macd[index - 1] <= signal[index - 1]) result[index] = "long"
-        else if (macd[index] < signal[index] && macd[index - 1] >= signal[index - 1]) result[index] = "short"
-      }
-      break
-    }
-    case "bollinger": {
-      const period = Math.max(3, Math.round(p.period || 20))
-      const means = simpleMovingAverageSeries(closes, period)
-      let sum = 0
-      let sumSquares = 0
-      for (let index = 0; index < candles.length; index++) {
-        sum += closes[index]
-        sumSquares += closes[index] ** 2
-        if (index >= period) {
-          sum -= closes[index - period]
-          sumSquares -= closes[index - period] ** 2
-        }
-        const count = Math.min(period, index + 1)
-        const variance = Math.max(0, sumSquares / count - (sum / count) ** 2)
-        const deviation = Math.sqrt(variance) * (p.stdDev || 2)
-        if (closes[index] <= means[index] - deviation) result[index] = "long"
-        else if (closes[index] >= means[index] + deviation) result[index] = "short"
-      }
-      break
-    }
-    case "ma":
-    case "ema":
-    case "sma": {
-      const short = Math.max(2, Math.round(p.short || 9))
-      const long = Math.max(short + 1, Math.round(p.long || 21))
-      const useExponential = config.type === "ema" || config.type === "ma"
-      const shortAverage = useExponential
-        ? exponentialMovingAverageSeries(closes, short)
-        : simpleMovingAverageSeries(closes, short)
-      const longAverage = useExponential
-        ? exponentialMovingAverageSeries(closes, long)
-        : simpleMovingAverageSeries(closes, long)
-      for (let index = 1; index < candles.length; index++) {
-        if (shortAverage[index] > longAverage[index] && shortAverage[index - 1] <= longAverage[index - 1]) {
-          result[index] = "long"
-        } else if (shortAverage[index] < longAverage[index] && shortAverage[index - 1] >= longAverage[index - 1]) {
-          result[index] = "short"
-        }
-      }
-      break
-    }
-    case "stochastic": {
-      const period = Math.max(3, Math.round(p.kPeriod || p.period || 14))
-      const dPeriod = Math.max(1, Math.round(p.dPeriod || 3))
-      const kValues = new Array<number>(candles.length).fill(50)
-      for (let index = 0; index < candles.length; index++) {
-        const start = Math.max(0, index - period + 1)
-        let high = Number.NEGATIVE_INFINITY
-        let low = Number.POSITIVE_INFINITY
-        for (let cursor = start; cursor <= index; cursor++) {
-          high = Math.max(high, candles[cursor].high)
-          low = Math.min(low, candles[cursor].low)
-        }
-        kValues[index] = high > low ? ((candles[index].close - low) / (high - low)) * 100 : 50
-      }
-      const dValues = simpleMovingAverageSeries(kValues, dPeriod)
-      for (let index = 1; index < candles.length; index++) {
-        const crossedUp = kValues[index] >= dValues[index] && kValues[index - 1] < dValues[index - 1]
-        const crossedDown = kValues[index] <= dValues[index] && kValues[index - 1] > dValues[index - 1]
-        if (crossedUp && kValues[index] <= (p.oversold || 20)) result[index] = "long"
-        else if (crossedDown && kValues[index] >= (p.overbought || 80)) result[index] = "short"
-      }
-      break
-    }
-    case "adx": {
-      const values = wilderAdxSeries(candles, p.period || 14)
-      for (let index = 0; index < candles.length; index++) {
-        if (values.adx[index] < (p.threshold || 25)) continue
-        if (values.plusDi[index] > values.minusDi[index]) result[index] = "long"
-        else if (values.minusDi[index] > values.plusDi[index]) result[index] = "short"
-      }
-      break
-    }
-    case "atr": {
-      const period = Math.max(3, Math.round(p.period || 14))
-      const atr = wilderAtrSeries(candles, period)
-      const baseline = simpleMovingAverageSeries(closes, period)
-      const multiplier = Math.max(0.1, p.multiplier || 1.5)
-      for (let index = 1; index < candles.length; index++) {
-        if (closes[index] > baseline[index - 1] + atr[index] * multiplier) result[index] = "long"
-        else if (closes[index] < baseline[index - 1] - atr[index] * multiplier) result[index] = "short"
-      }
-      break
-    }
-    case "psar":
-    case "sar":
-      return parabolicSarDirections(candles, p.acceleration || 0.02, p.maximum || 0.2)
-    case "cci": {
-      const period = Math.max(3, Math.round(p.period || 20))
-      const typical = candles.map((candle) => (candle.high + candle.low + candle.close) / 3)
-      const means = simpleMovingAverageSeries(typical, period)
-      const threshold = Math.max(1, Math.abs(p.threshold || 100))
-      for (let index = period - 1; index < candles.length; index++) {
-        const start = Math.max(0, index - period + 1)
-        let deviation = 0
-        for (let cursor = start; cursor <= index; cursor++) {
-          deviation += Math.abs(typical[cursor] - means[index])
-        }
-        deviation /= Math.max(1, index - start + 1)
-        const value = deviation > 0 ? (typical[index] - means[index]) / (0.015 * deviation) : 0
-        if (value <= -threshold) result[index] = "long"
-        else if (value >= threshold) result[index] = "short"
-      }
-      break
-    }
-    case "adl":
-    case "obv": {
-      const values = config.type === "obv"
-        ? onBalanceVolumeSeries(candles)
-        : accumulationDistributionSeries(candles)
-      const shortPeriod = Math.max(2, Math.round(p.short || 5))
-      const longPeriod = Math.max(shortPeriod + 1, Math.round(p.long || 20))
-      const short = simpleMovingAverageSeries(values, shortPeriod)
-      const long = simpleMovingAverageSeries(values, longPeriod)
-      for (let index = 1; index < candles.length; index++) {
-        if (short[index] > long[index] && short[index - 1] <= long[index - 1]) result[index] = "long"
-        else if (short[index] < long[index] && short[index - 1] >= long[index - 1]) result[index] = "short"
-      }
-      break
-    }
-    case "fibonacci": {
-      const lookback = Math.max(3, Math.round(p.lookback || 34))
-      const tolerancePct = Math.max(0.001, p.tolerancePct || 0.25)
-      for (let index = lookback - 1; index < candles.length; index++) {
-        const window = candles.slice(index - lookback + 1, index + 1)
-        const high = Math.max(...window.map((candle) => candle.high))
-        const low = Math.min(...window.map((candle) => candle.low))
-        const span = high - low
-        if (!(span > 0)) continue
-        const levels = [high - span * 0.382, high - span * 0.5, high - span * 0.618]
-        const nearest = levels.reduce((best, level) =>
-          Math.abs(candles[index].close - level) < Math.abs(candles[index].close - best) ? level : best,
-        )
-        const distancePct = Math.abs(candles[index].close - nearest) / candles[index].close * 100
-        if (distancePct > tolerancePct) continue
-        result[index] = candles[index].close <= high - span * 0.5 ? "long" : "short"
-      }
-      break
-    }
-    case "roc": {
-      const period = Math.max(1, Math.round(p.period || 12))
-      const threshold = Math.max(0, p.thresholdPct || 0.1)
-      for (let index = period; index < candles.length; index++) {
-        const reference = candles[index - period].close
-        const value = reference > 0 ? (candles[index].close - reference) / reference * 100 : 0
-        if (value >= threshold) result[index] = "long"
-        else if (value <= -threshold) result[index] = "short"
-      }
-      break
-    }
-    case "williamsR": {
-      const period = Math.max(3, Math.round(p.period || 14))
-      for (let index = period - 1; index < candles.length; index++) {
-        const window = candles.slice(index - period + 1, index + 1)
-        const high = Math.max(...window.map((candle) => candle.high))
-        const low = Math.min(...window.map((candle) => candle.low))
-        const value = high > low ? -100 * (high - candles[index].close) / (high - low) : -50
-        if (value <= (p.oversold || -80)) result[index] = "long"
-        else if (value >= (p.overbought || -20)) result[index] = "short"
-      }
-      break
-    }
-    case "vwap": {
-      const period = Math.max(2, Math.round(p.period || 20))
-      const threshold = Math.max(0, p.deviationPct || 0.1)
-      const values = rollingVwapSeries(candles, period)
-      for (let index = period - 1; index < candles.length; index++) {
-        const deviation = values[index] > 0 ? (candles[index].close - values[index]) / values[index] * 100 : 0
-        if (deviation <= -threshold) result[index] = "long"
-        else if (deviation >= threshold) result[index] = "short"
-      }
-      break
-    }
+  const rule = getCommonRule(config.type)
+  if (candles.length === 0 || !rule) return result
+  const context = createCommonSeriesContext(candles, { normalized: true })
+  const states = commonRuleStates(context, rule, toCommonParameters(config.type, config.params), 14)
+  for (let index = 0; index < states.length; index++) {
+    const state = states[index]
+    if (state !== 0) result[index] = state > 0 ? "long" : "short"
   }
   return result
+}
+
+/** Bars before a configuration's first possible signal (its rule's warm-up, at least 30). */
+function configurationWarmup(config: PresetIndicatorConfiguration): number {
+  const rule = getCommonRule(config.type)
+  if (!rule) return 30
+  return Math.max(30, rule.warmup(rule.resolve(toCommonParameters(config.type, config.params), 14)))
 }
 
 function resamplePresetCandles(
@@ -1091,7 +786,9 @@ function resamplePresetCandles(
     const nextBucket = Math.floor(candle.timestamp / bucketMs)
     if (nextBucket !== bucket) {
       bucket = nextBucket
-      result.push({ ...candle })
+      // the bar carries its bucket's open time (time-anchored rules read it);
+      // its entry index is the bucket's last source candle, so entries stay causal
+      result.push({ ...candle, timestamp: nextBucket * bucketMs })
       sourceIndexes.push(index)
       continue
     }
@@ -1099,7 +796,6 @@ function resamplePresetCandles(
     target.high = Math.max(target.high, candle.high)
     target.low = Math.min(target.low, candle.low)
     target.close = candle.close
-    target.timestamp = candle.timestamp
     target.volume += candle.volume
     sourceIndexes[sourceIndexes.length - 1] = index
   }
@@ -1117,7 +813,7 @@ export function generatePresetSignals(
     Object.entries(config.params).filter(([key]) => key !== "timeframeMinutes"),
   )
   const calculationConfig = { ...config, params: calculationParams }
-  const warmup = Math.max(30, ...Object.values(calculationParams).map((value) => Math.ceil(value || 0)))
+  const warmup = configurationWarmup(calculationConfig)
   const signalSeries = buildSignalSeries(resampled.candles, calculationConfig)
   const candidates: PresetSignalEntry[] = []
   for (let index = warmup; index < resampled.candles.length - 1; index++) {
