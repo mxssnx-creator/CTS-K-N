@@ -207,7 +207,11 @@ describe("Common rules are causal and two-sided", () => {
     const series = [3, 11].map((seed) => richCandles("EEE-USDT", 5, 3_000, seed))
     for (const definition of COMMON_INDICATOR_DEFINITIONS) {
       const rule = COMMON_RULES.get(definition.type)!
-      const tuple = sampleTuples(definition)[0]
+      // A reversion rule mirrors onto the same rule only with symmetric levels: the
+      // first default RSI tuple is 20 / 60, whose mirror is 40 / 80, so RSI uses
+      // overbought = 100 − oversold here (audit F1: rsi is a reversion rule).
+      const base = sampleTuples(definition)[0]
+      const tuple = definition.type === "rsi" ? { ...base, overbought: 100 - base.oversold } : base
       const count = { up: 0, dn: 0, mup: 0, mdn: 0 }
       for (const candles of series) {
         const a = commonRuleStates(createCommonSeriesContext(candles, { normalized: true }), rule, tuple)

@@ -540,6 +540,7 @@ unit	__tests__/unit/strategy-sets-processor.test.ts
 unit	__tests__/unit/strategy-snapshot-consistency.test.ts
 unit	__tests__/unit/strategy-stage-accounting.test.ts
 unit	__tests__/unit/strategy-stage-relations.test.ts
+unit	__tests__/unit/strategy-tuple-coverage.test.ts
 unit	__tests__/unit/strategy-volume-coordination.test.ts
 unit	__tests__/unit/stuck-placement-sweeper.test.ts
 unit	__tests__/unit/symbol-capacity.test.ts

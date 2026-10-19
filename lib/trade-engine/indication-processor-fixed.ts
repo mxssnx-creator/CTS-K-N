@@ -356,6 +356,40 @@ function logicalStrategyIndicationSubtype(indication: any): string {
 }
 
 /**
+ * Which tuples Base evaluates (audit SET-01, operator decision 2026-10-19).
+ *
+ * `all` (default): every configured tuple that qualified reaches Base, so each
+ * configuration is its own Set and is measured, as lib/trade-engine/advanced-config
+ * requires ("batching must never change which configurations exist").
+ * `representatives`: the earlier lane collapse, kept for comparison and for
+ * measuring the cost of the full coverage.
+ */
+export type StrategyTupleCoverage = "all" | "representatives"
+
+export function resolveStrategyTupleCoverage(raw: unknown = process.env.STRATEGY_TUPLE_COVERAGE): StrategyTupleCoverage {
+  return String(raw || "").trim().toLowerCase() === "representatives" ? "representatives" : "all"
+}
+
+/** The indications Base evaluates for one pass, with the counts that must reconcile. */
+export function strategyIndicationsForBase(
+  exactIndications: readonly any[],
+  fallbackIndications: readonly any[] = [],
+  coverage: StrategyTupleCoverage = resolveStrategyTupleCoverage(),
+): { indications: any[]; configured: number; passedToBase: number; collapsed: number } {
+  if (coverage === "representatives") {
+    const indications = selectStrategyIndicationRepresentatives(exactIndications, fallbackIndications)
+    return {
+      indications,
+      configured: exactIndications.length + fallbackIndications.length,
+      passedToBase: indications.length,
+      collapsed: Math.max(0, exactIndications.length - (indications.length - fallbackIndications.length)),
+    }
+  }
+  const indications = [...exactIndications, ...fallbackIndications]
+  return { indications, configured: indications.length, passedToBase: indications.length, collapsed: 0 }
+}
+
+/**
  * Collapse exact parameter tuples into executable Strategy decisions.
  *
  * Every tuple has already been calculated, graded, persisted and counted by
@@ -699,6 +733,8 @@ function mergeHistoricTailWithRealtime(
 
 export class IndicationProcessor {
   private connectionId: string
+  /** Base input of the last pass: configured vs passed to Base (SET-02/03 reconciliation). */
+  lastBaseCoverage: { configured: number; passedToBase: number; collapsed: number } | null = null
   // Use shared module-level cache to avoid initialization issues in cached webpack bundles
   private marketDataCache: Map<string, { data: any; timestamp: number }> = SHARED_MARKET_DATA_CACHE
   private settingsCache: { data: any; timestamp: number } | null = SHARED_SETTINGS_CACHE
@@ -1417,10 +1453,9 @@ export class IndicationProcessor {
           indication?.type === "auto" ||
           !exactTypes.has(String(indication?.type || "")),
         )
-        strategyIndications = selectStrategyIndicationRepresentatives(
-          exactSetIndications,
-          directFallback,
-        )
+        const base = strategyIndicationsForBase(exactSetIndications, directFallback)
+        strategyIndications = base.indications
+        this.lastBaseCoverage = { configured: base.configured, passedToBase: base.passedToBase, collapsed: base.collapsed }
       }
 
       // A generation can change while market/signal data is in flight. Drop

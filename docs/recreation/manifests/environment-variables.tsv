@@ -544,6 +544,7 @@ STRATEGY_MAIN_AXIS_SETS_CEILING	test-or-operator-tool	no	yes	1	.env.example
 STRATEGY_PHASE_DIAGNOSTICS	application-runtime	no	no	1	lib/strategy-coordinator.ts
 STRATEGY_REAL_SETS_CEILING	application-runtime	no	yes	3	.env.example,__tests__/unit/requested-regressions.test.ts,lib/strategy-coordinator.ts
 STRATEGY_REDIS_HASH_WRITE_BATCH_SIZE	application-runtime	no	yes	2	.env.example,lib/strategy-coordinator.ts
+STRATEGY_TUPLE_COVERAGE	application-runtime	no	no	1	lib/trade-engine/indication-processor-fixed.ts
 STRATEGY_VARIANT_BUILD_CONCURRENCY	application-runtime	no	yes	2	.env.example,lib/strategy-coordinator.ts
 SYMBOL_COUNT	test-or-operator-tool	no	no	2	scripts/test-quickstart-3symbols.js,scripts/verify-prod-soak.mjs
 SYMBOLS	test-or-operator-tool	no	no	2	scripts/run-engine-probe.mjs,scripts/test-quickstart-3symbols.js

@@ -553,6 +553,7 @@ __tests__/unit/strategy-sets-processor.test.ts
 __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts
 __tests__/unit/strategy-stage-relations.test.ts
+__tests__/unit/strategy-tuple-coverage.test.ts
 __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/stuck-placement-sweeper.test.ts
 __tests__/unit/symbol-capacity.test.ts
@@ -1263,6 +1264,7 @@ docs/REMOTE-CHISEL-WORKMODE.md
 docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
 docs/STAGE-FUNNEL-AND-PROCESSING.md
+docs/audit/round5-findings.md
 docs/baseline/STABLE-BASELINE-2026-09-19.md
 docs/baseline/candles-2026-09-19-1m.json.gz
 docs/chisel-client.service.example
