@@ -12,8 +12,8 @@ import { HISTORIC_TEST_MIN_PROFIT_FACTOR_DEFAULT } from "@/lib/historic-test-set
  * either re-measure and update docs/baseline, or the change is unintended.
  */
 describe("stable baseline 2026-09-19 — calculation configuration", () => {
-  test("round-trip cost is the real 0.26%, not the PositionCost sizing setting", () => {
-    expect(roundTripCostPercent()).toBeCloseTo(0.26, 10)
+  test("round-trip cost is the systemwide 0.15%, not the PositionCost sizing setting", () => {
+    expect(roundTripCostPercent()).toBeCloseTo(0.15, 10)
   })
 
   test("indication windows reach 48", () => {

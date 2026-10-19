@@ -10,7 +10,7 @@
  * corrected path. The variants then switch one old behaviour back on:
  *
  *  - cost 0.10 %: simulated closes charged PositionCost instead of the
- *    0.26 % round trip;
+ *    0.15 % round trip;
  *  - gross: no cost at all;
  *  - both-touch = TP: a bar touching stop and target counted as a win
  *    (old forward grading);
@@ -69,7 +69,7 @@ async function main() {
   setActiveProtectionFloors({})
   const symbols = symbolArg ? symbolArg.split(",") : readdirSync(signalsDir).filter((n) => n.endsWith(".json")).map((n) => n.replace(/\.json$/, ""))
   const variants: Variant[] = [
-    { key: "corrected", label: "Corrected engine path (real bars, stop first, 0.26 % round trip)", trades: [] },
+    { key: "corrected", label: "Corrected engine path (real bars, stop first, 0.15 % round trip)", trades: [] },
     { key: "cost010", label: "Old cost: PositionCost 0.10 % charged instead of the round trip", trades: [] },
     { key: "gross", label: "No cost at all (gross move)", trades: [] },
     { key: "bothTp", label: "Old grading: bar touching stop and target = win, 0.10 % cost", trades: [] },

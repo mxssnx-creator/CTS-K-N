@@ -35,16 +35,16 @@ describe("backtest request", () => {
   })
 
   test("market pays taker on both legs; maker pays maker on entry and a resting TP", () => {
-    expect(backtestRoundTripPct("market", "maker")).toBeCloseTo(0.16, 12)
-    expect(backtestRoundTripPct("market", "taker")).toBeCloseTo(0.16, 12)
+    expect(backtestRoundTripPct("market", "maker")).toBeCloseTo(0.15, 12)
+    expect(backtestRoundTripPct("market", "taker")).toBeCloseTo(0.15, 12)
     expect(backtestRoundTripPct("maker", "maker")).toBeCloseTo(0.04, 12)
-    expect(backtestRoundTripPct("maker", "taker")).toBeCloseTo(0.1, 12)
+    expect(backtestRoundTripPct("maker", "taker")).toBeCloseTo(0.095, 12)
   })
 })
 
 const trade = (overrides: Partial<BacktestTrade>): BacktestTrade => ({
   symbol: "BTCUSDT", type: "move", direction: "long", rule: "default", entryTime: T0, exitTime: T0 + 10 * 60_000,
-  entryPrice: 100, exitPrice: 100.5, takeProfitPct: 0.5, stopLossPct: 0.6, grossPct: 0.5, costPct: 0.16, netPct: 0.34,
+  entryPrice: 100, exitPrice: 100.5, takeProfitPct: 0.5, stopLossPct: 0.6, grossPct: 0.5, costPct: 0.15, netPct: 0.35,
   reason: "take_profit", exitLeg: "taker", ...overrides,
 })
 
@@ -99,8 +99,8 @@ describe("backtestTradesForSymbol", () => {
   test("market: the row's own TP, taker legs", () => {
     const { trades } = backtestTradesForSymbol({ symbol: "BTCUSDT", bars, signals, execution: "market", positionCostPct: 0.1, fromMs: T0 })
     expect(trades).toHaveLength(1)
-    expect(trades[0]).toMatchObject({ reason: "take_profit", exitPrice: expect.closeTo(100.5, 9), costPct: expect.closeTo(0.16, 12), exitLeg: "taker" })
-    expect(trades[0].netPct).toBeCloseTo(0.5 - 0.16, 9)
+    expect(trades[0]).toMatchObject({ reason: "take_profit", exitPrice: expect.closeTo(100.5, 9), costPct: expect.closeTo(0.15, 12), exitLeg: "taker" })
+    expect(trades[0].netPct).toBeCloseTo(0.5 - 0.15, 9)
   })
 
   test("maker: filled on the trade-through, resting TP is a maker leg", () => {
@@ -111,7 +111,7 @@ describe("backtestTradesForSymbol", () => {
 })
 
 describe("applyBaseGate", () => {
-  // Measured closes pay the real round trip (0.26 %): gross 0.5 % → net 0.24 → ratio 1.24; gross -0.6 → ratio 0.14.
+  // Measured closes pay the real round trip (0.15 %): gross 0.5 % → net 0.35 → ratio 1.35; gross -0.6 → net -0.75 → ratio 0.25.
   const close = (minute: number, grossPct: number, profitFactor = 1.5): BacktestTrade =>
     trade({ entryTime: T0 + minute * 60_000, exitTime: T0 + (minute + 5) * 60_000, grossPct, profitFactor })
 

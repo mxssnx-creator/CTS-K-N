@@ -10,7 +10,8 @@ import {
 describe("simulated and live trades are charged the same cost", () => {
   test("both sides are charged, plus slippage", () => {
     expect(roundTripCostFraction()).toBeCloseTo(DEFAULT_TAKER_FEE_FRACTION * 2 + DEFAULT_SLIPPAGE_FRACTION, 12)
-    expect(roundTripCostPercent()).toBeCloseTo(0.26, 10)
+    // Systemwide round trip: 2 × 0.05 % taker + 0.05 % slippage.
+    expect(roundTripCostPercent()).toBeCloseTo(0.15, 10)
   })
 
   test("the replay no longer borrows PositionCost as a cost", () => {

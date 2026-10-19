@@ -19,7 +19,7 @@ export const HISTORIC_TEST_PERIOD_HOURS = { min: 5, max: 85, step: 5, default: 2
  * Minimum ProfitFactor a combination must reach to be validated.
  *
  * Lowered from 1.2 to 1.1 by operator decision after the replay was corrected
- * to charge real round-trip cost (0.26%, taker fee both sides plus slippage)
+ * to charge real round-trip cost (0.15 %, taker fee both sides plus slippage)
  * instead of borrowing the PositionCost sizing setting (0.10%). That
  * correction moved every measured ProfitFactor down by about 0.16, so a 1.2
  * threshold against honest costs validated nothing: across 29 symbols and the
