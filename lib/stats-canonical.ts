@@ -141,7 +141,8 @@ function isRecord(value: unknown): value is AnyRecord {
 
 /** Numeric leaves that can never be negative (counts, volumes, durations). */
 const NON_NEGATIVE_KEY = /(count|Count|Cycles|cycles|open|Open|closed|Closed|created|Created|total|Total|placed|Placed|filled|Filled|volume|Volume|symbols|Symbols|Sets|sets|evaluated|passed|failed|wins|losses|entries|Entries|Ms)$/
-const SIGNED_KEY = /(pnl|Pnl|PnL|roi|Roi|ROI|delta|Delta|R$|Price|price|drift|Drift|offset|Offset|change|Change)/
+// `netEntries` is long minus short, so it is signed even though it ends in "Entries".
+const SIGNED_KEY = /(pnl|Pnl|PnL|roi|Roi|ROI|delta|Delta|R$|Price|price|drift|Drift|offset|Offset|change|Change|^net|Net)/
 
 function collectNegativeCounters(value: unknown, path: string, out: string[], depth = 0): void {
   if (depth > 6 || out.length > 40) return

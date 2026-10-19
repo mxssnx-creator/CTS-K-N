@@ -247,11 +247,15 @@ export async function runAudit({ baseUrl, redis, connectionId, symbols }) {
  */
 export async function runConsistencyAudit({ baseUrl, connectionId, previous = null }) {
   const id = encodeURIComponent(connectionId)
-  const [stats, engine, configCounts] = await Promise.all([
-    getJson(baseUrl, `/api/connections/progression/${id}/stats`),
-    getJson(baseUrl, `/api/trading/engine-stats?connection_id=${id}`),
-    getJson(baseUrl, `/api/indications/config-counts?connectionId=${id}`),
-  ])
+  // The two routes are separate requests, so a counter that a pass increments
+  // between them shows up as a one-write difference. The engine route is read
+  // before and after the stats route; counters are monotonic, so the stats value
+  // must lie inside that bracket, and only a value outside it is a disagreement.
+  const engineBefore = await getJson(baseUrl, `/api/trading/engine-stats?connection_id=${id}`)
+  const stats = await getJson(baseUrl, `/api/connections/progression/${id}/stats`)
+  const engineAfter = await getJson(baseUrl, `/api/trading/engine-stats?connection_id=${id}`)
+  const configCounts = await getJson(baseUrl, `/api/indications/config-counts?connectionId=${id}`)
+  const engine = engineAfter
   const issues = []
   const s = stats.json || {}
   if (stats.status !== 200) issues.push(`stats route HTTP ${stats.status}`)
@@ -291,10 +295,14 @@ export async function runConsistencyAudit({ baseUrl, connectionId, previous = nu
     ["strategyDetail.live.totalPnl", pnl2(detail.totalPnl)],
   ])
   const byType = s.indicationsByType || {}
+  const beforeByType = engineBefore.json?.indicationsByType || {}
   const engineByType = engine.json?.indicationsByType || {}
-  for (const type of new Set([...Object.keys(byType), ...Object.keys(engineByType)])) {
-    if ((byType[type] || 0) !== (engineByType[type] || 0)) {
-      issues.push(`indications ${type}: stats=${byType[type] || 0} engine-stats=${engineByType[type] || 0}`)
+  for (const type of new Set([...Object.keys(byType), ...Object.keys(engineByType), ...Object.keys(beforeByType)])) {
+    const value = byType[type] || 0
+    const low = Math.min(beforeByType[type] || 0, engineByType[type] || 0)
+    const high = Math.max(beforeByType[type] || 0, engineByType[type] || 0)
+    if (value < low || value > high) {
+      issues.push(`indications ${type}: stats=${value} engine-stats=${low}..${high} (outside the window)`)
     }
   }
   for (const [label, value] of [

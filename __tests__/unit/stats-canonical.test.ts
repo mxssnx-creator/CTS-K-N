@@ -87,6 +87,17 @@ describe("canonical statistics", () => {
     expect(body.dataIntegrity).toEqual({ violations: [], consistent: true })
   })
 
+  test("a signed net (long minus short) is not a negative counter", () => {
+    const body = canonicalizeProgressionStats({
+      strategyDetail: { real: { positionStats: { hedge: { totalLongEntries: 1, totalShortEntries: 3, netEntries: -2 } } } },
+    } as any)
+    expect(body.dataIntegrity).toEqual({ violations: [], consistent: true })
+    const broken = canonicalizeProgressionStats({
+      strategyDetail: { real: { positionStats: { hedge: { totalShortEntries: -1 } } } },
+    } as any)
+    expect(broken.dataIntegrity.violations).toEqual(["strategyDetail.real.positionStats.hedge.totalShortEntries=-1 is negative"])
+  })
+
   test("a negative counter is reported, not hidden", () => {
     const body = canonicalizeProgressionStats({ liveExecution: { wins: 0, losses: 0 }, realtime: { indicationCycles: -4 } } as any, ["base.passed (5) > base.evaluated (3)"])
     expect(body.dataIntegrity.consistent).toBe(false)
