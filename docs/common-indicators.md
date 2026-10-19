@@ -186,6 +186,8 @@ Also:
 | Type | Kind | Default tuples | Source | Parameters (from–to/step) |
 |---|---|---:|---|---|
 | `rsi` | state | 200 | K-N original | period 7–21/2, oversold 20–40/5, overbought 60–80/5 |
+
+Reversion rule: long only at or below oversold, short only at or above overbought, neutral between (audit F1, 2026-10-19). The former middle-zone momentum vote is removed; `rsiMomentum` keeps its own momentum middle-zone rule.
 | `stochastic` | state | 800 | K-N original | kPeriod 7–21/2, dPeriod 2–5/1, oversold 15–35/5, overbought 65–85/5 |
 | `cci` | state | 25 | K-N original | period 10–30/5, threshold 80–160/20 |
 | `williamsR` | state | 200 | K-N original | period 7–21/2, oversold -90–-70/5, overbought -30–-10/5 |

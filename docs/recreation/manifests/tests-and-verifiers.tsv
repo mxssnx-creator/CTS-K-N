@@ -447,6 +447,7 @@ unit	__tests__/unit/retention-policy.test.ts
 unit	__tests__/unit/rollback-orphan-diagnostics.test.ts
 unit	__tests__/unit/round5-audit-fixes.test.ts
 unit	__tests__/unit/row-share-and-rotating-accounting.test.ts
+unit	__tests__/unit/rsi-reversion-neutral-zone.test.ts
 unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts

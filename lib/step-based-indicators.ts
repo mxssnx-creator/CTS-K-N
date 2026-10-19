@@ -281,6 +281,8 @@ type IndicatorAccumulator = {
   neutralCount: number
   longStrength: number
   shortStrength: number
+  /** Strength summed over every result, used when the final direction is neutral. */
+  allStrength: number
   value: number
   signal: number
   detailOrder: string[]
@@ -296,6 +298,7 @@ function createIndicatorAccumulator(type: CommonIndicatorType): IndicatorAccumul
     neutralCount: 0,
     longStrength: 0,
     shortStrength: 0,
+    allStrength: 0,
     value: 0,
     signal: 0,
     detailOrder: [],
@@ -308,6 +311,7 @@ function addIndicatorResult(
   value: TechnicalIndicatorResult,
 ): void {
   accumulator.count += 1
+  accumulator.allStrength += value.strength
   if (value.direction === "long") {
     accumulator.longCount += 1
     accumulator.longStrength += value.strength
@@ -343,11 +347,13 @@ function finalizeIndicatorAccumulator(
     : direction === "short"
       ? accumulator.shortCount
       : accumulator.count
+  // A neutral result averages every variant, as the exhaustive aggregate does
+  // (aggregateIndicatorVariants), so streaming and exhaustive summaries agree.
   const directionalStrength = direction === "long"
     ? accumulator.longStrength
     : direction === "short"
       ? accumulator.shortStrength
-      : 0
+      : accumulator.allStrength
   return {
     type: accumulator.type,
     direction,

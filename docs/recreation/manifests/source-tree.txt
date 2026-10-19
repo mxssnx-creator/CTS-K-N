@@ -460,6 +460,7 @@ __tests__/unit/retention-policy.test.ts
 __tests__/unit/rollback-orphan-diagnostics.test.ts
 __tests__/unit/round5-audit-fixes.test.ts
 __tests__/unit/row-share-and-rotating-accounting.test.ts
+__tests__/unit/rsi-reversion-neutral-zone.test.ts
 __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
 __tests__/unit/runtime-concurrency-profile.test.ts
