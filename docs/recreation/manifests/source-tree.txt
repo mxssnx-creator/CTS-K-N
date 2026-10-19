@@ -1321,6 +1321,8 @@ docs/reports/20261007-sim24h-12s/SHA256SUMS
 docs/reports/20261007-sim24h-12s/report.html
 docs/reports/20261008-long-horizon/README.md
 docs/reports/20261008-long-horizon/summary.json
+docs/reports/20261019-verify-validated-funnel-45min/README.md
+docs/reports/20261019-verify-validated-funnel-45min/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json

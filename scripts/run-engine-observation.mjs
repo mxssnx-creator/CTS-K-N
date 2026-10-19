@@ -337,6 +337,21 @@ async function collectSimulatedTrades(connectionId) {
   return rows
 }
 
+// The results book's own figures: executed, real, own positions only.
+function summarizeResultsBook(payload) {
+  const book = payload?.book || {}
+  return {
+    executed: book.executed ?? null,
+    open: book.open ?? null,
+    closed: book.closed ?? null,
+    settled: book.settled ?? null,
+    wins: book.wins ?? null,
+    losses: book.losses ?? null,
+    net: book.net ?? null,
+    profitFactor: book.profitFactor ?? null,
+  }
+}
+
 function summarizeTrades(rows) {
   const closed = rows.filter((row) => Number(row?.closedAt) > 0 && Number.isFinite(Number(row?.realizedPnl)))
   let grossProfit = 0, grossLoss = 0, wins = 0, losses = 0, net = 0, fees = 0
@@ -617,7 +632,10 @@ async function main() {
     realtimeObservedMs: bootstrapDoneAt ? Date.now() - bootstrapDoneAt : 0,
     rssStartMb: rssStart,
     rssEndMb: serverRssMb(),
-    trades: summarizeTrades(history),
+    // Simulated rows are the engine's paper fills. They are not results: the
+    // results book counts executed, real, own positions only, so both are shown.
+    simulatedTrades: summarizeTrades(history),
+    resultsBook: summarizeResultsBook(results.json),
     coverage: { errors: coverage?.errors ?? null, warnings: coverage?.warnings ?? null },
   }
   writeFileSync(path.join(outDir, "summary.json"), JSON.stringify(summary, null, 2))
