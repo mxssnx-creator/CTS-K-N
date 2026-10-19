@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
+import { getRedisClient } from "@/lib/redis-db"
+import { typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
 import { baseMeasuredHistoryRejection, getPosWindowBatch } from "@/lib/pos-history"
 import {
   SIGNAL_FORWARD_MAX_HOLD_MS,
+  SIGNAL_FORWARD_REPLAY_LAG_MS,
   SIGNAL_FORWARD_SUMMARY_MAX_SYMBOLS,
   advanceSignalForwardEntry,
   noteSignalForwardEntries,
@@ -41,14 +44,23 @@ describe("advanceSignalForwardEntry", () => {
     expect(gap?.grossPct).toBeCloseTo(-1, 9)
   })
 
-  it("keeps an undecided entry open, remembers where it stopped, and closes at the max hold", () => {
+  it("keeps an undecided entry open, trails its cursor by the replay lag, and closes at the max hold", () => {
     const open = advanceSignalForwardEntry(entry(), [bar(1, 100, 100.2, 99.9, 100.1), bar(2, 100.1, 100.3, 99.9, 100.2)])
     expect(open.close).toBeNull()
-    expect(open.entry.checkedUntilMs).toBe(T0 + 3 * M)
-    const holdBars = Array.from({ length: 260 }, (_, i) => bar(3 + i, 100, 100.2, 99.9, 100.05))
+    expect(open.covered).toBe(true)
+    expect(open.entry.checkedUntilMs).toBe(T0 + 3 * M - SIGNAL_FORWARD_REPLAY_LAG_MS)
+    // The next window starts at the cursor, so the already-checked minutes are re-read from it.
+    const holdBars = Array.from({ length: 262 }, (_, i) => bar(1 + i, 100, 100.2, 99.9, 100.05))
     const closed = advanceSignalForwardEntry(open.entry, holdBars).close
     expect(closed?.reason).toBe("max_hold")
     expect(closed!.exitTime - closed!.entryTime).toBeGreaterThanOrEqual(SIGNAL_FORWARD_MAX_HOLD_MS)
+  })
+
+  it("reports an uncovered window and moves nothing when the bars do not reach the first minute to check", () => {
+    const result = advanceSignalForwardEntry(entry(), [bar(5, 100, 100.2, 99.9, 100.1), bar(6, 100, 100.2, 99.9, 100.1)])
+    expect(result.covered).toBe(false)
+    expect(result.close).toBeNull()
+    expect(result.entry.checkedUntilMs).toBe(0)
   })
 })
 
@@ -77,8 +89,38 @@ describe("note → resolve → Base gate", () => {
     const window = windows.get("signal|long")
     expect(window?.positionCostRatioCount).toBe(5)
     expect(baseMeasuredHistoryRejection(window, 5)).toBeNull()
-    // Resolved measurements are removed; new entries can be noted again.
-    expect(await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 98, positionCostPct: 0.1, indications: [signalRow("long", "a")] })).toBe(1)
+    // Resolved measurements are removed; a new provider snapshot can open a new one.
+    const nextSnapshot = { ...signalRow("long", "a"), metadata: { signal: { ...signalRow("long", "a").metadata.signal, generatedAt: T0 + M } } }
+    expect(await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 98, positionCostPct: 0.1, indications: [nextSnapshot] })).toBe(1)
+  })
+
+  it("does not re-open a stopped-out measurement from the snapshot that opened it", async () => {
+    const connectionId = `sigsnap-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000, indications: [signalRow("long", "a")] })
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: [bar(1, 100, 100.1, 98, 98.5)] })).toHaveLength(1)
+    // The same evaluation on the next ticks is one observation, not five more.
+    expect(await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 98.5, positionCostPct: 0.1, nowMs: T0 + 2 * M, indications: [signalRow("long", "a")] })).toBe(0)
+  })
+
+  it("grades a minute that one batch missed when a later batch returns it", async () => {
+    const connectionId = `siggap-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000, indications: [signalRow("long", "a")] })
+    // Minute 3 is missing from the first batch; the cursor trails it by the replay lag, so it is not skipped.
+    const first = [bar(1, 100, 100.2, 99.9, 100.1), bar(2, 100.1, 100.2, 99.9, 100.1), bar(4, 100.1, 100.2, 99.9, 100.1), bar(5, 100.1, 100.2, 99.9, 100.1)]
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: first })).toHaveLength(0)
+    const second = [bar(1, 100, 100.2, 99.9, 100.1), bar(2, 100.1, 100.2, 99.9, 100.1), bar(3, 100.1, 100.2, 98, 98.5), bar(4, 100.1, 100.2, 99.9, 100.1), bar(5, 100.1, 100.2, 99.9, 100.1)]
+    const closes = await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: second })
+    expect(closes).toHaveLength(1)
+    expect(closes[0].reason).toBe("stop_loss")
+  })
+
+  it("counts Signal closes in the realtime rolling counters the report reads", async () => {
+    const connectionId = `sigroll-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000, indications: [signalRow("long", "a")] })
+    await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: [bar(1, 100, 100.1, 98, 98.5)] })
+    const client = getRedisClient() as any
+    const rolling = await client.hgetall(typeMeasurementRollingKey(connectionId))
+    expect(rolling).toMatchObject({ closes: "1", "n:signal:long": "1", "l:signal:long": "1" })
   })
 
   it("is wired into realtime Signal processing and the measurement heartbeat", () => {
@@ -86,6 +128,43 @@ describe("note → resolve → Base gate", () => {
     const measurement = readFileSync(path.join(process.cwd(), "lib/trade-engine/type-measurement.ts"), "utf8")
     expect(processor).toContain("noteSignalForwardEntries({")
     expect(measurement).toContain("await resolveSignalForwardMeasurements({")
+  })
+})
+
+describe("resolve: exactly-once booking and expiry", () => {
+  const signalRow = (direction: "long" | "short", sourceId: string) => ({
+    type: "signal",
+    direction,
+    metadata: { signal: { stopLossPct: 0.8, takeProfitPct: 1.2, rewardRisk: 1.5, sourceIds: [sourceId], sourceId, agreement: 0.7, confidence: 0.7, generatedAt: T0 } },
+  })
+
+  it("books a close once, even when two passes resolve the same bars", async () => {
+    const connectionId = `sigonce-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000, indications: [signalRow("long", "a")] })
+    const stop = [bar(1, 100, 100.1, 98, 98.5)]
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: stop })).toHaveLength(1)
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: stop })).toHaveLength(0)
+    const windows = await getPosWindowBatch(connectionId, "BTCUSDT", [{ indicationType: "signal", direction: "long" }], 25)
+    expect(windows.get("signal|long")?.positionCostRatioCount).toBe(1)
+  })
+
+  it("expires an entry unbooked once bars past its cap never reached its first minute", async () => {
+    const connectionId = `sigexp-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000, indications: [signalRow("long", "a")] })
+    // Bars start long after the entry: nothing can be graded honestly, so nothing is booked.
+    const late = [bar(400, 100, 100.1, 99.9, 100), bar(401, 100, 100.1, 99.9, 100)]
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: late })).toHaveLength(0)
+    expect((await readSignalForwardSummary(connectionId, ["BTCUSDT"])).open).toBe(0)
+    const windows = await getPosWindowBatch(connectionId, "BTCUSDT", [{ indicationType: "signal", direction: "long" }], 25)
+    expect(windows.get("signal|long")?.positionCostRatioCount ?? 0).toBe(0)
+  })
+
+  it("keeps an entry whose window does not yet reach its first minute, for a later pass", async () => {
+    const connectionId = `sigkeep-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({ connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000, indications: [signalRow("long", "a")] })
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: [bar(3, 100, 100.1, 99.9, 100)] })).toHaveLength(0)
+    expect((await readSignalForwardSummary(connectionId, ["BTCUSDT"])).open).toBe(1)
+    expect(await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: [bar(1, 100, 100.1, 98, 98.5)] })).toHaveLength(1)
   })
 })
 

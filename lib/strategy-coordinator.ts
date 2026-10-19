@@ -6159,6 +6159,14 @@ export class StrategyCoordinator {
         .filter((setKey) => activeKeys.has(setKey)).length
       // The Base funnel of this pass: processing/running over Base-valid
       // Sets only (lib/stage-funnel-contract.ts).
+      // Validated Base PF/drawdown: means over the Sets that passed the gate.
+      const baseValidSets = baseSets.filter((set) => baseValidSetKeys.has(set.setKey))
+      const baseValidatedPf = baseValidSets.length > 0
+        ? baseValidSets.reduce((sum, set) => sum + (Number(set.avgProfitFactor) || 0), 0) / baseValidSets.length
+        : 0
+      const baseValidatedDdt = baseValidSets.length > 0
+        ? baseValidSets.reduce((sum, set) => sum + (Number(set.avgDrawdownTime) || 0), 0) / baseValidSets.length
+        : 0
       const baseFunnel = baseStageFunnel({
         emitted: baseSets.length,
         awaitingHistory: baseAwaitingHistory,
@@ -6252,6 +6260,13 @@ export class StrategyCoordinator {
           pass_rate:   String(basePassRatio.toFixed(4)),
           row_valid:   String(baseValidCount),
           row_valid_open: String(baseValidOpen),
+          // Validated Base PF and drawdown: the mean over Base-VALID Sets only
+          // (the blended, measured PF the gate judged). The emitted pool's PF
+          // (createBaseSets) is unfiltered and is never shown as the stage's PF.
+          avg_profit_factor:        String(baseValidatedPf.toFixed(4)),
+          avg_profit_factor_source: "validated_base",
+          avg_drawdown_time:        String(Math.round(baseValidatedDdt)),
+          validated_sets:           String(baseValidCount),
           // Processing = Base-valid (high-PF, measured) Sets only.
           sets_progressing:         String(baseFunnel.processing),
           sets_running_now:         String(baseFunnel.running),
@@ -6261,6 +6276,11 @@ export class StrategyCoordinator {
           [`s:${symbol}:passed`]: String(baseValidCount),
           [`s:${symbol}:row_valid`]: String(baseValidCount),
           [`s:${symbol}:row_valid_open`]: String(baseValidOpen),
+          // Per-symbol validated PF/drawdown/count: the stats route weights the
+          // Base stage by these, never by the emitted pool.
+          [`s:${symbol}:vcount`]: String(baseValidCount),
+          [`s:${symbol}:vapf`]:   String(baseValidatedPf.toFixed(4)),
+          [`s:${symbol}:vaddt`]:  String(Math.round(baseValidatedDdt)),
           [`s:${symbol}:progressing`]: String(baseFunnel.processing),
           [`s:${symbol}:running`]:     String(baseFunnel.running),
           [`s:${symbol}:awaiting_history`]: String(baseFunnel.awaitingHistory),

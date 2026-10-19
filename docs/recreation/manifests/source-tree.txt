@@ -1857,6 +1857,7 @@ lib/trade-engine/state-machine.ts
 lib/trade-engine/strategy-processor.ts
 lib/trade-engine/symbol-selection-ownership.ts
 lib/trade-engine/trade-engine.tsx
+lib/trade-engine/type-measurement-rolling.ts
 lib/trade-engine/type-measurement.ts
 lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
