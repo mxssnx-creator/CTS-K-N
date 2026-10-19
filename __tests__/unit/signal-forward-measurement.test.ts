@@ -3,8 +3,10 @@ import path from "node:path"
 import { baseMeasuredHistoryRejection, getPosWindowBatch } from "@/lib/pos-history"
 import {
   SIGNAL_FORWARD_MAX_HOLD_MS,
+  SIGNAL_FORWARD_SUMMARY_MAX_SYMBOLS,
   advanceSignalForwardEntry,
   noteSignalForwardEntries,
+  readSignalForwardSummary,
   resolveSignalForwardMeasurements,
   type SignalForwardEntry,
 } from "@/lib/trade-engine/signal-forward-measurement"
@@ -84,5 +86,49 @@ describe("note → resolve → Base gate", () => {
     const measurement = readFileSync(path.join(process.cwd(), "lib/trade-engine/type-measurement.ts"), "utf8")
     expect(processor).toContain("noteSignalForwardEntries({")
     expect(measurement).toContain("await resolveSignalForwardMeasurements({")
+  })
+})
+
+describe("readSignalForwardSummary (stats endpoint)", () => {
+  const signalRow = (direction: "long" | "short", sourceId: string) => ({
+    type: "signal",
+    direction,
+    metadata: { signal: { stopLossPct: 0.8, takeProfitPct: 1.2, rewardRisk: 1.5, sourceIds: [sourceId], sourceId, agreement: 0.7, confidence: 0.7, generatedAt: T0 } },
+  })
+
+  it("reports open entries and measured closes per symbol and direction, without writing", async () => {
+    const connectionId = `sigsum-${Date.now()}-${Math.random()}`
+    await noteSignalForwardEntries({
+      connectionId, symbol: "BTCUSDT", price: 100, positionCostPct: 0.1, nowMs: T0 + 5_000,
+      indications: [signalRow("long", "a"), signalRow("long", "b"), signalRow("short", "a")],
+    })
+    await noteSignalForwardEntries({
+      connectionId, symbol: "ETHUSDT", price: 50, positionCostPct: 0.1, nowMs: T0 + 5_000,
+      indications: [signalRow("long", "a")],
+    })
+    // Only the BTC long entries close: their stop (99.2) is touched, while the
+    // short's stop (100.8) and target (98.8) are not.
+    await resolveSignalForwardMeasurements({ connectionId, symbol: "BTCUSDT", bars: [bar(1, 100, 100.1, 99.0, 99.5)] })
+    const summary = await readSignalForwardSummary(connectionId, ["BTCUSDT", "ETHUSDT", "BTCUSDT"])
+    expect(summary.symbols).toBe(2)
+    expect(summary.bySymbol.BTCUSDT).toEqual({ open: 1, closedLong: 2, closedShort: 0 })
+    expect(summary.bySymbol.ETHUSDT).toEqual({ open: 1, closedLong: 0, closedShort: 0 })
+    expect(summary.open).toBe(2)
+    expect(summary.closedLong).toBe(2)
+    expect(summary.closedShort).toBe(0)
+    // Read-only: a second read returns the same numbers.
+    expect(await readSignalForwardSummary(connectionId, ["BTCUSDT", "ETHUSDT"])).toEqual(summary)
+  })
+
+  it("bounds the number of symbols read per call", async () => {
+    const many = Array.from({ length: SIGNAL_FORWARD_SUMMARY_MAX_SYMBOLS + 10 }, (_, i) => `SYM${i}USDT`)
+    const summary = await readSignalForwardSummary(`sigbound-${Date.now()}-${Math.random()}`, many)
+    expect(summary.symbols).toBe(SIGNAL_FORWARD_SUMMARY_MAX_SYMBOLS)
+  })
+
+  it("is wired into the progression stats payload next to the type measurement", () => {
+    const route = readFileSync(path.join(process.cwd(), "app/api/connections/progression/[id]/stats/route.ts"), "utf8")
+    expect(route).toContain("signalForward:          signalForwardSummary,")
+    expect(route).toContain("readSignalForwardSummary(\n      connectionId,\n      runtimeSymbolResolution.symbols,")
   })
 })

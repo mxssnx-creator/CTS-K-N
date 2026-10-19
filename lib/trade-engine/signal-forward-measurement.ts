@@ -22,7 +22,7 @@
  * Base gate reads for Signal Sets.
  */
 import { getRedisClient } from "@/lib/redis-db"
-import { recordPosClosedBatch } from "@/lib/pos-history"
+import { posRingKey, recordPosClosedBatch } from "@/lib/pos-history"
 import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { normalizeSignalRisk } from "@/lib/signal-indication"
 
@@ -206,4 +206,55 @@ export async function resolveSignalForwardMeasurements(input: {
   }
   await pipeline.exec()
   return closes
+}
+
+export interface SignalForwardSymbolSummary {
+  /** Realtime Signal entries still waiting for their exit (not yet closes). */
+  open: number
+  /** Measured Signal closes the Base gate reads, per direction (ring length, capped by the ring). */
+  closedLong: number
+  closedShort: number
+}
+
+export interface SignalForwardSummary {
+  symbols: number
+  open: number
+  closedLong: number
+  closedShort: number
+  bySymbol: Record<string, SignalForwardSymbolSummary>
+}
+
+/** Symbols read per summary call; a bound on Redis round-trips for the stats endpoint. */
+export const SIGNAL_FORWARD_SUMMARY_MAX_SYMBOLS = 64
+
+/**
+ * Read-only status of Signal forward measurement for the stats endpoint:
+ * how many realtime Signal entries are being graded and how many measured
+ * Signal closes the Base gate already has per direction. Never writes.
+ */
+export async function readSignalForwardSummary(connectionId: string, symbols: readonly string[]): Promise<SignalForwardSummary> {
+  const client = getRedisClient() as any
+  const list = [...new Set(symbols.map((s) => String(s || "").trim()).filter(Boolean))]
+    .slice(0, SIGNAL_FORWARD_SUMMARY_MAX_SYMBOLS)
+  const bySymbol: Record<string, SignalForwardSymbolSummary> = {}
+  for (const symbol of list) {
+    const [open, long, short] = await Promise.all([
+      client.hlen(signalForwardPendingKey(connectionId, symbol)).catch(() => 0),
+      client.llen(posRingKey(connectionId, symbol, "signal", "long")).catch(() => 0),
+      client.llen(posRingKey(connectionId, symbol, "signal", "short")).catch(() => 0),
+    ])
+    bySymbol[symbol] = {
+      open: Math.max(0, Number(open) || 0),
+      closedLong: Math.max(0, Number(long) || 0),
+      closedShort: Math.max(0, Number(short) || 0),
+    }
+  }
+  const values = Object.values(bySymbol)
+  return {
+    symbols: list.length,
+    open: values.reduce((sum, row) => sum + row.open, 0),
+    closedLong: values.reduce((sum, row) => sum + row.closedLong, 0),
+    closedShort: values.reduce((sum, row) => sum + row.closedShort, 0),
+    bySymbol,
+  }
 }

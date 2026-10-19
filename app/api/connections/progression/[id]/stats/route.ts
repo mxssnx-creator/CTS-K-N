@@ -38,6 +38,7 @@ import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { summarizeOutcomeSource } from "@/lib/outcome-source-summary"
 import { parseRollingTypeMeasurement, parseTypeMeasurement, typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
+import { readSignalForwardSummary } from "@/lib/trade-engine/signal-forward-measurement"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
@@ -1453,6 +1454,10 @@ export async function GET(
       ? operatorSymbols
       : resolveCanonicalSymbols(connection, es, ep, activeProgression, prehistoricHash)
     const symbolsFromArray = runtimeSymbolResolution.count
+    const signalForwardSummary = await readSignalForwardSummary(
+      connectionId,
+      runtimeSymbolResolution.symbols,
+    ).catch(() => null)
     const quickstartSymbols = normalizeSymbolList((es as any).quickstart_symbols)
     const quickstartCount = n((es as any).quickstart_symbol_count)
     const activeSelectionEpoch = String((es as any).symbol_selection_epoch || (es as any).quickstart_symbol_generation || "")
@@ -4592,6 +4597,10 @@ export async function GET(
         // What each indication type's Sets would have done over the range;
         // these closes seeded the Base gate's per-type buckets.
         typeMeasurement:        parseTypeMeasurement(prehistoricHash),
+        // Signal has no historic replay: realtime entries are graded on real
+        // bars (signal-forward-measurement.ts). Open = still being graded;
+        // closed = measured closes the Base gate reads, per direction.
+        signalForward:          signalForwardSummary,
         typeMeasurementRolling: rollingTypeMeasurement,
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
         configWork: {
