@@ -356,18 +356,21 @@ function logicalStrategyIndicationSubtype(indication: any): string {
 }
 
 /**
- * Which tuples Base evaluates (audit SET-01, operator decision 2026-10-19).
+ * Which tuples Base evaluates (audit SET-01).
  *
- * `all` (default): every configured tuple that qualified reaches Base, so each
- * configuration is its own Set and is measured, as lib/trade-engine/advanced-config
- * requires ("batching must never change which configurations exist").
- * `representatives`: the earlier lane collapse, kept for comparison and for
- * measuring the cost of the full coverage.
+ * `representatives` (default): the lane collapse, one row per type × direction ×
+ * subtype lane, as before. Measured on 2026-10-19 (70 symbols, 10 min each):
+ * pass p50 8.2 s and strategy phase 11.4 s median, against pass p50 27.1 s and
+ * strategy phase 43.8 s median with every tuple, about 3.3× the cost.
+ * `all`: every configured tuple that qualified reaches Base, so each
+ * configuration is its own Set (advanced-config requires that batching never
+ * changes which configurations exist). Opt in with STRATEGY_TUPLE_COVERAGE=all
+ * until the pass-time budget allows it.
  */
 export type StrategyTupleCoverage = "all" | "representatives"
 
 export function resolveStrategyTupleCoverage(raw: unknown = process.env.STRATEGY_TUPLE_COVERAGE): StrategyTupleCoverage {
-  return String(raw || "").trim().toLowerCase() === "representatives" ? "representatives" : "all"
+  return String(raw || "").trim().toLowerCase() === "all" ? "all" : "representatives"
 }
 
 /** The indications Base evaluates for one pass, with the counts that must reconcile. */

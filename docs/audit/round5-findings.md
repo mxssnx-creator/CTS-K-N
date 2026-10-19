@@ -72,7 +72,7 @@ Status: **fixed** (commit), **changed** (behaviour changed this round, measured 
 
 | ID | Sev | Location | Finding | Status |
 |---|---|---|---|---|
-| SET-01 | high | `lib/trade-engine/indication-processor-fixed.ts:369` | Realtime Base receives one representative per type x direction x subtype lane, not every configured tuple | changed: default evaluates every configured tuple (STRATEGY_TUPLE_COVERAGE); A/B measurement in the round 5 report |
+| SET-01 | high | `lib/trade-engine/indication-processor-fixed.ts:369` | Realtime Base receives one representative per type x direction x subtype lane, not every configured tuple | measured: all tuples is opt-in (STRATEGY_TUPLE_COVERAGE=all); default stays representatives because all tuples costs about 3.3x per pass (docs/stress/ab-tuples-*.md) |
 | SET-02 | medium | `lib/trade-engine/shared-ind-strat-pipeline.ts:211` | Counters count the full list while Base receives representatives, so counts do not reconcile | partly: configured and passed-to-Base counts recorded per pass (IndicationProcessor.lastBaseCoverage), not yet persisted to the stats route |
 | SET-03 | medium | `lib/indication-sets-processor.ts:3115` | Common evaluated tuples are not reconciled to emitted Sets; excluded categories are not counted | partly: same record as SET-02 |
 | SET-04 | medium | `lib/trade-engine/indication-processor-fixed.ts:1386` | Silent cycle-level and fallback population switches change the Base input without a count | partly: population switches still silent; the recorded Base input shows the change |

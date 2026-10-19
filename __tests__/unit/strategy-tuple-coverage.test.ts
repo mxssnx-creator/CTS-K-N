@@ -1,7 +1,7 @@
 /**
- * Audit SET-01/02/03 (operator decision 2026-10-19): Base evaluates every
- * configured tuple by default. The representative collapse stays available and
- * its counts must reconcile: configured − passed to Base = collapsed.
+ * Audit SET-01/02/03: the representative collapse is the default; all tuples
+ * is opt-in (STRATEGY_TUPLE_COVERAGE=all). Both modes must reconcile:
+ * configured − passed to Base = collapsed.
  */
 import {
   resolveStrategyTupleCoverage,
@@ -28,10 +28,10 @@ describe("Base tuple coverage", () => {
   ]
   const fallback = [row("signal", 1, "long", 1.6)]
 
-  test("the default coverage is all", () => {
-    expect(resolveStrategyTupleCoverage(undefined)).toBe("all")
-    expect(resolveStrategyTupleCoverage("")).toBe("all")
-    expect(resolveStrategyTupleCoverage("representatives")).toBe("representatives")
+  test("the default coverage is representatives; all is opt-in (measured cost)", () => {
+    expect(resolveStrategyTupleCoverage(undefined)).toBe("representatives")
+    expect(resolveStrategyTupleCoverage("")).toBe("representatives")
+    expect(resolveStrategyTupleCoverage("all")).toBe("all")
   })
 
   test("all: every configured tuple and fallback row reaches Base, nothing collapses", () => {

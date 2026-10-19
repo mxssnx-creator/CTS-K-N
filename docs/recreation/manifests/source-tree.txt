@@ -1336,6 +1336,10 @@ docs/reports/20261007-sim24h-12s/report.html
 docs/reports/20261008-long-horizon/README.md
 docs/reports/20261008-long-horizon/summary.json
 docs/signal-source-research.md
+docs/stress/ab-tuples-all.json
+docs/stress/ab-tuples-all.md
+docs/stress/ab-tuples-representatives.json
+docs/stress/ab-tuples-representatives.md
 docs/stress/last-6h-simulation.md
 docs/stress/offline-70-after.json
 docs/stress/offline-70-after.md
