@@ -42,6 +42,15 @@
 
 Keine Produktionsreife behauptet.
 
+## Übergabe — 2026-10-19 (aktueller Stand; ersetzt die Einträge vom 2026-10-07)
+
+- **Revision.** `main` ist `85afc16` (PR #559 am 2026-10-14 gemergt; PR #560 Common-Indikatoren darüber). Der Branch `claude/zen-fermat-gswxt7` wurde auf `main` fast-forwarded und enthält `6bb8b21` (Signal-Forward-Messung in den Progression-Stats als `signalForward`). Noch kein neuer PR: der GitHub-Connector war in dieser Sitzung nicht verbunden; der Draft-PR für `6bb8b21` muss geöffnet werden, sobald er verfügbar ist.
+- **Gates auf `6bb8b21`.** Vollständiges Jest: 3.588 bestanden / 0 fehlgeschlagen (die Integrationstests brauchen ein lokales Redis auf 127.0.0.1:6399; keine Secrets verwendet). Lint sauber auf den geänderten Dateien. Manifeste neu erzeugt. Produktions-Build `.next-prod` erfolgreich.
+- **Verifikationslauf läuft.** 24 h Prehistoric auf 12 Symbolen, danach 4 h Echtzeit, Paper-Modus, öffentliche BingX-Daten, keine Orders. Ausgabeverzeichnis `obs-verify3` im Scratchpad der Sitzung. Start 2026-10-19 00:25 UTC, Ende voraussichtlich gegen 04:30 UTC. Auswerten: Signal-Buckets füllen sich (`signalForward.closedLong/closedShort`), Base-Wartezustand sinkt, Signal-Sets werden bewertet, Processing = validierte Sets, keine Funnel- oder Coverage-Fehler.
+- **X02-Prod-VST-Lebenszyklustest: blockiert, nicht ausgeführt.** Der Container hat nur die allgemeinen `BINGX_API_KEY`/`BINGX_API_SECRET`; `BINGX_X02_*` fehlen. Der orchestrierte Verifier verlangt zusätzlich die exakte Operator-Bestätigung `I authorize X02 BingX Prod-VST virtual minimum-volume lifecycle orders` und die App im Wartungsmodus mit inaktiven Handelsdiensten. Beides wurde in der Sitzung nicht gegeben; daher wurde keine Order platziert. Der nächste Schritt braucht die ausdrückliche Freigabe des Operators und die Entscheidung zur Credential-Zuordnung.
+- **Review.** Ein dreispuriges adversariales Review der Signal-Forward-Messung wurde gestartet (Korrektheit, Nebenläufigkeit und Zustand, Handelssicherheit). Bestätigte Befunde werden in Folge-Commits mit Tests behoben und hier aufgeführt.
+- **Sicherheit unverändert.** X01 und Bybit nur lesend; keine Mainnet-Orders; kein Produktions-Deployment; keine Produktionsreife behauptet. Das Deployment des gemergten `main` bleibt ein eigener, ausdrücklich freizugebender Schritt.
+
 ## Fortsetzungsstand — 2026-10-07 ~23:00 UTC (Claude Cloud-Sitzung, Branch `claude/zen-fermat-gswxt7`, Draft-PR #559)
 
 **Arbeitsort:** Cloud-Container `/home/user/CTS-K-N` (nicht die kanonische `/workspace/CTS-K-N`); alle Änderungen über GitHub-Branch `claude/zen-fermat-gswxt7` (PR #559, Draft). Checkpoints nur via `scripts/create-checkpoint.sh` unter `/var/backups/cts-kn` (Container-lokal). **Nicht deployed, nicht gemergt.** Kein Exchange-Write in dieser Sitzung (Paper auf öffentlichen BingX-Daten; X02-VST-Lauf noch offen).

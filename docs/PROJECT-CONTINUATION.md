@@ -34,6 +34,15 @@
 
 No production-readiness claim.
 
+## Handoff — 2026-10-19 (current state; supersedes the 2026-10-07 entries below)
+
+- **Revision.** `main` is `85afc16` (PR #559 merged 2026-10-14; PR #560 Common indicators merged on top). Branch `claude/zen-fermat-gswxt7` was fast-forwarded to `main` and carries `6bb8b21` (Signal forward measurement visible in the progression stats, `signalForward`). No new PR yet: the GitHub connector failed to connect in this session, so the draft PR for `6bb8b21` must be opened once it is available.
+- **Gates on `6bb8b21`.** Full Jest 3,588 passed / 0 failed (needs a local Redis on 127.0.0.1:6399 for the integration suites; no secrets used). Lint clean on the changed files. Manifests regenerated. Production build `.next-prod` succeeded.
+- **Verification run in progress.** 24 h prehistoric on 12 symbols, then 4 h realtime, paper mode, public BingX data, no orders. Output directory `obs-verify3` under the session scratchpad. It started 00:25 UTC on 2026-10-19 and should finish around 04:30 UTC. Read it for: Signal buckets filling (`signalForward.closedLong/closedShort`), Base awaiting history falling, Signal Sets judged, processing equal to validated Sets, and no funnel or coverage errors.
+- **X02 Prod-VST lifecycle test: blocked, not run.** The container has only the generic `BINGX_API_KEY`/`BINGX_API_SECRET`; `BINGX_X02_*` are absent. The orchestrated verifier also needs the exact operator confirmation `I authorize X02 BingX Prod-VST virtual minimum-volume lifecycle orders` and the app in maintenance with trading services inactive. Neither was given in the session, so no order was placed. Next step needs the operator's explicit authorization and the credential mapping decision.
+- **Review.** A three-lens adversarial review of the Signal forward measurement was started (correctness, concurrency and state, trading safety). Confirmed findings, if any, are fixed and tested in follow-up commits and listed here.
+- **Safety unchanged.** X01 and Bybit read-only; no mainnet orders; no production deployment; no production-readiness claim. Deployment of the merged `main` remains a separate explicitly authorised step.
+
 ## Continuation — 2026-10-07 ~23:00 UTC (Claude cloud session, branch `claude/zen-fermat-gswxt7`, draft PR #559)
 
 **Where:** cloud container checkout `/home/user/CTS-K-N`. The published state is the GitHub branch `claude/zen-fermat-gswxt7`; it is not merged and not deployed. No exchange writes happened (paper on public BingX data). Checkpoints were created with `scripts/create-checkpoint.sh` (container-local `/var/backups/cts-kn`).
