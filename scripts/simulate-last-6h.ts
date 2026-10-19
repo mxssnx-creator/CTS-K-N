@@ -335,7 +335,8 @@ async function main() {
     barCounts,
     funnel: {
       preCalc: { candidates: preCandidates, admittedNotBooked: preAdmitted },
-      trading: { candidates: tradeCandidates.length, measuredReady: gated.measuredReady, admitted: booked.length },
+      trading: { candidates: tradeCandidates.length, admitted: booked.length },
+      measuredReadyWholeStream: gated.measuredReady,
       notModelled: ["main", "real", "live"],
     },
     hours,
