@@ -4,7 +4,7 @@
  * One definition, used by BOTH the live outcome model and the Historic Test
  * replay, because they were using different ones: the replay charged
  * `positionCostPercent` (0.10%) while the live outcome model charged
- * `takerFee * 2 + slippage` (0.26%). PositionCost is a SIZING setting — the
+ * `takerFee * 2 + slippage` (0.15 %). PositionCost is a SIZING setting — the
  * share of the book one position may hold — and borrowing it as a cost
  * understated every simulated trade by 0.16 percentage points, which is 1.6
  * PositionCosts and therefore 0.16 on the ProfitFactor coordinate.

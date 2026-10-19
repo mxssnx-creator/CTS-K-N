@@ -17,7 +17,7 @@
  * faded.
  *
  * Costs: the engine's own round trip (lib/trading-round-trip-cost.ts,
- * 0.26 % = taker 0.10 % per side + 0.06 % slippage) as BASE, ×1.25 as STRESS,
+ * 0.15 % = taker 0.05 % per side + 0.05 % slippage) as BASE, ×1.25 as STRESS,
  * and the BingX VIP-0 schedule (0.05 % taker + 0.03 % slippage per leg) as
  * VENUE for reference. Maker legs pay 0.02 % (0.03 % under stress).
  *
@@ -314,7 +314,7 @@ function select(outDir: string) {
   const selected = candidates.slice(0, SELECT_TOP).map((r) => ({ config: r.config, group: r.group }))
   writeFileSync(path.join(outDir, "dev-rows.json"), JSON.stringify({ symbols: dev.symbols, signals: dev.signals, rows: dev.rows }))
   writeFileSync(path.join(outDir, "selection.json"), JSON.stringify({
-    rule: `development only: ≥ ${MIN_TRADES} trades; PF > 1 at base (0.26 % round trip) and stress (×1.25); PF > 1 at base in both halves; top ${SELECT_TOP} by stress PF`,
+    rule: `development only: ≥ ${MIN_TRADES} trades; PF > 1 at base (0.15 % round trip) and stress (×1.25); PF > 1 at base in both halves; top ${SELECT_TOP} by stress PF`,
     candidates: candidates.length, selected,
   }, null, 2))
   const best = [...dev.rows].filter((r) => r.trades >= MIN_TRADES).sort((a, b) => (b.pf.base ?? 0) - (a.pf.base ?? 0)).slice(0, 10)

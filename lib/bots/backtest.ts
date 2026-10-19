@@ -6,7 +6,7 @@
  * reads the network, the clock or Redis.
  *
  * Cost: every closed position pays the platform's single round-trip cost
- * (lib/trading-round-trip-cost.ts, 0.26 %). With a 0.4 % take profit that
+ * (lib/trading-round-trip-cost.ts, 0.15 %). With a 0.4 % take profit that
  * leaves 0.14 % net per win, so signal quality — not trade count — decides
  * whether a bot is profitable. The filters below exist for that reason.
  */
@@ -217,7 +217,9 @@ export interface BotBacktestOptions {
  * profit fill as MAKER; stops, trails and time exits are market orders and pay
  * TAKER plus slippage. Market-entry bots pay taker on entry as well.
  */
-export const BOT_FEES = { makerPct: 0.02, takerPct: 0.05, slippagePct: 0.03 } as const
+// Per leg. A taker round trip is 2 × (0.05 + 0.025) = 0.15 %, the systemwide
+// round trip (lib/trading-round-trip-cost.cjs). Operator decision 2026-10-19.
+export const BOT_FEES = { makerPct: 0.02, takerPct: 0.05, slippagePct: 0.025 } as const
 export function roundTripCostFor(limitEntry: boolean, reason: "tp" | "sl" | "trail" | "time"): number {
   const entry = limitEntry ? BOT_FEES.makerPct : BOT_FEES.takerPct + BOT_FEES.slippagePct
   const exit = reason === "tp" ? BOT_FEES.makerPct : BOT_FEES.takerPct + BOT_FEES.slippagePct

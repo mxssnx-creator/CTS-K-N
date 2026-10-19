@@ -14,14 +14,18 @@
 import { getAppSettings, getRedisClient } from "@/lib/redis-db"
 import { posRingKey, recordPosClosedBatch } from "@/lib/pos-history"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
+import {
+  readSignalForwardEarliestCursor,
+  resolveSignalForwardMeasurements,
+} from "./signal-forward-measurement"
 import { isForcedSimulation } from "@/lib/real-trade-gates"
 import { setActiveProtectionFloors } from "@/lib/protection-floors"
 import { normalizePositionCostPercent } from "@/lib/position-cost"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
-import { movePctToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
 import { loadRangeMinuteBars } from "@/lib/market-data-loader"
 import { typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
+import { addRollingTypeCloses } from "./type-measurement-rolling"
 import {
   normalizeOpenPosition,
   replayDirectIndicationTypes,
@@ -186,20 +190,7 @@ export async function advanceTypeMeasurement(input: AdvanceTypeMeasurementInput)
     }
     const nextState: TypeMeasurementState = { v: 1, lastBarMs: result.lastBarMs, open: result.open, updatedAt: Date.now() }
     pipeline.set(stateKey, JSON.stringify(nextState), { EX: STATE_TTL_SECONDS })
-    if (input.rolling && result.closes.length > 0) {
-      const rollingKey = typeMeasurementRollingKey(input.connectionId)
-      pipeline.hincrby(rollingKey, "closes", result.closes.length)
-      pipeline.hset(rollingKey, { last_at: String(Date.now()), last_symbol: input.symbol })
-      for (const close of result.closes) {
-        const bucket = `${close.type}:${close.direction}`
-        pipeline.hincrby(rollingKey, `n:${bucket}`, 1)
-        if (close.netPct > 0) pipeline.hincrby(rollingKey, `w:${bucket}`, 1)
-        else if (close.netPct < 0) pipeline.hincrby(rollingKey, `l:${bucket}`, 1)
-        pipeline.hincrbyfloat(rollingKey, `net:${bucket}`, close.netPct)
-        pipeline.hincrbyfloat(rollingKey, `ratio:${bucket}`, movePctToMainTradePfRatio(close.netPct, close.positionCostPct))
-      }
-      pipeline.expire(rollingKey, STATE_TTL_SECONDS)
-    }
+    if (input.rolling) addRollingTypeCloses(pipeline, input.connectionId, input.symbol, result.closes, STATE_TTL_SECONDS)
     await pipeline.exec()
     return { result, resumed }
   } finally {
@@ -221,14 +212,26 @@ export async function refreshTypeMeasurement(
 ): Promise<AdvanceTypeMeasurementResult | null> {
   const client = getRedisClient() as any
   const state = parseTypeMeasurementState(await client.get(typeMeasurementStateKey(connectionId, symbol)).catch(() => null))
-  if (!state) return null
   const completedUntilMs = Math.floor(nowMs / MINUTE_MS) * MINUTE_MS
+  if (!state) {
+    // No measurement state (a symbol added after the bootstrap, or a lapsed
+    // state key): its Signal rows are still graded on the real bars.
+    await refreshSignalForwardOnly(connectionId, symbol, completedUntilMs, nowMs)
+    return null
+  }
   if (completedUntilMs - (state.lastBarMs + MINUTE_MS) < TYPE_MEASUREMENT_REFRESH_MS) return null
   const context = await loadTypeMeasurementContext(connectionId)
   if (!context) return null
+  // The window must reach back to the earliest pending Signal cursor as well
+  // as the measurement's own history, or a late minute is never graded.
+  const earliestSignal = await readSignalForwardEarliestCursor(connectionId, symbol).catch(() => null)
+  const windowStartMs = Math.min(
+    state.lastBarMs - (ENGINE_STAGE_HISTORY_MINUTES - 1) * MINUTE_MS,
+    earliestSignal ?? Number.POSITIVE_INFINITY,
+  )
   const bars = await loadRangeMinuteBars(symbol, {
     connectionId,
-    startMs: state.lastBarMs - (ENGINE_STAGE_HISTORY_MINUTES - 1) * MINUTE_MS,
+    startMs: windowStartMs,
     endMs: completedUntilMs,
     nowMs,
   })
@@ -244,13 +247,33 @@ export async function refreshTypeMeasurement(
   })
   // Signal has no historic replay: its realtime entries are graded on the
   // same completed bars (see signal-forward-measurement.ts).
-  const { resolveSignalForwardMeasurements } = await import("./signal-forward-measurement")
   await resolveSignalForwardMeasurements({
     connectionId,
     symbol,
     bars: bars.filter((bar: any) => Number(bar?.timestamp) + MINUTE_MS <= completedUntilMs),
   }).catch(() => [])
   return advanced
+}
+
+/**
+ * Grade pending Signal rows of a symbol that has no measurement state. Runs at
+ * most once per TYPE_MEASUREMENT_REFRESH_MS, the same cadence a measured
+ * symbol gets, so the heartbeat does not reload bars on every beat.
+ */
+async function refreshSignalForwardOnly(connectionId: string, symbol: string, completedUntilMs: number, nowMs: number): Promise<void> {
+  const client = getRedisClient() as any
+  const claim = await client
+    .set(`signal_forward_refresh:${connectionId}:${symbol}`, String(nowMs), { NX: true, PX: TYPE_MEASUREMENT_REFRESH_MS })
+    .catch(() => null)
+  if (claim !== "OK" && claim !== true) return
+  const earliest = await readSignalForwardEarliestCursor(connectionId, symbol).catch(() => null)
+  if (earliest === null || earliest >= completedUntilMs) return
+  const bars = await loadRangeMinuteBars(symbol, { connectionId, startMs: earliest, endMs: completedUntilMs, nowMs })
+  await resolveSignalForwardMeasurements({
+    connectionId,
+    symbol,
+    bars: bars.filter((bar: any) => Number(bar?.timestamp) + MINUTE_MS <= completedUntilMs),
+  }).catch(() => [])
 }
 
 

@@ -34,6 +34,29 @@
 
 No production-readiness claim.
 
+## Handoff — 2026-10-19 (current state; supersedes the 2026-10-07 entries below)
+
+- **Canonical checkout.** `/workspace/CTS-K-N` does not exist in this container (AGENTS.md names it as the canonical checkout). The working checkout is `/home/user/CTS-K-N` (branch `claude/zen-fermat-gswxt7`, pushed to GitHub). No replacement was created at `/workspace`; recovery from the verified bundles under `/var/backups/cts-kn` (last one 2026-10-07 23:20) is an operator decision, because those bundles predate this work.
+- **Revision.** `main` is `85afc16` (PR #559 merged 2026-10-14; PR #560 Common indicators merged on top). The changes of this session sit on `claude/zen-fermat-gswxt7` above `36dccb1`. No PR was open for them: the GitHub connector failed to connect (`plugin:github:github`, 400 bad authorization header), so the draft PR and its merge are pending.
+- **Changed in this session (each with tests):**
+  - **Round-trip cost 0.15 % systemwide** (`lib/trading-round-trip-cost.*`: 2 × 0.05 % taker + 0.05 % slippage; backtest `BOT_FEES` 0.05 taker + 0.025 slippage per leg). Live labels in scripts and the stage-funnel doc updated; dated report strings kept as they were.
+  - **Base PF is the validated Sets' PF.** `createMainSets` writes `avg_profit_factor` over Base-valid Sets only (`avg_profit_factor_source: validated_base`), with per-symbol `s:{sym}:vcount/vapf/vaddt`. The stats route's Base stage (`strategyDetail.base.avgProfitFactor`, `avgDrawdownTime`) and `performanceTiers.base` are weighted by `vcount`. Before this, a 1.76 PF showed on 843 emitted Sets with 0 passed.
+  - **Signal forward measurement hardened** (`lib/trade-engine/signal-forward-measurement.ts`):
+    - a bar must reach back to the row's first minute, else the row waits (`covered`);
+    - the 4 h cap settles at the cap, not on the first bar after it;
+    - the cursor trails by 120 min, so a minute missing from one batch is graded by a later one;
+    - a per-symbol lock and exactly-once booking (`hdel` = 1);
+    - a failed read never overwrites an open row;
+    - one provider snapshot (`generatedAt`) opens at most one measurement (`signal_forward_observed:*`);
+    - Signal closes also go into the realtime rolling counters (`lib/trade-engine/type-measurement-rolling.ts`, shared with the type measurement);
+    - a symbol without measurement state is still graded, throttled to the refresh interval.
+  - **Known residual:** booking is at most once. The row is deleted before its close is booked, so a booking that fails after the delete loses that close (logged). Changing this to at-least-once would double-count on a crash, so it is documented rather than changed.
+- **Gates on the working tree.** Full Jest 535 suites / 3,595 tests passed, 0 failed (needs the local Redis on 127.0.0.1:6399 for the integration suites; no secrets used). `tsc` clean. ESLint clean on the changed files. Recreation manifests regenerated and verified (2,105 files). Production build `.next-prod`: see the build log in the session scratchpad (status recorded below).
+- **Verification run stopped, not complete.** `obs-verify3` (24 h prehistoric × 12 symbols on `bingx-x01`, paper, public BingX data, no orders) finished the prehistoric phase (12/12 symbols, 1,036,738 candles, 0 failed tasks) and then received SIGTERM at 00:34 UTC, 10 minutes into its 4 h realtime phase. Its last snapshot, taken before the Base PF fix above, showed Base 843 emitted / 0 passed with stage PF 1.76; that is the unfiltered PF the fix replaces. Its output is kept in the session scratchpad (`obs-verify3`). A new run is needed to show the validated numbers.
+- **X02 Prod-VST lifecycle test: blocked, not run.** The container has only the generic `BINGX_API_KEY`/`BINGX_API_SECRET`. `scripts/bingx-x02-vst-baseline.ts` requires `BINGX_X02_API_KEY`/`BINGX_X02_API_SECRET` and refuses any non-VST host. The generic key's owner is not established, and AGENTS.md keeps mainnet read-only, so it was not mapped onto X02. The orchestrated verifier also needs the exact operator confirmation `I authorize X02 BingX Prod-VST virtual minimum-volume lifecycle orders` and the app in maintenance with trading services inactive. Neither was given in the session, so no order was placed.
+- **Review.** The three-lens review of the Signal measurement (`wf_029990cb-f05`) reported the defects listed above; the verdicts are recorded in the session journal. Its final verification step did not finish before the session was compacted. The audit workflow (`wf_3af7a93b-a18`) was cut off before reporting, so its PF-surface audit is not complete; the Base PF surfaces above are the ones it targeted.
+- **Safety unchanged.** X01 and Bybit read-only; no mainnet orders; no production deployment; no production-readiness claim. The measured edge is still not positive after the 0.15 % round trip in the development data (gross PF about 0.93–1.01 per type and direction). Deployment of the merged `main` remains a separate explicitly authorised step.
+
 ## Continuation — 2026-10-07 ~23:00 UTC (Claude cloud session, branch `claude/zen-fermat-gswxt7`, draft PR #559)
 
 **Where:** cloud container checkout `/home/user/CTS-K-N`. The published state is the GitHub branch `claude/zen-fermat-gswxt7`; it is not merged and not deployed. No exchange writes happened (paper on public BingX data). Checkpoints were created with `scripts/create-checkpoint.sh` (container-local `/var/backups/cts-kn`).

@@ -38,6 +38,7 @@ import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { summarizeOutcomeSource } from "@/lib/outcome-source-summary"
 import { parseRollingTypeMeasurement, parseTypeMeasurement, typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
+import { readSignalForwardSummary } from "@/lib/trade-engine/signal-forward-measurement"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
@@ -1453,6 +1454,10 @@ export async function GET(
       ? operatorSymbols
       : resolveCanonicalSymbols(connection, es, ep, activeProgression, prehistoricHash)
     const symbolsFromArray = runtimeSymbolResolution.count
+    const signalForwardSummary = await readSignalForwardSummary(
+      connectionId,
+      runtimeSymbolResolution.symbols,
+    ).catch(() => null)
     const quickstartSymbols = normalizeSymbolList((es as any).quickstart_symbols)
     const quickstartCount = n((es as any).quickstart_symbol_count)
     const activeSelectionEpoch = String((es as any).symbol_selection_epoch || (es as any).quickstart_symbol_generation || "")
@@ -3118,7 +3123,7 @@ export async function GET(
         let symCreated = 0, symEntries = 0, symRunning = 0, symProgressing = 0
         let symEvaluated = 0
         let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
-        let weightSum = 0, freshSymbols = 0
+        let weightSum = 0, pfWeightSum = 0, freshSymbols = 0
         const staleFields = collectPrunableStageRowFields(dh, {
           activeSymbols: activeStatsSymbolFilter,
           now: nowMs,
@@ -3143,10 +3148,16 @@ export async function GET(
           // drag the mean toward 0.
           if (c > 0) {
             weightSum  += c
-            weightedPF  += (Number(dh[`s:${symbol}:apf`])  || 0) * c
-            weightedDDT += (Number(dh[`s:${symbol}:addt`]) || 0) * c
             weightedPPS += (Number(dh[`s:${symbol}:apps`]) || 0) * c
             weightedPER += (Number(dh[`s:${symbol}:aper`]) || 0) * c
+          }
+          // Base's PF and drawdown are the validated Sets' only, weighted by
+          // how many passed the gate. Emitted Sets that failed never enter them.
+          const pfWeight = stage === "base" ? Number(dh[`s:${symbol}:vcount`] || 0) || 0 : c
+          if (pfWeight > 0) {
+            pfWeightSum += pfWeight
+            weightedPF  += (Number(dh[`s:${symbol}:${stage === "base" ? "vapf" : "apf"}`]) || 0) * pfWeight
+            weightedDDT += (Number(dh[`s:${symbol}:${stage === "base" ? "vaddt" : "addt"}`]) || 0) * pfWeight
           }
         }
         if (staleFields.length > 0) staleFieldsByKey.set(detailKey, staleFields)
@@ -3163,8 +3174,8 @@ export async function GET(
         const avgPosPerSet      = useCross && weightSum > 0
           ? weightedPPS / weightSum
           : 0
-        const avgProfitFactor   = useCross && weightSum > 0
-          ? weightedPF / weightSum
+        const avgProfitFactor   = useCross && pfWeightSum > 0
+          ? weightedPF / pfWeightSum
           : 0
         const avgProcessingMs   = useCross
           ? parseFloat(dh.avg_processing_ms || progHash[`strategy_${stage}_avg_processing_ms`] || "0")
@@ -3176,8 +3187,8 @@ export async function GET(
         // Count of positions that contributed to avgPosEvalReal (only meaningful for Real stage)
         const countPosEval      = useCross ? symEvaluated : 0
         // Drawdown time (avg minutes from strategy sets)
-        const avgDrawdownTime   = useCross && weightSum > 0
-          ? weightedDDT / weightSum
+        const avgDrawdownTime   = useCross && pfWeightSum > 0
+          ? weightedDDT / pfWeightSum
           : 0
 
         // Eval percentage per stage:
@@ -3811,7 +3822,7 @@ export async function GET(
       const FRESH_MS = stageRowSnapshotFreshMs
       const nowMs = Date.now()
       const coverage = summarizeStageRowCoverage(dh)
-      let symCreated = 0, symEntries = 0, symRunning = 0
+      let symCreated = 0, symEntries = 0, symRunning = 0, symValidated = 0
       let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
       let weightSum = 0, totalRunning = 0
       const detail: Array<{ symbol: string; created: number; entries: number; running: number; avgProfitFactor: number; avgDrawdownTime: number; avgPosPerSet: number; avgPosEval: number; fresh: boolean }> = []
@@ -3824,8 +3835,13 @@ export async function GET(
         const sCreated     = Number(dh[`s:${symbol}:created`]    || 0) || 0
         const sEntries     = Number(dh[`s:${symbol}:entries`]     || 0) || 0
         const sRunning     = Number(dh[`s:${symbol}:running`]     || 0) || 0
-        const sApf         = nf(dh[`s:${symbol}:apf`], 3)
-        const sAddt        = nf(dh[`s:${symbol}:addt`], 1)
+        // Base is judged on its validated Sets only: PF, drawdown and the
+        // weight come from the Base-valid fields the Main stage publishes.
+        // Emitted Sets are reported separately as created. Other stages are
+        // already post-gate, so their own fields apply.
+        const sValidCount  = stageLabel === "base" ? Number(dh[`s:${symbol}:vcount`] || 0) || 0 : sCreated
+        const sApf         = stageLabel === "base" ? nf(dh[`s:${symbol}:vapf`], 3) : nf(dh[`s:${symbol}:apf`], 3)
+        const sAddt        = stageLabel === "base" ? nf(dh[`s:${symbol}:vaddt`], 1) : nf(dh[`s:${symbol}:addt`], 1)
         const sApps         = nf(dh[`s:${symbol}:apps`], 2)
         const sAper        = nf(dh[`s:${symbol}:aper`], 4)
         detail.push({ symbol, created: sCreated, entries: sEntries, running: sRunning, avgProfitFactor: sApf, avgDrawdownTime: sAddt, avgPosPerSet: sApps, avgPosEval: sAper, fresh })
@@ -3833,13 +3849,14 @@ export async function GET(
         symCreated  += sCreated
         symEntries  += sEntries
         symRunning  += sRunning
+        symValidated += sValidCount
         totalRunning += sRunning
-        if (sCreated > 0) {
-          weightSum   += sCreated
-          weightedPF  += sApf  * sCreated
-          weightedDDT += sAddt * sCreated
-          weightedPPS += sApps  * sCreated
-          weightedPER += sAper * sCreated
+        if (sValidCount > 0) {
+          weightSum   += sValidCount
+          weightedPF  += sApf  * sValidCount
+          weightedDDT += sAddt * sValidCount
+          weightedPPS += sApps  * sValidCount
+          weightedPER += sAper * sValidCount
         }
       }
       detail.sort((a, b) => b.created - a.created)
@@ -3850,6 +3867,9 @@ export async function GET(
           coverage,
           symbolCount:       coverage.covered,
           totalCreated:      symCreated,
+          // Base: Sets that passed the Base gate (what PF, drawdown and the
+          // processing counts are computed over). Other stages: all of theirs.
+          validatedCount:    symValidated,
           totalEntries:      symEntries,
           totalRunning:      totalRunning,
           avgProfitFactor:   weightSum > 0 ? Math.round((weightedPF  / weightSum) * 1000) / 1000 : 0,
@@ -4592,6 +4612,10 @@ export async function GET(
         // What each indication type's Sets would have done over the range;
         // these closes seeded the Base gate's per-type buckets.
         typeMeasurement:        parseTypeMeasurement(prehistoricHash),
+        // Signal has no historic replay: realtime entries are graded on real
+        // bars (signal-forward-measurement.ts). Open = still being graded;
+        // closed = measured closes the Base gate reads, per direction.
+        signalForward:          signalForwardSummary,
         typeMeasurementRolling: rollingTypeMeasurement,
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
         configWork: {
