@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo } from "react"
+import { trailingStartTpShare } from "@/lib/trailing-activation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -195,7 +196,7 @@ export default function MultiTrailingSettings({
                             start = {start.toFixed(1)}
                           </span>
                           <span className="text-xs text-muted-foreground">
-                            ({fmtRatio(start)} gain triggers trailing)
+                            (arms at {fmtRatio(trailingStartTpShare(start))} of the take-profit distance)
                           </span>
                         </div>
                         <Badge

@@ -23,6 +23,10 @@
 import blockVolume from "@/lib/block-volume-ratio.cjs"
 import type { DcaBacktestCandle, DcaBacktestTrade } from "@/lib/dca-backtest"
 import type { HistoricTestTrade } from "@/lib/historic-test-scoring"
+import {
+  simulateGeneralTrailingExit,
+  TRAILING_ACTIVATION_TP_SHARE,
+} from "@/lib/trailing-activation"
 
 export interface FamilyReplayOptions {
   /** Round-trip cost in percent; results are expressed in these units. */
@@ -34,6 +38,10 @@ export interface FamilyReplayOptions {
    * round trip (0.26 %).
    */
   roundTripCostPercent?: number
+  /** Take-profit in percent of entry; the general trailing exit checks it first (audit TRAIL-07). */
+  takeProfitPct?: number
+  /** Configured trailing start band (0.3 … 1.5 keys); activation is its share of the TP distance. */
+  trailingStartRatio?: number
   /** Trailing retrace from the best price, in percent of entry. */
   trailingRetracePct?: number
   /** Stop loss in percent of entry, shared with the entry stream. */
@@ -71,55 +79,49 @@ export function replayNormal(
 }
 
 /**
- * Same entries, trailing-stop exit.
- *
- * The stop follows the best price reached since entry and the trade closes when
- * price retraces by `trailingRetracePct`. A candle that would hit both the
- * trailing stop and a new extreme is resolved pessimistically — the stop wins —
- * because intra-candle order is unknown and an optimistic reading would inflate
- * every trailing result.
+ * Same entries, general trailing exit: the same rule the live engine runs
+ * (lib/trailing-activation.ts). Trailing arms once the favourable gain reaches
+ * the configured start band's share of the take-profit distance, the stop
+ * ratchets on each favourable step, and take-profit and the static stop are
+ * checked first. A candle that would hit both a stop and a new extreme is
+ * resolved with the stop, as before.
  */
 export function replayTrailing(
   candles: readonly DcaBacktestCandle[],
   trades: readonly DcaBacktestTrade[],
   options: FamilyReplayOptions,
 ): HistoricTestTrade[] {
-  const retrace = Number(options.trailingRetracePct) > 0 ? Number(options.trailingRetracePct) : 0.4
+  // Trailing distance: the configured retrace, in percent of price (fraction in the engine).
+  const distance = Number(options.trailingRetracePct) > 0 ? Number(options.trailingRetracePct) / 100 : 0.004
   const stopLossPct = Number(options.stopLossPct) > 0 ? Number(options.stopLossPct) : 2.5
+  // Same default take-profit the candle simulator uses when none is configured (5 × PositionCost).
+  const takeProfitPct = Number(options.takeProfitPct) > 0 ? Number(options.takeProfitPct) : options.positionCostPercent * 5
+  const startRatio = Number(options.trailingStartRatio) > 0 ? Number(options.trailingStartRatio) : 0.3
+  const cost = Number(options.roundTripCostPercent) > 0 ? Number(options.roundTripCostPercent) : options.positionCostPercent
   const out: HistoricTestTrade[] = []
 
   for (const trade of trades) {
-    const startIndex = candles.findIndex((candle) => candle.time >= trade.entryTime)
+    // Walk only the bars after the entry decision: the entry bar printed before the fill.
+    const startIndex = candles.findIndex((candle) => candle.time > trade.entryTime)
     if (startIndex < 0) continue
     const entry = Number(trade.initialEntryPrice) > 0 ? Number(trade.initialEntryPrice) : candles[startIndex].open
     if (!(entry > 0)) continue
     const long = trade.direction === "long"
-    let best = entry
-    let exitTime = candles[candles.length - 1].time
-    let exitPrice = candles[candles.length - 1].close
-
-    for (let i = startIndex; i < candles.length; i++) {
-      const candle = candles[i]
-      const hardStop = long ? entry * (1 - stopLossPct / 100) : entry * (1 + stopLossPct / 100)
-      if (long ? candle.low <= hardStop : candle.high >= hardStop) {
-        exitTime = candle.time
-        exitPrice = hardStop
-        break
-      }
-      const trailStop = long ? best * (1 - retrace / 100) : best * (1 + retrace / 100)
-      // Pessimistic: the retrace is honoured before the new extreme.
-      if (long ? candle.low <= trailStop : candle.high >= trailStop) {
-        exitTime = candle.time
-        exitPrice = trailStop
-        break
-      }
-      best = long ? Math.max(best, candle.high) : Math.min(best, candle.low)
-    }
-
+    const exit = simulateGeneralTrailingExit({
+      direction: long ? "long" : "short",
+      entryPrice: entry,
+      bars: candles.slice(startIndex),
+      takeProfitPct,
+      stopLossPct,
+      startRatio,
+      stopRatio: distance,
+      activationMode: TRAILING_ACTIVATION_TP_SHARE,
+    })
+    const exitTime = exit ? exit.time : candles[candles.length - 1].time
+    const exitPrice = exit ? exit.price : candles[candles.length - 1].close
     const grossPct = long
       ? ((exitPrice - entry) / entry) * 100
       : ((entry - exitPrice) / entry) * 100
-    const cost = Number(options.roundTripCostPercent) > 0 ? Number(options.roundTripCostPercent) : options.positionCostPercent
     out.push(asTrade(trade.entryTime, exitTime, grossPct - cost, options.positionCostPercent))
   }
   return out

@@ -5,6 +5,10 @@
  */
 
 import { getRedisClient, getAppSettings, createPosition as redisCreatePosition } from "@/lib/redis-db"
+import {
+  TRAILING_ACTIVATION_ABSOLUTE,
+  TRAILING_ACTIVATION_TP_SHARE,
+} from "@/lib/trailing-activation"
 import { VolumeCalculator } from "@/lib/volume-calculator"
 import { resolveStopLossPercent } from "@/lib/tp-sl-ratio"
 import { emitPositionUpdate } from "@/lib/broadcast-helpers"
@@ -666,6 +670,11 @@ export class PseudoPositionManager {
               return String(stepRatio)
             })()
           : "0",
+        // Activation rule (audit TRAIL-01): general multi-step trailing arms on a
+        // share of the take-profit distance. Signal-dynamic keeps its own rule.
+        trailing_activation_mode: hasTrailingProfile && !signalDynamicTrailing
+          ? TRAILING_ACTIVATION_TP_SHARE
+          : TRAILING_ACTIVATION_ABSOLUTE,
         trailing_mode: hasTrailingProfile
           ? String(trailingProfile!.mode || "fixed")
           : "",

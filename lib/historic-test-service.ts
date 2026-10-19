@@ -181,6 +181,7 @@ export async function maybeRunHistoricTest(
     // setting (default 8), and reading it here made the trailing family retrace
     // 8 % (audit TRAIL-06).
     trailingRetracePct: numOrUndefined((raw as any)?.trailingRetracePct),
+    trailingStartRatio: numOrUndefined((raw as any)?.trailingStartRatio),
     tpslPairs: tpslPairs.length > 0 ? tpslPairs : undefined,
     block: {
       volumeRatio: numOrUndefined((raw as any)?.blockVolumeRatio),

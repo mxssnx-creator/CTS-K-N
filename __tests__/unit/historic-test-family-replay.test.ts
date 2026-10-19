@@ -30,7 +30,9 @@ describe("per-family replay shares one entry stream", () => {
       { time: 2_000, open: 100, high: 110, low: 100, close: 110, volume: 1 },
       { time: 3_000, open: 110, high: 120, low: 104, close: 106, volume: 1 },
     ]
-    const out = replayTrailing(candles, [entryTrade(5)], { ...opts, trailingRetracePct: 4, stopLossPct: 20 })
+    // Take-profit 30 % with the 0.3 band (share 0.3 = 9 %): trailing arms at 110 on the
+    // second candle, before the ambiguous third candle, and the TP (130) is not reached.
+    const out = replayTrailing(candles, [entryTrade(5)], { ...opts, trailingRetracePct: 4, stopLossPct: 20, takeProfitPct: 30, trailingStartRatio: 0.3 })
     expect(out).toHaveLength(1)
     // Best 110, trail 4% -> 105.6; the candle low 104 triggers it.
     expect(out[0].signedResultR).toBeCloseTo(((105.6 - 100) / 100 * 100 - 0.1) / 0.1, 6)

@@ -435,6 +435,7 @@ __tests__/unit/real-stage-accounting.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/realtime-cycle-phase-timing.test.ts
 __tests__/unit/realtime-rotation-progress.test.ts
+__tests__/unit/realtime-trailing-activation.test.ts
 __tests__/unit/realtime-trailing-update.test.ts
 __tests__/unit/reconcile-respects-slot-entry.test.ts
 __tests__/unit/redis-connection-identity.test.ts
@@ -583,6 +584,7 @@ __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
 __tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
+__tests__/unit/trailing-activation.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trailing-family-replay-wiring.test.ts
 __tests__/unit/transient-halt-short-ttl.test.ts
@@ -1885,6 +1887,7 @@ lib/trading-pair-keys.ts
 lib/trading-round-trip-cost.cjs
 lib/trading-round-trip-cost.ts
 lib/trading.ts
+lib/trailing-activation.ts
 lib/trailing-settings.ts
 lib/trend-indication.ts
 lib/types-auto-optimal.ts
