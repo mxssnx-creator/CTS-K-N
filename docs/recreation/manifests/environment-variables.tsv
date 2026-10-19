@@ -84,7 +84,7 @@ CRON_SYMBOL_LIMIT	application-runtime	no	no	1	app/api/cron/generate-indications/
 CTS_ACCEPT_LEGACY_ORDER_PREFIX	application-runtime	no	no	3	__tests__/unit/foreign-order-ownership-matrix.test.ts,__tests__/unit/system-order-short-hash.test.ts,lib/system-order-ownership.ts
 CTS_BACKUP_RETENTION_COUNT	test-or-operator-tool	no	yes	1	.env.example
 CTS_BACKUP_ROOT	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
-CTS_BASE_REQUIRE_MEASURED_HISTORY	application-runtime	no	no	2	__tests__/unit/validate-only-measured-sets.test.ts,lib/strategy-coordinator.ts
+CTS_BASE_REQUIRE_MEASURED_HISTORY	application-runtime	no	no	3	__tests__/unit/validate-only-measured-sets.test.ts,lib/strategy-coordinator.ts,scripts/simulate-last-6h.ts
 CTS_BASELINE_CANDLES	test-or-operator-tool	no	no	3	scripts/baseline/fetch-candles-1m.mjs,scripts/baseline/simulate-12h-hourly.ts,scripts/baseline/simulate-24h-portfolio.ts
 CTS_BINGX_RATE_LIMIT_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPM	test-or-operator-tool	no	yes	1	.env.example
@@ -511,6 +511,8 @@ SIGNAL_OBSERVATION_INTERVAL_MS	test-or-operator-tool	no	no	1	scripts/verify-prod
 SIGNAL_PROBE_CONCURRENCY	test-or-operator-tool	no	no	1	scripts/verify-signal-sources.ts
 SIGNAL_PROBE_SYMBOL	test-or-operator-tool	no	no	1	scripts/verify-signal-sources.ts
 SIGNAL_PROBE_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-signal-sources.ts
+SIM_OUT_DIR	test-or-operator-tool	no	no	1	scripts/simulate-last-6h.ts
+SIM_SYMBOLS	test-or-operator-tool	no	no	1	scripts/simulate-last-6h.ts
 SOAK_ADMIN_SECRET	test-or-operator-tool	yes	no	1	scripts/verify-prod-soak.mjs
 SOAK_API_P95_LIMIT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs
 SOAK_BOOTSTRAP_READY_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/verify-prod-soak.mjs

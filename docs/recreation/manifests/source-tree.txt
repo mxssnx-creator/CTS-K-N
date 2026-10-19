@@ -1330,11 +1330,14 @@ docs/reports/20261007-sim24h-12s/report.html
 docs/reports/20261008-long-horizon/README.md
 docs/reports/20261008-long-horizon/summary.json
 docs/signal-source-research.md
+docs/stress/last-6h-simulation.md
 docs/stress/offline-70-after.json
 docs/stress/offline-70-after.md
 docs/stress/offline-70-baseline.json
 docs/stress/offline-70-baseline.md
 docs/stress/offline-70-compare.md
+docs/stress/offline-70-verify.json
+docs/stress/offline-70-verify.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json
 docs/verification/redis-memory-recovery-20260905.md
@@ -2055,6 +2058,7 @@ scripts/service-control.sh
 scripts/setup-github-cli.sh
 scripts/short-range-capture.ts
 scripts/short-range-research.ts
+scripts/simulate-last-6h.ts
 scripts/simulate-signal-source-ranking.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs
