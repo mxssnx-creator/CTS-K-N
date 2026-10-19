@@ -187,11 +187,25 @@ const EMPTY_WINDOW: PosWindowStats = {
 export function baseMeasuredHistoryRejection(
   prevPos: Partial<Pick<PosWindowStats, "positionCostRatioCount">> | null | undefined,
   minCount: number,
+  window?: number,
 ): string | null {
+  const required = effectiveHistoryMinCount(minCount, window)
   const measuredCount = Number(prevPos?.positionCostRatioCount ?? 0)
-  return measuredCount < minCount
-    ? `base_awaiting_measured_history: ${measuredCount} < ${minCount}`
+  return measuredCount < required
+    ? `base_awaiting_measured_history: ${measuredCount} < ${required}`
     : null
+}
+
+/**
+ * The measured-closes count a Set can reach is capped by the window it is read
+ * from, so a minimum above the window could never be met and rejected every
+ * Set forever (audit F-01). The effective minimum is therefore the smaller of
+ * the two; without a window the minimum is returned unchanged.
+ */
+export function effectiveHistoryMinCount(minCount: number, window?: number): number {
+  const min = Math.max(1, Math.floor(Number(minCount) || 1))
+  const cap = Number(window)
+  return Number.isFinite(cap) && cap >= 1 ? Math.min(min, Math.floor(cap)) : min
 }
 
 // ── Key builders ───────────────────────────────────────────────────────

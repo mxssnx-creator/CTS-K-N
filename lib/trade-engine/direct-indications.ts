@@ -124,6 +124,14 @@ export interface DirectIndicationInput {
   current: DirectIndicationCandle
   /** Timestamp the rows are anchored at (wall clock, or the replayed candle). */
   now: number
+  /**
+   * Auto reads completed bars only (live: the Common history's completed
+   * minutes). The last 90 completed one-minute closes; absent in replay, where
+   * pricesOldestFirst already ends with the completed decision bar.
+   */
+  autoPricesOldestFirst?: number[]
+  /** The newest completed one-minute bar (Auto's direction and PF); absent in replay. */
+  autoCurrent?: DirectIndicationCandle
 }
 
 export interface DirectIndicationResult {
@@ -186,6 +194,28 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
 
     // Profit factor proportional to confidence
     const primaryPF = 1.0 + primaryConf * 0.5
+
+    // Auto evaluates completed bars only, like its Common summaries: in live
+    // the newest completed minute and the completed closes before it, so a
+    // forming candle can neither trigger nor flip Auto within its minute. In
+    // replay (no auto* inputs) the decision bar is already complete.
+    const autoCurrent = input.autoCurrent ?? input.current
+    const autoDirectionEvaluation = input.autoCurrent
+      ? evaluateIndependentDirections([
+        autoCurrent.open > 0 ? ((autoCurrent.close - autoCurrent.open) / autoCurrent.open) * 100 : 0,
+      ])
+      : primaryDirectionEvaluation
+    const autoDir = autoDirectionEvaluation.selectedDirection
+    const autoPF = input.autoCurrent
+      ? (() => {
+        const autoRange = autoCurrent.high - autoCurrent.low
+        const autoBodyRatio = autoRange > 0 ? Math.min(0.99, Math.abs(autoCurrent.close - autoCurrent.open) / autoRange) : 0.5
+        return 1.0 + (0.5 + autoBodyRatio * 0.4) * 0.5
+      })()
+      : primaryPF
+    const autoCoordination = input.autoPricesOldestFirst
+      ? commonMultiRangeCoordinationFor(input.autoPricesOldestFirst, positionCostPct, indicationSettings)
+      : commonMultiRangeCoordination
 
     // ── Indication emission with differentiated semantics ────────────────
     //
@@ -322,10 +352,10 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
           window.agreement >= minimumAgreement,
         )
         const coordinated = windows.filter((window) =>
-          window.direction === commonMultiRangeCoordination.direction,
+          window.direction === autoCoordination.direction,
         )
         if (
-          !commonMultiRangeCoordination.passed ||
+          !autoCoordination.passed ||
           coordinated.length < Math.min(2, coordinatedTimeframes.length)
         ) {
           return null
@@ -336,8 +366,8 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
         ) / coordinated.length
         return {
           aligned: true,
-          direction: commonMultiRangeCoordination.direction,
-          strength: Math.min(0.98, 0.45 + averageStrength * 0.35 + commonMultiRangeCoordination.score * 0.2),
+          direction: autoCoordination.direction,
+          strength: Math.min(0.98, 0.45 + averageStrength * 0.35 + autoCoordination.score * 0.2),
           windows: coordinated,
         }
       } catch {
@@ -508,30 +538,33 @@ export function computeDirectIndications(input: DirectIndicationInput): DirectIn
         })
       }
 
-      // 5. Auto — step-based indicator alignment, primary direction only.
-      if (
-        indicationSettings.autoEnabled !== false &&
-        isPrimary &&
-        autoAlignment?.aligned &&
-        autoAlignment.direction === dir
-      ) {
-        indications.push({
-          type: "auto",
-          symbol,
-          value: currentClose,
-          profitFactor: Math.min(2.3, pf * (1 + autoAlignment.strength * 0.35)),
-          confidence: autoAlignment.strength,
-          timestamp: now,
-          metadata: {
-            direction: dir,
-            alignment: "common_multi_range",
-            primary: true,
-            windows: autoAlignment.windows,
-            commonMultiRangeCoordination,
-            directionEvaluation: primaryDirectionEvaluation,
-          },
-        })
-      }
+    }
+
+    // 5. Auto — step-based indicator alignment in the completed bar's
+    // direction (the primary direction in replay). Emitted right after the
+    // primary loop, i.e. at its former position (the loop has one entry).
+    if (
+      indicationSettings.autoEnabled !== false &&
+      autoDir &&
+      autoAlignment?.aligned &&
+      autoAlignment.direction === autoDir
+    ) {
+      indications.push({
+        type: "auto",
+        symbol,
+        value: currentClose,
+        profitFactor: Math.min(2.3, autoPF * (1 + autoAlignment.strength * 0.35)),
+        confidence: autoAlignment.strength,
+        timestamp: now,
+        metadata: {
+          direction: autoDir,
+          alignment: "common_multi_range",
+          primary: true,
+          windows: autoAlignment.windows,
+          commonMultiRangeCoordination: autoCoordination,
+          directionEvaluation: autoDirectionEvaluation,
+        },
+      })
     }
 
     // Independent Direction remains available above. This additional

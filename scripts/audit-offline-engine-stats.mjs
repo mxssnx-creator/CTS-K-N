@@ -15,7 +15,7 @@ export function statsRoutes(connectionId) {
   return [
     `/api/connections/progression/${id}/stats`,
     `/api/trading/trade-history?connection_id=${id}&limit=500`,
-    `/api/trading/live-positions?connection_id=${id}&closedLimit=500`,
+    `/api/trading/live-positions?connection_id=${id}&closedLimit=500&includeSimulated=1`,
     `/api/trading/stats?connection_id=${id}`,
     `/api/trading/engine-stats?connection_id=${id}`,
     `/api/positions/stats?connection_id=${id}`,
@@ -90,8 +90,23 @@ export async function sampleOnce({ baseUrl, redis, connectionId, serverPid }) {
     if (r.json) for (const p of findNonFinite(r.json)) nanPaths.push(`${r.path.split("?")[0]} ${p}`)
   }
   const { open, closed } = await ledgerIds(redis, connectionId)
+  // The paper rows are only listed with includeSimulated=1 (live-positions
+  // route); the runtime block of the progression stats carries the event-loop
+  // and memory telemetry of the server process.
+  const progression = results.find((r) => r.path.startsWith("/api/connections/progression/"))?.json || {}
+  const runtime = progression?.runtime || progression?.data?.runtime || null
+  const realtime = progression?.realtime || progression?.data?.realtime || {}
   return {
     at: new Date().toISOString(),
+    runtime: runtime ? {
+      heapUsedMB: runtime.memory?.heapUsedMB ?? null,
+      rssMB: runtime.memory?.rssMB ?? null,
+      eventLoop: runtime.eventLoop || null,
+      eventLoopLifetime: runtime.eventLoopLifetime || null,
+      pressureLevel: runtime.concurrency?.pressureLevel ?? null,
+    } : null,
+    avgCycleTimeMs: Number.isFinite(Number(realtime?.avgCycleTimeMs)) ? Number(realtime.avgCycleTimeMs) : null,
+    routeMs: Object.fromEntries(results.map((r) => [r.path.split("?")[0], r.ms])),
     rssMb: processTreeRssMb(serverPid),
     redisKeys: await redis.dbSize(),
     redisUsedMb: Math.round(Number((/used_memory:(\d+)/.exec(await redis.info("memory")) || [])[1] || 0) / 1048576),
@@ -121,7 +136,7 @@ export async function runAudit({ baseUrl, redis, connectionId, symbols }) {
   if (dupClosed) issues.push(`closed index has ${dupClosed} duplicate ids`)
   if (both.length) issues.push(`${both.length} ids present in both open and closed index: ${both.slice(0, 5)}`)
 
-  const lp = await getJson(baseUrl, `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=5000`)
+  const lp = await getJson(baseUrl, `/api/trading/live-positions?connection_id=${encodeURIComponent(connectionId)}&closedLimit=5000&includeSimulated=1`)
   const th = await getJson(baseUrl, `/api/trading/trade-history?connection_id=${encodeURIComponent(connectionId)}&limit=5000`)
   const prog = await getJson(baseUrl, `/api/connections/progression/${encodeURIComponent(connectionId)}/stats`)
   info.routes = { livePositions: lp.status, tradeHistory: th.status, progression: prog.status }
@@ -221,4 +236,106 @@ export async function runAudit({ baseUrl, redis, connectionId, symbols }) {
     if (r.json) for (const p of findNonFinite(r.json)) issues.push(`non-finite ${r.path.split("?")[0]} ${p}`)
   }
   return { issues, info }
+}
+
+/**
+ * Cross-route consistency (operator decision 2026-10-14): one value per
+ * statistic everywhere it is shown, counters and progress never going
+ * backwards within a run, percentages within 0–100, and the stats route's own
+ * invariants (dataIntegrity.violations) empty. `previous` is the result of
+ * the previous call (or null); returns { issues, snapshot }.
+ */
+export async function runConsistencyAudit({ baseUrl, connectionId, previous = null }) {
+  const id = encodeURIComponent(connectionId)
+  // The two routes are separate requests, so a counter that a pass increments
+  // between them shows up as a one-write difference. The engine route is read
+  // before and after the stats route; counters are monotonic, so the stats value
+  // must lie inside that bracket, and only a value outside it is a disagreement.
+  const engineBefore = await getJson(baseUrl, `/api/trading/engine-stats?connection_id=${id}`)
+  const stats = await getJson(baseUrl, `/api/connections/progression/${id}/stats`)
+  const engineAfter = await getJson(baseUrl, `/api/trading/engine-stats?connection_id=${id}`)
+  const configCounts = await getJson(baseUrl, `/api/indications/config-counts?connectionId=${id}`)
+  const engine = engineAfter
+  const issues = []
+  const s = stats.json || {}
+  if (stats.status !== 200) issues.push(`stats route HTTP ${stats.status}`)
+  const same = (label, values) => {
+    const present = values.filter(([, value]) => value !== undefined)
+    const distinct = [...new Set(present.map(([, value]) => JSON.stringify(value ?? null)))]
+    if (distinct.length > 1) issues.push(`${label} differs: ${present.map(([where, value]) => `${where}=${JSON.stringify(value ?? null)}`).join(", ")}`)
+  }
+  const exec = s.liveExecution || {}
+  const tier = s.performanceTiers?.live || {}
+  const detail = s.strategyDetail?.live || {}
+  const rt = s.realtime?.positions || {}
+  same("open positions", [
+    ["openPositions.live.open", s.openPositions?.live?.open],
+    ["liveExecution.openPositions", exec.openPositions],
+    ["performanceTiers.live.totalRunning", tier.totalRunning],
+    ["strategyDetail.live.openPositions", detail.openPositions],
+    ["realtime.positions.open", rt.open],
+    ["canonicalStats.openPositions", s.canonicalStats?.openPositions],
+  ])
+  same("win rate", [
+    ["liveExecution.winRate", exec.winRate],
+    ["performanceTiers.live.winRate", tier.winRate],
+    ["strategyDetail.live.winRate", detail.winRate],
+    ["realtime.positions.winRate.all", rt.winRate?.all],
+  ])
+  same("profit factor", [
+    ["liveExecution.profitFactor", exec.profitFactor],
+    ["performanceTiers.live.avgProfitFactor", tier.avgProfitFactor],
+    ["strategyDetail.live.avgProfitFactor", detail.avgProfitFactor],
+    ["realtime.positions.profitFactor.all", rt.profitFactor?.all],
+  ])
+  const pnl2 = (value) => (value === undefined || value === null ? value : Math.round(Number(value) * 100) / 100)
+  same("realized PnL", [
+    ["liveExecution.realizedPnl", pnl2(exec.realizedPnl)],
+    ["performanceTiers.live.totalPnl", pnl2(tier.totalPnl)],
+    ["strategyDetail.live.totalPnl", pnl2(detail.totalPnl)],
+  ])
+  const byType = s.indicationsByType || {}
+  const beforeByType = engineBefore.json?.indicationsByType || {}
+  const engineByType = engine.json?.indicationsByType || {}
+  for (const type of new Set([...Object.keys(byType), ...Object.keys(engineByType), ...Object.keys(beforeByType)])) {
+    const value = byType[type] || 0
+    const low = Math.min(beforeByType[type] || 0, engineByType[type] || 0)
+    const high = Math.max(beforeByType[type] || 0, engineByType[type] || 0)
+    if (value < low || value > high) {
+      issues.push(`indications ${type}: stats=${value} engine-stats=${low}..${high} (outside the window)`)
+    }
+  }
+  for (const [label, value] of [
+    ["metadata.progress", s.metadata?.progress],
+    ["realtime.successRate", s.realtime?.successRate],
+    ["cycleSuccessRate", s.cycleSuccessRate],
+    ["liveExecution.winRate", exec.winRate],
+    ["strategyDetail.live.passRatio", detail.passRatio],
+    ["strategyDetail.live.evalPct", detail.evalPct],
+    ["historic.progressPercent", s.historic?.progressPercent],
+  ]) {
+    if (value === null || value === undefined) continue
+    if (!Number.isFinite(Number(value)) || Number(value) < 0 || Number(value) > 100) issues.push(`${label}=${value} outside 0..100`)
+  }
+  for (const violation of s.dataIntegrity?.violations || []) issues.push(`dataIntegrity: ${violation}`)
+  for (const path of findNonFinite(s)) issues.push(`stats non-finite ${path}`)
+  const snapshot = {
+    progress: Number(s.metadata?.progress) || 0,
+    indicationCycles: Number(s.indicationCycleCount) || 0,
+    strategyCycles: Number(s.strategyCycleCount) || 0,
+    realtimeCycles: Number(s.realtime?.realtimeCycles ?? s.realtime?.cycleCounters?.realtime) || 0,
+    historicProcessed: Number(s.historic?.symbolsProcessed) || 0,
+    indicationsTotal: Number(s.totalIndicationsCount) || 0,
+    closed: Number(s.canonicalStats?.decidedTrades ?? 0) + Number(s.canonicalStats?.breakEven ?? 0),
+    epoch: s.metadata?.runtimeEvidence?.epoch ?? s.engineRun?.epoch ?? null,
+    engineRunning: s.metadata?.engineRunning === true,
+  }
+  if (previous && previous.engineRunning && snapshot.engineRunning) {
+    for (const key of ["progress", "indicationCycles", "strategyCycles", "historicProcessed", "indicationsTotal", "closed"]) {
+      if (snapshot[key] < previous[key]) issues.push(`${key} went backwards: ${previous[key]} -> ${snapshot[key]}`)
+    }
+  }
+  const common = configCounts.json?.counts?.common || configCounts.json?.common || null
+  if (common && Number(common.enabledCommonIndicators) > 129) issues.push(`enabledCommonIndicators ${common.enabledCommonIndicators} > 129 catalogue types`)
+  return { issues, snapshot }
 }

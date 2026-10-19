@@ -41,6 +41,8 @@ import { parseRollingTypeMeasurement, parseTypeMeasurement, typeMeasurementRolli
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { canonicalizeProgressionStats, clampPct, closedWindowStats, monotonic } from "@/lib/stats-canonical"
+import { stageFunnelViolationsFromStats } from "@/lib/stage-funnel-contract"
 import { selectLiveOrderMetricsSnapshot } from "@/lib/live-order-metrics-snapshot"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import {
@@ -1550,8 +1552,12 @@ export async function GET(
     const liveStrategyCycles   = n(progHash.strategy_live_cycle_count)
     const liveRealtimeCycles   = n(progHash.realtime_live_cycle_count)
 
-    const realtimeIndicationCycles = churnIndicationCycles
-    const realtimeStrategyCycles   = churnStrategyCycles
+    // Counters shown across polls never go backwards within a run: a source
+    // that resets, or the pick() chain falling through to a smaller source,
+    // used to make the dashboard jump down.
+    const statsRunToken = `${progHash.epoch || ""}:${progHash.started_at || es.started_at || ""}`
+    const realtimeIndicationCycles = monotonic(`${connectionId}:${engineType}:indCycles`, statsRunToken, churnIndicationCycles)
+    const realtimeStrategyCycles   = monotonic(`${connectionId}:${engineType}:stratCycles`, statsRunToken, churnStrategyCycles)
     // realtimeCycles = total realtime ticks (churn). This is now actually
     // populated because EngineManager.startRealtimeProcessor writes
     // `realtime_cycle_count` on every tick via hincrby (previously this key
@@ -1575,7 +1581,7 @@ export async function GET(
       ? Math.round(realtimeCycleTimeSum / realtimeCycleCount)
       : n(es.last_cycle_duration)
 
-    const successRate = parseFloat(progHash.cycle_success_rate || String(es.cycle_success_rate || "100"))
+    const successRate = clampPct(progHash.cycle_success_rate ?? es.cycle_success_rate ?? 100) ?? 100
 
     // Total indications/strategies evaluated — prefer progression hash
     const indicationsTotal = pick(
@@ -2302,6 +2308,7 @@ export async function GET(
     // `auto` is a synthetic legacy alias retained for back-compat with old runs.
     const indTypes = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
     const indCounts: Record<string, number> = {}
+    const indEvaluated: Record<string, number> = {}
     await Promise.all(
       indTypes.map(async (type) => {
         // Both standalone keys are independent — issue the two GETs
@@ -2311,10 +2318,15 @@ export async function GET(
         // per-type breakdown reads.
         const fromHash = n(progHash[`indications_${type}_count`])
         const [fromKey, fromEval] = await Promise.all([
-          client.get(`indications:${connectionId}:${type}:count`).catch(() => 0),
-          client.get(`indications:${connectionId}:${type}:evaluated`).catch(() => 0),
+          client.get(`indications:${connectionId}:${type}:count`).catch(() => null),
+          client.get(`indications:${connectionId}:${type}:evaluated`).catch(() => null),
         ])
-        indCounts[type] = Math.max(fromHash, n(fromKey), n(fromEval))
+        // One unit (created indications): the standalone counter, else the
+        // progression hash field — the same order engine-stats and
+        // indications-stats read. "Evaluated" is its own figure; the former
+        // max() mixed the two units and jumped when a source changed.
+        indCounts[type] = fromKey !== null && fromKey !== undefined ? n(fromKey) : fromHash
+        indEvaluated[type] = n(fromEval)
       })
     )
     const indTotal = Object.values(indCounts).reduce((s, v) => s + v, 0) || indicationsTotal
@@ -3463,14 +3475,15 @@ export async function GET(
     // Sourced entirely from local Redis — the progression hash (counters) and
     // the closed-position archive written by the live-stage pipeline. No
     // exchange history calls required.
-    let profitFactor = 0
-    let profitFactorLast12 = 0
-    let profitFactorLast25 = 0
-    let profitFactorLast75 = 0
-    let winRate = 0
-    let winRateLast12 = 0
-    let winRateLast25 = 0
-    let winRateLast75 = 0
+    // canonical basis (lib/stats-canonical.ts); null = no decided trade / infinite PF
+    let profitFactor: number | null = null
+    let profitFactorLast12: number | null = null
+    let profitFactorLast25: number | null = null
+    let profitFactorLast75: number | null = null
+    let winRate: number | null = null
+    let winRateLast12: number | null = null
+    let winRateLast25: number | null = null
+    let winRateLast75: number | null = null
     {
       const livePlaced    = n(progHash.live_orders_placed_count)
       const liveFilled    = n(progHash.live_orders_filled_count)
@@ -3494,15 +3507,22 @@ export async function GET(
       const avgHoldMin  = countSampled > 0 ? (closedEval.sumHoldMs / countSampled) / 60_000 : 0
       const avgPnl      = countSampled > 0 ? sumPnl / countSampled : 0
       const avgRoi      = lastXClosed.avgSignedR
-      profitFactor = lastXClosed.profitFactor
-      profitFactorLast12 = last12Closed.profitFactor
-      profitFactorLast25 = last25Closed.profitFactor
-      profitFactorLast75 = last75Closed.profitFactor
-      const passRate   = livePlaced > 0 ? liveFilled / livePlaced : 0
-      winRate    = lastXClosed.winRate
-      winRateLast12 = last12Closed.winRate
-      winRateLast25 = last25Closed.winRate
-      winRateLast75 = last75Closed.winRate
+      // Windows on the canonical basis (lib/stats-canonical.ts): venue-net
+      // USD, break-evens excluded. The R-multiple aggregation above stays
+      // for avgProfitFactorR / avgPosEvalReal.
+      const windowAll = closedWindowStats(sampledClosed)
+      const window12 = closedWindowStats(sampledClosed, 12)
+      const window25 = closedWindowStats(sampledClosed, 25)
+      const window75 = closedWindowStats(sampledClosed, 75)
+      profitFactor = windowAll.profitFactor.value
+      profitFactorLast12 = window12.profitFactor.value
+      profitFactorLast25 = window25.profitFactor.value
+      profitFactorLast75 = window75.profitFactor.value
+      const passRate   = livePlaced > 0 ? Math.min(1, liveFilled / livePlaced) : 0
+      winRate    = windowAll.winRate
+      winRateLast12 = window12.winRate
+      winRateLast25 = window25.winRate
+      winRateLast75 = window75.winRate
       const avgPosSize = countSampled > 0
         ? closedEval.sumVolumeUsd / countSampled
         : liveCreated > 0 ? liveVolumeUsd / liveCreated : 0
@@ -3549,7 +3569,8 @@ export async function GET(
         avgPosPerSet:        liveCreated > 0 ? 1 : 0,                  // one exchange position per Live Set
         avgPositionNotionalUsd: Math.round(avgPosSize * 100) / 100,
         createdSets:         liveCreated,                               // positions actually created on exchange
-        avgProfitFactor:     Math.round(profitFactor * 1000) / 1000,    // PF from realised PnL
+        avgProfitFactor:     profitFactor,                              // canonical venue-net PF (null: none / infinite)
+        avgProfitFactorR:    Math.round(lastXClosed.profitFactor * 1000) / 1000, // R-multiple PF (Set ranking)
         avgProcessingTimeMs: 0,                                         // not tracked for live — handled inline
         avgPosEvalReal:      Math.round(avgRoi * 10000) / 10000,        // avg ROI fraction
         countPosEval:        countSampled,
@@ -3570,7 +3591,7 @@ export async function GET(
         passed:    liveFilled,
         failed:    Math.max(0, livePlaced - liveFilled),
         // Live-exclusive fields for richer UI display:
-        winRate:        lastXClosed.winRate,
+        winRate:        windowAll.winRate,
         totalPnl:       Math.round(sumPnl * 100) / 100,
         avgPnl:         Math.round(avgPnl * 100) / 100,
         openPositions:  Math.max(0, liveCreated - liveClosed),
@@ -4228,7 +4249,7 @@ export async function GET(
       return "idle"
     })()
     const rawEngineProgress = pct(ep?.progress)
-    const progress = (() => {
+    const phaseProgress = (() => {
       if (engineIsStopped) return rawEngineProgress
       if (phase === "prehistoric_data") return pct(historicProgressPercent)
       if (phase === "live_trading") return 100
@@ -4238,6 +4259,12 @@ export async function GET(
       if (phase === "initializing") return Math.max(rawEngineProgress, 5)
       return rawEngineProgress
     })()
+    // Phase floors only move progress up: a run going from prehistoric (90 %)
+    // to indications (floor 60) no longer shows 90 → 60. A stopped engine
+    // shows its own value; a new run starts again from 0.
+    const progress = engineIsStopped
+      ? phaseProgress
+      : Math.min(100, monotonic(`${connectionId}:${engineType}:progress`, statsRunToken, phaseProgress))
     const message  = ep?.detail || ep?.message || (
       phase === "prehistoric_data"
         ? `Historical processing ${historicProgressPercent}% (${historicSymbolsProcessed}/${historicSymbolsTotal || "?"} symbols)`
@@ -4552,7 +4579,7 @@ export async function GET(
     }
 
     // ── Build response ──────────────────────────────────────────────────────
-    return NextResponse.json({
+    const statsBody: Record<string, any> = {
       success: true,
       connectionId,
       engineType,
@@ -4720,16 +4747,16 @@ export async function GET(
           ordersPlaced: n(progHash.live_orders_placed_count),
           ordersFilled: n(progHash.live_orders_filled_count),
           profitFactor: {
-            all:     Math.round(profitFactor * 1000) / 1000,
-            last12:  Math.round(profitFactorLast12 * 1000) / 1000,
-            last25:  Math.round(profitFactorLast25 * 1000) / 1000,
-            last75:  Math.round(profitFactorLast75 * 1000) / 1000,
+            all:     profitFactor,
+            last12:  profitFactorLast12,
+            last25:  profitFactorLast25,
+            last75:  profitFactorLast75,
           },
           winRate: {
-            all:    Math.round(winRate * 10) / 10,
-            last12: Math.round(winRateLast12 * 10) / 10,
-            last25: Math.round(winRateLast25 * 10) / 10,
-            last75: Math.round(winRateLast75 * 10) / 10,
+            all:    winRate,
+            last12: winRateLast12,
+            last25: winRateLast25,
+            last75: winRateLast75,
           },
         },
         isActive:         realtimeIsActive,
@@ -5789,7 +5816,11 @@ export async function GET(
       liveStrategyCount:     stratCounts.live || 0,
       totalStrategyCount:    stratTotal,
       positionsCount:        positionsOpen,
-    })
+      indicationsEvaluatedByType: indEvaluated,
+    }
+    // One value per statistic across the payload, and the funnel / sign
+    // invariants surfaced (never applied) as dataIntegrity.violations.
+    return NextResponse.json(canonicalizeProgressionStats(statsBody, stageFunnelViolationsFromStats(statsBody)))
     } catch (error) {
       console.error("[v0] [/stats] Error:", error)
       return NextResponse.json(

@@ -1733,8 +1733,23 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
   return `${indications.length}|${latestTimestamp}|${(hash >>> 0).toString(36)}`
 }
 
+// One PositionContext is built per coordination cycle (getPositionContext
+// caches it for POSITION_CONTEXT_TTL_MS) and shared by every symbol flow, so
+// fingerprinting it once per flow cost O(symbols² · keys) per pass. Contexts
+// are never mutated after construction — every consumer only reads them and
+// the per-symbol view is a spread copy — so each object is fingerprinted once.
+const positionContextFingerprints = new WeakMap<PositionContext, string>()
+
 /** Stable fingerprint for every position-context field that changes Set output. */
 export function buildPositionContextFingerprint(ctx: PositionContext): string {
+  const cached = positionContextFingerprints.get(ctx)
+  if (cached !== undefined) return cached
+  const fingerprint = computePositionContextFingerprint(ctx)
+  positionContextFingerprints.set(ctx, fingerprint)
+  return fingerprint
+}
+
+function computePositionContextFingerprint(ctx: PositionContext): string {
   const symbols = new Set<string>([
     ...Object.keys(ctx.perSymbolOpen || {}),
     ...Object.keys(ctx.perSymbolOpenByDir || {}),
@@ -5528,6 +5543,9 @@ export class StrategyCoordinator {
       1,
       this._prevPosMinCountValue >= 0 ? this._prevPosMinCountValue : 5,
     )
+    // The measured count is read from the `prevPosWindow` closes, so the
+    // effective minimum can never exceed that window (audit F-01).
+    const baseHistoryWindow = this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25
 
     for (const baseSet of baseSets) {
       if (scannedBaseSets > 0 && scannedBaseSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
@@ -5567,7 +5585,7 @@ export class StrategyCoordinator {
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
       const measuredHistoryRejection = requireMeasuredHistoryForBaseValidity
-        ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount)
+        ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount, baseHistoryWindow)
         : null
       if (measuredHistoryRejection) {
         baseSet.status = "invalid"

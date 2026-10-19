@@ -18,6 +18,10 @@
  */
 
 import { applyTrailingDistanceFloorRatio } from "@/lib/protection-floors"
+import {
+  takeProfitRatio,
+  trailingActivationThreshold,
+} from "@/lib/trailing-activation"
 import { getRedisClient } from "@/lib/redis-db"
 import { PseudoPositionManager } from "./pseudo-position-manager"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
@@ -999,9 +1003,16 @@ export class RealtimeProcessor {
         const anchorStored = parseFloat(position.trailing_anchor || "0")
         const currentTrailingStop = parseFloat(position.trailing_stop_price || "0")
 
-        // Phase 1 — INACTIVE: not yet at the activation threshold.
+        // Phase 1 — INACTIVE: not yet at the activation threshold. The threshold
+        // is a share of the take-profit distance for positions opened under the
+        // tp_share rule (audit TRAIL-01); older positions keep the absolute gain.
         if (!wasActive) {
-          if (gainRatio < startRatio) return  // dormant; pure TP/SL governs
+          const activationThreshold = trailingActivationThreshold({
+            mode: position.trailing_activation_mode,
+            startRatio,
+            takeProfitRatio: takeProfitRatio(entryPrice, parseFloat(position.takeprofit_price || "0")),
+          })
+          if (gainRatio < activationThreshold) return  // dormant; pure TP/SL governs
 
           // Phase 2 — ACTIVATION: cross the start threshold for the first time.
           const anchor = currentPrice

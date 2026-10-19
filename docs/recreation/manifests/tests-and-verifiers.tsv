@@ -6,6 +6,7 @@ e2e	__tests__/e2e/progression-flow.test.ts
 integration	__tests__/integration/live-order-service.test.ts
 integration	__tests__/integration/main-engine-live-dispatch.test.ts
 integration	__tests__/integration/outcome-set-ceiling.test.ts
+integration	__tests__/integration/paper-lifecycle-70-symbols.test.ts
 integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
 operator-tool	__tests__/diagnostic-cleanup.ts
@@ -107,9 +108,12 @@ unit	__tests__/unit/close-accounting-connections.test.ts
 unit	__tests__/unit/close-adopted-positions.test.ts
 unit	__tests__/unit/closeable-row-statuses.test.ts
 unit	__tests__/unit/coherent-stage-thresholds.test.ts
+unit	__tests__/unit/common-auto-series.test.ts
 unit	__tests__/unit/common-category-vote.test.ts
+unit	__tests__/unit/common-history.test.ts
 unit	__tests__/unit/common-indicators-catalog.test.ts
 unit	__tests__/unit/common-indicators-legacy-equivalence.test.ts
+unit	__tests__/unit/common-rule-prefix-stability.test.ts
 unit	__tests__/unit/connection-backtest-jobs.test.ts
 unit	__tests__/unit/connection-backtest-ui-contract.test.ts
 unit	__tests__/unit/connection-backtest.test.ts
@@ -228,6 +232,7 @@ unit	__tests__/unit/halt-retires-on-own-book.test.ts
 unit	__tests__/unit/handoff-slot-halt.test.ts
 unit	__tests__/unit/health-route-liveness-budget.test.ts
 unit	__tests__/unit/health-runtime-contract.test.ts
+unit	__tests__/unit/historic-candle-tail-cache.test.ts
 unit	__tests__/unit/historic-candle-window.test.ts
 unit	__tests__/unit/historic-four-hour-stats.test.ts
 unit	__tests__/unit/historic-profit-factor.test.ts
@@ -314,6 +319,7 @@ unit	__tests__/unit/manual-close-not-reopened.test.ts
 unit	__tests__/unit/margin-call-route.test.ts
 unit	__tests__/unit/margin-call.test.ts
 unit	__tests__/unit/market-data-1s-backfill.test.ts
+unit	__tests__/unit/market-data-cache-capacity.test.ts
 unit	__tests__/unit/market-data-fetch-deadline.test.ts
 unit	__tests__/unit/market-data-history-contract.test.ts
 unit	__tests__/unit/market-data-second-coverage.test.ts
@@ -362,6 +368,7 @@ unit	__tests__/unit/portfolio-risk-budget.test.ts
 unit	__tests__/unit/pos-count-volume-ratio.test.ts
 unit	__tests__/unit/pos-history-batch.test.ts
 unit	__tests__/unit/position-book-stats.test.ts
+unit	__tests__/unit/position-context-fingerprint-memo.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
 unit	__tests__/unit/position-index-established-with-hash.test.ts
@@ -415,6 +422,7 @@ unit	__tests__/unit/real-stage-accounting.test.ts
 unit	__tests__/unit/realtime-cycle-diagnostic.test.ts
 unit	__tests__/unit/realtime-cycle-phase-timing.test.ts
 unit	__tests__/unit/realtime-rotation-progress.test.ts
+unit	__tests__/unit/realtime-trailing-activation.test.ts
 unit	__tests__/unit/realtime-trailing-update.test.ts
 unit	__tests__/unit/reconcile-respects-slot-entry.test.ts
 unit	__tests__/unit/redis-connection-identity.test.ts
@@ -438,7 +446,9 @@ unit	__tests__/unit/results-skip-set.test.ts
 unit	__tests__/unit/resume-stalled-system-close.test.ts
 unit	__tests__/unit/retention-policy.test.ts
 unit	__tests__/unit/rollback-orphan-diagnostics.test.ts
+unit	__tests__/unit/round5-audit-fixes.test.ts
 unit	__tests__/unit/row-share-and-rotating-accounting.test.ts
+unit	__tests__/unit/rsi-reversion-neutral-zone.test.ts
 unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts
 unit	__tests__/unit/runtime-concurrency-profile.test.ts
@@ -507,6 +517,7 @@ unit	__tests__/unit/statistics-history-snapshot.test.ts
 unit	__tests__/unit/statistics-overview-current-counts.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/statistics-ui-correctness.test.ts
+unit	__tests__/unit/stats-canonical.test.ts
 unit	__tests__/unit/status-canonical-position-counts.test.ts
 unit	__tests__/unit/stop-loss-rejection-backoff.test.ts
 unit	__tests__/unit/stopped-out-row-not-a-violation.test.ts
@@ -529,6 +540,7 @@ unit	__tests__/unit/strategy-sets-processor.test.ts
 unit	__tests__/unit/strategy-snapshot-consistency.test.ts
 unit	__tests__/unit/strategy-stage-accounting.test.ts
 unit	__tests__/unit/strategy-stage-relations.test.ts
+unit	__tests__/unit/strategy-tuple-coverage.test.ts
 unit	__tests__/unit/strategy-volume-coordination.test.ts
 unit	__tests__/unit/stuck-placement-sweeper.test.ts
 unit	__tests__/unit/symbol-capacity.test.ts
@@ -560,6 +572,7 @@ unit	__tests__/unit/trade-history-stability.test.ts
 unit	__tests__/unit/trade-protection-contract.test.ts
 unit	__tests__/unit/trading-round-trip-cost.test.ts
 unit	__tests__/unit/trading-stats-route.test.ts
+unit	__tests__/unit/trailing-activation.test.ts
 unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trailing-family-replay-wiring.test.ts
 unit	__tests__/unit/transient-halt-short-ttl.test.ts
