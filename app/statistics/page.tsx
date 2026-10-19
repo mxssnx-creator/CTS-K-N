@@ -80,6 +80,7 @@ import {
   type ProfitFactorMetric,
 } from "@/lib/live-trading-analytics"
 import { signedResultRToMainTradePfRatio } from "@/lib/main-trade-profit-factor"
+import { normalizePositionCostPercent } from "@/lib/position-cost"
 
 // Enhanced types for comprehensive analytics
 interface OptimalStrategyMetrics {
@@ -113,11 +114,13 @@ function toStatisticsPseudoPosition(position: TradingPosition): PseudoPosition {
   // Keep the explicit signed Result-R and the operator PF coordinate separate.
   // The canonical coordinate is 1.00 neutral and advances by 0.10 per signed
   // PositionCost unit; +1R therefore maps to 1.10, never 2.00.
-  const positionCost = Number(position.margin_used) > 0
-    ? Number(position.margin_used)
-    : notional > 0
-      ? notional
-      : Math.max(Math.abs(realizedPnl), Number.EPSILON)
+  // One PositionCost unit in money: the configured PositionCost percent of
+  // notional, so +1R is one PositionCost of venue-net profit. The coordinate
+  // used to divide by margin or notional instead (audit COST-03).
+  const costPct = normalizePositionCostPercent((position as { position_cost_pct?: unknown }).position_cost_pct)
+  const positionCost = notional > 0
+    ? notional * costPct / 100
+    : Math.max(Math.abs(realizedPnl), Number.EPSILON)
   const rawStrategy = String(position.strategy_type || "").toLowerCase()
   const strategyType: PseudoPosition["strategy_type"] =
     rawStrategy.includes("block") ? "block"

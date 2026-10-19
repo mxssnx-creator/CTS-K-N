@@ -5543,6 +5543,9 @@ export class StrategyCoordinator {
       1,
       this._prevPosMinCountValue >= 0 ? this._prevPosMinCountValue : 5,
     )
+    // The measured count is read from the `prevPosWindow` closes, so the
+    // effective minimum can never exceed that window (audit F-01).
+    const baseHistoryWindow = this._prevPosWindowValue > 0 ? this._prevPosWindowValue : 25
 
     for (const baseSet of baseSets) {
       if (scannedBaseSets > 0 && scannedBaseSets % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
@@ -5582,7 +5585,7 @@ export class StrategyCoordinator {
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
       const measuredHistoryRejection = requireMeasuredHistoryForBaseValidity
-        ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount)
+        ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount, baseHistoryWindow)
         : null
       if (measuredHistoryRejection) {
         baseSet.status = "invalid"

@@ -630,8 +630,12 @@ export class PseudoPositionManager {
         profit_factor: String(params.profitFactor),
         effective_profit_factor: String(params.effectiveProfitFactor ?? params.profitFactor),
         trailing_enabled: effectiveTrailing ? "1" : "0",
+        // Seeded only when trailing is active from entry. A dormant trailing
+        // stop would be checked by shouldCloseStopLoss before the configured SL
+        // and close the position at the minimum distance (audit TRAIL-02); the
+        // first favourable tick after activation computes the stop instead.
         trailing_stop_price:
-          signalDynamicTrailing && trailingProfile
+          signalDynamicTrailing && trailingProfile && trailingProfile.startRatio <= 0
             ? String(
                 params.side === "long"
                   ? params.entryPrice * (1 - Math.max(0.008, trailingProfile.minStopRatio || trailingProfile.stopRatio))

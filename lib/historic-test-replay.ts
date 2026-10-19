@@ -170,6 +170,11 @@ export function createHistoricCandleSimulator(
         trailingRetracePct: options.trailingRetracePct,
         stopLossPct,
         positionCostPercent,
+        // The same real round trip the fixed-exit family pays (audit TRAIL-05).
+        roundTripCostPercent: roundTripCostPercent({
+          takerFeeFraction: options.takerFeeFraction,
+          slippageFraction: options.slippageFraction,
+        }),
       }).slice(0, bound)
     }
     if (request.family === "block") {

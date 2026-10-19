@@ -177,7 +177,10 @@ export async function maybeRunHistoricTest(
     loadCandles: (request: HistoricTestSimulationRequest) => loadHistoricTestCandles(request) as Promise<any>,
     profile: raw as any,
     positionCostPercent,
-    trailingRetracePct: numOrUndefined((raw as any)?.trailingRetracePct ?? (raw as any)?.trailingMinStep),
+    // Only the trailing retrace is a retrace. `trailingMinStep` is a window-gate
+    // setting (default 8), and reading it here made the trailing family retrace
+    // 8 % (audit TRAIL-06).
+    trailingRetracePct: numOrUndefined((raw as any)?.trailingRetracePct),
     tpslPairs: tpslPairs.length > 0 ? tpslPairs : undefined,
     block: {
       volumeRatio: numOrUndefined((raw as any)?.blockVolumeRatio),

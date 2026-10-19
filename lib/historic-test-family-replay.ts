@@ -27,6 +27,13 @@ import type { HistoricTestTrade } from "@/lib/historic-test-scoring"
 export interface FamilyReplayOptions {
   /** Round-trip cost in percent; results are expressed in these units. */
   positionCostPercent: number
+  /**
+   * Real round trip charged on every trailing exit (fees, slippage). Falls back
+   * to `positionCostPercent` only where no venue cost is known. Audit TRAIL-05 /
+   * COST-01: the trailing family charged PositionCost (0.10 %) instead of the real
+   * round trip (0.26 %).
+   */
+  roundTripCostPercent?: number
   /** Trailing retrace from the best price, in percent of entry. */
   trailingRetracePct?: number
   /** Stop loss in percent of entry, shared with the entry stream. */
@@ -112,7 +119,8 @@ export function replayTrailing(
     const grossPct = long
       ? ((exitPrice - entry) / entry) * 100
       : ((entry - exitPrice) / entry) * 100
-    out.push(asTrade(trade.entryTime, exitTime, grossPct - options.positionCostPercent, options.positionCostPercent))
+    const cost = Number(options.roundTripCostPercent) > 0 ? Number(options.roundTripCostPercent) : options.positionCostPercent
+    out.push(asTrade(trade.entryTime, exitTime, grossPct - cost, options.positionCostPercent))
   }
   return out
 }
