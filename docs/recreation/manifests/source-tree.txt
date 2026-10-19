@@ -458,6 +458,7 @@ __tests__/unit/results-skip-set.test.ts
 __tests__/unit/resume-stalled-system-close.test.ts
 __tests__/unit/retention-policy.test.ts
 __tests__/unit/rollback-orphan-diagnostics.test.ts
+__tests__/unit/round5-audit-fixes.test.ts
 __tests__/unit/row-share-and-rotating-accounting.test.ts
 __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
