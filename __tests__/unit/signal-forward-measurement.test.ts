@@ -56,6 +56,14 @@ describe("advanceSignalForwardEntry", () => {
     expect(closed!.exitTime - closed!.entryTime).toBeGreaterThanOrEqual(SIGNAL_FORWARD_MAX_HOLD_MS)
   })
 
+  it("a bar after the cap decides by the cap even when it touches the target, across a gap of quiet minutes", () => {
+    // Minutes 2..299 are absent; minute 300 opens flat and then touches the target. The cap (4 h) comes first.
+    const late = advanceSignalForwardEntry(entry(), [bar(1, 100, 100.2, 99.9, 100.1), bar(300, 100.5, 101.2, 100.4, 101)])
+    expect(late.close?.reason).toBe("max_hold")
+    expect(late.close?.exitTime).toBe(entry().entryTime + SIGNAL_FORWARD_MAX_HOLD_MS)
+    expect(late.close?.exitPrice).toBe(100.5)
+  })
+
   it("reports an uncovered window and moves nothing when the bars do not reach the first minute to check", () => {
     const result = advanceSignalForwardEntry(entry(), [bar(5, 100, 100.2, 99.9, 100.1), bar(6, 100, 100.2, 99.9, 100.1)])
     expect(result.covered).toBe(false)
