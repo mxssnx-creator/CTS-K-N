@@ -4298,11 +4298,13 @@ export async function GET(
       // connection aliases are resolved explicitly below so a global
       // `positions_average` cannot shadow a saved `average_count`.
       const vcSettings: Record<string, unknown> = { ...(vcApp as Record<string, unknown> || {}) }
+      let canonicalBaseProfitFactor: unknown
       try {
         const vcConnS = await getCanonicalConnectionSettingsOverlay(connectionId)
         for (const [k, v] of Object.entries(vcConnS)) {
           if (v !== undefined && v !== null && v !== "") vcSettings[k] = v
         }
+        canonicalBaseProfitFactor = (vcConnS as Record<string, unknown>).baseProfitFactor
       } catch { /* best-effort */ }
       if (vcConn) {
         const CONN_FIELDS = [
@@ -4319,6 +4321,12 @@ export async function GET(
         for (const f of CONN_FIELDS) {
           const v = (vcConn as Record<string, unknown>)[f]
           if (v !== undefined && v !== null && v !== "") vcSettings[f] = v
+        }
+        // The top-level connection field is a stale flat mirror (it kept the old
+        // 1.1 after the operator saved 1.15). The engine reads the settings
+        // mirror, so the displayed Base PF must come from the same place.
+        if (canonicalBaseProfitFactor !== undefined && canonicalBaseProfitFactor !== null && canonicalBaseProfitFactor !== "") {
+          vcSettings.baseProfitFactor = canonicalBaseProfitFactor
         }
       }
       stageOverviewSettings = vcSettings

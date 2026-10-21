@@ -32,6 +32,7 @@ operator-tool	scripts/validate-direct-trade-history.cjs
 operator-tool	scripts/validate-direct-trade-windows.cjs
 operator-tool	scripts/verify-block-native-redis.ts
 operator-tool	scripts/verify-direct-trade-config-lifecycle.ts
+operator-tool	scripts/verify-frozen-replay-candidates.mjs
 operator-tool	scripts/verify-live-config-loss.mjs
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
@@ -310,6 +311,7 @@ unit	__tests__/unit/main-indications-stats-route.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
 unit	__tests__/unit/main-stage-one-per-base.test.ts
 unit	__tests__/unit/main-trade-profit-factor.test.ts
+unit	__tests__/unit/mainnet-read-only-migration.test.ts
 unit	__tests__/unit/manual-close-not-reopened.test.ts
 unit	__tests__/unit/margin-call-route.test.ts
 unit	__tests__/unit/margin-call.test.ts
@@ -438,6 +440,7 @@ unit	__tests__/unit/results-skip-set.test.ts
 unit	__tests__/unit/resume-stalled-system-close.test.ts
 unit	__tests__/unit/retention-policy.test.ts
 unit	__tests__/unit/rollback-orphan-diagnostics.test.ts
+unit	__tests__/unit/round-trip-cost-and-direct-default.test.ts
 unit	__tests__/unit/row-share-and-rotating-accounting.test.ts
 unit	__tests__/unit/run-with-env-lifecycle.test.ts
 unit	__tests__/unit/runtime-boot-id.test.ts

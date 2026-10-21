@@ -18,6 +18,7 @@ export type RealTradeBlockCode =
   | "connection_not_allowed"
   | "credentials_missing"
   | "explicit_block"
+  | "mainnet_read_only"
   | "placement_disabled"
   | "execution_unavailable"
   | "shared_redis_required"
@@ -203,6 +204,19 @@ export function isBingXVirtualFundsDemo(settings: Record<string, any>): boolean 
 }
 
 /**
+ * Project policy (AGENTS.md): BingX mainnet (X01) and every Bybit connection
+ * are read-only. Only BingX Prod-VST virtual funds may place orders. This is a
+ * code-level rule on purpose: it must not depend on an environment variable,
+ * a stored connection flag, or a migration, all of which have re-enabled X01
+ * live before.
+ */
+export function isMainnetReadOnlyConnection(settings: Record<string, any>): boolean {
+  const exchange = String(settings.exchange || "").trim().toLowerCase()
+  if (exchange === "bybit") return true
+  return exchange === "bingx" && !isBingXVirtualFundsDemo(settings)
+}
+
+/**
  * Optional process-level connection allow-list for every Main/Preset/Signal
  * exchange write. An absent variable preserves development compatibility; an
  * explicitly configured list is fail-closed when the connection has no ID.
@@ -335,6 +349,9 @@ export function evaluateRealTradeReadiness(
   if (!requested) {
     blockCode = "disabled"
     blockReason = `${label} is disabled by the operator`
+  } else if (isMainnetReadOnlyConnection(settings)) {
+    blockCode = "mainnet_read_only"
+    blockReason = `${label} is blocked: mainnet and Bybit connections are read-only by project policy; only BingX Prod-VST may place orders`
   } else if (!isLiveOrderConnectionAllowed(settings)) {
     blockCode = "connection_not_allowed"
     blockReason = `${label} is not allowed for this connection by LIVE_ORDER_CONNECTION_IDS`

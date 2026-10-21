@@ -8246,6 +8246,39 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "109")
     },
   },
+  {
+    // Project policy (AGENTS.md): BingX mainnet (X01) and Bybit are read-only.
+    // Migrations 051, 052 and 054 set is_live_trade=1 on bingx-x01, so a fresh
+    // or restored-old Redis re-enabled live there. This runs last and clears the
+    // live flags; lib/real-trade-gates.ts blocks those connections in code too.
+    version: 111,
+    name: "111-mainnet-read-only-live-flags-off",
+    up: async (client: any) => {
+      const ids = ["bingx-x01", "bybit-x03"]
+      const hashes = (id: string) => [
+        `connection:${id}`,
+        `settings:trade_engine_state:${id}`,
+        `settings:connection:${id}`,
+        `settings:connection_settings:${id}`,
+      ]
+      for (const id of ids) {
+        for (const hash of hashes(id)) {
+          // Only touch hashes that exist; never create one.
+          const exists = await client.exists(hash).catch(() => 0)
+          if (!exists) continue
+          await client.hset(hash, {
+            is_live_trade: "0",
+            live_trade_requested: "0",
+            live_trade_enabled: "0",
+          }).catch(() => 0)
+        }
+      }
+    },
+    down: async (client: any) => {
+      // Flags stay off: re-enabling mainnet live is never a rollback.
+      await client.set("_schema_version", "110")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {
@@ -8813,7 +8846,16 @@ if (!hasExisting) {
       .find((values) => parseBootSymbols(values?.force_symbols).length > 0) || {}
     const existingForcedSymbols = parseBootSymbols(existingBootConfig.force_symbols)
     const existingSymbolOrder = String(existingBootConfig.symbol_order || "").trim().toLowerCase()
-    const pinnedSymbols = withCanonicalForcedSymbols(existingForcedSymbols, devSymCount)
+    // An operator-saved basket keeps its size: slicing it to the env/default
+    // count turned a saved 30-symbol X01 basket into 4 symbols on every boot.
+    // An explicit V0_DEV_SYMBOL_COUNT is a deliberate developer cap and still
+    // sizes a pinned basket. Without it the operator's saved basket keeps its
+    // size: it used to be sliced to the default 4 on every boot.
+    const explicitDevCap = String(process.env.V0_DEV_SYMBOL_COUNT ?? "").trim() !== ""
+    const pinnedSymbols = withCanonicalForcedSymbols(
+      existingForcedSymbols,
+      explicitDevCap ? devSymCount : Math.max(devSymCount, existingForcedSymbols.length),
+    )
     // A force_symbols basket is only operator-explicit when symbol_order is
     // empty. Older boot/migration code persisted default fixtures as a forced
     // basket while also declaring volatility_1h; preserving those stale values

@@ -9,6 +9,7 @@
  */
 
 import { latestWilderRsi } from "@/lib/wilder-rsi"
+import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
   DEFAULT_DCA_PROFILE,
   calculateDcaAddQuantity,
@@ -952,8 +953,12 @@ function simulateTrades(
     const grossBestMarketExitPnlPercent = legs.reduce((sum, leg) => sum + leg.weight * (direction === "long"
       ? ((currentBestMarketExitPrice - leg.price) / initialPrice) * 100
       : ((leg.price - currentBestMarketExitPrice) / initialPrice) * 100), 0)
-    const pnlPercent = grossPnlPercent - positionCostPercent * costExposureMultiplier
-    const bestMarketExitPnlPercent = grossBestMarketExitPnlPercent - positionCostPercent * costExposureMultiplier
+    // Charged once per closed position: the real round trip, or a larger
+    // configured PositionCost (lib/trading-round-trip-cost.ts), as the main
+    // engine's simulated closes pay. PositionCost stays the PF unit below.
+    const chargedCostPercent = simulatedCloseCostPercent(positionCostPercent)
+    const pnlPercent = grossPnlPercent - chargedCostPercent * costExposureMultiplier
+    const bestMarketExitPnlPercent = grossBestMarketExitPnlPercent - chargedCostPercent * costExposureMultiplier
     const drawdownTimeMin = currentDrawdownTimeMin
     target.totalTrades++
     target.totalVolumeMultiplier += totalLegWeight

@@ -1,0 +1,25 @@
+{
+  "devCandidates": 1730,
+  "holdoutWindow": {
+    "start": "2026-09-08T00:00:00.000Z",
+    "endExclusive": "2026-09-22T00:00:00.000Z"
+  },
+  "holdoutSourceSha256": "6f7e26dc711ac16f6faf1aa4bc8aad2b1bd2133430b5cd969a726332aad660c4",
+  "holdoutEngineSourceSha256": "aab658c400f87584034c9593f8338b3a5073fef3972d9da1fe0ab61e108a15d7",
+  "frozenFound": 1730,
+  "frozenPositiveBaseCost": 116,
+  "frozenPositiveBothWithRules": 0,
+  "frozenHitRate": 0,
+  "controlValidatedInHoldout": 1430,
+  "controlConfigurationPairs": 2365440,
+  "controlRate": 0.0006045386904761905,
+  "verdict": "No frozen configuration passes both costs with the rules in the holdout.",
+  "rules": {
+    "minTrades": 42,
+    "maxDrawdownTimeMin": 240,
+    "baseCost": 0.1,
+    "stressCost": 0.2
+  },
+  "defaultsPromoted": false,
+  "independentHoldout": "reserved window; not verified as never viewed"
+}

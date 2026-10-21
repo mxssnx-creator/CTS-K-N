@@ -14,10 +14,18 @@ assert(inputFile && outputDirectory, "Usage: node --import tsx scripts/validate-
 const recentPositionWindow = Number(windowArgument)
 assert(Number.isInteger(recentPositionWindow) && recentPositionWindow >= 3 && recentPositionWindow <= 50, "Recent position count must be an integer in the settings range 3–50")
 const symbols = [...new Set(symbolList.split(","))]
-assert(symbols.length > 0 && symbols.every(symbol => ["BCH-USDT", "XRP-USDT", "SOL-USDT"].includes(symbol)), "Unsupported public-candle symbol")
+assert(symbols.length > 0 && symbols.every(symbol => /^[A-Z0-9]+-USDT$/.test(symbol)), "Unsupported public-candle symbol")
 const raw = fs.readFileSync(inputFile)
 const market = JSON.parse(raw)
+assert(symbols.every(symbol => [5, 15, 30].every(minutes => market.series?.[`${symbol}:${minutes}`])), "Every symbol needs 5m, 15m and 30m public candles in the input file")
+// DCA is a separate strategy family; set DIRECT_TRADE_REPLAY_DCA=0 to replay the non-DCA Direct strategies only.
+const includeDca = process.env.DIRECT_TRADE_REPLAY_DCA !== "0"
+// Connection volume factor (0.1–10, system multiplier 0.2). It scales order notional and therefore USDT PnL and drawdown; it is recorded here, not applied to the per-trade ratio PF.
+const volumeFactor = Number(process.env.DIRECT_TRADE_REPLAY_VOLUME_FACTOR || 1)
+assert(Number.isFinite(volumeFactor) && volumeFactor >= 0.1 && volumeFactor <= 10, "Volume factor must be within 0.1–10")
 const day = 86_400_000
+// Same value as MAX_DRAWDOWN_TIME_MINUTES in lib/constants.ts (system default, 240 min). Changing it changes validity, not the ledger.
+const SYSTEM_MAX_DRAWDOWN_TIME_MIN = 240
 assert.equal(market.endExclusive - market.start, 14 * day, "Exactly fourteen complete UTC days are required")
 assert.equal(market.start % day, 0)
 assert.equal(market.endExclusive % day, 0)
@@ -31,7 +39,7 @@ const dimensions = {
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current", takeProfitPercent: [0.5, 1],
   blockCounts: [1, 2, 3, 4, 5, 6], blockVolumeRatios: [0.1, 0.5], blockIncrementSteps: [1, 2], blockEffectiveIncrementStep: 1,
-  positionCostPercent: [0.1, 0.2], recentPositionWindow, maxDrawdownTimeMin: 300,
+  positionCostPercent: [0.1, 0.2], recentPositionWindow, maxDrawdownTimeMin: SYSTEM_MAX_DRAWDOWN_TIME_MIN,
 }
 const noTrail = { trailing: false, trailStart: 0, trailStop: 0, mode: "none" }
 const fixed = [[0.3, 0.2], [0.5, 0.3], [1, 0.5]].map(([trailStart, trailStop]) => ({ trailing: true, trailStart, trailStop, mode: "fixed" }))
@@ -42,8 +50,10 @@ const plans = [
   ["trailing_auto", normalSl, auto], ["combination", normalSl, [noTrail, ...fixed, ...auto]],
   ["inverse", [0.25, 0.5, 0.75, 1, 1.25], [noTrail, ...fixed]],
   ["high_protection", [0.75], [noTrail, ...auto]], ["dca", [1], [noTrail]],
-].map(([strategyType, slRatios, trailOptions]) => ({ strategyType, slRatios, trailOptions }))
+].map(([strategyType, slRatios, trailOptions]) => ({ strategyType, slRatios, trailOptions })).filter(plan => includeDca || plan.strategyType !== "dca")
 dimensions.plans = plans
+dimensions.includeDca = includeDca
+dimensions.volumeFactor = volumeFactor
 const setColumns = ["setKey", "symbol", "direction", "signalDirection", "strategyType", "timeframe", "entryTactic", "exitTactic", "takeprofit", "stoploss", "trailingMode", "trailStart", "trailStop", "autoTrailSensitivity", "positionCostPercent", "blockVolumeRatio", "blockIncrementSteps", "totalTrades", "totalPnl", "profitFactor", "profitFactorInfinite", "positionCostRatio", "maxDrawdownTimeMin", "avgDrawdownTimeMin", "recentPositionCount", "recentPositionCostRatio", "valid", "deactivationReason", "blockCount", "blockTotalPnl", "blockRealizedProfitFactor", "blockRealizedProfitFactorInfinite", "blockRealizedVolumeMultiplier", "dcaRealizedVolumeMultiplier"]
 const blockColumns = ["blockCount", "blockTotalPnl", "blockNetProfit", "blockNetLoss", "blockRealizedProfitFactor", "blockRealizedProfitFactorInfinite", "blockPositionCostRatio", "blockMinimumProfitFactor", "blockMaxDrawdownTimeMin", "blockCalculatedVolumeMultiplier", "blockRealizedVolumeMultiplier", "blockRecentPositionCount", "valid", "deactivationReason"]
 setColumns.push("netProfit", "netLoss", "recentProfitFactor", "recentProfitFactorInfinite", "recentTotalPnl", "blockNetProfit", "blockNetLoss", "effectiveTotalPnl", "effectiveNetProfit", "effectiveNetLoss", "effectiveProfitFactor", "effectiveProfitFactorInfinite", "effectiveRecentProfitFactor", "effectiveRecentProfitFactorInfinite", "effectiveRecentPositionCostRatio")
@@ -107,7 +117,7 @@ function baseInput(symbol, candlesByTimeframe, timeframeSet, direction, plan, co
     entryTactics: dimensions.entryTactics, exitTactics: dimensions.exitTactics, entryTiming: "current",
     activityVolumeRatio: 1, maxHoldMinutes: 120, positionCostPercent: cost,
     blockRange: plan.strategyType === "dca" ? [0, 0] : [1, 6], minProfitFactor: 1.1, minRecentProfitFactor: 1.1,
-    recentPositionWindow, minRecentPositions: recentPositionWindow, maxDrawdownTimeMin: 300 }
+    recentPositionWindow, minRecentPositions: recentPositionWindow, maxDrawdownTimeMin: SYSTEM_MAX_DRAWDOWN_TIME_MIN }
 }
 function metrics(s) { return Object.fromEntries(setColumns.slice(17).map(k => [k, s[k] ?? null])) }
 function config(s) { return Object.fromEntries(setColumns.slice(1, 17).map(k => [k, s[k] ?? null])) }

@@ -1,5 +1,34 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-10-21 (zuletzt): Kosten 0,15 %, Direct-Kostenkorrektur, Boot-/Stats-Fixes
+
+- Round Trip systemweit **0,15 %** (Betreiberentscheidung): Taker 0,05 % je Seite + Slippage 0,05 % (`lib/trading-round-trip-cost.cjs`; vorher 0,26 %). Tests und Baseline-Doku angepasst.
+- Stable-Baseline 2026-09-19 neu gemessen (gleiche Kerzen): bei 0,26 % exakt $158,7330 reproduziert; bei 0,15 % $249,6166, PF 1,1837. Ein 24-h-Fenster, kein Nachweis eines Vorteils.
+- Direct-Simulation zahlt jetzt den echten Round Trip einmal (vorher nur PositionCost 0,1 %); Einmalabzug am Ledger belegt (118.272 Paare exakt). Direct Trade bleibt per Default aus (`enabled:false`).
+- Boot-Guard: gespeicherter Operator-Korb (X01, 30 Symbole) wird nicht mehr auf 4 gekürzt; explizites `V0_DEV_SYMBOL_COUNT` begrenzt weiter. Stats zeigen Base-PF aus dem Settings-Spiegel.
+- Gates: tsc sauber; Unit 530/531 Suites (Rest braucht echten Redis-Server). Offen: Dashboard-Flag nach Boot aus; `trailingMinStep` ≥ `minStep`.
+
+## Fortsetzungsstand — 2026-10-21 (später): X01 read-only im Code erzwungen
+
+- `lib/real-trade-gates.ts`: `isMainnetReadOnlyConnection` / Blockcode `mainnet_read_only` für BingX-Mainnet und alle Bybit-Verbindungen (Main/Preset/Signal), unabhängig von Env-Flags, Allow-List und gespeicherten Flags. Nur BingX Prod-VST darf Orders platzieren.
+- Migration 111 setzt Live-Flags auf `bingx-x01`/`bybit-x03` auf 0 (nur bestehende Hashes). Schema 110 → 111. Neuer Test `mainnet-read-only-migration.test.ts`; tsc sauber.
+- Abgelehnt: X01 live erzwingen, Min-PF/Max-DDT lockern für mehr Orders, PF durch Zurücknehmen der Simulationsfixes erhöhen. Stable-12 ist Vorfahre von main (+50), Direct-Engine unterscheidet sich nur im RSI; PF ~0,44–0,45 auf NEAR+BTC.
+- Offen: Merge/Deploy von Schema 111 (nur gemergtes grünes main); Container-Env mit BingX-Key und Live-Flags entfernen.
+
+## Fortsetzungsstand — 2026-10-21 (X01 read-only replay; Claude cloud session, branch `claude/exciting-lamport-euhxu4`, base main `85afc16`)
+
+- **Request not performed by rule:** live X01 with 20 symbols, volume factor 0.5, DCA off, Block on. X01 is BingX mainnet and read-only per `AGENTS.md`. No mainnet order was placed or enabled. Container has no `/workspace` canonical checkout, no Chisel, no server.
+- **Done (read-only, public candles, no credentials):** 20 top-volume USDT perpetuals, 14 complete days, DCA excluded, Block on, volume factor 0.5 recorded (does not change PF). Dev window 2026-10-07..20: 2,365,440 configurations, 1,730 in-sample survivors positive at both costs with rules. Holdout 2026-09-08..21: frozen survivors 0 of 1,730 positive at both costs (control base rate 0.060 %). **No positive configuration is validated.**
+- **Full results, system-default diffs, and issues:** `docs/reports/20261021-x01-readonly-replay/RESULTS.md`; reports `dev-2026-10-07-to-20/report.html`, `holdout-2026-09-08-to-21/report.html`.
+- **Backups:** `/var/backups/cts-kn/20261021T190200Z-before-x01-readonly-replay` (verified, pre-edit).
+- **Gates:** engine unit tests 8 suites / 75 pass; ESLint clean on changed scripts; no TypeScript changed, typecheck not run.
+- **Remote:** not reached.
+- **Pending safety work (open):**
+  1. `lib/redis-migrations.ts` 052/054 force `bingx-x01` `is_live_trade=1` for schema below 52/54 (fresh or old-snapshot Redis would re-enable X01 live).
+  2. No code-level mainnet read-only rule; the live gate is env-only (`ALLOW_LIVE_ORDER_PLACEMENT`, `LIVE_ORDER_CONNECTION_IDS`).
+  3. This container exports BingX key/secret, `FORCE_LIVE=1`, `ALLOW_LIVE_ORDER_PLACEMENT=1`, `ALLOW_INLINE_REDIS_LIVE_TRADING=1`. Remove them from the environment settings.
+  4. Take-profit replay grid is 0.5 %/1 % only; system grid is ratio 2–22.
+
 ## Fortsetzungsstand — 2026-10-14 (Claude Cloud-Sitzung, Branch `claude/funny-carson-jk9atm`, gestapelt auf #559)
 
 **Arbeitsort:** Cloud-Container `/home/user/CTS-K-N` (nicht die kanonische `/workspace/CTS-K-N`; kein Chisel, keine Exchange-Zugänge). Der Branch beginnt auf dem Kopf von #559 (`claude/zen-fermat-gswxt7`) und integriert dessen Arbeit unverändert. **Gemergt nur über den GitHub-PR, nicht deployed.** Checkpoint vor den Änderungen: `/var/backups/cts-kn/20261014T122651Z-pre-common-expansion` (VERIFIED). Kein Exchange-Zugriff.

@@ -1,5 +1,59 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Update — 2026-10-21 (latest): cost 0.15 %, Direct cost correction, boot and stats fixes
+
+- **Round trip 0.15 % systemwide** (operator decision): `lib/trading-round-trip-cost.cjs` taker 0.05 % per side (BingX `takerFeeRate`) + slippage 0.05 %; it was 0.10 % + 0.06 % (0.26 %). Tests and `docs/baseline/STABLE-BASELINE-2026-09-19.md` updated.
+- **Baseline re-measured** on the committed candles: at 0.26 % the code reproduces the recorded $158.7330 exactly; at 0.15 % it gives $249.6166, PF 1.1837 (R-normalised), max DD 10.84 %. One 24 h window, simplified venue replay; not a validated edge.
+- **Direct engine cost fix:** simulated Direct closes were charged only PositionCost (0.1 %); they now pay the real round trip once (`simulatedCloseCostPercent`), PositionCost staying the PF unit. Verified single deduction: for 118,272 BTC configurations the PnL difference between 0.1 % and 0.2 % cost equals `0.1 × trades` exactly. Two-symbol replay pooled Block PF: 0.455 (old 0.1 % charge), 0.399 (0.15 %), 0.258 (0.26 %).
+- **Direct Trade module** is already disabled by default (`enabled: false`, `liveMode: false` in the route default); pinned by `round-trip-cost-and-direct-default.test.ts`. No migration or seeder enables it.
+- **Boot guard fix:** a saved operator basket (X01, 30 symbols) is no longer sliced to the default 4 on boot; an explicit `V0_DEV_SYMBOL_COUNT` still caps it.
+- **Stats fix:** the progression stats show the Base PF from the settings mirror, not a stale flat connection field (1.1 vs saved 1.15).
+- Open: the dashboard-enabled flag resets to off on boot (appears to be deliberate safety normalization); the stale flat `trailingMinStep` (8) on the connection hash; `trailingMinStep` cannot be below `minStep`.
+
+## Update — 2026-10-21 (later): X01 read-only enforced in code (same branch)
+
+- **Gate:** `lib/real-trade-gates.ts` `isMainnetReadOnlyConnection` + block code `mainnet_read_only`. BingX mainnet and every Bybit connection are blocked for Main, Preset and Signal regardless of `ALLOW_LIVE_ORDER_PLACEMENT`, `LIVE_ORDER_CONNECTION_IDS` or stored flags. Only BingX Prod-VST can place orders.
+- **Migration 111** clears `is_live_trade`, `live_trade_requested` and `live_trade_enabled` on existing `bingx-x01` and `bybit-x03` hashes (never creates one). Schema constant 110 → 111; version pins in tests and `scripts/kilo-deploy-preflight.mjs` updated. Rollback never re-enables live.
+- **Tests:** new `__tests__/unit/mainnet-read-only-migration.test.ts`; two readiness tests and the block-clearance fixture updated to the policy. Typecheck clean.
+- **Declined on request:** loosening min PF / max DDT to open more live orders, forcing X01 live, and raising PF by reverting the simulation fixes. The replay shows relaxed thresholds admit configurations that lose out of sample, and the policy allows default changes only after positive, independently validated results. Orders open only on X02 Prod-VST, whose settings are on the server (unreachable here).
+- **Stable-12 comparison:** Stable-12 is an ancestor of main (main +50). The Direct engine differs only in RSI; on NEAR+BTC both give pooled Block PF 0.44–0.45.
+- **Deploy note:** schema 111 deploys with the next merged green `main`; X01 stays read-only after it.
+
+## Continuation — 2026-10-21 (Claude cloud session, branch `claude/exciting-lamport-euhxu4`, base = main `85afc16`)
+
+**Request:** run X01 live with 20 symbols, volume factor 0.5, DCA off, Block on, fix all issues, monitor, and show positive configs with diffs from system results.
+
+**Not done, by binding rule:** no live X01 run and no mainnet order. X01 is BingX mainnet and `AGENTS.md` makes it read-only. This container has no `/workspace` checkout, no Chisel tunnel and no server, so no remote monitoring was possible.
+
+**Done (read-only replay, public BingX candles, no credentials, no orders):**
+- 20 symbols = top 20 USDT perpetuals by 24 h quote volume (ranking, not hand-picked). DCA excluded, Block on, volume factor 0.5 recorded.
+- Dev window 2026-10-07 to 2026-10-20 (14 complete days): 4,730,880 rows; 2,365,440 configurations; 1,730 in-sample survivors positive at both costs with the trade and DDT rules (0.07 %). Pooled PF 0.485 (Base) / 0.476 (Block).
+- Holdout 2026-09-08 to 2026-09-21 (reserved in the 2026-10-07 notes; not verified as never viewed): 1,430 rule-passing configurations (control base rate 0.060 %). Pooled PF 0.473 / 0.467.
+- Frozen check: the 1,730 dev survivors in the holdout: **0 pass both costs with the rules**; median PnL −7.09 (base) / −10.81 (stress); summed PnL +12,934 → −21,116 (stress). **No positive configuration is validated.** The requested settings are not positive after costs.
+- Results and system diffs: `docs/reports/20261021-x01-readonly-replay/RESULTS.md` (interactive HTML reports for dev and holdout next to it).
+
+**Fixed in this change:**
+- `scripts/validate-direct-trade-history.cjs`: any symbol with complete candles, `DIRECT_TRADE_REPLAY_DCA=0`, recorded volume factor, system drawdown limit 240 min (was 300).
+- New: `scripts/fetch-public-candles-validator.mjs` (public, rate-limit retry for BingX code 100410), `scripts/build-direct-trade-replay-report.mjs` (two-pass streaming report), `scripts/verify-frozen-replay-candidates.mjs` (frozen out-of-sample check, no re-selection).
+
+**Safety findings (open, need a decision; not changed here):**
+1. `lib/redis-migrations.ts` migrations 052 and 054 set `bingx-x01` `is_live_trade=1` / `live_trade_enabled=1`. They run for a schema below 52 or 54, so a fresh or restored old Redis would re-enable X01 live at boot. The current schema is 110, so they do not re-run on the 2026-09-16 production state.
+2. No code-level mainnet read-only rule. The live gate (`lib/real-trade-gates.ts`) depends only on `ALLOW_LIVE_ORDER_PLACEMENT` and the optional `LIVE_ORDER_CONNECTION_IDS`.
+3. This container exports `BINGX_API_KEY`, `BINGX_API_SECRET`, `FORCE_LIVE=1`, `ALLOW_LIVE_ORDER_PLACEMENT=1` and `ALLOW_INLINE_REDIS_LIVE_TRADING=1`. All commands here unset them. Recommend removing them from the environment settings.
+
+**Gates:** engine unit tests (`direct-trade-coordination`, `direct-trade-cost-basis`, `block-count-state`, `block-defaults-and-ceiling`, `direct-trade-live-readiness`, `main-live-trade-readiness`, `exchange-force-simulated`, `connection-volume-guard`): 8 suites, 75 tests pass. ESLint clean on the changed scripts. No TypeScript changed; typecheck not run.
+
+**Checkpoints:** `/var/backups/cts-kn/20261021T190200Z-before-x01-readonly-replay` (verified, before edits). A second one before the commit is listed in the memory bank.
+
+**Remote state:** not reached. No Chisel, no `/workspace`, no production server, no deployment.
+
+**Next, in order:**
+1. Decide on the X01 policy (AGENTS says read-only): a code-level deny for BingX prod-live plus a migration forcing `bingx-x01` live flags off, or both.
+2. Remove the live-order credentials and flags from this container's environment.
+3. If a wider result is wanted: the system take-profit grid (ratio 2–22) and a second independent window. Both are replays only; no default changes without positive, independently validated results.
+
+No production-readiness claim.
+
 ## Continuation — 2026-10-14 (Claude cloud session, branch `claude/funny-carson-jk9atm`, stacked on #559)
 
 **Where:** cloud container checkout `/home/user/CTS-K-N`. There is no `/workspace` canonical checkout, no Chisel tunnel and no exchange credentials here.

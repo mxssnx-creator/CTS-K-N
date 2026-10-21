@@ -109,3 +109,4 @@ version	name	source
 108	108-independent-additive-block-counts	lib/redis-migrations.ts
 109	109-protection-floor-defaults-0-6	lib/redis-migrations.ts
 110	110-stage-pf-defaults-1-10	lib/redis-migrations.ts
+111	111-mainnet-read-only-live-flags-off	lib/redis-migrations.ts

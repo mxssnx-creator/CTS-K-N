@@ -340,12 +340,12 @@ describe("Main Trade Engine live execution readiness", () => {
       expect(evaluateRealTradeReadiness({ ...vst, is_testnet: "0" })).toMatchObject({
         canPlaceRealOrders: false,
         executionMode: "blocked",
-        blockCode: "placement_disabled",
+        blockCode: "mainnet_read_only",
       })
       expect(evaluateRealTradeReadiness({ ...vst, exchange: "bybit" })).toMatchObject({
         canPlaceRealOrders: false,
         executionMode: "blocked",
-        blockCode: "placement_disabled",
+        blockCode: "mainnet_read_only",
       })
     } finally {
       Object.defineProperty(process.env, "NODE_ENV", {
@@ -357,7 +357,7 @@ describe("Main Trade Engine live execution readiness", () => {
     }
   })
 
-  test("production connection allow-list authorizes BingX X01/X02 and Bybit X03 identities", () => {
+  test("production connection allow-list authorizes X02 Prod-VST only; X01 mainnet and Bybit stay read-only even when allow-listed", () => {
     const previousNodeEnv = process.env.NODE_ENV
     try {
       Object.defineProperty(process.env, "NODE_ENV", {
@@ -377,9 +377,9 @@ describe("Main Trade Engine live execution readiness", () => {
         live_trade_requested: "1",
       }
       expect(evaluateRealTradeReadiness({ ...base, id: "bingx-x01", is_testnet: "0" })).toMatchObject({
-        canPlaceRealOrders: true,
-        executionMode: "live",
-        blockCode: null,
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "mainnet_read_only",
       })
       expect(evaluateRealTradeReadiness({ ...base, id: "bingx-x02", is_testnet: "1" })).toMatchObject({
         canPlaceRealOrders: true,
@@ -387,14 +387,14 @@ describe("Main Trade Engine live execution readiness", () => {
         blockCode: null,
       })
       expect(evaluateRealTradeReadiness({ ...base, id: "bybit-x03", exchange: "bybit", is_testnet: "0" })).toMatchObject({
-        canPlaceRealOrders: true,
-        executionMode: "live",
-        blockCode: null,
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "mainnet_read_only",
       })
       expect(evaluateRealTradeReadiness({ ...base, id: "bybit-x03-unified", exchange: "bybit", is_testnet: "0" })).toMatchObject({
-        canPlaceRealOrders: true,
-        executionMode: "live",
-        blockCode: null,
+        canPlaceRealOrders: false,
+        executionMode: "blocked",
+        blockCode: "mainnet_read_only",
       })
       expect(evaluateRealTradeReadiness({ ...base, is_testnet: "1" })).toMatchObject({
         canPlaceRealOrders: false,
