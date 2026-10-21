@@ -267,6 +267,8 @@ DIRECT_TRADE_RECOVERY_NODE_OPTIONS	test-or-operator-tool	no	no	1	scripts/run-dir
 DIRECT_TRADE_RECOVERY_PHASE	test-or-operator-tool	no	no	1	scripts/test-direct-trade-recovery-scenarios.mjs
 DIRECT_TRADE_RECOVERY_PORT	test-or-operator-tool	no	no	1	scripts/run-direct-trade-recovery-soak.mjs
 DIRECT_TRADE_RECOVERY_RESTART_PORT	test-or-operator-tool	no	no	1	scripts/run-direct-trade-recovery-soak.mjs
+DIRECT_TRADE_REPLAY_DCA	test-or-operator-tool	no	no	1	scripts/validate-direct-trade-history.cjs
+DIRECT_TRADE_REPLAY_VOLUME_FACTOR	test-or-operator-tool	no	no	1	scripts/validate-direct-trade-history.cjs
 DIRECT_TRADE_SCALE_HOURS	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
 DIRECT_TRADE_SCALE_REPORT_FILE	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs
 DIRECT_TRADE_SCALE_SPECS	test-or-operator-tool	no	no	1	scripts/benchmark-direct-trade-symbol-coordination.cjs

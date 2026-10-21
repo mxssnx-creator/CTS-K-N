@@ -1321,6 +1321,13 @@ docs/reports/20261007-sim24h-12s/SHA256SUMS
 docs/reports/20261007-sim24h-12s/report.html
 docs/reports/20261008-long-horizon/README.md
 docs/reports/20261008-long-horizon/summary.json
+docs/reports/20261021-x01-readonly-replay/RESULTS.md
+docs/reports/20261021-x01-readonly-replay/dev-2026-10-07-to-20/report.html
+docs/reports/20261021-x01-readonly-replay/dev-2026-10-07-to-20/summary.json
+docs/reports/20261021-x01-readonly-replay/dev-2026-10-07-to-20/validated-candidates.json
+docs/reports/20261021-x01-readonly-replay/frozen-holdout/frozen-holdout-summary.json
+docs/reports/20261021-x01-readonly-replay/holdout-2026-09-08-to-21/report.html
+docs/reports/20261021-x01-readonly-replay/holdout-2026-09-08-to-21/summary.json
 docs/signal-source-research.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json
@@ -1934,6 +1941,7 @@ scripts/bingx-comprehensive-test.mjs
 scripts/bingx-x02-vst-baseline.ts
 scripts/bootstrap-install.sh
 scripts/build-24h-report.mjs
+scripts/build-direct-trade-replay-report.mjs
 scripts/build-heap.mjs
 scripts/build-next-with-trace-retry.mjs
 scripts/build-observation-report.mjs
@@ -1955,6 +1963,7 @@ scripts/direct-trade-processor.mjs
 scripts/direct-trade-supervisor.mjs
 scripts/ensure-server-autoboot.sh
 scripts/fetch-dca-public-history.py
+scripts/fetch-public-candles-validator.mjs
 scripts/fetch-research-bars.mjs
 scripts/fetch-research-hourly.mjs
 scripts/final-validation-test.mjs
@@ -2068,6 +2077,7 @@ scripts/validate-direct-trade-windows.cjs
 scripts/verify-block-native-redis.ts
 scripts/verify-deployment-contract.mjs
 scripts/verify-direct-trade-config-lifecycle.ts
+scripts/verify-frozen-replay-candidates.mjs
 scripts/verify-live-config-loss.mjs
 scripts/verify-migration-status.mjs
 scripts/verify-native-redis-coordination.ts

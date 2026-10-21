@@ -32,6 +32,7 @@ operator-tool	scripts/validate-direct-trade-history.cjs
 operator-tool	scripts/validate-direct-trade-windows.cjs
 operator-tool	scripts/verify-block-native-redis.ts
 operator-tool	scripts/verify-direct-trade-config-lifecycle.ts
+operator-tool	scripts/verify-frozen-replay-candidates.mjs
 operator-tool	scripts/verify-live-config-loss.mjs
 operator-tool	scripts/verify-migration-status.mjs
 operator-tool	scripts/verify-native-redis-coordination.ts
