@@ -1,5 +1,40 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Continuation — 2026-10-21 (Claude cloud session, branch `claude/exciting-lamport-euhxu4`, base = main `85afc16`)
+
+**Request:** run X01 live with 20 symbols, volume factor 0.5, DCA off, Block on, fix all issues, monitor, and show positive configs with diffs from system results.
+
+**Not done, by binding rule:** no live X01 run and no mainnet order. X01 is BingX mainnet and `AGENTS.md` makes it read-only. This container has no `/workspace` checkout, no Chisel tunnel and no server, so no remote monitoring was possible.
+
+**Done (read-only replay, public BingX candles, no credentials, no orders):**
+- 20 symbols = top 20 USDT perpetuals by 24 h quote volume (ranking, not hand-picked). DCA excluded, Block on, volume factor 0.5 recorded.
+- Dev window 2026-10-07 to 2026-10-20 (14 complete days): 4,730,880 rows; 2,365,440 configurations; 1,730 in-sample survivors positive at both costs with the trade and DDT rules (0.07 %). Pooled PF 0.485 (Base) / 0.476 (Block).
+- Holdout 2026-09-08 to 2026-09-21 (reserved in the 2026-10-07 notes; not verified as never viewed): 1,430 rule-passing configurations (control base rate 0.060 %). Pooled PF 0.473 / 0.467.
+- Frozen check: the 1,730 dev survivors in the holdout: **0 pass both costs with the rules**; median PnL −7.09 (base) / −10.81 (stress); summed PnL +12,934 → −21,116 (stress). **No positive configuration is validated.** The requested settings are not positive after costs.
+- Results and system diffs: `docs/reports/20261021-x01-readonly-replay/RESULTS.md` (interactive HTML reports for dev and holdout next to it).
+
+**Fixed in this change:**
+- `scripts/validate-direct-trade-history.cjs`: any symbol with complete candles, `DIRECT_TRADE_REPLAY_DCA=0`, recorded volume factor, system drawdown limit 240 min (was 300).
+- New: `scripts/fetch-public-candles-validator.mjs` (public, rate-limit retry for BingX code 100410), `scripts/build-direct-trade-replay-report.mjs` (two-pass streaming report), `scripts/verify-frozen-replay-candidates.mjs` (frozen out-of-sample check, no re-selection).
+
+**Safety findings (open, need a decision; not changed here):**
+1. `lib/redis-migrations.ts` migrations 052 and 054 set `bingx-x01` `is_live_trade=1` / `live_trade_enabled=1`. They run for a schema below 52 or 54, so a fresh or restored old Redis would re-enable X01 live at boot. The current schema is 110, so they do not re-run on the 2026-09-16 production state.
+2. No code-level mainnet read-only rule. The live gate (`lib/real-trade-gates.ts`) depends only on `ALLOW_LIVE_ORDER_PLACEMENT` and the optional `LIVE_ORDER_CONNECTION_IDS`.
+3. This container exports `BINGX_API_KEY`, `BINGX_API_SECRET`, `FORCE_LIVE=1`, `ALLOW_LIVE_ORDER_PLACEMENT=1` and `ALLOW_INLINE_REDIS_LIVE_TRADING=1`. All commands here unset them. Recommend removing them from the environment settings.
+
+**Gates:** engine unit tests (`direct-trade-coordination`, `direct-trade-cost-basis`, `block-count-state`, `block-defaults-and-ceiling`, `direct-trade-live-readiness`, `main-live-trade-readiness`, `exchange-force-simulated`, `connection-volume-guard`): 8 suites, 75 tests pass. ESLint clean on the changed scripts. No TypeScript changed; typecheck not run.
+
+**Checkpoints:** `/var/backups/cts-kn/20261021T190200Z-before-x01-readonly-replay` (verified, before edits). A second one before the commit is listed in the memory bank.
+
+**Remote state:** not reached. No Chisel, no `/workspace`, no production server, no deployment.
+
+**Next, in order:**
+1. Decide on the X01 policy (AGENTS says read-only): a code-level deny for BingX prod-live plus a migration forcing `bingx-x01` live flags off, or both.
+2. Remove the live-order credentials and flags from this container's environment.
+3. If a wider result is wanted: the system take-profit grid (ratio 2–22) and a second independent window. Both are replays only; no default changes without positive, independently validated results.
+
+No production-readiness claim.
+
 ## Continuation — 2026-10-14 (Claude cloud session, branch `claude/funny-carson-jk9atm`, stacked on #559)
 
 **Where:** cloud container checkout `/home/user/CTS-K-N`. There is no `/workspace` canonical checkout, no Chisel tunnel and no exchange credentials here.
