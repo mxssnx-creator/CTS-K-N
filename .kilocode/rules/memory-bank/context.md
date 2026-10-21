@@ -1,5 +1,12 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-10-21 (später): X01 read-only im Code erzwungen
+
+- `lib/real-trade-gates.ts`: `isMainnetReadOnlyConnection` / Blockcode `mainnet_read_only` für BingX-Mainnet und alle Bybit-Verbindungen (Main/Preset/Signal), unabhängig von Env-Flags, Allow-List und gespeicherten Flags. Nur BingX Prod-VST darf Orders platzieren.
+- Migration 111 setzt Live-Flags auf `bingx-x01`/`bybit-x03` auf 0 (nur bestehende Hashes). Schema 110 → 111. Neuer Test `mainnet-read-only-migration.test.ts`; tsc sauber.
+- Abgelehnt: X01 live erzwingen, Min-PF/Max-DDT lockern für mehr Orders, PF durch Zurücknehmen der Simulationsfixes erhöhen. Stable-12 ist Vorfahre von main (+50), Direct-Engine unterscheidet sich nur im RSI; PF ~0,44–0,45 auf NEAR+BTC.
+- Offen: Merge/Deploy von Schema 111 (nur gemergtes grünes main); Container-Env mit BingX-Key und Live-Flags entfernen.
+
 ## Fortsetzungsstand — 2026-10-21 (X01 read-only replay; Claude cloud session, branch `claude/exciting-lamport-euhxu4`, base main `85afc16`)
 
 - **Request not performed by rule:** live X01 with 20 symbols, volume factor 0.5, DCA off, Block on. X01 is BingX mainnet and read-only per `AGENTS.md`. No mainnet order was placed or enabled. Container has no `/workspace` canonical checkout, no Chisel, no server.

@@ -311,6 +311,7 @@ unit	__tests__/unit/main-indications-stats-route.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts
 unit	__tests__/unit/main-stage-one-per-base.test.ts
 unit	__tests__/unit/main-trade-profit-factor.test.ts
+unit	__tests__/unit/mainnet-read-only-migration.test.ts
 unit	__tests__/unit/manual-close-not-reopened.test.ts
 unit	__tests__/unit/margin-call-route.test.ts
 unit	__tests__/unit/margin-call.test.ts

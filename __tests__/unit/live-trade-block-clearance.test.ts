@@ -4,6 +4,8 @@ const mockConnection = {
   id: "conn-live-blocked",
   name: "Blocked BingX",
   exchange: "bingx",
+  // Prod-VST: mainnet BingX is read-only by project policy and would never clear.
+  is_testnet: "1",
   api_key: "12345678901",
   api_secret: "abcdefghijklmnopqrstuvwxyz",
   is_live_trade: "0",

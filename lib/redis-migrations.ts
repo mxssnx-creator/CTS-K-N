@@ -8246,6 +8246,39 @@ const migrations: Migration[] = [
       await client.set("_schema_version", "109")
     },
   },
+  {
+    // Project policy (AGENTS.md): BingX mainnet (X01) and Bybit are read-only.
+    // Migrations 051, 052 and 054 set is_live_trade=1 on bingx-x01, so a fresh
+    // or restored-old Redis re-enabled live there. This runs last and clears the
+    // live flags; lib/real-trade-gates.ts blocks those connections in code too.
+    version: 111,
+    name: "111-mainnet-read-only-live-flags-off",
+    up: async (client: any) => {
+      const ids = ["bingx-x01", "bybit-x03"]
+      const hashes = (id: string) => [
+        `connection:${id}`,
+        `settings:trade_engine_state:${id}`,
+        `settings:connection:${id}`,
+        `settings:connection_settings:${id}`,
+      ]
+      for (const id of ids) {
+        for (const hash of hashes(id)) {
+          // Only touch hashes that exist; never create one.
+          const exists = await client.exists(hash).catch(() => 0)
+          if (!exists) continue
+          await client.hset(hash, {
+            is_live_trade: "0",
+            live_trade_requested: "0",
+            live_trade_enabled: "0",
+          }).catch(() => 0)
+        }
+      }
+    },
+    down: async (client: any) => {
+      // Flags stay off: re-enabling mainnet live is never a rollback.
+      await client.set("_schema_version", "110")
+    },
+  },
 ]
 
 export function getLatestMigrationVersion(): number {

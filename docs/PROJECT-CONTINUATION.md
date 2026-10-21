@@ -1,5 +1,14 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Update — 2026-10-21 (later): X01 read-only enforced in code (same branch)
+
+- **Gate:** `lib/real-trade-gates.ts` `isMainnetReadOnlyConnection` + block code `mainnet_read_only`. BingX mainnet and every Bybit connection are blocked for Main, Preset and Signal regardless of `ALLOW_LIVE_ORDER_PLACEMENT`, `LIVE_ORDER_CONNECTION_IDS` or stored flags. Only BingX Prod-VST can place orders.
+- **Migration 111** clears `is_live_trade`, `live_trade_requested` and `live_trade_enabled` on existing `bingx-x01` and `bybit-x03` hashes (never creates one). Schema constant 110 → 111; version pins in tests and `scripts/kilo-deploy-preflight.mjs` updated. Rollback never re-enables live.
+- **Tests:** new `__tests__/unit/mainnet-read-only-migration.test.ts`; two readiness tests and the block-clearance fixture updated to the policy. Typecheck clean.
+- **Declined on request:** loosening min PF / max DDT to open more live orders, forcing X01 live, and raising PF by reverting the simulation fixes. The replay shows relaxed thresholds admit configurations that lose out of sample, and the policy allows default changes only after positive, independently validated results. Orders open only on X02 Prod-VST, whose settings are on the server (unreachable here).
+- **Stable-12 comparison:** Stable-12 is an ancestor of main (main +50). The Direct engine differs only in RSI; on NEAR+BTC both give pooled Block PF 0.44–0.45.
+- **Deploy note:** schema 111 deploys with the next merged green `main`; X01 stays read-only after it.
+
 ## Continuation — 2026-10-21 (Claude cloud session, branch `claude/exciting-lamport-euhxu4`, base = main `85afc16`)
 
 **Request:** run X01 live with 20 symbols, volume factor 0.5, DCA off, Block on, fix all issues, monitor, and show positive configs with diffs from system results.
