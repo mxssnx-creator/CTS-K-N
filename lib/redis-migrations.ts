@@ -8846,7 +8846,16 @@ if (!hasExisting) {
       .find((values) => parseBootSymbols(values?.force_symbols).length > 0) || {}
     const existingForcedSymbols = parseBootSymbols(existingBootConfig.force_symbols)
     const existingSymbolOrder = String(existingBootConfig.symbol_order || "").trim().toLowerCase()
-    const pinnedSymbols = withCanonicalForcedSymbols(existingForcedSymbols, devSymCount)
+    // An operator-saved basket keeps its size: slicing it to the env/default
+    // count turned a saved 30-symbol X01 basket into 4 symbols on every boot.
+    // An explicit V0_DEV_SYMBOL_COUNT is a deliberate developer cap and still
+    // sizes a pinned basket. Without it the operator's saved basket keeps its
+    // size: it used to be sliced to the default 4 on every boot.
+    const explicitDevCap = String(process.env.V0_DEV_SYMBOL_COUNT ?? "").trim() !== ""
+    const pinnedSymbols = withCanonicalForcedSymbols(
+      existingForcedSymbols,
+      explicitDevCap ? devSymCount : Math.max(devSymCount, existingForcedSymbols.length),
+    )
     // A force_symbols basket is only operator-explicit when symbol_order is
     // empty. Older boot/migration code persisted default fixtures as a forced
     // basket while also declaring volatility_1h; preserving those stale values

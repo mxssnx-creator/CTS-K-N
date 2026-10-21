@@ -1,5 +1,15 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Update — 2026-10-21 (latest): cost 0.15 %, Direct cost correction, boot and stats fixes
+
+- **Round trip 0.15 % systemwide** (operator decision): `lib/trading-round-trip-cost.cjs` taker 0.05 % per side (BingX `takerFeeRate`) + slippage 0.05 %; it was 0.10 % + 0.06 % (0.26 %). Tests and `docs/baseline/STABLE-BASELINE-2026-09-19.md` updated.
+- **Baseline re-measured** on the committed candles: at 0.26 % the code reproduces the recorded $158.7330 exactly; at 0.15 % it gives $249.6166, PF 1.1837 (R-normalised), max DD 10.84 %. One 24 h window, simplified venue replay; not a validated edge.
+- **Direct engine cost fix:** simulated Direct closes were charged only PositionCost (0.1 %); they now pay the real round trip once (`simulatedCloseCostPercent`), PositionCost staying the PF unit. Verified single deduction: for 118,272 BTC configurations the PnL difference between 0.1 % and 0.2 % cost equals `0.1 × trades` exactly. Two-symbol replay pooled Block PF: 0.455 (old 0.1 % charge), 0.399 (0.15 %), 0.258 (0.26 %).
+- **Direct Trade module** is already disabled by default (`enabled: false`, `liveMode: false` in the route default); pinned by `round-trip-cost-and-direct-default.test.ts`. No migration or seeder enables it.
+- **Boot guard fix:** a saved operator basket (X01, 30 symbols) is no longer sliced to the default 4 on boot; an explicit `V0_DEV_SYMBOL_COUNT` still caps it.
+- **Stats fix:** the progression stats show the Base PF from the settings mirror, not a stale flat connection field (1.1 vs saved 1.15).
+- Open: the dashboard-enabled flag resets to off on boot (appears to be deliberate safety normalization); the stale flat `trailingMinStep` (8) on the connection hash; `trailingMinStep` cannot be below `minStep`.
+
 ## Update — 2026-10-21 (later): X01 read-only enforced in code (same branch)
 
 - **Gate:** `lib/real-trade-gates.ts` `isMainnetReadOnlyConnection` + block code `mainnet_read_only`. BingX mainnet and every Bybit connection are blocked for Main, Preset and Signal regardless of `ALLOW_LIVE_ORDER_PLACEMENT`, `LIVE_ORDER_CONNECTION_IDS` or stored flags. Only BingX Prod-VST can place orders.

@@ -1,5 +1,13 @@
 # Active Context: CTS-K-N Trading System (main project)
 
+## Fortsetzungsstand — 2026-10-21 (zuletzt): Kosten 0,15 %, Direct-Kostenkorrektur, Boot-/Stats-Fixes
+
+- Round Trip systemweit **0,15 %** (Betreiberentscheidung): Taker 0,05 % je Seite + Slippage 0,05 % (`lib/trading-round-trip-cost.cjs`; vorher 0,26 %). Tests und Baseline-Doku angepasst.
+- Stable-Baseline 2026-09-19 neu gemessen (gleiche Kerzen): bei 0,26 % exakt $158,7330 reproduziert; bei 0,15 % $249,6166, PF 1,1837. Ein 24-h-Fenster, kein Nachweis eines Vorteils.
+- Direct-Simulation zahlt jetzt den echten Round Trip einmal (vorher nur PositionCost 0,1 %); Einmalabzug am Ledger belegt (118.272 Paare exakt). Direct Trade bleibt per Default aus (`enabled:false`).
+- Boot-Guard: gespeicherter Operator-Korb (X01, 30 Symbole) wird nicht mehr auf 4 gekürzt; explizites `V0_DEV_SYMBOL_COUNT` begrenzt weiter. Stats zeigen Base-PF aus dem Settings-Spiegel.
+- Gates: tsc sauber; Unit 530/531 Suites (Rest braucht echten Redis-Server). Offen: Dashboard-Flag nach Boot aus; `trailingMinStep` ≥ `minStep`.
+
 ## Fortsetzungsstand — 2026-10-21 (später): X01 read-only im Code erzwungen
 
 - `lib/real-trade-gates.ts`: `isMainnetReadOnlyConnection` / Blockcode `mainnet_read_only` für BingX-Mainnet und alle Bybit-Verbindungen (Main/Preset/Signal), unabhängig von Env-Flags, Allow-List und gespeicherten Flags. Nur BingX Prod-VST darf Orders platzieren.

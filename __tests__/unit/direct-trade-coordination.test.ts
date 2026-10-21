@@ -1,3 +1,4 @@
+import { roundTripCostPercent, simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
   buildTimeframeCombinations,
   buildDirectTradeTakeProfitPositionCostRatios,
@@ -51,11 +52,13 @@ describe("Direct-Trade independent historical coordination", () => {
     const [entry, add1, add2, exit] = prices
     const quotePnl = sign * ((exit - entry) + 0.5 * (exit - add1) + 0.5 * (exit - add2))
     const tradedEntryNotional = entry + 0.5 * add1 + 0.5 * add2
-    const expected = (quotePnl - tradedEntryNotional * 0.001) / entry * 100
+    // Charged once per leg notional: the real round trip (0.15 %), since the configured 0.1 % is below it.
+    const charged = simulatedCloseCostPercent(0.1) / 100
+    const expected = (quotePnl - tradedEntryNotional * charged) / entry * 100
     expect(row.totalTrades).toBe(1)
     expect(row.blockEvaluations[1].blockRealizedVolumeMultiplier).toBe(2)
     expect(row.blockEvaluations[1].blockTotalPnl).toBeCloseTo(expected, 4)
-    expect(row.totalPnl).toBeCloseTo(sign * (exit - entry) / entry * 100 - 0.1, 4)
+    expect(row.totalPnl).toBeCloseTo(sign * (exit - entry) / entry * 100 - simulatedCloseCostPercent(0.1), 4)
   })
 
   test("waits for a higher-timeframe close in history while preserving current live snapshots", () => {
@@ -391,12 +394,19 @@ describe("Direct-Trade independent historical coordination", () => {
       minRecentPositions: 3,
       maxDrawdownTimeMin: 60,
     }
-    const lowCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.02 })[0]
-    const defaultCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.1 })[0]
+    // Above the real round trip (0.15 %) the configured cost is the charge, once per closed position.
+    const lowCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.3 })[0]
+    const highCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.5 })[0]
+    expect(highCost.positionCostPercent).toBe(0.5)
+    expect(highCost.totalPnl).toBeCloseTo(lowCost.totalPnl - lowCost.totalTrades * 0.2, 3)
+    expect(highCost.recentTotalPnl).toBeCloseTo(lowCost.recentTotalPnl - lowCost.recentPositionCount * 0.2, 3)
 
+    // At or below the round trip the real round trip is charged, once: 0.02 and 0.1 give the same result.
+    const tiny = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.02 })[0]
+    const defaultCost = evaluateDirectTradeSets({ ...common, positionCostPercent: 0.1 })[0]
     expect(defaultCost.positionCostPercent).toBe(0.1)
-    expect(defaultCost.totalPnl).toBeCloseTo(lowCost.totalPnl - lowCost.totalTrades * 0.08, 3)
-    expect(defaultCost.recentTotalPnl).toBeCloseTo(lowCost.recentTotalPnl - lowCost.recentPositionCount * 0.08, 3)
+    expect(defaultCost.totalPnl).toBeCloseTo(tiny.totalPnl, 6)
+    expect(lowCost.totalPnl).toBeCloseTo(defaultCost.totalPnl - lowCost.totalTrades * (0.3 - roundTripCostPercent()), 3)
   })
 
   test("changes only recent admission when the last-position window changes", () => {

@@ -110,3 +110,19 @@ Without this normalisation one position risked 22.6 x its PositionCost, and
 - The Real stage sorts candidates by ProfitFactor but applies no PF filter
   (`created == passed`). This baseline reproduces that behaviour.
 - One 24-hour window. Results on other days will differ.
+
+## Addendum 2026-10-21 — round trip 0.15 %, baseline re-measured
+
+The operator set the systemwide round-trip cost to **0.15 %** (BingX taker fee 0.05 % per side from the public contracts API, plus 0.05 % slippage). The guard test `__tests__/unit/stable-baseline-2026-09-19.test.ts` now pins 0.15.
+
+Re-run of `scripts/baseline/simulate-24h-portfolio.ts` on the same committed candles (SHA-256 unchanged):
+
+| Cost | Balance | Return | Max DD | Positions taken | Win rate | PF (R-normalised) | Positive hours |
+|---|---|---|---|---|---|---|---|
+| 0.26 % (recorded 2026-09-19) | $10 → $158.7330 | 1487.33 % | 15.63 % | 17,576 | 95.2 % | 1.1373 | 18/24 |
+| 0.15 % (current) | $10 → $249.6166 | 2396.17 % | 10.84 % | 14,539 | 91.4 % | 1.1837 | 21/24 |
+
+- At 0.26 % the current code reproduces the recorded balance **exactly** ($158.7330): the calculation did not drift.
+- The difference at 0.15 % is the cost change only.
+- Limits that still apply: this is one 24 h window with a simplified venue replay and a 100-position cap, and its entries are in-sample. The 14-day real-cost replays of the Direct engine (`docs/reports/20261021-x01-readonly-replay/`) give a pooled PF below 1. The baseline does not show a validated edge.
+- The Direct engine's simulated closes now also pay the real round trip once (previously only the 0.10 % PositionCost), as the main engine's simulated closes do.
