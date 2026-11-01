@@ -8,6 +8,8 @@ import {
   type CommonIndicatorType,
 } from "@/lib/common-indicator-config"
 import { summarizeCommonCategories, type CommonCategorySummary } from "@/lib/common-indicators/categories"
+import { commonWarmupMinutes, commonWindowStartMs } from "@/lib/common-indicators/history"
+import { getCommonRule, toCommonResult, type CommonRule, type RuleParams } from "@/lib/common-indicators/registry"
 import {
   createTechnicalIndicatorEvaluationContext,
   evaluateTechnicalIndicators,
@@ -30,28 +32,84 @@ import {
 const TIMEFRAME_CONTEXTS = new WeakMap<object, Map<number, TechnicalIndicatorEvaluationContext>>()
 const NORMALIZED_INPUTS = new WeakMap<object, TechnicalCandle[]>()
 
+const TIMEFRAME_CONTEXTS_BY_KEY = new WeakMap<object, Map<string, TechnicalIndicatorEvaluationContext>>()
+
+export interface CompletedBucketOptions {
+  /**
+   * Completed one-minute data ends here (exclusive). A higher-timeframe bucket
+   * that would end later is still forming and is left out, so a 5m/15m/30m
+   * reading cannot change until its bucket closes.
+   */
+  completedThroughMs?: number
+}
+
 export function timeframeEvaluationContext(
   candles: unknown[],
   timeframeMinutes: number,
+  options: CompletedBucketOptions = {},
 ): TechnicalIndicatorEvaluationContext {
-  let byTimeframe = TIMEFRAME_CONTEXTS.get(candles)
-  if (!byTimeframe) {
-    byTimeframe = new Map()
-    TIMEFRAME_CONTEXTS.set(candles, byTimeframe)
+  const completedThroughMs = Number(options.completedThroughMs)
+  if (!Number.isFinite(completedThroughMs)) {
+    let byTimeframe = TIMEFRAME_CONTEXTS.get(candles)
+    if (!byTimeframe) {
+      byTimeframe = new Map()
+      TIMEFRAME_CONTEXTS.set(candles, byTimeframe)
+    }
+    const cached = byTimeframe.get(timeframeMinutes)
+    if (cached) return cached
+    const context = createTechnicalIndicatorEvaluationContext(
+      resampleNormalizedCandles(normalizedInput(candles), timeframeMinutes),
+      { normalized: true },
+    )
+    byTimeframe.set(timeframeMinutes, context)
+    return context
   }
-  const cached = byTimeframe.get(timeframeMinutes)
+  let byKey = TIMEFRAME_CONTEXTS_BY_KEY.get(candles)
+  if (!byKey) {
+    byKey = new Map()
+    TIMEFRAME_CONTEXTS_BY_KEY.set(candles, byKey)
+  }
+  const key = `${timeframeMinutes}|${completedThroughMs}`
+  const cached = byKey.get(key)
   if (cached) return cached
+  const resampled = resampleNormalizedCandles(normalizedInput(candles), timeframeMinutes)
+  const last = resampled[resampled.length - 1]
+  const bucketMs = Math.max(1, Math.round(timeframeMinutes)) * 60_000
+  const completed = last && last.timestamp + bucketMs > completedThroughMs ? resampled.slice(0, -1) : resampled
+  // The bar length is the configured timeframe, not inferred from (possibly
+  // gapped) timestamps, so live and replay contexts agree exactly.
+  const context = createTechnicalIndicatorEvaluationContext(completed, { normalized: true, tfMin: timeframeMinutes })
+  byKey.set(key, context)
+  return context
+}
+
+function normalizedInput(candles: unknown[]): TechnicalCandle[] {
   let normalized = NORMALIZED_INPUTS.get(candles)
   if (!normalized) {
     normalized = normalizeTechnicalCandles(candles)
     NORMALIZED_INPUTS.set(candles, normalized)
   }
-  const context = createTechnicalIndicatorEvaluationContext(
-    resampleNormalizedCandles(normalized, timeframeMinutes),
-    { normalized: true },
-  )
-  byTimeframe.set(timeframeMinutes, context)
-  return context
+  return normalized
+}
+
+/**
+ * Drop the evaluation contexts of a candle array that outlives its pass (the
+ * Common history view is reused for a whole minute; its series are not needed
+ * once Auto and the Set pass have read them).
+ */
+export function releaseTimeframeContexts(candles: unknown[]): void {
+  TIMEFRAME_CONTEXTS.delete(candles)
+  TIMEFRAME_CONTEXTS_BY_KEY.delete(candles)
+  NORMALIZED_INPUTS.delete(candles)
+}
+
+function normalizeTimeframes(timeframesMinutes: number[]): number[] {
+  return [...new Set(
+    timeframesMinutes
+      .map(Number)
+      .filter(Number.isFinite)
+      .map((value) => Math.max(1, Math.min(60, Math.round(value)))),
+  )].sort((left, right) => left - right)
 }
 
 function round(value: number, decimals = 8): number {
@@ -83,6 +141,88 @@ function buildParameterVariants(
     }
   }
   return variants
+}
+
+type PreparedVariant = {
+  type: CommonIndicatorType
+  rule: CommonRule
+  params: RuleParams
+  warmup: number
+}
+
+/** buildParameterVariants with each tuple resolved once (rule, parameters, warm-up). */
+function prepareSummaryVariants(
+  settings: CommonIndicationSettingsDocument | undefined,
+  enabledTypes: readonly CommonIndicatorType[],
+): PreparedVariant[] {
+  const prepared: PreparedVariant[] = []
+  for (const { type, parameters } of buildParameterVariants(settings, enabledTypes)) {
+    const rule = getCommonRule(type)
+    if (!rule) continue
+    const params = rule.resolve(parameters[type], 14)
+    prepared.push({ type, rule, params, warmup: rule.warmup(params) })
+  }
+  return prepared
+}
+
+export type TimeframeSummary = {
+  indicators: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>>
+  summary: CommonCategorySummary
+  typeSummary: ReturnType<typeof summarizeTechnicalIndicators>
+  ma: number
+  rsi: number
+  macd: { macd: number; signal: number }
+  bb: { upper: number; middle: number; lower: number }
+  stochastic: { k: number; d: number }
+  obv: number
+}
+
+/**
+ * Every tuple of the grid read at bar `k` of one timeframe context and
+ * aggregated per type (the Auto summary). Reading the last bar gives exactly
+ * the per-tuple evaluateTechnicalIndicators results; an earlier bar of a
+ * longer context gives the same result as the context cut after `k`, because
+ * every Common rule is causal.
+ */
+async function summarizeTimeframeAt(
+  context: TechnicalIndicatorEvaluationContext,
+  k: number,
+  variants: readonly PreparedVariant[],
+  batchSize: number,
+): Promise<TimeframeSummary> {
+  const byType = new Map<CommonIndicatorType, IndicatorAccumulator>()
+  if (k >= 0 && k < context.length) {
+    for (let index = 0; index < variants.length; index++) {
+      const variant = variants[index]
+      if (k + 1 >= variant.warmup) {
+        const sample = variant.rule.at(context, variant.params, k)
+        if (sample) {
+          let accumulator = byType.get(variant.type)
+          if (!accumulator) {
+            accumulator = createIndicatorAccumulator(variant.type)
+            byType.set(variant.type, accumulator)
+          }
+          addIndicatorResult(accumulator, toCommonResult(variant.rule.type, sample) as TechnicalIndicatorResult)
+        }
+      }
+      // Promise continuations alone do not give timers/control requests a
+      // turn while the grid is CPU-bound; yield like the batch loop does.
+      if (batchSize > 0 && (index + 1) % batchSize === 0 && index + 1 < variants.length) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+    }
+  }
+  const indicators: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>> = {}
+  for (const accumulator of byType.values()) {
+    indicators[accumulator.type] = finalizeIndicatorAccumulator(accumulator)
+  }
+  return {
+    indicators,
+    // Auto's vote: one vote per category (lib/common-indicators/categories.ts)
+    summary: summarizeCommonCategories(indicators),
+    typeSummary: summarizeTechnicalIndicators(indicators),
+    ...compatibilityValues(indicators),
+  }
 }
 
 function aggregateIndicatorVariants(
@@ -141,6 +281,8 @@ type IndicatorAccumulator = {
   neutralCount: number
   longStrength: number
   shortStrength: number
+  /** Strength summed over every result, used when the final direction is neutral. */
+  allStrength: number
   value: number
   signal: number
   detailOrder: string[]
@@ -156,6 +298,7 @@ function createIndicatorAccumulator(type: CommonIndicatorType): IndicatorAccumul
     neutralCount: 0,
     longStrength: 0,
     shortStrength: 0,
+    allStrength: 0,
     value: 0,
     signal: 0,
     detailOrder: [],
@@ -168,6 +311,7 @@ function addIndicatorResult(
   value: TechnicalIndicatorResult,
 ): void {
   accumulator.count += 1
+  accumulator.allStrength += value.strength
   if (value.direction === "long") {
     accumulator.longCount += 1
     accumulator.longStrength += value.strength
@@ -203,11 +347,13 @@ function finalizeIndicatorAccumulator(
     : direction === "short"
       ? accumulator.shortCount
       : accumulator.count
+  // A neutral result averages every variant, as the exhaustive aggregate does
+  // (aggregateIndicatorVariants), so streaming and exhaustive summaries agree.
   const directionalStrength = direction === "long"
     ? accumulator.longStrength
     : direction === "short"
       ? accumulator.shortStrength
-      : 0
+      : accumulator.allStrength
   return {
     type: accumulator.type,
     direction,
@@ -272,6 +418,7 @@ export class StepBasedIndicators {
     settings: CommonIndicationSettingsDocument | undefined,
     onBatch: (configurations: StepBasedIndicatorConfiguration[], timeframeMinutes: number) => Promise<void>,
     batchSize = 32,
+    options: CompletedBucketOptions = {},
   ): Promise<{ configurations: number; timeframes: number[] }> {
     const parameterVariants = buildParameterVariants(settings, enabledTypes)
     const normalizedTimeframes = [...new Set(
@@ -284,7 +431,7 @@ export class StepBasedIndicators {
     let configurationCount = 0
 
     for (const timeframeMinutes of normalizedTimeframes) {
-      const evaluationContext = timeframeEvaluationContext(candles, timeframeMinutes)
+      const evaluationContext = timeframeEvaluationContext(candles, timeframeMinutes, options)
       const resampled = evaluationContext.candles
       for (let start = 0; start < parameterVariants.length; start += boundedBatchSize) {
         const batch = parameterVariants.slice(start, start + boundedBatchSize).map(({ type, parameters }) => {
@@ -333,59 +480,99 @@ export class StepBasedIndicators {
       .map((definition) => definition.type),
     settings?: CommonIndicationSettingsDocument,
     batchSize = 32,
-  ) {
-    const results: Record<string, {
-      indicators: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>>
-      summary: CommonCategorySummary
-      typeSummary: ReturnType<typeof summarizeTechnicalIndicators>
-      ma: number
-      rsi: number
-      macd: { macd: number; signal: number }
-      bb: { upper: number; middle: number; lower: number }
-      stochastic: { k: number; d: number }
-      obv: number
-    }> = {}
-    const accumulators = new Map<number, Map<CommonIndicatorType, IndicatorAccumulator>>()
-
-    await this.forEachConfigurationAsync(
-      candles,
-      timeframesMinutes,
-      enabledTypes,
-      settings,
-      async (batch, timeframeMinutes) => {
-        let byType = accumulators.get(timeframeMinutes)
-        if (!byType) {
-          byType = new Map()
-          accumulators.set(timeframeMinutes, byType)
-        }
-        for (const configuration of batch) {
-          const value = configuration.indicators[configuration.type]
-          if (!value) continue
-          let accumulator = byType.get(configuration.type)
-          if (!accumulator) {
-            accumulator = createIndicatorAccumulator(configuration.type)
-            byType.set(configuration.type, accumulator)
-          }
-          addIndicatorResult(accumulator, value)
-        }
-      },
-      batchSize,
-    )
-
-    for (const [timeframeMinutes, byType] of accumulators) {
-      const indicators: Partial<Record<CommonIndicatorType, TechnicalIndicatorResult>> = {}
-      for (const accumulator of byType.values()) {
-        indicators[accumulator.type] = finalizeIndicatorAccumulator(accumulator)
-      }
-      results[String(timeframeMinutes)] = {
-        indicators,
-        // Auto's vote: one vote per category (lib/common-indicators/categories.ts)
-        summary: summarizeCommonCategories(indicators),
-        typeSummary: summarizeTechnicalIndicators(indicators),
-        ...compatibilityValues(indicators),
-      }
+    options: CompletedBucketOptions = {},
+  ): Promise<Record<string, TimeframeSummary>> {
+    const results: Record<string, TimeframeSummary> = {}
+    const variants = prepareSummaryVariants(settings, enabledTypes)
+    if (variants.length === 0) return results
+    const boundedBatchSize = Math.max(1, Math.min(256, Math.floor(batchSize) || 32))
+    for (const timeframeMinutes of normalizeTimeframes(timeframesMinutes)) {
+      const context = timeframeEvaluationContext(candles, timeframeMinutes, options)
+      results[String(timeframeMinutes)] = await summarizeTimeframeAt(
+        context,
+        context.length - 1,
+        variants,
+        boundedBatchSize,
+      )
     }
     return results
+  }
+
+  /**
+   * Auto summaries for every bar of a replay, computed once per anchor hour
+   * instead of once per bar. `bars` are completed one-minute bars, oldest
+   * first. `at(i)` equals calculateSummariesAsync over the anchored Common
+   * window ending at bars[i] (commonWindowSlice) with completedThroughMs =
+   * bars[i] close: the decisions of one anchor hour read prefixes of one
+   * series, and the Common rules are causal. Calls must move forward in time
+   * (one group is kept).
+   */
+  static createSummarySeries(
+    bars: readonly TechnicalCandle[],
+    timeframesMinutes: number[] = [1, 5, 15, 30],
+    enabledTypes: readonly CommonIndicatorType[] = COMMON_INDICATOR_DEFINITIONS
+      .filter((definition) => definition.enabled)
+      .map((definition) => definition.type),
+    settings?: CommonIndicationSettingsDocument,
+    batchSize = 256,
+  ): { at(index: number): Promise<Record<string, TimeframeSummary>> } {
+    const variants = prepareSummaryVariants(settings, enabledTypes)
+    const timeframes = normalizeTimeframes(timeframesMinutes)
+    const boundedBatchSize = Math.max(0, Math.min(4096, Math.floor(batchSize) || 0))
+    let group: {
+      windowStartMs: number
+      contexts: Map<number, TechnicalIndicatorEvaluationContext>
+      summaries: Map<string, TimeframeSummary>
+    } | null = null
+    const lowerBound = (values: readonly TechnicalCandle[], timestampMs: number) => {
+      let low = 0
+      let high = values.length
+      while (low < high) {
+        const middle = (low + high) >>> 1
+        if (values[middle].timestamp < timestampMs) low = middle + 1
+        else high = middle
+      }
+      return low
+    }
+    return {
+      async at(index: number) {
+        const results: Record<string, TimeframeSummary> = {}
+        const bar = bars[index]
+        if (!bar || variants.length === 0) return results
+        const windowStartMs = commonWindowStartMs(bar.timestamp)
+        if (!group || group.windowStartMs !== windowStartMs) {
+          // Every decision of this anchor hour reads a prefix of these bars.
+          const first = lowerBound(bars, windowStartMs)
+          const end = lowerBound(bars, windowStartMs + commonWarmupMinutes() * 60_000)
+          const normalized = normalizeTechnicalCandles(bars.slice(first, end) as unknown[])
+          const contexts = new Map<number, TechnicalIndicatorEvaluationContext>()
+          for (const timeframeMinutes of timeframes) {
+            contexts.set(
+              timeframeMinutes,
+              createTechnicalIndicatorEvaluationContext(
+                resampleNormalizedCandles(normalized, timeframeMinutes),
+                { normalized: true, tfMin: timeframeMinutes },
+              ),
+            )
+          }
+          group = { windowStartMs, contexts, summaries: new Map() }
+        }
+        const completedThroughMs = bar.timestamp + 60_000
+        for (const timeframeMinutes of timeframes) {
+          const context = group.contexts.get(timeframeMinutes)!
+          // the last bucket that is complete when this bar closes
+          const k = lowerBound(context.candles, completedThroughMs - timeframeMinutes * 60_000 + 1) - 1
+          const cacheKey = `${timeframeMinutes}:${k}`
+          let summary = group.summaries.get(cacheKey)
+          if (!summary) {
+            summary = await summarizeTimeframeAt(context, k, variants, boundedBatchSize)
+            group.summaries.set(cacheKey, summary)
+          }
+          results[String(timeframeMinutes)] = summary
+        }
+        return results
+      },
+    }
   }
 
   /**

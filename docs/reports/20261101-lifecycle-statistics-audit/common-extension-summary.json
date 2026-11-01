@@ -1,0 +1,93 @@
+{
+  "protocol": {
+    "firstDay": "2026-10-18",
+    "days": 14,
+    "trainingDays": 7,
+    "validationDays": 7,
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT",
+      "SOLUSDT",
+      "BCHUSDT",
+      "XRPUSDT",
+      "BNBUSDT",
+      "DOGEUSDT",
+      "ADAUSDT",
+      "AVAXUSDT",
+      "LINKUSDT",
+      "DOTUSDT",
+      "LTCUSDT",
+      "NEARUSDT",
+      "SUIUSDT",
+      "TRXUSDT"
+    ],
+    "timeframes": [
+      1,
+      5,
+      15,
+      30
+    ],
+    "types": [
+      "relativeVigor",
+      "lowRangeEdgeTurn",
+      "lowRangeFailedBreak",
+      "lowRangeBreakout",
+      "lowRangeMidReclaim",
+      "lowRangeCompressionBreak"
+    ],
+    "exits": [
+      {
+        "id": "tp0.3-sl0.3-h15",
+        "takeProfitPct": 0.3,
+        "stopLossPct": 0.3,
+        "maxHoldMs": 900000
+      },
+      {
+        "id": "tp0.5-sl0.4-h60",
+        "takeProfitPct": 0.5,
+        "stopLossPct": 0.4,
+        "maxHoldMs": 3600000
+      },
+      {
+        "id": "tp1-sl0.75-h240",
+        "takeProfitPct": 1,
+        "stopLossPct": 0.75,
+        "maxHoldMs": 14400000
+      }
+    ],
+    "costs": {
+      "base": 0.15,
+      "stress": 0.22499999999999998
+    },
+    "selection": "training >=30 closes, PF>1.05 and positive net at both base and 1.5x cost; validation >=12 closes and PF>1/positive net at both costs",
+    "caveat": "Independent unit-notional candidate replay. Overlapping configurations are not a portfolio; no venue fills or full Base/Main/Real engine pass are claimed. Fixed TP/SL only; trailing, Block, DCA and source Signals are covered separately by lifecycle/regression tests.",
+    "execution": "Decision at completed timeframe close; first exit on next minute; gaps validated before scoring; if both levels touch, stop wins; cost charged once per closed trade; open trades crossing the split are excluded from validation."
+  },
+  "summary": {
+    "configurations": 36720,
+    "trainingSelected": 41,
+    "trainingValidatedPct": 0.1116557734204793,
+    "independentValidated": 0,
+    "validationRetainedPct": 0,
+    "dataBars": 302400,
+    "dataHashes": {
+      "BTCUSDT": "c77c3de7369339e5a194af55b93ad1b78971fa409ed8fd8e6f961776f28dd1e2",
+      "ETHUSDT": "71f07a0cc0d4e58aa6ef4974bae565ed9f633c71d32669589591b3dc3f153047",
+      "SOLUSDT": "12e6ccfdfb59de6fc908f4a6977bb4f392efa14efba5650b36e6d04caa2cbfbd",
+      "BCHUSDT": "5fc148b8c436fa0eb9e6b74d8306106413836e27ec99224d167e358013c41035",
+      "XRPUSDT": "5c559b462b27381fc4a89b23d509cc68a9cfa9cb3e1c6f6b31cc239aa02349bf",
+      "BNBUSDT": "f2a5fae9fea1994558420c1fb6c588ad90f0123d2e9c544a663b837620bbe712",
+      "DOGEUSDT": "a5cc4e75e3d7c79f9584b40cf76109abd5804e7821cfa101f712b9aa6efd4d19",
+      "ADAUSDT": "69a738d5f6b0d1296e55c72c05afd4a6b3617abef462c486769df087a0b0923b",
+      "AVAXUSDT": "7b3fff498d580ea39cad06f907a011d2e225840b3918c7f1b070f121676fb44d",
+      "LINKUSDT": "2cfe21d87400366337077eab5a3482af58e13de7d36276fe5850047def21826d",
+      "DOTUSDT": "89a8c35b687869a11a05bb0ab09a06e4ee816e0f129b58a587e8c742c4f44a29",
+      "LTCUSDT": "9c7cadba8e6761fb53f2360c5f8090b247f75f4126b1b367a477860d9603eac4",
+      "NEARUSDT": "0b90c82fdbb9b25a1b7e7e0256dffee531b4ab3e0f07915b7d308162c3566dbd",
+      "SUIUSDT": "5a5545be841dcfd5f82069f09b36aa7391e3a2fa8700858a673df2b189296ac6",
+      "TRXUSDT": "a6597b478f6321e52bf0e8dd569b61c7ecdfc7e7d2dc0bfa2aa77b5ecffebfbf"
+    },
+    "bestValidated": []
+  },
+  "report": "https://chatgpt.com/library?file_id=libfile_6b0781e6230c8191a8f30530c1ebd3b6&account_id=personal"
+}

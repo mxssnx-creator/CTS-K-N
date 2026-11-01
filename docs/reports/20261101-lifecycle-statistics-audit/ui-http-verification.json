@@ -1,0 +1,44 @@
+[
+  {
+    "path": "/",
+    "status": 200,
+    "bytes": 160688,
+    "labelFound": true,
+    "invalidNumbers": false
+  },
+  {
+    "path": "/statistics",
+    "status": 200,
+    "bytes": 92304,
+    "labelFound": true,
+    "invalidNumbers": false
+  },
+  {
+    "path": "/statistics/indications/signal",
+    "status": 200,
+    "bytes": 92433,
+    "labelFound": true,
+    "invalidNumbers": false
+  },
+  {
+    "path": "/settings/indications/common",
+    "status": 200,
+    "bytes": 83845,
+    "labelFound": true,
+    "invalidNumbers": false
+  },
+  {
+    "path": "/live-trading",
+    "status": 200,
+    "bytes": 83799,
+    "labelFound": true,
+    "invalidNumbers": false
+  },
+  {
+    "path": "/logistics",
+    "status": 200,
+    "bytes": 76645,
+    "labelFound": true,
+    "invalidNumbers": false
+  }
+]

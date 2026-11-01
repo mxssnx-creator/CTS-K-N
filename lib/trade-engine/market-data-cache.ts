@@ -16,7 +16,10 @@ const CACHE = new Map<string, { data: any; timestamp: number }>()
 // High-frequency TTL: 200ms ensures fresh data each indication cycle (1000ms interval)
 // but avoids redundant Redis round-trips within the same cycle across parallel symbol processing
 const CACHE_TTL = 200 // ms
-const CACHE_MAX_ENTRIES = 64
+// Must exceed the symbol basket (70 symbols per connection): below it the
+// per-cycle prefetch evicted its own oldest entries, and every evicted symbol
+// paid an individual Redis round-trip in the same cycle.
+const CACHE_MAX_ENTRIES = 256
 
 function setBoundedCache(symbol: string, data: any, timestamp = Date.now()): void {
   CACHE.delete(symbol)
@@ -143,14 +146,15 @@ const SETTINGS_CACHE_TTL = 5000 // ms
 // once and reuse the parsed+sorted array across cycles. The cache key is the
 // symbol; a cheap length signature (raw string length) invalidates the entry
 // only when the underlying blob actually changes (e.g. a reload writes a
-// different candle count). Bounded to a handful of symbols — the engine only
-// ever replays its configured symbol set.
+// different candle count). Bounded to the configured symbol set — the engine
+// only ever replays that set, and the bound sits above a 70-symbol basket so
+// one pass never evicts entries it is about to reuse.
 const PARSED_CANDLES_CACHE = new Map<
   string,
   { candles: any[]; sig: number; timestamp: number }
 >()
 const PARSED_CANDLES_TTL = 5 * 60_000 // 5 min — defensive eviction
-const PARSED_CANDLES_MAX_ENTRIES = 64
+const PARSED_CANDLES_MAX_ENTRIES = 256
 
 interface HistoricChunkRange {
   start: number
@@ -204,24 +208,41 @@ function normalizeHistoricCandles(chunks: unknown[]): any[] {
   return [...byTimestamp.values()].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
 }
 
-async function loadHistoricChunkRanges(symbol: string, connectionId?: string): Promise<HistoricChunkRange[]> {
+interface HistoricChunkIndex {
+  ranges: HistoricChunkRange[]
+  /**
+   * The raw `history:meta` string ("" when absent or not a string). The only
+   * writer (market-data-loader writeHistoricCandleChunks) deletes the meta
+   * before touching the chunk list and republishes it with a new `updatedAt`
+   * afterwards, so an unchanged string means unchanged chunk content.
+   */
+  signature: string
+}
+
+async function loadHistoricChunkIndex(symbol: string, connectionId?: string): Promise<HistoricChunkIndex> {
   await initRedis()
   const client = getRedisClient()
   const raw = await client.get(marketDataKey(symbol, "history:meta", connectionId))
-  if (!raw) return []
+  if (!raw) return { ranges: [], signature: "" }
+  const signature = typeof raw === "string" ? raw : ""
   try {
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw
-    if (!Array.isArray(parsed?.ranges)) return []
-    return parsed.ranges
+    if (!Array.isArray(parsed?.ranges)) return { ranges: [], signature }
+    const ranges = parsed.ranges
       .map((range: any) => ({
         start: Number(range?.start),
         end: Number(range?.end),
         count: Math.max(0, Number(range?.count) || 0),
       }))
       .filter((range: HistoricChunkRange) => Number.isFinite(range.start) && Number.isFinite(range.end))
+    return { ranges, signature }
   } catch {
-    return []
+    return { ranges: [], signature }
   }
+}
+
+async function loadHistoricChunkRanges(symbol: string, connectionId?: string): Promise<HistoricChunkRange[]> {
+  return (await loadHistoricChunkIndex(symbol, connectionId)).ranges
 }
 
 /**
@@ -281,6 +302,28 @@ export async function getHistoricCandlesForRange(
   return [...selectedByTimestamp.values()].sort((a, b) => candleTimestamp(a) - candleTimestamp(b))
 }
 
+// ── Historic tail cache (per-pass re-read protection) ─────────────────────
+// The indication processor asks for the complete stage warmup on EVERY
+// realtime pass for EVERY symbol whenever the hot `:candles` tail is shorter,
+// and each call re-read (LRANGE) and JSON-parsed ~5.4k candles, then deduped
+// and sorted them — multiplied by the symbol count on the one Node thread the
+// engine shares with HTTP. The chunked index only changes when its meta is
+// republished (see HistoricChunkIndex.signature), so the parsed tail is reused
+// while the raw meta string is unchanged. Keyed per (connection-scoped chunk
+// list, limit); LRU-bounded above a 70-symbol basket.
+const HISTORIC_TAIL_CACHE = new Map<string, { candles: any[]; sig: string }>()
+const HISTORIC_TAIL_MAX_ENTRIES = 256
+
+function storeHistoricTail(cacheKey: string, candles: any[], sig: string): void {
+  HISTORIC_TAIL_CACHE.delete(cacheKey)
+  HISTORIC_TAIL_CACHE.set(cacheKey, { candles, sig })
+  while (HISTORIC_TAIL_CACHE.size > HISTORIC_TAIL_MAX_ENTRIES) {
+    const oldest = HISTORIC_TAIL_CACHE.keys().next().value
+    if (oldest === undefined) break
+    HISTORIC_TAIL_CACHE.delete(oldest)
+  }
+}
+
 /**
  * Load the newest bounded candle tail from the chunked history index.
  *
@@ -288,15 +331,28 @@ export async function getHistoricCandlesForRange(
  * small realtime tail. Stage coordination still needs the complete 90-minute
  * warmup, so readers must obtain that window from the canonical chunks instead
  * of forcing the loader to duplicate thousands of candles in every hot key.
+ *
+ * The returned array is SHARED while the history is unchanged — callers must
+ * treat it and its candles as read-only (the indication processor only
+ * spreads it into a new merged array), like getParsedCandlesCached.
  */
 export async function getHistoricCandleTail(symbol: string, limit: number, connectionId?: string): Promise<any[]> {
   const requested = Math.max(0, Math.floor(Number(limit) || 0))
   if (requested === 0) return []
 
-  const ranges = await loadHistoricChunkRanges(symbol, connectionId)
+  const { ranges, signature } = await loadHistoricChunkIndex(symbol, connectionId)
+  const cacheKey = `${marketDataKey(symbol, "history:chunks", connectionId)}|${requested}`
   if (ranges.length === 0) {
+    HISTORIC_TAIL_CACHE.delete(cacheKey)
     const legacy = await getParsedCandlesCached(symbol, connectionId)
     return legacy.slice(-requested)
+  }
+  const cached = signature ? HISTORIC_TAIL_CACHE.get(cacheKey) : undefined
+  if (cached && cached.sig === signature) {
+    // Hit — refresh LRU recency and reuse the already-parsed tail.
+    HISTORIC_TAIL_CACHE.delete(cacheKey)
+    HISTORIC_TAIL_CACHE.set(cacheKey, cached)
+    return cached.candles
   }
 
   let first = ranges.length - 1
@@ -311,7 +367,9 @@ export async function getHistoricCandleTail(symbol: string, limit: number, conne
     first,
     ranges.length - 1,
   )
-  return normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : []).slice(-requested)
+  const tail = normalizeHistoricCandles(Array.isArray(rawChunks) ? rawChunks : []).slice(-requested)
+  if (signature) storeHistoricTail(cacheKey, tail, signature)
+  return tail
 }
 
 /**

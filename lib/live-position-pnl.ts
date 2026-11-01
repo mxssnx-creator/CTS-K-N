@@ -116,10 +116,15 @@ export function resolveConfirmedPositionQuantity(
       exchange.size,
     ),
   )
-  const current = firstPositiveNumeric(position.executedQuantity, exchangeQuantity)
+  const explicitCurrent = firstFiniteNumeric(position.executedQuantity)
+  const current = explicitCurrent === undefined ? exchangeQuantity : Math.max(0, explicitCurrent)
   const closed = firstPositiveNumeric(position.closedQuantity)
   const total = firstPositiveNumeric(position.totalExecutedQuantity)
-  const reconstructedLifetime = (current ?? 0) + (closed ?? 0)
+  // Terminal legacy rows retain the filled size in both executedQuantity and
+  // closedQuantity. Those are two views of the same fill, not two entries.
+  const reconstructedLifetime = status === "closed"
+    ? Math.max(current ?? 0, closed ?? 0)
+    : (current ?? 0) + (closed ?? 0)
   // Explicit zero execution is evidence, not a missing legacy field. A
   // requested `quantity` must not resurrect an old unfilled row merely
   // because its stale status says open/closed.
@@ -145,6 +150,9 @@ export function resolveConfirmedPositionQuantity(
   if (status === "closed") {
     return firstPositiveNumeric(total, closed, fillQuantity, current)
   }
+  // A reconciled zero current quantity wins over old fills and a stale venue
+  // snapshot. Lifetime execution remains available through the branch above.
+  if (explicitCurrent !== undefined && explicitCurrent <= 0) return undefined
   const reconstructedOpen = total !== undefined && closed !== undefined
     ? Math.max(0, total - closed)
     : undefined

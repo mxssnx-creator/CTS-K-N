@@ -302,13 +302,12 @@ export async function runSignalsBacktest(input: {
   const now = input.now ?? Date.now()
   const toMs = Math.floor(now / MINUTE_MS) * MINUTE_MS
   const fromMs = toMs - input.request.hours * HOUR_MS
-  const [{ loadTypeMeasurementContext }, { replayDirectIndicationTypes }, { loadRangeMinuteBars }, { StepBasedIndicators }, coordinator, { ENGINE_STAGE_HISTORY_MINUTES }] = await Promise.all([
+  const [{ loadTypeMeasurementContext }, { replayDirectIndicationTypes, typeReplayWarmupMinutes }, { loadRangeMinuteBars }, { StepBasedIndicators }, coordinator] = await Promise.all([
     import("@/lib/trade-engine/type-measurement"),
     import("@/lib/trade-engine/prehistoric-type-replay"),
     import("@/lib/market-data-loader"),
     import("@/lib/step-based-indicators"),
     import("@/lib/strategy-coordinator"),
-    import("@/lib/engine-stage-history"),
   ])
   const context = await loadTypeMeasurementContext(input.connectionId)
   if (!context) throw new Error("backtest_unavailable_in_forced_simulation")
@@ -319,11 +318,13 @@ export async function runSignalsBacktest(input: {
   const worker = async () => {
     for (let symbol = queue.shift(); symbol; symbol = queue.shift()) {
       input.assertActive?.()
-      const expectedBars = input.request.hours * 60 + ENGINE_STAGE_HISTORY_MINUTES
+      // the stage window, or Auto's anchored Common window, before the first decision
+      const warmupMinutes = typeReplayWarmupMinutes(context.indicationSettings)
+      const expectedBars = input.request.hours * 60 + warmupMinutes
       try {
         const bars = await loadRangeMinuteBars(symbol, {
           connectionId: input.connectionId,
-          startMs: fromMs - ENGINE_STAGE_HISTORY_MINUTES * MINUTE_MS,
+          startMs: fromMs - warmupMinutes * MINUTE_MS,
           endMs: toMs,
           nowMs: now,
         })
@@ -356,7 +357,7 @@ export async function runSignalsBacktest(input: {
               }
               return { takeProfitPct: 0, stopLossPct: 0 }
             },
-            stepIndicatorsFor: (history, timeframes) => StepBasedIndicators.calculateSummariesAsync(
+            stepIndicatorSeries: (history, timeframes) => StepBasedIndicators.createSummarySeries(
               history, timeframes, context.indicationSettings?.commonIndicatorTypes, context.indicationSettings?.commonSettings,
             ),
             assertActive: input.assertActive,

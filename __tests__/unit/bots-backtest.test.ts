@@ -53,7 +53,8 @@ describe("bot backtest engine", () => {
   })
 
   test("costs come from the BingX fee schedule, maker for a bracket entry and TP", () => {
-    expect(BOT_FEES).toEqual({ makerPct: 0.02, takerPct: 0.05, slippagePct: 0.03 })
+    // Per leg 0.05 % taker + 0.025 % slippage: a taker round trip is the systemwide 0.15 %.
+    expect(BOT_FEES).toEqual({ makerPct: 0.02, takerPct: 0.05, slippagePct: 0.025 })
     const r = runBotBacktest(candles, { ...defaultBotSettings("sandwich"), backtestHours: 24 })
     expect(r.summary.costPctPerTrade).toBeCloseTo(0.04, 10)
   })

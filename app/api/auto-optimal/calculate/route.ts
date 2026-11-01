@@ -4,6 +4,7 @@ import DatabaseManager from "@/lib/database"
 import { EntityTypes, ConfigSubTypes } from "@/lib/core/entity-types"
 import { getConnection, getSettings, setSettings, getMarketData } from "@/lib/redis-db"
 import { aggregateCostNormalizedResults } from "@/lib/profit-factor"
+import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
   effectivePositionCostPercent,
   normalizePositionCostPercent,
@@ -470,9 +471,11 @@ function simulateTrade(
   const positionCostPercent = normalizePositionCostPercent(
     params.positionCostBySymbol?.[symbol] ?? params.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT,
   )
-  // Auto-Optimal ranks only closed simulated trades. Deduct the configured
-  // position cost once, so zero-gross moves cannot look profitable in PF.
-  const profitLoss = grossProfitLoss - positionCostPercent
+  // Auto-Optimal ranks only closed simulated trades. Charge the same cost a
+  // simulated close pays in the engine, max(real round trip, PositionCost), so
+  // zero-gross moves cannot look profitable in PF (audit COST-02: the ranking
+  // deducted PositionCost alone, below the real round trip).
+  const profitLoss = grossProfitLoss - simulatedCloseCostPercent(positionCostPercent)
   
   return {
     symbol,

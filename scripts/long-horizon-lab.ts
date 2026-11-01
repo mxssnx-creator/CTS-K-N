@@ -1,6 +1,6 @@
 /**
  * Long-horizon lab: do entries on hourly bars have an edge large enough to
- * pay the 0.26 % round trip? The engine's short-hold entries do not: their
+ * pay the 0.15 % round trip? The engine's short-hold entries do not: their
  * gross PF is 0.93-1.01 for every type x direction (scripts/pf-attribution.ts),
  * so short-horizon tuning cannot help. Over hours to days a typical move is
  * several percent, and the round trip becomes a small share of it.
@@ -17,7 +17,7 @@
  * is a stop; a bar opening beyond a level exits at its open; max hold exits
  * at a bar's close. One position per symbol and configuration at a time.
  *
- * Costs per trade: base = 0.26 % round trip + 0.03 % per day held (funding,
+ * Costs per trade: base = 0.15 % round trip + 0.03 % per day held (funding,
  * conservative and unsigned); stress = 0.39 % + 0.06 % per day.
  */
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"

@@ -41,7 +41,7 @@ const __DBGC = (message: string): void => {
 import { ENGINE_STAGE_HISTORY_CANDLES, loadRangeMinuteBars } from "@/lib/market-data-loader"
 import { expandMinuteBarsToSeconds } from "@/lib/market-data-1s-backfill"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
-import { minuteBars, summarizeTypeReplay, type TypeReplayClose } from "./prehistoric-type-replay"
+import { minuteBars, summarizeTypeReplay, typeReplayWarmupMinutes, type TypeReplayClose } from "./prehistoric-type-replay"
 import {
   advanceTypeMeasurement,
   backfillTypeMeasurement,
@@ -967,7 +967,12 @@ export class ConfigSetProcessor {
           if (needsBackfill || typeReplayContext) {
             rangeMinuteBars = await loadRangeMinuteBars(symbol, {
               connectionId: this.connectionId,
-              startMs: rangeStartMs,
+              // Auto's measurement reads the anchored Common window (up to
+              // about 31 h) before each decision; the seconds backfill below
+              // still starts at rangeStartMs.
+              startMs: typeReplayContext
+                ? Math.min(rangeStartMs, effectiveStart.getTime() - typeReplayWarmupMinutes(typeReplayContext.indicationSettings) * 60_000)
+                : rangeStartMs,
               endMs: effectiveEnd.getTime(),
             })
           }

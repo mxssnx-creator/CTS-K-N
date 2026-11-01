@@ -648,9 +648,12 @@ type ExactSnapshotCacheEntry = {
 // Keep a bounded, market-signatured read-through cache. Settings changes clear
 // it explicitly. A closed forward outcome patches the affected exact rows in
 // the cached snapshot instead of forcing the whole Cartesian grid to run again.
+// With the Common history key (completed minutes) the snapshot is rebuilt once
+// per minute by contract; the age bound only guards a stale entry. At 30 s a
+// pass longer than 30 s (many symbols) made every visit rebuild the full grid.
 const EXACT_SNAPSHOT_CACHE_MAX_AGE_MS = Math.max(
   100,
-  Math.min(30_000, Number(process.env.INDICATION_EXACT_SNAPSHOT_CACHE_MS || 30_000) || 30_000),
+  Math.min(300_000, Number(process.env.INDICATION_EXACT_SNAPSHOT_CACHE_MS || 120_000) || 120_000),
 )
 const EXACT_SNAPSHOT_CACHE_MAX_ENTRIES = 256
 const exactSnapshotCache = new Map<string, ExactSnapshotCacheEntry>()
@@ -723,6 +726,11 @@ function exactSnapshotCacheKey(connectionId: string, symbol: string, marketData:
   // cache misses caused by feeds that stamp an otherwise unchanged envelope
   // with a new wall-clock timestamp on every pulse.
   if (mode !== "historical") {
+    // The Common history view key changes exactly when a minute completes
+    // (or a stored minute is corrected), like the completed-minute signature
+    // below, without hashing every one-second candle on every pass.
+    const commonHistoryKey = String(marketData?.__commonHistoryKey || "")
+    if (commonHistoryKey) return `${connectionId}:${symbol}:realtime:c${commonHistoryKey}`
     return `${connectionId}:${symbol}:realtime:${realtimeMarketSignature(marketData)}`
   }
   const candles = Array.isArray(marketData?.candles) ? marketData.candles : []
@@ -3072,20 +3080,12 @@ export class IndicationSetsProcessor {
     // forward window exists only to grade an outcome afterwards; computing
     // the Common indicators on it (as before) let historic Sets see up to 64
     // future bars, while realtime fell back to flat synthetic candles.
-    let candles = this.getHistoryCandles(marketData)
+    // Without real OHLC candles there is nothing to evaluate: flat candles
+    // built from closes alone (OHLC = close, volume 0) made every range,
+    // volume and wick indicator read a market that did not exist.
+    const candles = this.getHistoryCandles(marketData)
     if (candles.length === 0) {
-      const prices = this.normalizePriceHistory(marketData)
-      candles = prices.map((price, index) => ({
-        timestamp: index * 60_000,
-        open: price,
-        high: price,
-        low: price,
-        close: price,
-        volume: 0,
-      }))
-    }
-    if (candles.length === 0) {
-      return { type: "common", total: 0, qualified: 0, configs: 0 }
+      return { type: "common", total: 0, qualified: 0, configs: 0, reason: "no_history" }
     }
 
     const candidates: IndicationCandidate[] = []
@@ -3151,6 +3151,9 @@ export class IndicationSetsProcessor {
         // the calculation loop continues yielding to API/control requests.
       },
       COMMON_INDICATION_CALC_BATCH_SIZE,
+      // completed higher-timeframe buckets only (the Common history holds
+      // completed minutes; a 5m/15m/30m bucket still forming is left out)
+      { completedThroughMs: Number(marketData?.__commonCompletedThroughMs) || undefined },
     )
     await flushCandidates()
     return directionalProcessingResult("common", total, this.currentCycleEntries
@@ -4308,6 +4311,12 @@ export class IndicationSetsProcessor {
 
   /** Real OHLC candles up to the decision point, oldest first. */
   private getHistoryCandles(marketData: any): any[] {
+    // The cycle's Common history (lib/common-indicators/history.ts): real
+    // one-minute bars, already causal (cut at the decision time) and bounded.
+    // Returned as the same array Auto read, so both passes share its series.
+    if (Array.isArray(marketData?.commonCandles) && marketData.commonCandles.length > 0) {
+      return marketData.commonCandles
+    }
     const raw = Array.isArray(marketData?.candles) ? marketData.candles : []
     const asOfMs = Number(marketData?.__indicationSnapshotAsOfMs)
     return raw

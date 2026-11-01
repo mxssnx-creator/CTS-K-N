@@ -561,7 +561,7 @@ export function IndicationAnalyticsDashboard({ mode }: { mode: "signal" | "main"
               ["Request interval", `${payload.signal.settings.requestIntervalSeconds}s`, "Hard minimum 30 seconds"],
               [
                 "Previous-position gate",
-                `12 closed · ratio ≥ ${Number(payload.signal.settings.configMinimumPfRatio || 1.25).toFixed(2)}`,
+                `${payload.signal.settings.configPerformanceLookback ?? 12} closed · ratio ≥ ${Number(payload.signal.settings.configMinimumPfRatio || 1.25).toFixed(2)}`,
                 "Exact source × symbol × direction × config",
               ],
               ["Website sources", String(payload.signal.settings.maxSourcesPerCycle), "35 crypto feeds + 1 InstaForex Charts feed; only compatible sources run"],

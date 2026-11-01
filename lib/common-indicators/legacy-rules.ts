@@ -175,12 +175,15 @@ const rsiRule: CommonRule = {
   at(ctx, p, i) {
     const values = ctx.memo(`kn:rsi:${p.period}`, () => rsi(ctx.candles, p.period))
     const value = values[i]
-    const midpoint = (p.oversold + p.overbought) / 2
-    const directional = value <= p.oversold
+    // Reversion: long only at or below oversold, short only at or above
+    // overbought, neutral between. The former middle-zone vote (value versus
+    // the midpoint) was momentum and flipped direction at the thresholds
+    // (audit F1, operator decision 2026-10-19).
+    const directional: TechnicalDirection = value <= p.oversold
       ? "long"
       : value >= p.overbought
         ? "short"
-        : direction(value - midpoint, Math.max(1, (p.overbought - p.oversold) * 0.1))
+        : "neutral"
     return sample(directional, Math.abs(value - 50) / 50, value, value - 50, {
       overbought: p.overbought,
       oversold: p.oversold,

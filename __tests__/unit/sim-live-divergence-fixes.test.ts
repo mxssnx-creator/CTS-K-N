@@ -78,7 +78,7 @@ describe("historic Common Sets", () => {
   const common = processor.slice(processor.indexOf("private async processCommonSet"), processor.indexOf("private async processCommonSet") + 1500)
 
   test("compute indicators on the causal history, never the forward grading window", () => {
-    expect(common).toContain("let candles = this.getHistoryCandles(marketData)")
+    expect(common).toContain("const candles = this.getHistoryCandles(marketData)")
     expect(common).not.toContain("this.getForwardCandles(marketData)")
     expect(processor).toContain("(!Number.isFinite(asOfMs) || candle.timestamp <= asOfMs))")
   })

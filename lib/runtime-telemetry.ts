@@ -33,6 +33,21 @@ const eventLoopDelay: EventLoopDelayReader | null = (() => {
   }
 })()
 
+// A second histogram that is never reset: the interval histogram above is
+// cleared by every reader (several routes and pollers), so its p95 only covers
+// whatever window the last reader left. Soaks and stress reports read this one.
+const eventLoopDelayLifetime: EventLoopDelayReader | null = (() => {
+  try {
+    if (typeof monitorEventLoopDelay !== "function") return null
+    const reader = monitorEventLoopDelay({ resolution: 20 }) as EventLoopDelayReader
+    if (!reader || typeof reader.enable !== "function" || typeof reader.percentile !== "function") return null
+    reader.enable()
+    return reader
+  } catch {
+    return null
+  }
+})()
+
 // `performance.eventLoopUtilization()` without a prior snapshot is lifetime
 // cumulative. Feeding that value into the adaptive lane controller made a
 // busy cold start look permanently critical even after the event loop had
@@ -79,6 +94,7 @@ export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
   const capturedAt = new Date().toISOString()
   let memory = { rssMB: 0, heapUsedMB: 0, heapTotalMB: 0, externalMB: 0, arrayBuffersMB: 0 }
   let eventLoop = { utilizationPct: 0, delayP50Ms: 0, delayP95Ms: 0, delayMaxMs: 0 }
+  let eventLoopLifetime = { delayP50Ms: 0, delayP95Ms: 0, delayP99Ms: 0, delayMaxMs: 0 }
   let memoryCollection = {
     highWaterMarkMB: 0,
     inFlight: false,
@@ -130,6 +146,19 @@ export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
   }
 
   try {
+    if (eventLoopDelayLifetime) {
+      eventLoopLifetime = {
+        delayP50Ms: rounded(eventLoopDelayLifetime.percentile(50) / 1e6),
+        delayP95Ms: rounded(eventLoopDelayLifetime.percentile(95) / 1e6),
+        delayP99Ms: rounded(eventLoopDelayLifetime.percentile(99) / 1e6),
+        delayMaxMs: rounded(eventLoopDelayLifetime.max / 1e6),
+      }
+    }
+  } catch {
+    // observational only
+  }
+
+  try {
     const monitor = (globalThis as typeof globalThis & {
       __memory_monitor__?: {
         highWaterMark?: number
@@ -164,6 +193,7 @@ export function getRuntimeTelemetry(itemCount = Number.POSITIVE_INFINITY) {
     memoryCollection,
     strategyMemory,
     eventLoop,
+    eventLoopLifetime,
     node: {
       version: process.version,
       pid: process.pid,

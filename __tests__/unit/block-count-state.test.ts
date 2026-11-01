@@ -405,4 +405,37 @@ describe("independent Block count lifecycle", () => {
     const state = JSON.parse(pauses["BTCUSDT|move:long#block:3"])
     expect(state.remaining).toBe(1)
   })
+
+  test.each(["long", "short"])("%s Block recovery uses the complete net multi-fill exit per entry basis", async (direction) => {
+    const redis = new MemoryRedis()
+    const winningEntry = direction === "long" ? 95 : 105
+    const losingEntry = direction === "long" ? 105 : 95
+    await advanceBlockCountPausesOnPositionClose(redis, {
+      id: `partial-${direction}`, connectionId: "multi", symbol: "BTCUSDT", direction, status: "closed",
+      realizedPnL: 3, averageExecutionPrice: 100, totalExecutedQuantity: 2, quantity: 2,
+      closePrice: direction === "long" ? 110 : 90, tradingFees: 5,
+      partialOrderExecutions: [
+        { id: "first", appliedQuantity: 1, price: direction === "long" ? 98 : 102, updatedAt: 20 },
+        { id: "last", appliedQuantity: 1, price: direction === "long" ? 110 : 90, updatedAt: 30 },
+      ],
+      blockLegs: [
+        { setKey: "winner#block:1", entryPrice: winningEntry, quantity: 1, blockCount: 1, incrementSteps: 2, addedAt: 10 },
+        { setKey: "loser#block:1", entryPrice: losingEntry, quantity: 1, blockCount: 1, incrementSteps: 2, addedAt: 10 },
+      ],
+    })
+    const states = await redis.hgetall("block_count_pause:multi")
+    expect(JSON.parse(states["BTCUSDT|winner#block:1"])).toMatchObject({ remaining: 1, recovering: false, incrementStep: 1 })
+    expect(JSON.parse(states["BTCUSDT|loser#block:1"])).toMatchObject({ remaining: 0, recovering: true, incrementStep: 2 })
+  })
+
+  test("pending accounting does not consume the close id before authoritative settlement arrives", async () => {
+    const redis = new MemoryRedis()
+    const close = { id: "settlement", connectionId: "settled", symbol: "BTCUSDT", direction: "long",
+      status: "closed", realizedPnL: 1, pnlAccountingComplete: false,
+      blockLegs: [{ setKey: "a#block:1", blockCount: 1, quantity: 1 }] }
+    await advanceBlockCountPausesOnPositionClose(redis, close)
+    expect(await redis.hgetall("block_count_pause:settled")).toEqual({})
+    await advanceBlockCountPausesOnPositionClose(redis, { ...close, pnlAccountingComplete: true })
+    expect(JSON.parse((await redis.hgetall("block_count_pause:settled"))["BTCUSDT|a#block:1"]).remaining).toBe(1)
+  })
 })

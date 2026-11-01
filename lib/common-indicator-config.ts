@@ -347,8 +347,9 @@ function catalogDefinition(entry: CommonCatalogEntry): CommonIndicatorDefinition
     storageKey: entry.type,
     label: entry.label,
     description: entry.description,
-    // New types are enabled by default (operator decision, October 2026).
-    enabled: true,
+    // Preserve the October enabled defaults; unvalidated research additions
+    // explicitly opt out until their independent after-cost evidence passes.
+    enabled: entry.defaultEnabled !== false,
     category: entry.category,
     kind: entry.kind,
     parameters: entry.parameters,

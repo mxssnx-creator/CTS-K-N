@@ -41,6 +41,13 @@ precedence over stale workspace paths in older notes.
   be lifecycle-tested only with virtual minimum volume and must finish with its
   owned positions/orders reconciled and the pre-test account baseline restored.
   Never broaden this authorization to a mainnet order.
+- Operator exception 2026-11-01: the current user explicitly authorized X01
+  BingX mainnet with 15 symbols at the minimum supported volume. Canonical
+  `bingx-x01` may opt in with `BINGX_X01_MAINNET_LIVE=1`, the placement flag and
+  exact connection allow-list. All qualification, ownership, accounting and
+  protection gates still apply. Other mainnet identities and Bybit stay
+  read-only. This supersedes the preceding X01-only restriction, not the
+  managed-access or merged-green-main deployment requirements.
 - Never print, commit, bundle, or copy into chat: SSH/Chisel secrets, private
   keys, exchange credentials, `.env` contents, raw account reports, or Redis
   snapshots. Load existing owner-only credentials only at the execution edge.

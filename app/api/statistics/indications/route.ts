@@ -8,6 +8,8 @@ import {
 } from "@/lib/signal-analytics"
 import {
   SIGNAL_INDICATION_STORAGE_KEY,
+  SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
+  SIGNAL_LANE_PERFORMANCE_LOOKBACK,
   getSignalSourceHealth,
   invalidateSignalCycleCache,
   invalidateSignalSettingsCache,
@@ -32,7 +34,8 @@ import {
   LIVE_POSITION_OPEN_READ_LIMIT,
 } from "@/lib/live-position-read-model"
 import { LIVE_POSITION_ANALYTICS_WINDOW_MS } from "@/lib/live-position-analytics-archive"
-import { isRealizedPnlAccountingPending } from "@/lib/live-position-pnl"
+import { resolveSettledRealizedPnl, resolveConfirmedPositionQuantity } from "@/lib/live-position-pnl"
+import { parseRuntimeTimestamp } from "@/lib/distributed-engine-runtime"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
@@ -87,11 +90,6 @@ function signalSourceIds(position: any): string[] {
   ))
 }
 
-function positionPnl(position: any): number {
-  const value = Number(position?.realizedPnL ?? position?.realized_pnl ?? position?.pnl ?? 0)
-  return Number.isFinite(value) ? value : 0
-}
-
 function positionPercent(position: any, kind: "stop" | "take"): number {
   const candidates = kind === "stop"
     ? [
@@ -117,13 +115,14 @@ function normalizeClosedTrade(
   connectionId: string,
   position: any,
 ): SignalAnalyticsTrade | null {
-  const closedAt = Number(position?.closedAt ?? position?.closed_at ?? position?.updatedAt ?? 0)
+  const closedAt = parseRuntimeTimestamp(position?.closedAt ?? position?.closed_at ?? position?.updatedAt)
+  const realizedPnl = resolveSettledRealizedPnl(position)
   const symbol = normalizeSymbol(position?.symbol)
   if (
-    String(position?.status || "").toLowerCase() !== "closed" ||
+    String(position?.status || "").trim().toLowerCase() !== "closed" ||
     !(closedAt > 0) ||
     !symbol ||
-    isRealizedPnlAccountingPending(position)
+    realizedPnl === undefined
   ) return null
   return {
     id: String(position?.id || `${connectionId}:${symbol}:${closedAt}`),
@@ -131,9 +130,9 @@ function normalizeClosedTrade(
     symbol,
     direction: positionDirection(position),
     sourceIds: signalSourceIds(position),
-    openedAt: Number(position?.createdAt ?? position?.openedAt ?? position?.timestamp ?? 0) || closedAt,
+    openedAt: parseRuntimeTimestamp(position?.createdAt ?? position?.openedAt ?? position?.timestamp) || closedAt,
     closedAt,
-    realizedPnl: positionPnl(position),
+    realizedPnl,
     stopLossPct: positionPercent(position, "stop"),
     takeProfitPct: positionPercent(position, "take"),
     executionLane:
@@ -220,13 +219,14 @@ export async function GET(request: Request) {
         trade: normalizeClosedTrade(connectionId, position),
         type: indicationType(position),
       })),
-    ).filter((row) => row.trade !== null) as Array<{
+    ).filter((row) => row.trade !== null && row.trade.closedAt <= now) as Array<{
       position: any
       trade: SignalAnalyticsTrade
       type: string
     }>
     const openRows = snapshots.flatMap(({ connectionId, open }) =>
-      open.filter(isExecutedRealExchangePosition).map((position: any) => ({
+      open.filter(isExecutedRealExchangePosition).filter((position: any) =>
+        (resolveConfirmedPositionQuantity(position) ?? 0) > 0).map((position: any) => ({
         connectionId,
         type: indicationType(position),
         symbol: normalizeSymbol(position?.symbol),
@@ -241,7 +241,8 @@ export async function GET(request: Request) {
       })),
     )
     const signalRowsUnfiltered = allClosed.filter((row) =>
-      row.type === "signal" || row.trade.sourceIds.length > 0,
+      (row.type === "signal" || row.trade.sourceIds.length > 0)
+      && isSystemOwnSignalRow(row.position, row.trade.connectionId),
     )
     const signalRows = signalRowsUnfiltered.filter((row) => (
       (!requestedDirection || row.trade.direction === requestedDirection) &&
@@ -447,8 +448,9 @@ export async function GET(request: Request) {
           maxOrdersPerSymbol: signalSettings.maxOrdersPerSymbol,
           maxOrders: signalSettings.maxOrders,
           configMinimumPfRatio: signalSettings.configMinimumPfRatio,
-          sourcePerformanceLookback: 12,
-          lanePerformanceLookback: 10,
+          configPerformanceLookback: signalSettings.performanceLookback,
+          sourcePerformanceLookback: SIGNAL_SOURCE_PERFORMANCE_LOOKBACK,
+          lanePerformanceLookback: SIGNAL_LANE_PERFORMANCE_LOOKBACK,
           positionSelectionMode: signalSettings.positionSelectionMode,
           trailingEnabled: signalSettings.trailingEnabled,
           trailingOnly: signalSettings.trailingOnly,

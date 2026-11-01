@@ -84,6 +84,7 @@ async function readTypeSnapshot(client: any, connectionId: string, type: Indicat
   // shapes, never additive. Prefer the exact JSON snapshot when present.
   const rows = directRows.length > 0 ? directRows : listRows
   const latestRows = parseRows(latestRaw)
+  // the created count (same unit as the progression stats); evaluated only as a last resort
   const countHint = finiteNumber(countRaw) ?? finiteNumber(evaluatedRaw) ?? 0
 
   return { rows, latest: latestRows[0] || null, countHint }
@@ -121,7 +122,9 @@ export async function GET(request: Request) {
         const type = INDICATION_TYPES[index]
         const aggregate = stats[type]
         if (rows.length > 0 || countHint > 0 || latest) connectionIds.add(requestedConnectionId)
-        aggregate.count = rows.length > 0 ? rows.length : countHint
+        // the cumulative created count (as the progression stats show it); the
+        // bounded snapshot (≤1,000 rows) only when no counter exists
+        aggregate.count = countHint > 0 ? countHint : rows.length
 
         for (const row of rows) {
           const strength = finiteNumber(

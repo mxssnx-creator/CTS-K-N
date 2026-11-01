@@ -41,6 +41,8 @@ export interface CommonCatalogEntry<T extends string = string> {
   constraints?: ReadonlyArray<readonly [string, "<" | "<=", string]>
   /** needs wall-clock bars (sessions, quarter hours or UTC days) */
   requiresWallClock?: boolean
+  /** Research additions stay opt-in until independent after-cost validation. */
+  defaultEnabled?: boolean
 }
 
 const range = (
@@ -59,6 +61,12 @@ const single = (label: string, value: number, min: number, max: number, minimumS
 /** keep = bars an event stays active (2: the firing bar is still read once it has closed) */
 const keep = (value = 2) => single("Keep (bars)", value, 1, 20)
 
+const lowRangeParameters = () => ({
+  window: range("Prior channel (bars)", 12, 48, 12, 1, 48),
+  relation: range("Relation (0 standalone, 1 trend, 2 break, 3 activity, 4 trend + break; 5–12 move relations)", 0, 4, 1, 0, 12),
+  keep: keep(1),
+})
+
 const entry = <T extends string>(
   type: T,
   category: CommonIndicatorCategory,
@@ -67,7 +75,7 @@ const entry = <T extends string>(
   label: string,
   description: string,
   parameters: Record<string, CatalogParameter>,
-  extra: Pick<CommonCatalogEntry, "constraints" | "requiresWallClock"> = {},
+  extra: Pick<CommonCatalogEntry, "constraints" | "requiresWallClock" | "defaultEnabled"> = {},
 ): CommonCatalogEntry<T> => ({
   type,
   label,
@@ -80,6 +88,20 @@ const entry = <T extends string>(
 })
 
 export const COMMON_CATALOG = [
+  entry("relativeVigor", "oscillator", "event", ["r-rvi", "r-rvi-m"], "Relative Vigor Index cross",
+    "RVI crosses its signal above zero (long) or below zero (short); gaps restart the warm-up.", {
+      period: range("Period", 10, 20, 10, 1, 100), keep: keep(1),
+    }, { defaultEnabled: false }),
+  entry("lowRangeEdgeTurn", "structure", "event", ["low-range-edge-turn"], "Low-Range edge turn",
+    "Turn from the edge of the prior narrow channel, filtered by the selected relation. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
+  entry("lowRangeFailedBreak", "structure", "event", ["low-range-failed-break"], "Low-Range failed break",
+    "Sweep outside the prior narrow channel and close back inside, with independent relations. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
+  entry("lowRangeBreakout", "volatility", "event", ["low-range-breakout"], "Low-Range breakout",
+    "Close beyond the prior narrow channel, with independent trend, break, activity or move relations. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
+  entry("lowRangeMidReclaim", "structure", "event", ["low-range-mid-reclaim"], "Low-Range midpoint reclaim",
+    "Cross the midpoint of the prior narrow channel, filtered by the selected relation. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
+  entry("lowRangeCompressionBreak", "volatility", "event", ["low-range-compression-break"], "Low-Range compression break",
+    "Break from a narrow channel compressed to at most 65% of its older context. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
   // ── trend ─────────────────────────────────────────────────────────────────────────
   entry("emaTrend", "trend", "state", ["trend-ema"], "EMA trend",
     "Fast EMA above the slow EMA with the close above the slow EMA (long), the mirror (short).", {

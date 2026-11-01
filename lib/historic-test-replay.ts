@@ -77,6 +77,8 @@ export interface HistoricCandleSimulatorOptions {
   stopLossPct?: number
   /** trailing: percent the exit trails behind the best price reached. */
   trailingRetracePct?: number
+  /** Configured trailing start band; activation is its share of the take-profit distance. */
+  trailingStartRatio?: number
   maxHoldMinutes?: number
   /** Round-trip cost in percent; also the PositionCost the result is expressed in. */
   positionCostPercent?: number
@@ -168,8 +170,15 @@ export function createHistoricCandleSimulator(
     if (request.family === "trailing") {
       return replayTrailing(candles, result.trades, {
         trailingRetracePct: options.trailingRetracePct,
+        trailingStartRatio: options.trailingStartRatio,
+        takeProfitPct,
         stopLossPct,
         positionCostPercent,
+        // The same real round trip the fixed-exit family pays (audit TRAIL-05).
+        roundTripCostPercent: roundTripCostPercent({
+          takerFeeFraction: options.takerFeeFraction,
+          slippageFraction: options.slippageFraction,
+        }),
       }).slice(0, bound)
     }
     if (request.family === "block") {
