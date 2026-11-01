@@ -3,6 +3,7 @@ import { getRedisClient, getConnection, initRedis } from "@/lib/redis-db"
 import { resolveCanonicalSymbols } from "@/lib/connection-symbols"
 import { scanRedisKeys, scanRedisSetMembers } from "@/lib/redis-scan"
 import { ProgressionStateManager } from "@/lib/progression-state-manager"
+import { readCreatedIndicationCounts } from "@/lib/created-indication-counts"
 
 export const dynamic = "force-dynamic"
 
@@ -54,14 +55,11 @@ export async function GET(req: NextRequest) {
     const indicationCycleCount = parseInt(progHash.indication_cycle_count || "0", 10)
     const indicationsCount     = parseInt(progHash.indications_count     || "0", 10)
 
-    // Per-type indication counts stored as indications_{type}_count
-    const indicationsByType: Record<string, number> = {}
-    for (const [field, val] of Object.entries(progHash)) {
-      if (field.startsWith("indications_") && field.endsWith("_count") && field !== "indications_count") {
-        const typeName = field.replace("indications_", "").replace("_count", "")
-        indicationsByType[typeName] = parseInt(String(val || "0"), 10)
-      }
-    }
+    // Per-type indication counts, one unit (created indications) and the same
+    // source order as /api/connections/progression/{id}/stats: the standalone
+    // `indications:{id}:{type}:count` counter, else the progression hash
+    // field `indications_{type}_count`, so both routes show the same number.
+    const indicationsByType = await readCreatedIndicationCounts(redis, connectionId, progHash)
 
     // ── 2. Read strategy counts ──────────────────────────────────────────────────
     // PRIMARY: progression hash. Live total is cumulative selected/created Live

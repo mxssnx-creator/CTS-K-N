@@ -1,0 +1,559 @@
+ref,sha,included_in_integrated_head,included_in_original_main,classification
+origin/CTS-v5.6,48e991a793c0d416c1c7371a32c794db6eff2c9e,True,True,included in original main
+origin/CTS-v5.7,605ddba147ab8f2f5b18ec4ec552b23329374137,True,True,included in original main
+origin/CTS-v5.8,58f81efea229528bf18ee4c3c6fa446670dcf693,True,True,included in original main
+origin,1a4d2b23a89586bb798f2ee0b563704ac53913b5,True,True,included in original main
+origin/Stable-01,b3d4e9f596aec3a783021878f09713e9dab520b9,True,True,included in original main
+origin/Stable-02,5d510058720080a5d000cc6bb297467c5c9dcb20,True,True,included in original main
+origin/Stable-03,ed13c6b377c430af810e0c882750d773982f1e2c,True,True,included in original main
+origin/Stable-10,663ea421c6041a34088ea585b02f8ce43baab9d9,True,True,included in original main
+origin/Stable-11,e6be4a70d16f9ecdd051b449568f8c7f98355c25,True,True,included in original main
+origin/Stable-12,2c2317556255c3a3cd8865f2aa720aaec67fb337,True,True,included in original main
+origin/agent/access-dashboard-redaction-20260914,dcc26a7dd21b5f50156b388ffe3ec813431f6cff,True,True,included in original main
+origin/agent/admission-own-quantity-20260921,d16fb0f94af8fe98f431bce73b6e35144390e7a6,True,True,included in original main
+origin/agent/aggregate-rearm-20261002,d7f55770f892d376b547c33feec65fcbf42a8a4a,True,True,included in original main
+origin/agent/api-correctness-20261001,26d66209e4115ebd59b07d6fb5dbced18f3d5f71,True,True,included in original main
+origin/agent/attribute-slot-continue-violations-20260924,e9f3c10859b4626af4ca09544c25b1f265bc0af1,True,True,included in original main
+origin/agent/authoritative-snapshot-cache-20260917,a6b5e2ffb72b1e379dfd820a7043e55d830947c7,True,True,included in original main
+origin/agent/axis-default-engages-20260917,4420e61939ef1ad27a102601eeba8dc46ded1f8f,True,True,included in original main
+origin/agent/axis-volume-cache-race-20260812,dd6a373317ffdb0e237a21fe1a20b951596e65db,False,False,preserved remote ref; requires separate review
+origin/agent/bingx-vst-soak-20260811,364482ff092a8bddd1a332957c49675e033046a6,True,True,included in original main
+origin/agent/bingx-vst-time-sync-20260822,4a88d4a3d7094702caf49cb1885bc21bef9fcc48,False,False,preserved remote ref; requires separate review
+origin/agent/block-active-gate-20260916,249911423781f59a951997f6105f8767316602c8,True,True,included in original main
+origin/agent/block-defaults-from-data-20260917,8c854b7d7c6d17f895091bc9702a6eaf01791ad9,True,True,included in original main
+origin/agent/block-overall-lanes-20260919,f2b375b5d16392502c7e3949157c1dbd511f83a0,True,True,included in original main
+origin/agent/block-recovery-only-20260919,44c23ee646d120df1b525968ebad286d2a37cbd0,True,True,included in original main
+origin/agent/block-row-eval-30-20260918,88de74473c251631d79011481ebd9164cad089e0,True,True,included in original main
+origin/agent/block-semantics-spec-v2-20260919,33eb4d5744d6ce1f05494bfa4e2486a16b632f6b,True,True,included in original main
+origin/agent/block-shared-lane-stacking-20260919,f456ec2e68c4f2218f6aed6acb477836c4c166dc,True,True,included in original main
+origin/agent/block-stats-prune-20260922,9abe592ae3c7e320caf481ee2e52a1ddbab89a3c,True,True,included in original main
+origin/agent/block-unbounded-multiplier-20260917,0483df57bf5a2c13535ad25a3fe348274daac9c5,True,True,included in original main
+origin/agent/blocked-reason-visibility-20260919,f03506c4ce49150a52cdad0e0347c01409f426c0,True,True,included in original main
+origin/agent/bots-cron-nonblocking-20260923,d63ebc308c0ce2bf34ba27af83a6ac177bd05486,True,True,included in original main
+origin/agent/bots-exact-settlement-20260923,aeac8fba867bc8eb2be079889452faa920745b7a,True,True,included in original main
+origin/agent/bots-live-runner-20260922,484ab7e505892e044f46e1fcd890bef44a826358,True,True,included in original main
+origin/agent/bots-partial-fill-protect-20260922,045d3f34593ed4993e0607b6f3f76845b037ed85,True,True,included in original main
+origin/agent/bots-risk-levels-20260922,14b46b0758bcfd35989be1cb64112089615c6aae,True,True,included in original main
+origin/agent/bots-section-20260922,1e17422ef238b5a224804aa55786a37db1366f44,True,True,included in original main
+origin/agent/bots-stop-retry-20260923,32234d0d24616ce087dedc33936e8e176425738d,True,True,included in original main
+origin/agent/bots-tick-deadline-20260922,5e665fffadcfc9ce7acda9281ce392b12553054b,True,True,included in original main
+origin/agent/bots-time-exit-20260923,068c6627405ca6feecac493444fd844bcba0325b,True,True,included in original main
+origin/agent/bots-types-ui-20260922,751586512aac6064691797eb78acdddbaa9a0cc6,True,True,included in original main
+origin/agent/bots-venue-reconcile-20260923,ec275b8a3762ebf6da8d4205060cb0f8906368e0,True,True,included in original main
+origin/agent/build-heap-floor-20260929,c6a0541fd791c223a76891b63391559433a380ab,True,True,included in original main
+origin/agent/cache-margin-leverage-setup-20260924,464b57102267cc3dd661764fbbf74f846f835bd4,True,True,included in original main
+origin/agent/canonical-connection-loaders-20260915,51624cb97a8461dd639c2da637638a91b6a4a333,True,True,included in original main
+origin/agent/checkpoint-retention-20260914,8b5b45d4b48f4055b72031cdcc703aa27ef60c1b,True,True,included in original main
+origin/agent/chisel-port80-bridge-doc-20260914,3327598f0a36cc5088438040185d1e6617bf4ed4,True,True,included in original main
+origin/agent/close-accounting-20260929,165de4ff54976f0cc5a8a9f6bcf6622a4f0384b9,True,True,included in original main
+origin/agent/close-accounting-backfill-20260923,395fcd49484f0a220ea170b25859d6668c708b79,True,True,included in original main
+origin/agent/close-accounting-prefilter-ids-20260923,229d1a6cc3adeaa73a0b125b611d7d3cf6ac8fc7,True,True,included in original main
+origin/agent/close-accounting-rotating-cursor-20260925,8d61978adc17d4565875c028a75f1276bac9ca5c,True,True,included in original main
+origin/agent/close-adopted-positions-20260915,2d88cb2b1e496794a954a33389eecfd829bfdd91,True,True,included in original main
+origin/agent/close-deferral-20261004,2cf7afef09b181ae9317dd40572f6fe625c7d1c2,True,True,included in original main
+origin/agent/close-pending-prefill-20260916,9473539f88e74a8d8ed2d397e26556d36253e375,True,True,included in original main
+origin/agent/coherent-set-storage-live-smoke,e2ceb755e4360d48b1f15c4be0864970855527f9,False,False,preserved remote ref; requires separate review
+origin/agent/coherent-stage-thresholds-20260921,fce4e96d17801f47c03c4888bc0dd5f74032ec33,True,True,included in original main
+origin/agent/confirm-missing-controls-20261001,ced043affecff7ba6e7e422192f556452e787625,True,True,included in original main
+origin/agent/coordination-ui-and-historic-test-20260916,55248883425d4eb9b3cac019fcb8f7d706f22901,True,True,included in original main
+origin/agent/correct-real-overall-open-position-stats,3e1a6065aed4ed2e1ae3ddcded02b4e2a7060393,True,True,included in original main
+origin/agent/cpu-aware-async-stats-20260807,0b629b7989eae7c34f40c8396a1a5f7defd231fb,False,False,preserved remote ref; requires separate review
+origin/agent/cts-server-publish-20260821,cf0226d6d875a0f330bae56146627339b005fdc6,False,False,preserved remote ref; requires separate review
+origin/agent/cycle-timing-visibility-20260916,c13042ad8b3803e63e577cb1ff858d974639c2e1,True,True,included in original main
+origin/agent/cycle-timing-visible-channel-20260917,fca22863a8ee5669d59f8ecac00e03e39e7c5ed1,True,True,included in original main
+origin/agent/dark-mode-theme-tokens-20260915,b6a798664daaa75972a17d306e8186c3dccb2846,True,True,included in original main
+origin/agent/dca-level-readside-20260916,904e017633a4f901b72d1853f4f41d653d92fc3a,True,True,included in original main
+origin/agent/ddr-prehistoric-20261002,567ac76b991cf00d0a54dccca1baa6ad0b4f95d2,True,True,included in original main
+origin/agent/default-min-pf-13-20260916,60bee22cd16a7e02c66cf6f1946ada2eeac18e75,True,True,included in original main
+origin/agent/defaults-hedge-dca-20260929,fea197f4f7e2d02a6733a8a52d98388459fda011,True,True,included in original main
+origin/agent/deferral-reason-visibility-20260917,aaa7f37fbe5b3c33e913cc8d9da1cf4794de837f,True,True,included in original main
+origin/agent/deploy-keeps-runtime-up-20260917,31ae0a88d5c9d22fcd538dbeb20c20ea7edafba6,True,True,included in original main
+origin/agent/deploy-readiness-boot-window-20260923,a09d0ec46ab3886a0f317f76c56c2fc446aae55f,True,True,included in original main
+origin/agent/deploy-readiness-transient-halt-20260923,d0a30929e0e3b3310fddb25f4446e16e801dce6c,True,True,included in original main
+origin/agent/deploy-tick-retry-20260929,244acb1073beea8b7055b68fe25ec12dba082b52,True,True,included in original main
+origin/agent/design-tokens-darkmode-20260917,a8651c2e456db2dbacd6dc92549e10340b43ba37,True,True,included in original main
+origin/agent/direct-trade-blob-retention-20260916,1c0c534fc6eb16db97bf5fd378db12437aaa0435,True,True,included in original main
+origin/agent/direct-trade-cost-basis-20260923,85e96257fe9cabc3f247020fd0bd76c5d9d9a839,True,True,included in original main
+origin/agent/direct-trade-self-healing-release,0fe03c59b4d740f1fd7822d61e17176bbc1a25d6,False,False,preserved remote ref; requires separate review
+origin/agent/direct-trade-shadow-warming-20260923,c0369fcb1566554ddb09aebae76fccd33dc0f878,True,True,included in original main
+origin/agent/direct-trade-tp-grid,b8ab8c57a437144a4ae31d711d7e4fb82ae92a2c,False,False,preserved remote ref; requires separate review
+origin/agent/dispatch-blocked-reasons-visible-20260923,b515e0379ca6ccbb43cb05d035206a21c44c8cdb,True,True,included in original main
+origin/agent/dispatch-gate-diagnosis-20260929,c58f0be67e55362d2f7a12de844f84f67de5c8c7,True,True,included in original main
+origin/agent/dynamic-venue-max-leverage-20260924,0ff84067ad30e427b6f77c28eda05fa19e11f14b,True,True,included in original main
+origin/agent/empty-book-own-fingerprint-20260921,b401d8e0edcfa88d964b8ca1457398d11b0cb6fb,True,True,included in original main
+origin/agent/enforce-entry-halt-at-execution-20260915,d60f42aa7fd2c0d2ec1190436395eb1faae164b8,True,True,included in original main
+origin/agent/engine-adopt-landed-protection-20260923,bdbd0f02a3db6d9ac47d5269bb9df1268bd9c07e,True,True,included in original main
+origin/agent/engine-settle-by-client-id-20260923,d6d5deef40b4715fb73cec42cd71d0c59944bcee,True,True,included in original main
+origin/agent/engine-system-audit-20260822,8d2f77d78e8cd0b0521f899c239828a8155e242c,True,True,included in original main
+origin/agent/exact-vst-settlement-recovery-20260823,b2d511bfc6964963220a3f987e3838ae0059382e,False,False,preserved remote ref; requires separate review
+origin/agent/family-statistics-api-20260917,6f23dec30d01e0e99f14a737735b8fda70c6c4b9,True,True,included in original main
+origin/agent/final-linux-runtime-hardening-20260823-v2,f5f723b4fc157cdf5d15b173abf880563a3fafa3,True,True,included in original main
+origin/agent/final-ratio-pf-stats-controls,ef24bd2cce7b671217faef0acb33fa39b044dcda,True,True,included in original main
+origin/agent/finish-strategy-stage-release-20260728,a593af6bd7391275a4a55f4c2c7c22c7dd0264e1,True,True,included in original main
+origin/agent/fix-server-issues-20260929,2e42b65a26e21ee632d4f430889c5ffea9ff32eb,True,True,included in original main
+origin/agent/fixes-20261003,b922b5a642bc6b3c7dc4dc468f41ae697ff78e68,True,True,included in original main
+origin/agent/foreign-position-isolation-20260916,4861a6c036039f01868877d713d84ff4d1133d75,True,True,included in original main
+origin/agent/green-main-and-ci-20260919,83738355cbab5260a6773a1aa23b7eb9e688909e,True,True,included in original main
+origin/agent/halt-interlock-at-submission-20260915,b04b68fe35f89103b892de2e0e9bfd94bbf6c075,True,True,included in original main
+origin/agent/halt-recheck-and-short-hash-20260926,620509fc5aa9abd6bdb8f2975857b12de6dfc9b9,True,True,included in original main
+origin/agent/halt-retires-on-own-book-20260917,f39306007c4edcefafcfd2770c4c2775ddf480b4,True,True,included in original main
+origin/agent/handoff-20260915-audit,4873b8c9401ceb55509a46640db8f85fdb6c52ef,True,True,included in original main
+origin/agent/handoff-20260915-btc-close,5e3c88031fed9b75cfefc7e5daa3b318e33cc15e,True,True,included in original main
+origin/agent/handoff-20260915-consistency,f4f096766f7c91595324401d4b6afab498300348,True,True,included in original main
+origin/agent/handoff-20260915-live-phase,cb7594cd312b1a080f7d65f6e9147ca781eef173,True,True,included in original main
+origin/agent/handoff-20260915-safety-audit,7d5acf8c76b3cfa083968dfe74e53941c8efaa3b,True,True,included in original main
+origin/agent/handoff-20260915-ui-audit,0a457a0097c2b43de263b89fe62532fdb9e288d3,True,True,included in original main
+origin/agent/handoff-20260916-churn,d2a7e32d0436fa58cbaec19375dbb8235b425ec0,True,True,included in original main
+origin/agent/handoff-20260916-overview-stats,799ed5d76aa3ac4f95a42a7cc24f61c1bd251543,True,True,included in original main
+origin/agent/handoff-20260916-pf-block-dca,de432bb4d0f9a736f0f44c8e92da0e091051cce2,True,True,included in original main
+origin/agent/handoff-20260916-zombies,61efc3c546025f1022b8e19ecef3086df52739f3,True,True,included in original main
+origin/agent/handoff-20260916-zombies-fixed,d35ac18332a52abea8163a732833572b03f94fbe,True,True,included in original main
+origin/agent/handoff-codes-20261003,0feb5e58f9cd54656f3d73859ec347317e0c5525,True,True,included in original main
+origin/agent/handoff-security-20261003,a15bac953f066bd5df879e8bd0a9d1b8f8095cd6,True,True,included in original main
+origin/agent/harden-vst-memory-pull-agent-20260821,315cef9183312bf39f586e9b1d67dca232c2c9d8,False,False,preserved remote ref; requires separate review
+origin/agent/historic-alias-precedence-20260929,edddcc2d4c03e9b4ff160504e99fc6c0e753268a,True,True,included in original main
+origin/agent/historic-runtime-stability-20260814,605ddba147ab8f2f5b18ec4ec552b23329374137,True,True,included in original main
+origin/agent/historic-test-scoring-20260916,ae72eb359f2b8bfd80d18c20e2ce124b700a38b8,True,True,included in original main
+origin/agent/historic-test-structure-20260929,361d19965973c320e786613cb593cc277c78a150,True,True,included in original main
+origin/agent/history-pending-and-sticky-20260923,a44b5590d2cb78a7cae58067dfe8f3d37a7d1f53,True,True,included in original main
+origin/agent/index-atomic-with-hash-20260917,82a411f650b6e68cde897727d027df2b4e1871ac,True,True,included in original main
+origin/agent/index-without-hash-20260919,71cebdd6b300e48a17dd3e9e2ff0f265f2be0514,True,True,included in original main
+origin/agent/integration-20260919,d06e3ed38b3dbfb198a714893349ca316c22b2bc,True,True,included in original main
+origin/agent/ledger-ready-20261001,d2dced6569ef8442a0aa1c978c21748187ef2503,True,True,included in original main
+origin/agent/leverage-tier-20260929,1a3cb2a540951aba323790d24055d88afc0ebe61,True,True,included in original main
+origin/agent/leverage-units-liq-20261002,fd00d54c25ac3be5de7452f782cb4c667e156543,True,True,included in original main
+origin/agent/leverage-vs-stop-20260930,179f3d2972799e4140781cd4170e5d724f0b960f,True,True,included in original main
+origin/agent/linux-prod-remediation-20260822,7126689ae72d5bc15840a70251e90fcc33e1a8ab,False,False,preserved remote ref; requires separate review
+origin/agent/live-counts-exclude-block-20260919,35ee9e349fc51a8deea6074a38425cb5aab64fb5,True,True,included in original main
+origin/agent/live-dispatch-tests-floor-20260929,6ca4b5056ad706f5208e754bad499b3febacf157,True,True,included in original main
+origin/agent/live-family-statistics-20260917,d121a331bb7d3855808478c1119430ea142bddea,True,True,included in original main
+origin/agent/live-health-monitor-20260929,7d4d8fb014ff5da8c3401a7d7a2aa07ccd20a5a3,True,True,included in original main
+origin/agent/live-results-20260929,2cc9780b9714084b5563318a28510a236c75af5a,True,True,included in original main
+origin/agent/live-shortcircuit-readiness-fix-20260917,29294e19680722eec2eeef3e7e12d6c54036f887,True,True,included in original main
+origin/agent/live-stage-halt-shortcircuit-20260917,6d9fa2a8755d63d03b369673752353638e4b3bc2,True,True,included in original main
+origin/agent/main-stage-one-per-base-20260917,742d2178d3198f31580c7a3a9b1f2a6940e4a513,True,True,included in original main
+origin/agent/mainnet-1s-history-real-minutes-20260923,e7ee7cd462c801be3243b2bc2b772d9cfc4359a3,True,True,included in original main
+origin/agent/maintenance-wait-20261001,abd34da752833fa871ebcfe9661a7a40cf6332a4,True,True,included in original main
+origin/agent/manual-close-not-reopened-20260924,dd8a2030d2ab4e0169f03d60fbe3399e78feecc9,True,True,included in original main
+origin/agent/min-sl-ratio-20261003,b9ca5459889a1f2db5a4914e30211c7b9b5f27f7,True,True,included in original main
+origin/agent/minimum-scales-with-variant-20260917,d35877e0fd9a4c4613fcf555fa5672ca50d155e5,True,True,included in original main
+origin/agent/monitor-open-status-20261002,9342d218b3e7a0fead7d564997f93b76c7a8a11d,True,True,included in original main
+origin/agent/monitor-report-fix-20260929,4bb96222254b53be059a7ff8145b06be8c6e23d0,True,True,included in original main
+origin/agent/mutation-scope-20261002,b2a330de37b4e078466b2ed927e775f93c136bfc,True,True,included in original main
+origin/agent/no-foreign-quantity-adoption-20260924,9f1cb12721873888bee47f3237fa589be39eec0f,True,True,included in original main
+origin/agent/openorders-ban-20261001,54e06f546034854069bc7cbfb82be0d134d262fa,True,True,included in original main
+origin/agent/order-id-system-connection-type-20260926,e23af5811114fb23e972468495190556e2a6aa06,True,True,included in original main
+origin/agent/orders-flow-20261002,b164e8227258eb974b938dcc5afb7d9132e999cd,True,True,included in original main
+origin/agent/orders-flow2-20261002,290907ef45e52c0ca6a54dc61531e2f6cb54e5b7,True,True,included in original main
+origin/agent/orphan-position-mirror-cleanup-20260925,4e5b83e6f3c2fe4c3ae00435e91713119da233a8,True,True,included in original main
+origin/agent/orphaned-position-sweep-20260917,4569c67b43260e96ce856e30a293bd87de638fc0,True,True,included in original main
+origin/agent/outcome-set-bound-20260917,7283dab7499f8aa5038de750ad1fe17ad60ce146,True,True,included in original main
+origin/agent/overall-accumulation-20260921,94b4187e74f19ababbf7adc51b3a72f4b4ceb199,True,True,included in original main
+origin/agent/overall-arms-fresh-slot-20260921,9503c9a1a64038b24c81eb77513ce6c2863b25a0,True,True,included in original main
+origin/agent/overall-control-orders-default-20260921,3deb8e55284459e4cc36caa2e1cfc167c4d80af7,True,True,included in original main
+origin/agent/overall-stats-relevant-connections-20260916,f06225a5766b7a195043fad93a1f91e48af04200,True,True,included in original main
+origin/agent/own-quantity-protection-20260921,eca3c277d1efd485e9913bfb09c33c1c2ab2db88,True,True,included in original main
+origin/agent/own-share-again-20261003,183084666b0bba4d1dd9a435bb5b78ed2da9188b,True,True,included in original main
+origin/agent/owned-only-protection-book-20260917,3626617cc85e19ee3d02b108f7a1bfb57f3962b1,True,True,included in original main
+origin/agent/payload-20261001,37d58ca6e10e1cd3f92a7ad8edb7825c31886207,True,True,included in original main
+origin/agent/persistent-access-handoff-20260914,748f78dc164e99a47397d5e324a19ae2429d5ceb,True,True,included in original main
+origin/agent/persistent-workflow-20260811,6af7c63d101c5addaa77e6982a849890396e1e7f,False,False,preserved remote ref; requires separate review
+origin/agent/pf-validate-20261001,ad3f6f3d34c09ffd86d29bdfa11ac9699a4c6b4a,True,True,included in original main
+origin/agent/positions-sticky-header-20260923,2303468503ff7a7351a9fb70c1b7432ba8118583,True,True,included in original main
+origin/agent/positionside-holds-20260929,dacf5e07bfd4db2dba92bd177b8225a0d28e61d1,True,True,included in original main
+origin/agent/post-entry-audit-retry-20260916,ff797fdee1a24f6daa706578fdb9055035b2c388,True,True,included in original main
+origin/agent/post-entry-audit-settle-20260922,701530283f3d28de12111bdad0b2f89e240c8c1e,True,True,included in original main
+origin/agent/post-fill-snapshot-refresh-20260922,bb4014be1a244e8a5c831b4db34cbccc8909df59,True,True,included in original main
+origin/agent/postfix-soak-validation-20260820,3d4400e4b2a24ea8cf5c38459d14f01059ea386a,True,True,included in original main
+origin/agent/prehistoric-async-20m-complete,df746f9b1a5470fc8bc440e8e2f43fc3b946e096,True,True,included in original main
+origin/agent/production-live-server-20260805,d0170a960ef847b4c5b0665d75d5257f759d4d3b,False,False,preserved remote ref; requires separate review
+origin/agent/protection-ids-lost-update-20260919,b7b0a92558d316e5dca8a6492b62d287a9953bc3,True,True,included in original main
+origin/agent/ratelimit-defer-20261001,3d67f08aa4cfb91227263c31d485192e372daac4,True,True,included in original main
+origin/agent/real-stage-accounting-20260918,885aaa9a0a66be3dedfd7e43140588e702936da1,True,True,included in original main
+origin/agent/realtime-cycle-phase-timing-20260917,75904648a8da5cf6c0779bcf0e1a27b6d1975404,True,True,included in original main
+origin/agent/reconcile-attributable-20261003,790895e69b0d598bcc86f9be46a87a860cf86314,True,True,included in original main
+origin/agent/reconcile-respects-slot-entry-20260924,f2b305ec38755769ba11001c42925cc163f55324,True,True,included in original main
+origin/agent/recover-cpu-async-20260809,494c702f16da702a4a97e058b83e1682c62d8191,True,True,included in original main
+origin/agent/recover-historic-factor-batching-20260812,adac78b2980505d04e5bc1938f6b48dde31423d6,True,True,included in original main
+origin/agent/recover-linux-vst-main-direct-20260823,b081da5f87d2b574386f5a5f27c8a4c1000f3b4f,True,True,included in original main
+origin/agent/release-context-final-20260823,539d3a5edd837d0dd789cb946410266db77745a1,False,False,preserved remote ref; requires separate review
+origin/agent/release-entry-lock-on-early-exit-20260924,71d5a2c41d30c00be5cf8850c6e82a7a45f72137,True,True,included in original main
+origin/agent/release-lock-before-transient-discard-20260924,64aefb1e60b051907bd97b58456093c141526268,True,True,included in original main
+origin/agent/replay-real-cost-20260919,25cc758595499cab99d4f511e3612da1fbeb625e,True,True,included in original main
+origin/agent/reset-db-preserves-foreign-keys-20260915,38ac525498aacb1f0573ebe8af0d3aa862f92ebc,True,True,included in original main
+origin/agent/results-truth-20261001,7ee558118a87a998683f28ff04b050875fef7750,True,True,included in original main
+origin/agent/resume-stalled-system-close-20260926,9c3782389d13577a2cb0e9e7ece5d075f9c90854,True,True,included in original main
+origin/agent/rollback-hold-heal-20261004,e93eeac8e268e6ca5ee2331d1554f5c7dc3d6849,True,True,included in original main
+origin/agent/rollback-orphan-diagnostics-20260923,21c0dd23c9d79c12d309ae9011f42093181fe2d6,True,True,included in original main
+origin/agent/server-recovery-handoff-20260914,71a84fe8ac22e1110fc5231820dcfc92b8b7666c,True,True,included in original main
+origin/agent/set-key-casing-symmetry-20260918,18e400a1fa8ec9e783a0474376379c99c31077d4,True,True,included in original main
+origin/agent/settled-rows-auto-close-20260919,39077d5747a3bd264d78cbe141d1734d6bd7b59e,True,True,included in original main
+origin/agent/shared-slot-audit-20260929,7d11d908d39276a190e565ceb1d18d5f13550346,True,True,included in original main
+origin/agent/shortrange-pf-block-counts-20260919,ee878b63801bda118eaa59f5ad320f98862194d7,True,True,included in original main
+origin/agent/shutdown-no-flatten-20260923,36f4cdd26db18b23fbf298e49f43eb800e90ff0b,True,True,included in original main
+origin/agent/signal-block-volume-release,d59f5895384749cca1b5fc3fc0bedeb3f65e1314,True,True,included in original main
+origin/agent/signal-capacity-self-heal-20260923,441e208d69d87eb81c25329c5b340c58d3ae3ff8,True,True,included in original main
+origin/agent/signal-own-limits-20260929,b8dae40ae0edb8b617502cc31e0c4476ed6e7960,True,True,included in original main
+origin/agent/signal-own-only-20260929,51823c3ce34750acb29e9cf9628f90e646b5f1b6,True,True,included in original main
+origin/agent/signal-position-slots-20260929,966d1c198369fef6ecb78205340cd8e6d338b842,True,True,included in original main
+origin/agent/signal-positions-orders-20260929,a251d8acbeab9137704cb7bf61f133b2d46db027,True,True,included in original main
+origin/agent/signal-stability-20260726,070bd16e8c866f88f99e4a05d3f9540e57d3fbc0,True,True,included in original main
+origin/agent/since-start-labels-20260915,377b0fe803fc12b50c3a4d871e3745747fa574a2,True,True,included in original main
+origin/agent/skipped-tests-deploy-contract,11fc7bf059200007713c0a1d65bc3441548fe9a4,False,False,preserved remote ref; requires separate review
+origin/agent/slot-entry-serialize-capacity-release-20260924,c0636664090a13031fde5f66601eeaacc28fb7ae,True,True,included in original main
+origin/agent/slot-halt-transient-20261003,2656bc25b1da9c14fd497f6b50475e5ef0cd279e,True,True,included in original main
+origin/agent/slot-scoped-halts-20260921,4130b62e33adbec24062ccfbc2b13e805250d7af,True,True,included in original main
+origin/agent/slot-scoped-protection-halt-20260924,a9524a8c6c92772a92cb8e7644fb1bb67f5fdee3,True,True,included in original main
+origin/agent/stability-20260929,d46cc47d09128b5cc7d5f4e09fc10a2d90ad2e85,True,True,included in original main
+origin/agent/stable-baseline-20260919,3ca1ada9a47913b754bfb75a4621025437ad8d9c,True,True,included in original main
+origin/agent/stage-counter-units-20260922,056dd57d1b80e85411ae1aa6ad23c0d62df22435,True,True,included in original main
+origin/agent/statistics-archive-normalization-20260824,bef8e4866ad570ce9734d31b44391760b8716d26,True,True,included in original main
+origin/agent/statistics-attribution-20260915,d979838f73d34a869ba6affb921d2fea9891750a,True,True,included in original main
+origin/agent/status-canonical-position-counts-20260915,4aecfec584e6f215a651ad4d1d7ae7a7c47c3c3a,True,True,included in original main
+origin/agent/stopped-out-row-not-a-violation-20260924,c3851b82189a3cd86bd008af1837fe862740fc07,True,True,included in original main
+origin/agent/strategy-stage-timing-20260917,e034d30a52882600ab40a559f7e998e692e8a807,True,True,included in original main
+origin/agent/stuck-placement-sweeper-20260916,04895af4da7f4006a2d23e22de15129b459932bb,True,True,included in original main
+origin/agent/summary-perf-20261001,36920bca29375cdc47548917ae2e2664c40f31c3,True,True,included in original main
+origin/agent/sweep-path-20261004,568deb256e6585e583c8cbb445fa9bb888fa3bdb,True,True,included in original main
+origin/agent/sync-phase-20261001,9eb11891f25901a2bfc94723ec04bb6695e1d06a,True,True,included in original main
+origin/agent/systemwide-live-audit-20260821,4e0769c8dd63e90a1f5b3c1e364f6d3fc1195548,True,True,included in original main
+origin/agent/test-budget-20261003,907dfd9a05b8bc1ac52a1a14c439de9ea1774345,True,True,included in original main
+origin/agent/tick-performance-20260929,7fa5e805d7344bebb0f8dd47bb6d47a2bf291f02,True,True,included in original main
+origin/agent/tp-must-clear-cost-20260924,ac642db17cd466619c3fc873c3955b4789450953,True,True,included in original main
+origin/agent/trade-history-own-scope-20260923,348d884a5c0c6b09f37d17c25207d0f8aca67e5f,True,True,included in original main
+origin/agent/trailing-family-wiring-20260917,a69095af35c44709857e2c4c6bf986c7885b8346,True,True,included in original main
+origin/agent/transient-halt-short-ttl-20260921,7868dfa57ef93c55814ccf8e4f5240d51535f845,True,True,included in original main
+origin/agent/transient-never-downgrades-genuine-20260921,7eae42eb8b4cfd1fb7e0a1452347225e77629748,True,True,included in original main
+origin/agent/truthful-dispatch-reasons-20260924,cefd276026897593f34488d60c28eb44e57dd3ea,True,True,included in original main
+origin/agent/ui-assigned-connection-visible-20260923,5cf3d479b9f79c68490d443c3f8930a9c067e030,True,True,included in original main
+origin/agent/ui-cleanup-and-nav-20260917,edd0b1e96cb6c63b614deeeebe507053c248cfce,False,False,preserved remote ref; requires separate review
+origin/agent/ui-connection-refresh-storm-20260923,4bd666624b004382060f11a41d9c2b5132314334,True,True,included in original main
+origin/agent/ui-consistency-20261002,48800c962c587c24999be73760203d04e48734bc,True,True,included in original main
+origin/agent/ui-prefer-running-connection-20260922,14134a1963dfb0150256fc345564f1f4ee64c50d,True,True,included in original main
+origin/agent/ui-stats-complete-archive-20260824,db28f2a997d0af0d799bf0640228759eae5c6351,True,True,included in original main
+origin/agent/unified-vst-main-stats-20260823,98ba3774dc2917e9d31766f07785248bf8febdc8,False,False,preserved remote ref; requires separate review
+origin/agent/unplaced-rows-not-exposure-20260919,4d08cb8ad17309427b124afc6a900f93c596e7bf,True,True,included in original main
+origin/agent/validate-only-measured-sets-20260918,568884806a354ba723c4b55be4e1b6a470d85a3e,True,True,included in original main
+origin/agent/venue-position-close-settlement-20260925,b7a2f7fdc97fb6e9fd90df4c35328f7f2deba58b,True,True,included in original main
+origin/agent/verify-wait-20260929,9347acdcb4df318326c1c511c7aef9b9670366e0,True,True,included in original main
+origin/agent/volume-factor-reset-20260929,ac29066318b5756a45aea3f9eb8f7b469f5d189a,True,True,included in original main
+origin/agent/volume-guard-20260929,50d1174693dcbab877033e1baaa97bbd8f19daa3,True,True,included in original main
+origin/agent/volume-risk-20261004,4dce761e21fe7e92d32139c2c05c1aec7aa68ab4,True,True,included in original main
+origin/agent/widen-direction-ranges-20260919,6b00fd6ae1cdde8ae862cc9428130ca42a63c169,True,True,included in original main
+origin/agent/x01-boot-guard-saved-count-20260923,874b26c7523d81136d10a26f45fcd4cad12fac39,True,True,included in original main
+origin/agent/x01-settings-persist-history-20260923,d156a3f49cd82ea7f105d2f20abf68ea9f96ef8f,True,True,included in original main
+origin/automation/backup-gate-20260909,5b1d730b32f959dc2d56d743da235f6848f79486,True,True,included in original main
+origin/backup/main-before-bundle-context-fix-20260904,c5cc3d712f657721873ad6a6b0631b1a6725c856,True,True,included in original main
+origin/backup/main-before-final-validation-20260815-f4b8b17,f4b8b17f45811372d63a32bf0bf8a11931646d9d,True,True,included in original main
+origin/backup/main-before-legacy-env-shell-fix-20260904,d64493c4cf63cbb76582b092db39dc3965f2ed8f,True,True,included in original main
+origin/backup/main-before-legacy-release-fix-20260904,7241b662ab12b6cd4f320e3bebb9ad605259c722,True,True,included in original main
+origin/backup/main-before-legacy-snapshot-fix-20260904,aafe23a5f4430dea82d90884e91b91c8ff7307aa,True,True,included in original main
+origin/backup/main-before-live-readiness-allowlist-fix-20260904,93a900cff9a8760e5ce4e7a05a66f7811f498981,True,True,included in original main
+origin/backup/main-before-operator-stop-init-fix-20260904,77c8e60cccb48ee34967e70bc49c0e863a9e0183,True,True,included in original main
+origin/backup/main-before-postfix-soak-20260820-1851c00,1851c00db71e485d474289f259a060b440fe32bc,True,True,included in original main
+origin/backup/main-before-release-completeness-fix-20260904,f9b87dcab83f368ea6a288964fba4dc0f2dc423b,True,True,included in original main
+origin/backup/main-before-retry-recovery-fix-20260904,d442b50b2fe6cf3d987dc129dffdcdeaadef91de,True,True,included in original main
+origin/backup/main-before-runtime-merge-20260815-9ee7b7ec,9ee7b7ec84998db2430f9b960096fc7b7109e2ee,True,True,included in original main
+origin/backup/main-before-short-release-fix-20260904,0577d3ef0d406be54fe4349c7cbc1188c42b542c,True,True,included in original main
+origin/backup/main-before-stage-row-release-20260904,ffc9dc3d2c04aff08222aa4ad8d0a772fad089fc,True,True,included in original main
+origin/backup/main-before-systemd-governor-node-fix-20260904,f66d0c7fbbdb7ad349325f3f9da60331512d6d70,True,True,included in original main
+origin/backup/pre-context-push-20260728-e14ecad,e14ecad520dbf72e0932eef802cb0a9010dea607,True,True,included in original main
+origin/backup/pre-force-agent-20260728-821c799,821c7997823450a476af75024287f71fbe7d3521,True,True,included in original main
+origin/backup/pre-force-main-20260728-8fc17f3,8fc17f3f303db9a10f0a7a696583a280de4b1b62,True,True,included in original main
+origin/backup/systemwide-audit-base-20260821-a0f81d3,a0f81d32b094d5536872d1bc6942890b5855de68,True,True,included in original main
+origin/backup/systemwide-live-audit-20260821-03daf5b,7af119a8f88cb61ea7451c5ca8aafb44cca33dc7,True,True,included in original main
+origin/backup/systemwide-live-audit-20260821-a7a7bb2,4e0769c8dd63e90a1f5b3c1e364f6d3fc1195548,True,True,included in original main
+origin/bingx-server-integration,2db3035df3ed70f3321c034b134b23041c651016,False,False,preserved remote ref; requires separate review
+origin/claude/exciting-lamport-euhxu4,1a4d2b23a89586bb798f2ee0b563704ac53913b5,True,True,included in original main
+origin/claude/funny-carson-jk9atm,888a65f37d445782cd04dca7af9ea0744025dfe6,True,False,integrated from pending PR
+origin/claude/upbeat-turing-deeb4f,16fb918c3791a218b41a50d83360d8ef58144664,True,True,included in original main
+origin/claude/zen-fermat-gswxt7,c1f4cda8eca06de2641339882a9ebc84f9ecf4ae,True,False,integrated from pending PR
+origin/codex/add-central-event-bus-module-and-update-checks,ef7ef15417728a97a2758c3545255a24c9f9f912,True,True,included in original main
+origin/codex/add-forcelocaltakeover-option-to-startengine,b7a0fb222541016f8bc66d52884fe37d1c037a42,True,True,included in original main
+origin/codex/add-helper-for-main-connection-settings-change,22ceb64891a28f1fcae1e0c760fa4a5f27e6437a,True,True,included in original main
+origin/codex/add-orchestrated-verifier-for-bingx-inventory,ae2157854af627ca695f2abd5a5af453a0307a42,True,True,included in original main
+origin/codex/add-shared-fingerprint-builder-module,f8dd00297004962c78686d2bb2b1d3a3e584ebcb,True,True,included in original main
+origin/codex/add-shared-readiness-helper,dcb55bb8b05eea38c9c332c62fa5c02d85d19b45,True,True,included in original main
+origin/codex/add-single-order-placement-service,c4056790078cad7297965954a1282d0d9f23c413,True,True,included in original main
+origin/codex/add-startup-diagnostics-writer-to-redis,d6dad62fac731ad72a4a8e844d77c076379a61f5,True,True,included in original main
+origin/codex/add-symbol-coverage-and-processing-metrics,a9b964c7da4e0e17a44773c3356e158d5fc35e71,True,True,included in original main
+origin/codex/additive-block-ctsg-dca-20260905,03bbac3b763fa50f8936cd49727d4a52729f1bc2,True,True,included in original main
+origin/codex/adjust-symbol-resolution-logic,8db09e02bbfb9b007e8e9c95d3bee997d45cb2ce,True,True,included in original main
+origin/codex/align-resume-regression-manifests-20260830,1916e3f37c2f98297392d046b0bc18b36dd8111b,True,True,included in original main
+origin/codex/audit-and-update-connection-settings-routes,8a418c59c84d4d150ad09f0e02bc84676c6d0c6b,True,True,included in original main
+origin/codex/backup-before-runtime-transition-20260830,4bb701881990c15fce1b5e51776328f292e5c865,True,True,included in original main
+origin/codex/backup-gate-20260905,5dd69e8477e09ba4ce8740c745d23c6bf5ce2137,False,False,preserved remote ref; requires separate review
+origin/codex/behebe-alle-fehler-und-aktiviere-deploy,866ee841a012fad5a61f51d81c7fc19cbb2f8d24,True,True,included in original main
+origin/codex/behebe-alle-fehler-und-aktiviere-deploy-azebol,b08b696563ebc18b609752c03438c8c520e9fd2f,False,False,preserved remote ref; requires separate review
+origin/codex/behebe-alle-fehler-und-aktiviere-deploy-m4ejau,125bf96e65ec9e3edbbde5fdc7ab2675eed9a1ba,True,True,included in original main
+origin/codex/behebe-alle-probleme,9a834fab848d82b8cf2f9577a73b2fc4b66781af,True,True,included in original main
+origin/codex/behebe-alle-probleme-bebxvl,5187cb2542574deab34fefd1070dbad4193d919c,True,True,included in original main
+origin/codex/behebe-alle-probleme-ikkn26,5f2f6e28d633cc5ff544c84bcba591060a78fe12,True,True,included in original main
+origin/codex/behebe-alle-probleme-im-code,d048b38c7b594a1c76319f9e5778a21096d75b31,True,True,included in original main
+origin/codex/behebe-alle-probleme-semuk7,acef6ea5af365e872fd92ae0216705b3ea07e363,True,True,included in original main
+origin/codex/behebe-alle-probleme-und-fehler,bd960c26880167958734d70654e6c5ac12fe005e,True,True,included in original main
+origin/codex/behebe-alle-probleme-x9o2r7,06cac3d894872fc1dc3d43437b860ae77f2c443a,True,True,included in original main
+origin/codex/behebe-produktionsfehler-bei-db-migrationen,7d5078e713b51ca8a8ef48c818a3d43011b99f82,True,True,included in original main
+origin/codex/bingx-12-dev-prod-validation,dc5f25396e5485b4f119391dead8a7446b02e07a,True,True,included in original main
+origin/codex/bingx-rate-limit-recovery-20260827,7a49c99669d1d72572b2946e78cddc94613785df,False,False,preserved remote ref; requires separate review
+origin/codex/block-break-race-recovery-20260901,762e0c70bc81f8068f850373a93e7277b12ec249,True,True,included in original main
+origin/codex/block-break-race-recovery-20260902-v2,0dfa14f9325e75bc6633786fc42aaf4c6051a450,True,True,included in original main
+origin/codex/block-progression-stability,bd8b87e63c0cba209b81a7d9f14cd015e9c4b5f3,True,True,included in original main
+origin/codex/bounded-production-shutdown-20260830,34fb397319450b48354cec9edc3cd6ec1eb5a91e,True,True,included in original main
+origin/codex/build-heap-20260906,6e5c76aca5cb756b1619f224b1d08cc4586a7e39,True,True,included in original main
+origin/codex/build-script-heap-20260906,108a75952476d1ba4cd7fb2fe9cf7ca94c49aba0,True,True,included in original main
+origin/codex/checkpoints/2026-08-02-direct-trade,fbce44cfe9945cf00d11481d4996a49f70bce99b,True,True,included in original main
+origin/codex/checkpoints/2026-08-02-direct-trade-326deb7,33f57a8c08eb82a6e52d6811886ac58bea353d19,True,True,included in original main
+origin/codex/chisel-v104-recovery,b2d14df62938e30bd36583b7b625ed3791c12c71,False,False,preserved remote ref; requires separate review
+origin/codex/classify-changed-fields-in-connection-recoordination,2b86574388c11ecd377bbbeee0e01d12c52ee797,True,True,included in original main
+origin/codex/connection-session-equity-floor,dd99107155b46b36b14aac5404a9ab5bd9d8b6c1,False,False,preserved remote ref; requires separate review
+origin/codex/connectioncard-statensetzung-beheben,e138f55a93cd912de984b40966fc1c5980d34736,True,True,included in original main
+origin/codex/context-bounded-stats-handoff-20260831,ff12f622e33839b3ef2c2a46bbb471c279990529,True,True,included in original main
+origin/codex/context-signal-handoff-20260830,15c4a96c7913a28a4ec843993930b7b9e6eb1d43,True,True,included in original main
+origin/codex/context-update-20260827,21d759622465b47042086590dd7e30d0d1534731,True,True,included in original main
+origin/codex/continuation-20260906,5eee36aa0409b88503ab49505a803f1d48c9d4ea,True,True,included in original main
+origin/codex/control-order-lifecycle-20260827,4a55f2dd3df75f2160ddbda96531ccaf7f668809,False,False,preserved remote ref; requires separate review
+origin/codex/current-strategy-total-20260905,fa78b2ccb26578d07b2f4f5f1fe643449abb05a1,True,True,included in original main
+origin/codex/define-stage-acknowledgement-events-and-update-tests,d4dfae7e24f240ac93acd1aff3473a9d516e69c8,True,True,included in original main
+origin/codex/direct-heartbeat-startup-wait-20260903,15ee3549ab41eb53fc30ab55d4b741ec67265423,True,True,included in original main
+origin/codex/direct-trade-net-coordination-6e8c9d5,8b91301906024819d4842b2d35f3ab68c1a8d437,False,False,preserved remote ref; requires separate review
+origin/codex/enforce-release-completeness-20260904,63f3778565d906437073f0c776786df6099f4777,False,False,preserved remote ref; requires separate review
+origin/codex/engine-state-mirror-20260909,06017cecc73b242d76300a6687abf65c13ca5659,False,False,preserved remote ref; requires separate review
+origin/codex/ensure-correct-handling-of-live-exchange-orders,d1349ee900e48741e6cd81b5bab06f78d7a88968,True,True,included in original main
+origin/codex/final-bounded-stats-handoff-20260831,0ba16a860a3fda1ae5c1dd17e740f4690079a4ba,True,True,included in original main
+origin/codex/final-release-audit-20260906,d1e4c870453634d4b43ae2bb92ff9c9b355c1063,True,True,included in original main
+origin/codex/find-ai-model-information,0d3198f2b2e34b911b873de34d445b6009590b3c,True,True,included in original main
+origin/codex/find-ai-model-used,8c40c46994c40a92e4908632b2cf9a24cfe16edf,True,True,included in original main
+origin/codex/find-ai-model-used-axpojt,978c34a1d6372e64e59391188ca6741150b22665,True,True,included in original main
+origin/codex/find-ai-model-used-ipq4ax,92b3c4a7fa04e3fa64901cce39ca8161ee727f6c,True,True,included in original main
+origin/codex/find-ai-model-used-ttq3m1,98e38ad90e468c9cf8c3c398c836ff08954da959,True,True,included in original main
+origin/codex/find-current-ai-version,d336d62dc82f41a0560dd32fed24e948691fea6b,True,True,included in original main
+origin/codex/fix-authoritative-empty-book-guard-20260913,2cf15c835ccc2d08c7f5ceb488124b43df27396a,True,True,included in original main
+origin/codex/fix-codex-review-issues-for-pr-#77,954de133266943d5e7bb8a75dfc977091577d09d,False,False,preserved remote ref; requires separate review
+origin/codex/fix-deployment-issues,dbd5e69f0da49c14c2e5dcf872d048a557a6e95d,True,True,included in original main
+origin/codex/fix-deployment-issues-completely,fe93dc7c965e08150155400df377f919564870da,False,False,preserved remote ref; requires separate review
+origin/codex/fix-deployment-issues-completely-tlzrjr,02ca28e0d456c546c0f5236cb4d47a1f12d63b7b,True,True,included in original main
+origin/codex/fix-exchange-trades-and-progress-issues,a323cd741e57960d5f84c9ddd75b34c70162919b,True,True,included in original main
+origin/codex/fix-high-priority-bug-in-connection-settings,ef6ca4f8812f1bf2f9e3c5b38063a852a4d31ba2,False,False,preserved remote ref; requires separate review
+origin/codex/fix-high-priority-bug-in-stats-route,757b99cede0cc161ca39b05fd344212a5c56083d,False,False,preserved remote ref; requires separate review
+origin/codex/fix-high-priority-bugs-from-codex-review,67f7c2f7b5b92221aa481abbb7e14b16eff49438,False,False,preserved remote ref; requires separate review
+origin/codex/fix-installation-issues-and-settings-limits,8ba349bdc21e45e5d00b969597acf44e5bd656b1,True,True,included in original main
+origin/codex/fix-installation-issues-and-settings-limits-s88icv,8b3ee6a37b8ffcb3a7efcebd9d823e34a1b268a2,True,True,included in original main
+origin/codex/fix-kilo-startup-20260722,4c2535ef36599e742d8c7d54a3cb6bce3eaf662d,True,True,included in original main
+origin/codex/fix-live-exchange-orders-in-production,5f18bdecfe6939cd10515faa44fd48055f5e6fde,True,True,included in original main
+origin/codex/fix-nounset-legacy-env-migration-20260904,e0eca71e38b7729f4c9e2f8e482ea039ce176e86,False,False,preserved remote ref; requires separate review
+origin/codex/fix-processing-and-stats-issues,4a5f8a52517575c3d1f9395ef4bdb366c14450ff,True,True,included in original main
+origin/codex/fix-processing-and-stats-issues-4d2uos,cd7f6125ffb372561b3e06206ce913bb3293bd00,True,True,included in original main
+origin/codex/fix-processing-and-stats-issues-7wpvsc,df935dd2ee9ae3e749c524860608b687d62a67e5,True,True,included in original main
+origin/codex/fix-processing-and-stats-issues-bbthrz,99c7d27a445bb93780c629cbecd779de3b660bde,True,True,included in original main
+origin/codex/fix-progress-and-synchronization-issues,05963e219eb95ee6bdc91221629a415e9f47752c,True,True,included in original main
+origin/codex/fix-progress-and-synchronization-issues-h7vkfb,f7e54f131428dbeccb1272520d1d115eadf4b2ab,False,False,preserved remote ref; requires separate review
+origin/codex/fix-quickstart-auto-start-and-order-placement,098d36a20e84e9d8b36e4ac1ccc291f0b8099653,True,True,included in original main
+origin/codex/fix-quickstart-auto-start-and-order-placement-d0wcjq,a0055325abf92eed35a7b3af9921bc1ed7f4e3ab,True,True,included in original main
+origin/codex/fix-quickstart-auto-start-and-order-placement-v37rt0,f393e16725b0076254bf69568fcebc135391d416,True,True,included in original main
+origin/codex/fix-real-live-data-integrity-20260913,0754adb2a158de9319716a50462613acb775f76d,True,True,included in original main
+origin/codex/fix-remote-install-functionality-in-settings,c620463014c9995c89d1656ef8ba03fc3ee400af,True,True,included in original main
+origin/codex/fix-remote-install-functionality-in-settings-7gn7bw,09c4fa8e50f2d5bef04eec3f5100339ea495036d,True,True,included in original main
+origin/codex/fix-remote-install-functionality-in-settings-by0ygh,2311c418e4997111495387205ccb57921880f48d,True,True,included in original main
+origin/codex/fix-remote-install-functionality-in-settings-j0jje3,59fff7abdebea3f197af0df67d3770ab2d86e30f,True,True,included in original main
+origin/codex/fix-safe-simulation-contract-file-20260830,70d076a6d8079783bb9fa9e7c3fede11878146a8,False,False,preserved remote ref; requires separate review
+origin/codex/fix-safe-simulation-deploy-20260830,51dfb81811ecc4303f46a4f92fbe6ca527c6a9ab,False,False,preserved remote ref; requires separate review
+origin/codex/fix-settings-recoordination-error,87a9826cb0a9c91b49811f08abef15fb4a20e9d7,True,True,included in original main
+origin/codex/fix-systemwide-issues-and-optimize-performance,cb56647a7c3f16ee3adb06d58c9bc4d872c148f7,True,True,included in original main
+origin/codex/forex-instaforex-20260830-safety,9323a16542ff15b83d9e5955242838c29d08597e,False,False,preserved remote ref; requires separate review
+origin/codex/forex-instaforex-final-20260830,f895448c3f0b9ec8629fbb2993a7bba2ef62f525,True,True,included in original main
+origin/codex/forex-release-record-20260830,90da81674dc9ee0b6cecc988bf54ed5cef3166f6,True,True,included in original main
+origin/codex/fractional-close-grid-20260909,2e96e5078981911d70f9ab963caa7f4fe9ce1652,True,True,included in original main
+origin/codex/harden-pending-recoordination-state,8f0cbf0ef79bfb8591808653cf7f42dba659f1fa,True,True,included in original main
+origin/codex/identify-ai-model-used,36df7d188a565ca112e898299bf8ecd3edd6d04f,True,True,included in original main
+origin/codex/ignore-inactive-legacy-release-snapshots-20260904,8931ddfcb4f3109fceba6262331421c5f0f71f06,False,False,preserved remote ref; requires separate review
+origin/codex/implement-canonical-event-schema-and-routing,e1f4864a011b1838dc23aed4bd3e47c5a02956b3,True,True,included in original main
+origin/codex/implement-durable-refresh-mechanism-after-writes,5ff8474322eedb0be9144bdc72735e15476391ae,True,True,included in original main
+origin/codex/implement-fail-closed-restart-operation,6e2fbd6783e9491e41e1b4f1bafbbc17fda90ec3,True,True,included in original main
+origin/codex/implement-shared-dashboard-event-client,48723d57465c54b74261c61803227cf5e86988c0,True,True,included in original main
+origin/codex/installer-gate-fix-20260830,3317180d1fda9be6700a196c9f37c6ec79108e69,True,True,included in original main
+origin/codex/installer-live-chisel-20260903,d202fa9fe271217bac45a64d267fe6a131173d6c,False,False,preserved remote ref; requires separate review
+origin/codex/installer-live-opt-in-and-x01-projection-20260830,b695f31218bcb0ceb7c96cb9eebdeb618427b931,True,True,included in original main
+origin/codex/isolate-installer-jest-runtime-20260830,d3db5a7dfcc4ddc0ba2eb21d8fd1a91fa07e32ca,True,True,included in original main
+origin/codex/live-dispatch-counter-fix-20260909,4de5f3d67f778f97a33d27f59b22d236688aeb93,True,True,included in original main
+origin/codex/live-order-accounting-20260909,b07782f900ffe7ee06abe19ea43e8c73d7bb9785,True,True,included in original main
+origin/codex/live-position-readiness-20260910,78e4d591f5cf42c52d986fbb1c3395202cb5012f,True,True,included in original main
+origin/codex/live-safety-strategy-coordination,c304d2a8d299354e3e116bfbc0b527f7fe1a63d6,False,False,preserved remote ref; requires separate review
+origin/codex/live-summary-indication-stats,fe6db88613191b6247577491b4b2c7a668b08309,False,False,preserved remote ref; requires separate review
+origin/codex/live-vst-overview-fix-20260906,72fbc71da612b392e10505a08afa3679858067aa,True,True,included in original main
+origin/codex/main-indications-stats-20260830,42182e9682ce2c63eee8dcd3a09df44aa4253285,True,True,included in original main
+origin/codex/make-engine-coordination-event-based,9143f92edc96e7fa5fab303eddeb322c4d253229,True,True,included in original main
+origin/codex/native-redis-stats-vst-20260904,af588f51294bfa9cb51e765284a91097298e2197,True,True,included in original main
+origin/codex/netted-slot-generation-recovery-20260827,b368087d3f51aa0232d83b573be54d6fd6fa51f6,False,False,preserved remote ref; requires separate review
+origin/codex/normalize-live-position-status-grouping,2484eef9cd4b9e4a4a1b97218de3c1dc2cf35754,True,True,included in original main
+origin/codex/order-counter-integrity-20260909,6fe2f8a7ec092fd170fb40f9dc4aa925b246745f,True,True,included in original main
+origin/codex/order-counter-validation-20260909,86892dea2c1055be488417adbdb31c2b0b5938bb,True,True,included in original main
+origin/codex/overall-control-orders-20260912,deefe8663b27cb9f37e8af285ac4dc3fd3920644,True,True,included in original main
+origin/codex/overview-reliability-20260905,2961999441ba0fb2abe0db8dfd4f10075d944f11,True,True,included in original main
+origin/codex/per-symbol-counter-rebuild-20260909,1c1525f45ed421b39e6c1192288d09a9ae4807cf,True,True,included in original main
+origin/codex/pnl-exchange-attribution-20260827,c3716e9b3069023c28107af7278c586c0b15cb6d,False,False,preserved remote ref; requires separate review
+origin/codex/portable-minute-scheduler,fd4066face0cd4df51c01675f452e02a0e6a6588,True,True,included in original main
+origin/codex/pr332-runtime-acceptance-20260909,e0ebcf8559431626e036579e0e30e85b357dff9d,True,True,included in original main
+origin/codex/preserve-operator-stop-deploy-init-20260904,a5ea46518cab4064b11aeaad41a6bef69dd627c1,True,True,included in original main
+origin/codex/preset-optimizer-release,414602455825c2d3d68a76025db41adf40bf4142,True,True,included in original main
+origin/codex/production-async-validation,24865cb1c4aec21c1918a86ff4a2bac80afee6d6,False,False,preserved remote ref; requires separate review
+origin/codex/production-hardening-20260904,82787744884e65443b34f580e318d0755a769bdf,False,False,preserved remote ref; requires separate review
+origin/codex/production-memory-ui-stability-20260904,7ba3fc10ba8598297793fe8cc29ac8727f405df0,True,True,included in original main
+origin/codex/quickstart-live-admission-20260909,e4467c2e14a817c6ced9090af66457cf05d15ad8,True,True,included in original main
+origin/codex/quickstart-timeout-headroom,408f6be3905314013451636c633348e0ec4f03a6,True,True,included in original main
+origin/codex/real-stage-detailed-stats,492c55d976c068f745dcbebf4a3d171028724bec,False,False,preserved remote ref; requires separate review
+origin/codex/recalc-final-handoff-20260913,9142cc58961ac6de84c85601a97ffd70c9961416,True,True,included in original main
+origin/codex/recalc-invalidation-20260913,b56de3a66959ac7b0f86803b844c8924305f00d9,True,True,included in original main
+origin/codex/recognize-inactive-legacy-snapshots-20260904,e6343e1b528f8320fc9621d1ec87faf5ae1e23ae,False,False,preserved remote ref; requires separate review
+origin/codex/recognize-short-legacy-release-shas-20260904,26f5f03ceedfd7f0b01fe63451aef6f7ce020dcf,False,False,preserved remote ref; requires separate review
+origin/codex/recover-protection-halt-with-foreign-exposure-20260913,3acc9253db94f5845f1ec41fb63699cb4029332d,False,False,preserved remote ref; requires separate review
+origin/codex/recover-protection-halt-with-foreign-exposure-full-20260913,5cb46ad3d1b0a238b5a08c92063e8cc471ea91a2,True,True,included in original main
+origin/codex/redis-diagnostic-shutdown-20260902,e7ac72c6566220c0af0a1a5c106182670ceb1ebf,True,True,included in original main
+origin/codex/redis-retention-live-hardening-20260902,88fa424396e4bc0ed787bcb89b89923fa7704f84,True,True,included in original main
+origin/codex/redis-retention-repair-20260830,22ac1344792cfabf7d836d5a58af9c9eb783c69b,True,True,included in original main
+origin/codex/refactor-connection-settings-update-process,e9c59576a7a35116f89011bd9d0acc74505690d8,False,False,preserved remote ref; requires separate review
+origin/codex/refactor-dashboard-active-connections-manager,d2044adf22b7330f318b6bf079884dc272c64917,True,True,included in original main
+origin/codex/refactor-parsing-logic-for-orders,0516fd58015d549621954828cadbd93240b97643,True,True,included in original main
+origin/codex/remove-client.keys-from-production,ee01ffffe252a9e7283f94c145d5c333b3baac50,True,True,included in original main
+origin/codex/repair-recreation-manifest-20260830,e39953f65f81a783221a4ceec838b8af0113b9c5,True,True,included in original main
+origin/codex/replace-array-storage-with-redis-for-orders,117dd20b2201527662e8f6fec26dcdb42b1040d1,True,True,included in original main
+origin/codex/replace-concurrency-model-with-redis-locking,066f6575fee50d3f09d0e67537f5c59c66af0001,True,True,included in original main
+origin/codex/resume-incomplete-clean-install-20260904,a59bb83d3862c679eebbafb4fc1463d370b3e0b4,False,False,preserved remote ref; requires separate review
+origin/codex/retention-script-clean-exit-20260830,5449f866d5aaeb70a19610074fb751dea78c7811,True,True,included in original main
+origin/codex/runtime-maintenance-vst-ownership-20260829,0c6fd0cb27399792467bac28c8d5be8d81994795,True,True,included in original main
+origin/codex/runtime-transition-sticky-stop-20260830,0d5cf413cdcc10ba2118244468e86dd9bda16962,True,True,included in original main
+origin/codex/runtime-verification-20260906,1ee298116dd5846d888f25c3348a9bd6efff6308,True,True,included in original main
+origin/codex/server-autoboot-20260902,38d84a53f24f901ad780375de7dbdfdee1968a9e,True,True,included in original main
+origin/codex/server-autoboot-maintenance-guard-20260902,5d01b669802773a2313341a6ecd3f7a9fb04fe71,True,True,included in original main
+origin/codex/signal-overview-shared-runtime-20260830,98b183e9c9152b871d29b16e52676a63c9b65666,True,True,included in original main
+origin/codex/sol-causal-block-recovery-20260912,ed7cf66003eac186e16c6eb25b2ab7f90937a525,True,True,included in original main
+origin/codex/sol-remote-handoff-20260913,0bde5a04bd73ddb932695e65c121741034c18b17,True,True,included in original main
+origin/codex/stabilize-symbol-mirrors-installer-rollback-20260830,3c9c7c547d157734965e60f8941f426048b84b1e,True,True,included in original main
+origin/codex/stage-accounting-multi-instance-20260904,68a197673ec60cdb0e7b80c7889e1154c2607301,False,False,preserved remote ref; requires separate review
+origin/codex/stage-evals-vst-admission-20260904,da8cd875b506941ee41284bcfa864a7be8f174ce,True,True,included in original main
+origin/codex/stats-stream-vst-band-20260904,f22e16eb41eac416c885977bf243e071d07dc3db,True,True,included in original main
+origin/codex/status-live-overview-20260906,8eb78382e001cc0367947a906753788445784612,True,True,included in original main
+origin/codex/trend-indication,817a8a35a99bae3d9ef84f07cdf0cd6e70e84a69,True,True,included in original main
+origin/codex/uberprufen-und-alles-beheben,45eab91a1e2364db853af9fa9bb72c273ae2a9b7,True,True,included in original main
+origin/codex/uberprufen-und-alles-beheben-f8a82k,77617ca9342e45e42daecbcd1b58c7264d3f707a,True,True,included in original main
+origin/codex/uberprufen-und-beheben-aller-probleme,78f97ccd28f0925710c0b48dd0e01fde00f6d2f8,True,True,included in original main
+origin/codex/uberprufen-und-fehlerbehebung-der-funktionalitat,524ed2cf79b253cc0cf5c29004ad59adb4d6881c,True,True,included in original main
+origin/codex/uberprufen-und-fehlerbehebung-der-funktionalitat-gio1kr,e666c60139b2ae5a5401a8c7f9e31c9151856343,True,True,included in original main
+origin/codex/uberprufen-und-fehlerbehebung-der-funktionalitat-kvwwzg,2d32096c0bb6f533f676287649ac9c3ab553bf37,True,True,included in original main
+origin/codex/uberprufen-und-fehlerbehebung-der-funktionalitat-uim7cz,3bf1dd6912f6d44043df388b192cf97ac58db27f,True,True,included in original main
+origin/codex/uberprufen-und-probleme-auf-hauptseite-beheben,3c7c6ade48f6dc00e9345f9923381a92d93d7534,True,True,included in original main
+origin/codex/uberprufen-und-probleme-auf-hauptseite-beheben-4g4ggo,977e4230de4f2ce08987be0e6fb0c6d30d549cbb,True,True,included in original main
+origin/codex/ui-main-connections-audit,8832b1c482e830ac608f4210a60995f839d22da3,False,False,preserved remote ref; requires separate review
+origin/codex/update-cleanuporphanedprogress-logic,5bd3f4bc231164e84e6a2df8c93c01554ee79635,True,True,included in original main
+origin/codex/update-cleanupvolatileruntimestate-logic,afe87a23a8f9f8640fbdb754795a476e48248386,True,True,included in original main
+origin/codex/update-completestartup-for-trade_engine,73fedf913b891251ace72181eac811adb5c754a5,True,True,included in original main
+origin/codex/update-connection-recoordination-logic,94cdb969d2bb98984dfca0269ae83d25c2b3b388,True,True,included in original main
+origin/codex/update-connection-settings-integration,3e171b5997bd8fdc1ae9f8a62717b5afda4712ce,True,True,included in original main
+origin/codex/update-connector-fingerprint-handling,07b54828b052cda8e7b38001280bf213a8c9aeb1,True,True,included in original main
+origin/codex/update-engine-auto-initializer-behavior,5b1b8b4dedcdfc9ab5a86f7121356bf3c09f4ee6,True,True,included in original main
+origin/codex/update-engine-refresh-queue-and-settings-response,16659c493b9e8e95a01b88373bf2fe48b31a84fd,True,True,included in original main
+origin/codex/update-engine-refresh-queue-management,f803830311e56199b617c52139d97fdd1c28d249,True,True,included in original main
+origin/codex/update-enrichpnl-to-treat-0-as-valid,b42356d8422b978365afbcf1f9e9b6a2fe7f3be4,True,True,included in original main
+origin/codex/update-getconnection-for-merged-redis-reads,e37b4f3353d246986e600a07f34ac82ee1d7b89f,True,True,included in original main
+origin/codex/update-initialization-logic-in-route.ts,5eaeeadb914c747ce6cf678649681df9b6718913,True,True,included in original main
+origin/codex/update-initredis-method-in-redis-db,8132bf558b306f1d22ff7300f6e685a42b7066bc,True,True,included in original main
+origin/codex/update-lib/connection-recoordinator.ts-implementation,cef2de19e95724ef2729bef4e67ad19bbed347a2,True,True,included in original main
+origin/codex/update-live-order-lock-helpers,c631b357bf2265903f36e716923389b39a1abd04,True,True,included in original main
+origin/codex/update-live-stage-for-failed-order-metrics,7f554530ac71e6280ad0bf27219bda6af51a7982,True,True,included in original main
+origin/codex/update-live-stage.ts-for-simulated-orders,a8d17b1fc5053c3593f3c41fbd16f833b8470830,True,True,included in original main
+origin/codex/update-live-stage.ts-for-simulated-orders-jd2nrz,a0bbef292f8da6eeef38886379aad15771745716,True,True,included in original main
+origin/codex/update-liveposition-for-durable-field,af47fc59bdbcda4e391b67a7ffda425285bfc12c,True,True,included in original main
+origin/codex/update-notifysettingschanged-for-redis-usage,497e938bdeb76e238cf19cfcc98d6e2625545f85,True,True,included in original main
+origin/codex/update-processqueuedenginerefreshrequests-method,5a58a10db625f60fd5dd44e55016124803e8c1bc,True,True,included in original main
+origin/codex/update-progression-state-management-keys,1e00798abb7ff93f0c8ac7ee9aebb32bae50a62b,False,False,preserved remote ref; requires separate review
+origin/codex/update-progression-stats-for-authoritative-scope,3d9ee404ab53e87c241f80c10cab83a88a4f6040,False,False,preserved remote ref; requires separate review
+origin/codex/update-progression_visible_setting_keys,4fd4a7e2d82e82739c8bdc2a4ea3f3d68e6c7c06,True,True,included in original main
+origin/codex/update-quick-start-button-for-connection-handling,62c5738acfd3797de2a1d7ac4b1d2ddd2759493d,True,True,included in original main
+origin/codex/update-quick-start-button-functionality,ee510a8ca4d8b4d450099c8c0119f3aa49ef96dd,True,True,included in original main
+origin/codex/update-quickstart-route-for-connection-settings,7c11abf97c5e54038380f9d7bdc5cb39bad66e7b,True,True,included in original main
+origin/codex/update-quickstart-settings-handling,d7f1c9a125abc569dfd5067a14791073f0df03b8,True,True,included in original main
+origin/codex/update-redis-instance-connection-requirements,d6e53aa62a1a5ef2bffee896d8564c81ef27652a,True,True,included in original main
+origin/codex/update-redis-migration-flow-and-coverage-repair,db04ca0137fdf78947e6b30f2e90ad13f6c86b35,True,True,included in original main
+origin/codex/update-trade-engine-quick-start-route,759af04aa1a34b6a415e074e8e14b42142102159,True,True,included in original main
+origin/codex/update-trade-engine-timeout-handling,927e5f98e1a5c034f252390cdf652926ea8c6cee,True,True,included in original main
+origin/codex/update-validateorder-for-market-orders,8e6391fc182a3b65acd05330fb2e7a76631cb3ad,True,True,included in original main
+origin/codex/visible-progress-recovery-20260904,5e8b085fab635f8c27b0369730415935820763a0,True,True,included in original main
+origin/codex/vst-continuation-20260904,702f71f3f2b5adb23901b034cce21a79d2f63756,True,True,included in original main
+origin/codex/vst-margin-verified-20260904,0072227dfe1901224a082d7c35ac8bfeb2f0aa99,True,True,included in original main
+origin/codex/vst25-live-results-20260908,34b8498913dcc1c24611435ed70b9be3543ec55b,True,True,included in original main
+origin/codex/x02-exact-slot-protection-20260829-0142,046fd7356c4096f3713f9e9e4e2cd93317631d2a,True,True,included in original main
+origin/codex/x02-owned-recovery-20260913,c16c4e01a2ec87399c22ec4f241ac387629de8d1,True,True,included in original main
+origin/codex/x02-restart-stats-recovery-20260827,75e7aae4f80e072633c70a86854731ebc726e5e0,False,False,preserved remote ref; requires separate review
+origin/codex/x02-security-stop-trailing-rearm-20260829,26da476a57e7a2cf344a093bf34725d84d73d6b0,True,True,included in original main
+origin/codex/x02-soak-runtime-safety-20260829-a4d432e,d150362f520d0eba422113aeb18c475c114fb65c,True,True,included in original main
+origin/codex/x02-vst-orphan-flatten-operator-20260830,a17aca25d61084368e36bf09b4f27799b2006f98,False,False,preserved remote ref; requires separate review
+origin/docs/backup-github-chisel-policy-20260826,2cd3e33696006bd2e521ab8550f8565e92a1ad45,True,True,included in original main
+origin/docs/direct-trade-release-handoff-20260830,c5c51c76f8803a0d7fa2d94ae74ecf644790fd3b,True,True,included in original main
+origin/feature/remote-direct-pf-v101,71d01f3bf15c24418c188a694a2e2a99f27be720,True,True,included in original main
+origin/fix/bingx-109421-order-notfound-cooldown,b6c00aefc5446ece4619f8c9d6bee6ad85996bb5,True,True,included in original main
+origin/fix/bootstrap-bundle-verify-context-20260904,0a0d3c767e59a7a6beb75e526c3b77eb2aaba8a8,False,False,preserved remote ref; requires separate review
+origin/fix/bootstrap-owner-progress-20260826,a90e332a2ab120f26ce69ee623fe036e6da55f4c,True,True,included in original main
+origin/fix/continuous-overview-stage-stats-20260826,6044ae2d8b1a8deb75ae704af3aee2968095989b,True,True,included in original main
+origin/fix/control-orders-complete-20260826,522dda85f27b5ff81f3ac5f3cecaf7346b8dba8d,True,True,included in original main
+origin/fix/control-orders-stability-report-20260826,d1e9a1540e08434eb4e05390ca8ae38b41a3ea9c,True,True,included in original main
+origin/fix/cts-minimum-volume-protection-20260827,68c7c0d41e82748e66529cfb130b01bde3e80ae9,False,False,preserved remote ref; requires separate review
+origin/fix/cts-minimum-volume-protection-verified-20260827,0a3d91df5d6537e0496f8d06aea5be9191f6bde7,False,False,preserved remote ref; requires separate review
+origin/fix/direct-startup-ledger-recovery-20260829-1237,2a1b86ec98fa0aec4470df1bedb03cfa57cda86b,False,False,preserved remote ref; requires separate review
+origin/fix/direct-trade-average-stats-20260826,946c2370fb412e36a3ef3cc159d7001e03e65475,True,True,included in original main
+origin/fix/direct-trade-vst-live-20260830,5a34734d381bda99f8db1f82f0df72f3752588d1,True,True,included in original main
+origin/fix/direction-protection-stat-integrity-20260829-1402,33ab3b8eaa8d0b74abb59859da635e342cc46c98,False,False,preserved remote ref; requires separate review
+origin/fix/distributed-readiness-status-20260825,7a5c2c2221bef153ff546590835a1a9fe2f1210c,True,True,included in original main
+origin/fix/exact-historic-pf-source-20260824,560648eeaebcdce93aff4d4a78b3a206f7b124b6,True,True,included in original main
+origin/fix/exact-order-accounting-reconciliation-20260824,207e738b33ebb8c04208b24c8c23e188874f1b32,True,True,included in original main
+origin/fix/favicon-metadata-20260825,a5cdc84f1432cbabed821db0a0a1e6dcca936c72,True,True,included in original main
+origin/fix/historic-bridge-close-backoff-20260826,d18ccd3208a7ec86937bbe6242c867615451c9fd,True,True,included in original main
+origin/fix/historic-four-hour-stats-20260824,56bf1f082ced2fa6c0f2755dcf1a13e45aa61673,True,True,included in original main
+origin/fix/install-lib-permissions,9af053bbd7f8b27313e6e9e3fd85ec103af6e1e3,False,False,preserved remote ref; requires separate review
+origin/fix/installer-runtime-permissions,2027b9e5bc413a0bb26f2b684ca0d9a51f50aaff,True,True,included in original main
+origin/fix/live-path-tuning,ca5dd97c754be8aa5f45f5c53192ecdf01b99b40,True,True,included in original main
+origin/fix/live-readiness-allowlist-20260904,2402f6545d8afa28b8c9c657ecf8161c6e20df63,False,False,preserved remote ref; requires separate review
+origin/fix/prefill-close-finalize,bd98083b9325d669ab399c7a89ab8f67edc5f203,True,True,included in original main
+origin/fix/production-safety-checkpoint-20260829-1201,55fbbe07db0b55f7c600cf46dc5f86139b2ed4ca,False,False,preserved remote ref; requires separate review
+origin/fix/protection-reconciliation,27f97589bb64fbebe104162d5ae4338bfb2fc16c,True,True,included in original main
+origin/fix/real-stage-logical-set-stats-20260826,19cb9306d51f5147574904a07059eae6e6515654,True,True,included in original main
+origin/fix/restore-direct-trade-processor,050af2cd863416077b91ec3a94a7c8deb98ccfc1,False,False,preserved remote ref; requires separate review
+origin/fix/runtime-stats-stability-20260825,3eeed5780b08650c29267a83e09eaf44c9816697,True,True,included in original main
+origin/fix/scheduled-progress-heartbeat-20260826,01654d027e11c8aaf257d3e02874c0498a9930db,True,True,included in original main
+origin/fix/serverless-sse-reconnect-20260825,626ae092354a0a1f35339b23aef74e1b57dae053,False,False,preserved remote ref; requires separate review
+origin/fix/statistics-accounting-reconciliation-20260824,04076ff25ceff7f2995c7fa30017652baf7757b0,True,True,included in original main
+origin/fix/stuck-placed-close,44750849b10a98b18852532fd4dcd237a02fed42,False,False,preserved remote ref; requires separate review
+origin/fix/systemd-governor-node-path-20260904,eae3c9c2c1a5762ea3a6ba1fdabd17a073fa385b,False,False,preserved remote ref; requires separate review
+origin/fix/x02-control-security-20260828-recovered,dbb2ca706d50581ed30f5b7c2c03c7fa37c23c93,True,True,included in original main
+origin/fix/x02-external-protection-coexistence-20260829,986b7f378f4639f7fa2c77b1ff15d3f35deffd19,True,True,included in original main
+origin/fix/x02-security-stop-quantity-20260828,68bb56cc8f34e933b2d21ad395b0c1048ebb85ed,True,True,included in original main
+origin/fix/x02-shared-symbol-race-20260829,3f5e4b74e9a407c160e8740b453f56141214ffeb,True,True,included in original main
+origin/fix/x02-vst-hour-stability-20260827,b34f5dad245fb5909851810931353fd51d0ea7e1,False,False,preserved remote ref; requires separate review
+origin/fix/x02-vst-preflight-fixture-20260828,c7b95ac1501624b4c8d10fecd418373bb081567a,True,True,included in original main
+origin/kilo,b6f7039010c77b6edeb4338b85f1ba359ac0d591,False,False,preserved remote ref; requires separate review
+origin/main,1a4d2b23a89586bb798f2ee0b563704ac53913b5,True,True,included in original main
+origin/pr561,888a65f37d445782cd04dca7af9ea0744025dfe6,True,False,integrated from pending PR
+origin/pr562,c1f4cda8eca06de2641339882a9ebc84f9ecf4ae,True,False,integrated from pending PR
+origin/release/green-main-20260827,fe07b31095b37f3cde2ff2651e31bfafb80306a1,True,True,included in original main
+origin/remove/grok-dashboard-20260829-1441,5bed115327cbd7eeae304dd811581aa30e2bc306,False,False,preserved remote ref; requires separate review
+origin/remove/grok-dashboard-manifest-20260829-1450,cecb538c5fa47b3fa13ae5dd13ad07d846a11009,False,False,preserved remote ref; requires separate review
+origin/repair/recreation-manifests,60c8727030469d195bc21bd859b77cf9a96a6529,True,True,included in original main
+origin/temp1,39844c0b6e523a6cb89f6851af741582ca6f1dcd,True,True,included in original main
+origin/test/push-size-probe,30db7524f6258708437cf89e539b238148dfeb54,True,True,included in original main
+origin/v0/automated-trading-monitor-dd825f75,72105c6415c36ddb014fc727d7cd9009b947294f,False,False,preserved remote ref; requires separate review
+origin/v0/mxssnxx-07460dcf,11dee924b3f2860924f5c8d28d1cbc78b3cf04d5,False,False,preserved remote ref; requires separate review
+origin/v0/mxssnxx-09eca8ca,fbdec53e6e326acfdd6672575bf0da8026d4a503,True,True,included in original main
+origin/v0/mxssnxx-228f35df,ada6fca415652ad38b1ea74fc70b715d85736f6a,True,True,included in original main
+origin/v0/mxssnxx-41d71829,5597e361fe8b65026ce88a898ef8c24415715dbe,True,True,included in original main
+origin/v0/mxssnxx-6db3add9,b85405a0c80f3da1e1ff5eabf5cfcff6d91abae9,True,True,included in original main
+origin/v0/mxssnxx-8fdc818f,fbdec53e6e326acfdd6672575bf0da8026d4a503,True,True,included in original main
+origin/v0/mxssnxx-911ccf4f,2489eecc86779a6982d995b467b399d6abba6bf5,True,True,included in original main
+origin/v0/mxssnxx-c7a698d0,817acd6a59a3cff8bd299100d8a7a1be04069d49,True,True,included in original main
+origin/v0/mxssnxx-d58f1f0f,3d99f000f7808e1cc9cf67f1bd4b93bf977062ae,True,True,included in original main
+origin/v5.1,fb01e274020c8fc57861f01d1be6182272c9f740,True,True,included in original main
+origin/v5.2,79c4c2eb773cd7b2aa47bca1e6a930a3a5dd3ffe,True,True,included in original main
+origin/v5.2.1,2489eecc86779a6982d995b467b399d6abba6bf5,True,True,included in original main
+origin/v5.2.2,839f00be41f47e417621c1fea74fea7e2dade430,True,True,included in original main
+origin/v5.3,396956c562dd190dc1b73a77ded520d5d751a470,True,True,included in original main
+origin/v5.3.1,5d9d8bdd500fdfc09504a7bb59f4224784af8ab9,True,True,included in original main
+origin/vercel,54e21ed21af8824182dafeaa33b93fefb1eb6065,True,True,included in original main
+origin/working01,4ee332206675842e3c85496b0d7cf38852e8c181,True,True,included in original main

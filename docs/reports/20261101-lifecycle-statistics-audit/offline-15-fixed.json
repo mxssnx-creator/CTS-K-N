@@ -1,0 +1,2254 @@
+{
+  "label": "",
+  "normal": "on",
+  "symbols": 15,
+  "symbolList": [
+    "BTCUSDT",
+    "SOLUSDT",
+    "BCHUSDT",
+    "XRPUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "DOGEUSDT",
+    "ADAUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "DOTUSDT",
+    "ATOMUSDT",
+    "LTCUSDT",
+    "UNIUSDT",
+    "NEARUSDT"
+  ],
+  "durationMs": 120000,
+  "verifierExit": 1,
+  "summary": {
+    "label": "",
+    "symbols": 15,
+    "durationMs": 120000,
+    "samples": 10,
+    "steadyStateFrom": null,
+    "sampleWindow": "whole-run; steady state not reached",
+    "eventLoopLifetime": {
+      "delayP50Ms": 20.4,
+      "delayP95Ms": 32.3,
+      "delayP99Ms": 44.1,
+      "delayMaxMs": 198.3
+    },
+    "perSymbolMs": {
+      "p95OfPassP95": 1116,
+      "maxOfPassMax": 1116
+    },
+    "phaseSplitMedianMs": {
+      "indication": 1230,
+      "pseudo": 3,
+      "strategy": 5719
+    },
+    "simulatedOrders": {
+      "created": null,
+      "closed": null
+    },
+    "symbolErrors": null,
+    "realtimePass": {
+      "sampledLastPassMs": {
+        "p50": 3627,
+        "p95": 3801,
+        "max": 3801
+      },
+      "recordedMaxMs": 3934,
+      "passes": null,
+      "realtimeCycleCount": 35,
+      "slowPassThresholdMs": 5000,
+      "slowPassCount": 0,
+      "slowPassMs": {
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "avgCycleTimeMs": 0
+    },
+    "liveness": {
+      "probes": 168,
+      "failed": 1,
+      "p50Ms": 5,
+      "p95Ms": 25,
+      "p99Ms": 612,
+      "maxMs": 1227,
+      "over1sPct": 0.6
+    },
+    "statsApiSlowestMs": {
+      "p50": 1422,
+      "p95": 5186,
+      "max": 5186
+    },
+    "rssMb": {
+      "start": 388.5,
+      "peak": 1473.6,
+      "end": 1467.6
+    },
+    "heapUsedMb": {
+      "start": 253.4,
+      "peak": 940.8,
+      "end": 717.6
+    },
+    "redisKeys": {
+      "start": 330,
+      "peak": 194832,
+      "end": 190949
+    },
+    "redisUsedMb": {
+      "start": 3,
+      "peak": 152,
+      "end": 101
+    },
+    "positions": {
+      "open": 0,
+      "closed": 0
+    },
+    "setInventory": {
+      "total": 520,
+      "symbolsWithSets": 15,
+      "perSymbolMin": 34,
+      "perSymbolMedian": 34,
+      "perSymbolMax": 36,
+      "byType": {
+        "signal": 520
+      }
+    },
+    "auditIssues": 0,
+    "serverAlerts": 0,
+    "sampleFailures": 0,
+    "nanPaths": [],
+    "consistencyIssueKinds": 0,
+    "consistencyIssues": [],
+    "consistencySamplesWithIssues": 0
+  },
+  "samples": [
+    {
+      "at": "2026-11-01T23:05:46.203Z",
+      "runtime": {
+        "heapUsedMB": 253.4,
+        "rssMB": 388.5,
+        "eventLoop": {
+          "utilizationPct": 0,
+          "delayP50Ms": 21.5,
+          "delayP95Ms": 26.7,
+          "delayMaxMs": 26.7
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 21.5,
+          "delayP95Ms": 26.7,
+          "delayP99Ms": 26.7,
+          "delayMaxMs": 26.7
+        },
+        "pressureLevel": "healthy"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 182,
+        "/api/trading/trade-history": 61,
+        "/api/trading/live-positions": 103,
+        "/api/trading/stats": 34,
+        "/api/trading/engine-stats": 131,
+        "/api/positions/stats": 89,
+        "/api/exchange/live-summary": 41,
+        "/api/statistics/indications": 91,
+        "/api/statistics/families": 99,
+        "/api/main/system-stats-v3": 132,
+        "/api/main/strategies-evaluation": 100,
+        "/api/main/indications-stats": 88,
+        "/api/system/monitoring": 183,
+        "/api/trade-engine/status-all": 134,
+        "/api/connections/bingx-x01/engine-states": 104
+      },
+      "rssMb": 388.5,
+      "rssSource": "server-telemetry",
+      "redisKeys": 330,
+      "redisUsedMb": 3,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 183,
+      "slowest": "/api/system/monitoring",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 0,
+        "lastPassMs": null,
+        "lastPassAt": null,
+        "passMsMax": null,
+        "lastPassSymbols": null,
+        "symbolP50Ms": null,
+        "symbolP95Ms": null,
+        "symbolMaxMs": null,
+        "indicationMs": null,
+        "pseudoMs": null,
+        "strategyMs": null,
+        "slowest": null,
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:06:06.483Z",
+      "runtime": {
+        "heapUsedMB": 354,
+        "rssMB": 1012.9,
+        "eventLoop": {
+          "utilizationPct": 74.8,
+          "delayP50Ms": 20.3,
+          "delayP95Ms": 26.6,
+          "delayMaxMs": 123.7
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.3,
+          "delayP95Ms": 25.8,
+          "delayP99Ms": 35.4,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "healthy"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 74,
+        "/api/trading/trade-history": 13,
+        "/api/trading/live-positions": 19,
+        "/api/trading/stats": 48,
+        "/api/trading/engine-stats": 5186,
+        "/api/positions/stats": 35,
+        "/api/exchange/live-summary": 74,
+        "/api/statistics/indications": 75,
+        "/api/statistics/families": 50,
+        "/api/main/system-stats-v3": 104,
+        "/api/main/strategies-evaluation": 2082,
+        "/api/main/indications-stats": 55,
+        "/api/system/monitoring": 49,
+        "/api/trade-engine/status-all": 57,
+        "/api/connections/bingx-x01/engine-states": 74
+      },
+      "rssMb": 1012.9,
+      "rssSource": "server-telemetry",
+      "redisKeys": 194832,
+      "redisUsedMb": 152,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 5186,
+      "slowest": "/api/trading/engine-stats",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 0,
+        "lastPassMs": null,
+        "lastPassAt": null,
+        "passMsMax": null,
+        "lastPassSymbols": null,
+        "symbolP50Ms": null,
+        "symbolP95Ms": null,
+        "symbolMaxMs": null,
+        "indicationMs": null,
+        "pseudoMs": null,
+        "strategyMs": null,
+        "slowest": null,
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:06:32.850Z",
+      "runtime": {
+        "heapUsedMB": 650.7,
+        "rssMB": 1266.1,
+        "eventLoop": {
+          "utilizationPct": 60.8,
+          "delayP50Ms": 20.2,
+          "delayP95Ms": 23,
+          "delayMaxMs": 26.2
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.3,
+          "delayP95Ms": 25,
+          "delayP99Ms": 35.6,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "healthy"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 47,
+        "/api/trading/trade-history": 6,
+        "/api/trading/live-positions": 13,
+        "/api/trading/stats": 13,
+        "/api/trading/engine-stats": 61,
+        "/api/positions/stats": 23,
+        "/api/exchange/live-summary": 32,
+        "/api/statistics/indications": 33,
+        "/api/statistics/families": 25,
+        "/api/main/system-stats-v3": 74,
+        "/api/main/strategies-evaluation": 1332,
+        "/api/main/indications-stats": 51,
+        "/api/system/monitoring": 41,
+        "/api/trade-engine/status-all": 50,
+        "/api/connections/bingx-x01/engine-states": 51
+      },
+      "rssMb": 1266.1,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190938,
+      "redisUsedMb": 97,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 1332,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 1,
+        "lastPassMs": 630,
+        "lastPassAt": 1793574390098,
+        "passMsMax": 630,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 43,
+        "symbolP95Ms": 214,
+        "symbolMaxMs": 214,
+        "indicationMs": 413,
+        "pseudoMs": 2,
+        "strategyMs": 792,
+        "slowest": "[{\"symbol\":\"BTCUSDT\",\"ms\":214},{\"symbol\":\"AVAXUSDT\",\"ms\":170},{\"symbol\":\"LTCUSDT\",\"ms\":156},{\"symbol\":\"XRPUSDT\",\"ms\":138},{\"symbol\":\"SOLUSDT\",\"ms\":131}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:06:48.864Z",
+      "runtime": {
+        "heapUsedMB": 940.8,
+        "rssMB": 1405.9,
+        "eventLoop": {
+          "utilizationPct": 89,
+          "delayP50Ms": 20.5,
+          "delayP95Ms": 28.7,
+          "delayMaxMs": 48.2
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.3,
+          "delayP95Ms": 26.7,
+          "delayP99Ms": 41.5,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 52,
+        "/api/trading/trade-history": 11,
+        "/api/trading/live-positions": 13,
+        "/api/trading/stats": 39,
+        "/api/trading/engine-stats": 77,
+        "/api/positions/stats": 27,
+        "/api/exchange/live-summary": 60,
+        "/api/statistics/indications": 61,
+        "/api/statistics/families": 47,
+        "/api/main/system-stats-v3": 73,
+        "/api/main/strategies-evaluation": 637,
+        "/api/main/indications-stats": 49,
+        "/api/system/monitoring": 45,
+        "/api/trade-engine/status-all": 51,
+        "/api/connections/bingx-x01/engine-states": 52
+      },
+      "rssMb": 1405.9,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190947,
+      "redisUsedMb": 98,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 637,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 6,
+        "lastPassMs": 3768,
+        "lastPassAt": 1793574408835,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 451,
+        "symbolP95Ms": 1052,
+        "symbolMaxMs": 1052,
+        "indicationMs": 1333,
+        "pseudoMs": 2,
+        "strategyMs": 5950,
+        "slowest": "[{\"symbol\":\"UNIUSDT\",\"ms\":1052},{\"symbol\":\"LINKUSDT\",\"ms\":854},{\"symbol\":\"SOLUSDT\",\"ms\":559},{\"symbol\":\"ETHUSDT\",\"ms\":555},{\"symbol\":\"NEARUSDT\",\"ms\":519}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:07:04.922Z",
+      "runtime": {
+        "heapUsedMB": 275.9,
+        "rssMB": 1442.5,
+        "eventLoop": {
+          "utilizationPct": 88.4,
+          "delayP50Ms": 20.5,
+          "delayP95Ms": 31.8,
+          "delayMaxMs": 52.9
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.3,
+          "delayP95Ms": 28.8,
+          "delayP99Ms": 42.2,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 66,
+        "/api/trading/trade-history": 17,
+        "/api/trading/live-positions": 17,
+        "/api/trading/stats": 20,
+        "/api/trading/engine-stats": 90,
+        "/api/positions/stats": 32,
+        "/api/exchange/live-summary": 43,
+        "/api/statistics/indications": 45,
+        "/api/statistics/families": 33,
+        "/api/main/system-stats-v3": 78,
+        "/api/main/strategies-evaluation": 981,
+        "/api/main/indications-stats": 57,
+        "/api/system/monitoring": 49,
+        "/api/trade-engine/status-all": 53,
+        "/api/connections/bingx-x01/engine-states": 59
+      },
+      "rssMb": 1442.5,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190948,
+      "redisUsedMb": 101,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 981,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 11,
+        "lastPassMs": 3212,
+        "lastPassAt": 1793574424119,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 461,
+        "symbolP95Ms": 980,
+        "symbolMaxMs": 980,
+        "indicationMs": 1063,
+        "pseudoMs": 22,
+        "strategyMs": 4949,
+        "slowest": "[{\"symbol\":\"ATOMUSDT\",\"ms\":980},{\"symbol\":\"BTCUSDT\",\"ms\":699},{\"symbol\":\"BCHUSDT\",\"ms\":610},{\"symbol\":\"ADAUSDT\",\"ms\":518},{\"symbol\":\"DOTUSDT\",\"ms\":513}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:07:21.461Z",
+      "runtime": {
+        "heapUsedMB": 404.9,
+        "rssMB": 1457.4,
+        "eventLoop": {
+          "utilizationPct": 88.9,
+          "delayP50Ms": 20.6,
+          "delayP95Ms": 36.9,
+          "delayMaxMs": 60.7
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 30.6,
+          "delayP99Ms": 43.4,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 83,
+        "/api/trading/trade-history": 13,
+        "/api/trading/live-positions": 18,
+        "/api/trading/stats": 42,
+        "/api/trading/engine-stats": 101,
+        "/api/positions/stats": 34,
+        "/api/exchange/live-summary": 83,
+        "/api/statistics/indications": 84,
+        "/api/statistics/families": 43,
+        "/api/main/system-stats-v3": 94,
+        "/api/main/strategies-evaluation": 1422,
+        "/api/main/indications-stats": 80,
+        "/api/system/monitoring": 53,
+        "/api/trade-engine/status-all": 61,
+        "/api/connections/bingx-x01/engine-states": 63
+      },
+      "rssMb": 1457.4,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190948,
+      "redisUsedMb": 100,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 1422,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 15,
+        "lastPassMs": 3801,
+        "lastPassAt": 1793574439099,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 527,
+        "symbolP95Ms": 780,
+        "symbolMaxMs": 780,
+        "indicationMs": 1343,
+        "pseudoMs": 2,
+        "strategyMs": 5978,
+        "slowest": "[{\"symbol\":\"LTCUSDT\",\"ms\":780},{\"symbol\":\"XRPUSDT\",\"ms\":718},{\"symbol\":\"AVAXUSDT\",\"ms\":588},{\"symbol\":\"UNIUSDT\",\"ms\":571},{\"symbol\":\"SOLUSDT\",\"ms\":531}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:07:38.392Z",
+      "runtime": {
+        "heapUsedMB": 328.2,
+        "rssMB": 1455.5,
+        "eventLoop": {
+          "utilizationPct": 87.6,
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 35.7,
+          "delayMaxMs": 45
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 31.2,
+          "delayP99Ms": 44.5,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 95,
+        "/api/trading/trade-history": 22,
+        "/api/trading/live-positions": 28,
+        "/api/trading/stats": 62,
+        "/api/trading/engine-stats": 116,
+        "/api/positions/stats": 50,
+        "/api/exchange/live-summary": 84,
+        "/api/statistics/indications": 86,
+        "/api/statistics/families": 67,
+        "/api/main/system-stats-v3": 109,
+        "/api/main/strategies-evaluation": 1848,
+        "/api/main/indications-stats": 70,
+        "/api/system/monitoring": 65,
+        "/api/trade-engine/status-all": 67,
+        "/api/connections/bingx-x01/engine-states": 70
+      },
+      "rssMb": 1455.5,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190947,
+      "redisUsedMb": 99,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 1848,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 20,
+        "lastPassMs": 3118,
+        "lastPassAt": 1793574454851,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 443,
+        "symbolP95Ms": 777,
+        "symbolMaxMs": 777,
+        "indicationMs": 1093,
+        "pseudoMs": 3,
+        "strategyMs": 4941,
+        "slowest": "[{\"symbol\":\"NEARUSDT\",\"ms\":777},{\"symbol\":\"DOTUSDT\",\"ms\":561},{\"symbol\":\"UNIUSDT\",\"ms\":560},{\"symbol\":\"BTCUSDT\",\"ms\":517},{\"symbol\":\"SOLUSDT\",\"ms\":509}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:07:55.160Z",
+      "runtime": {
+        "heapUsedMB": 691.8,
+        "rssMB": 1472.1,
+        "eventLoop": {
+          "utilizationPct": 88.8,
+          "delayP50Ms": 20.5,
+          "delayP95Ms": 35.4,
+          "delayMaxMs": 47.1
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 31.9,
+          "delayP99Ms": 44.5,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 56,
+        "/api/trading/trade-history": 6,
+        "/api/trading/live-positions": 7,
+        "/api/trading/stats": 25,
+        "/api/trading/engine-stats": 74,
+        "/api/positions/stats": 47,
+        "/api/exchange/live-summary": 47,
+        "/api/statistics/indications": 47,
+        "/api/statistics/families": 29,
+        "/api/main/system-stats-v3": 66,
+        "/api/main/strategies-evaluation": 1642,
+        "/api/main/indications-stats": 53,
+        "/api/system/monitoring": 33,
+        "/api/trade-engine/status-all": 36,
+        "/api/connections/bingx-x01/engine-states": 49
+      },
+      "rssMb": 1472.1,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190949,
+      "redisUsedMb": 101,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 1642,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 25,
+        "lastPassMs": 3282,
+        "lastPassAt": 1793574472552,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 438,
+        "symbolP95Ms": 879,
+        "symbolMaxMs": 879,
+        "indicationMs": 996,
+        "pseudoMs": 4,
+        "strategyMs": 5339,
+        "slowest": "[{\"symbol\":\"ETHUSDT\",\"ms\":879},{\"symbol\":\"XRPUSDT\",\"ms\":672},{\"symbol\":\"AVAXUSDT\",\"ms\":639},{\"symbol\":\"LINKUSDT\",\"ms\":626},{\"symbol\":\"NEARUSDT\",\"ms\":465}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:08:11.152Z",
+      "runtime": {
+        "heapUsedMB": 652.3,
+        "rssMB": 1473.6,
+        "eventLoop": {
+          "utilizationPct": 86.5,
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 34.1,
+          "delayMaxMs": 58
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 32.2,
+          "delayP99Ms": 43.7,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 57,
+        "/api/trading/trade-history": 11,
+        "/api/trading/live-positions": 12,
+        "/api/trading/stats": 36,
+        "/api/trading/engine-stats": 83,
+        "/api/positions/stats": 28,
+        "/api/exchange/live-summary": 58,
+        "/api/statistics/indications": 59,
+        "/api/statistics/families": 37,
+        "/api/main/system-stats-v3": 73,
+        "/api/main/strategies-evaluation": 905,
+        "/api/main/indications-stats": 63,
+        "/api/system/monitoring": 47,
+        "/api/trade-engine/status-all": 59,
+        "/api/connections/bingx-x01/engine-states": 61
+      },
+      "rssMb": 1473.6,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190948,
+      "redisUsedMb": 99,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 905,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 31,
+        "lastPassMs": 3627,
+        "lastPassAt": 1793574491112,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 443,
+        "symbolP95Ms": 1116,
+        "symbolMaxMs": 1116,
+        "indicationMs": 1230,
+        "pseudoMs": 2,
+        "strategyMs": 5789,
+        "slowest": "[{\"symbol\":\"BNBUSDT\",\"ms\":1116},{\"symbol\":\"NEARUSDT\",\"ms\":686},{\"symbol\":\"SOLUSDT\",\"ms\":571},{\"symbol\":\"LTCUSDT\",\"ms\":497},{\"symbol\":\"ETHUSDT\",\"ms\":480}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    },
+    {
+      "at": "2026-11-01T23:08:27.884Z",
+      "runtime": {
+        "heapUsedMB": 717.6,
+        "rssMB": 1467.6,
+        "eventLoop": {
+          "utilizationPct": 88.7,
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 33.4,
+          "delayMaxMs": 81.1
+        },
+        "eventLoopLifetime": {
+          "delayP50Ms": 20.4,
+          "delayP95Ms": 32.3,
+          "delayP99Ms": 44.1,
+          "delayMaxMs": 198.3
+        },
+        "pressureLevel": "elevated"
+      },
+      "avgCycleTimeMs": 0,
+      "routeMs": {
+        "/api/connections/progression/bingx-x01/stats": 66,
+        "/api/trading/trade-history": 25,
+        "/api/trading/live-positions": 25,
+        "/api/trading/stats": 58,
+        "/api/trading/engine-stats": 124,
+        "/api/positions/stats": 45,
+        "/api/exchange/live-summary": 76,
+        "/api/statistics/indications": 78,
+        "/api/statistics/families": 59,
+        "/api/main/system-stats-v3": 114,
+        "/api/main/strategies-evaluation": 1647,
+        "/api/main/indications-stats": 78,
+        "/api/system/monitoring": 64,
+        "/api/trade-engine/status-all": 65,
+        "/api/connections/bingx-x01/engine-states": 78
+      },
+      "rssMb": 1467.6,
+      "rssSource": "server-telemetry",
+      "redisKeys": 190949,
+      "redisUsedMb": 101,
+      "openPositions": 0,
+      "closedPositions": 0,
+      "slowestMs": 1647,
+      "slowest": "/api/main/strategies-evaluation",
+      "failures": [],
+      "nanPaths": [],
+      "pass": {
+        "realtimeCycleCount": 35,
+        "lastPassMs": 3670,
+        "lastPassAt": 1793574505534,
+        "passMsMax": 3934,
+        "lastPassSymbols": 15,
+        "symbolP50Ms": 493,
+        "symbolP95Ms": 964,
+        "symbolMaxMs": 964,
+        "indicationMs": 1364,
+        "pseudoMs": 5,
+        "strategyMs": 5719,
+        "slowest": "[{\"symbol\":\"UNIUSDT\",\"ms\":964},{\"symbol\":\"BTCUSDT\",\"ms\":734},{\"symbol\":\"ETHUSDT\",\"ms\":693},{\"symbol\":\"AVAXUSDT\",\"ms\":554},{\"symbol\":\"NEARUSDT\",\"ms\":546}]",
+        "slowPassCount": null,
+        "symbolErrors": null,
+        "simulatedCreated": null,
+        "simulatedClosed": null
+      },
+      "consistencyIssues": []
+    }
+  ],
+  "liveness": [
+    {
+      "at": 1793574342734,
+      "ms": 1,
+      "failed": true
+    },
+    {
+      "at": 1793574343735,
+      "ms": 612
+    },
+    {
+      "at": 1793574344736,
+      "ms": 1227
+    },
+    {
+      "at": 1793574345965,
+      "ms": 3
+    },
+    {
+      "at": 1793574346966,
+      "ms": 4
+    },
+    {
+      "at": 1793574347967,
+      "ms": 178
+    },
+    {
+      "at": 1793574348968,
+      "ms": 5
+    },
+    {
+      "at": 1793574349968,
+      "ms": 5
+    },
+    {
+      "at": 1793574350968,
+      "ms": 12
+    },
+    {
+      "at": 1793574351969,
+      "ms": 8
+    },
+    {
+      "at": 1793574352969,
+      "ms": 5
+    },
+    {
+      "at": 1793574353970,
+      "ms": 5
+    },
+    {
+      "at": 1793574354971,
+      "ms": 4
+    },
+    {
+      "at": 1793574355972,
+      "ms": 27
+    },
+    {
+      "at": 1793574356973,
+      "ms": 9
+    },
+    {
+      "at": 1793574357973,
+      "ms": 4
+    },
+    {
+      "at": 1793574358973,
+      "ms": 7
+    },
+    {
+      "at": 1793574359973,
+      "ms": 5
+    },
+    {
+      "at": 1793574360973,
+      "ms": 7
+    },
+    {
+      "at": 1793574361974,
+      "ms": 8
+    },
+    {
+      "at": 1793574362974,
+      "ms": 3
+    },
+    {
+      "at": 1793574363977,
+      "ms": 17
+    },
+    {
+      "at": 1793574364979,
+      "ms": 6
+    },
+    {
+      "at": 1793574365980,
+      "ms": 9
+    },
+    {
+      "at": 1793574366980,
+      "ms": 6
+    },
+    {
+      "at": 1793574367980,
+      "ms": 11
+    },
+    {
+      "at": 1793574368981,
+      "ms": 4
+    },
+    {
+      "at": 1793574369981,
+      "ms": 11
+    },
+    {
+      "at": 1793574370982,
+      "ms": 8
+    },
+    {
+      "at": 1793574371982,
+      "ms": 6
+    },
+    {
+      "at": 1793574372983,
+      "ms": 6
+    },
+    {
+      "at": 1793574373984,
+      "ms": 4
+    },
+    {
+      "at": 1793574374985,
+      "ms": 6
+    },
+    {
+      "at": 1793574375984,
+      "ms": 9
+    },
+    {
+      "at": 1793574376984,
+      "ms": 3
+    },
+    {
+      "at": 1793574377984,
+      "ms": 4
+    },
+    {
+      "at": 1793574378987,
+      "ms": 5
+    },
+    {
+      "at": 1793574379986,
+      "ms": 4
+    },
+    {
+      "at": 1793574380986,
+      "ms": 8
+    },
+    {
+      "at": 1793574381986,
+      "ms": 4
+    },
+    {
+      "at": 1793574382986,
+      "ms": 4
+    },
+    {
+      "at": 1793574383986,
+      "ms": 2
+    },
+    {
+      "at": 1793574384987,
+      "ms": 3
+    },
+    {
+      "at": 1793574385987,
+      "ms": 6
+    },
+    {
+      "at": 1793574386988,
+      "ms": 3
+    },
+    {
+      "at": 1793574387989,
+      "ms": 3
+    },
+    {
+      "at": 1793574388990,
+      "ms": 4
+    },
+    {
+      "at": 1793574389990,
+      "ms": 4
+    },
+    {
+      "at": 1793574390990,
+      "ms": 3
+    },
+    {
+      "at": 1793574391989,
+      "ms": 11
+    },
+    {
+      "at": 1793574392990,
+      "ms": 6
+    },
+    {
+      "at": 1793574393990,
+      "ms": 4
+    },
+    {
+      "at": 1793574394990,
+      "ms": 9
+    },
+    {
+      "at": 1793574395990,
+      "ms": 10
+    },
+    {
+      "at": 1793574396991,
+      "ms": 3
+    },
+    {
+      "at": 1793574397991,
+      "ms": 9
+    },
+    {
+      "at": 1793574398991,
+      "ms": 3
+    },
+    {
+      "at": 1793574399991,
+      "ms": 5
+    },
+    {
+      "at": 1793574400992,
+      "ms": 3
+    },
+    {
+      "at": 1793574401993,
+      "ms": 5
+    },
+    {
+      "at": 1793574402994,
+      "ms": 6
+    },
+    {
+      "at": 1793574403994,
+      "ms": 4
+    },
+    {
+      "at": 1793574404994,
+      "ms": 4
+    },
+    {
+      "at": 1793574405995,
+      "ms": 3
+    },
+    {
+      "at": 1793574406998,
+      "ms": 5
+    },
+    {
+      "at": 1793574407999,
+      "ms": 3
+    },
+    {
+      "at": 1793574408999,
+      "ms": 3
+    },
+    {
+      "at": 1793574409999,
+      "ms": 17
+    },
+    {
+      "at": 1793574410998,
+      "ms": 34
+    },
+    {
+      "at": 1793574411999,
+      "ms": 4
+    },
+    {
+      "at": 1793574412998,
+      "ms": 3
+    },
+    {
+      "at": 1793574413999,
+      "ms": 3
+    },
+    {
+      "at": 1793574414999,
+      "ms": 9
+    },
+    {
+      "at": 1793574415998,
+      "ms": 14
+    },
+    {
+      "at": 1793574417001,
+      "ms": 19
+    },
+    {
+      "at": 1793574418002,
+      "ms": 4
+    },
+    {
+      "at": 1793574419003,
+      "ms": 3
+    },
+    {
+      "at": 1793574420002,
+      "ms": 5
+    },
+    {
+      "at": 1793574421002,
+      "ms": 11
+    },
+    {
+      "at": 1793574422002,
+      "ms": 6
+    },
+    {
+      "at": 1793574423002,
+      "ms": 4
+    },
+    {
+      "at": 1793574424001,
+      "ms": 4
+    },
+    {
+      "at": 1793574425002,
+      "ms": 12
+    },
+    {
+      "at": 1793574426003,
+      "ms": 19
+    },
+    {
+      "at": 1793574427002,
+      "ms": 3
+    },
+    {
+      "at": 1793574428003,
+      "ms": 14
+    },
+    {
+      "at": 1793574429003,
+      "ms": 3
+    },
+    {
+      "at": 1793574430003,
+      "ms": 40
+    },
+    {
+      "at": 1793574431003,
+      "ms": 3
+    },
+    {
+      "at": 1793574432004,
+      "ms": 5
+    },
+    {
+      "at": 1793574433004,
+      "ms": 3
+    },
+    {
+      "at": 1793574434005,
+      "ms": 4
+    },
+    {
+      "at": 1793574435005,
+      "ms": 3
+    },
+    {
+      "at": 1793574436005,
+      "ms": 8
+    },
+    {
+      "at": 1793574437005,
+      "ms": 4
+    },
+    {
+      "at": 1793574438005,
+      "ms": 5
+    },
+    {
+      "at": 1793574439005,
+      "ms": 3
+    },
+    {
+      "at": 1793574440004,
+      "ms": 9
+    },
+    {
+      "at": 1793574441003,
+      "ms": 5
+    },
+    {
+      "at": 1793574442009,
+      "ms": 22
+    },
+    {
+      "at": 1793574443010,
+      "ms": 20
+    },
+    {
+      "at": 1793574444009,
+      "ms": 3
+    },
+    {
+      "at": 1793574445010,
+      "ms": 3
+    },
+    {
+      "at": 1793574446010,
+      "ms": 25
+    },
+    {
+      "at": 1793574447009,
+      "ms": 11
+    },
+    {
+      "at": 1793574448009,
+      "ms": 6
+    },
+    {
+      "at": 1793574449009,
+      "ms": 33
+    },
+    {
+      "at": 1793574450010,
+      "ms": 8
+    },
+    {
+      "at": 1793574451010,
+      "ms": 3
+    },
+    {
+      "at": 1793574452009,
+      "ms": 6
+    },
+    {
+      "at": 1793574453009,
+      "ms": 5
+    },
+    {
+      "at": 1793574454009,
+      "ms": 4
+    },
+    {
+      "at": 1793574455010,
+      "ms": 4
+    },
+    {
+      "at": 1793574456011,
+      "ms": 10
+    },
+    {
+      "at": 1793574457012,
+      "ms": 4
+    },
+    {
+      "at": 1793574458011,
+      "ms": 4
+    },
+    {
+      "at": 1793574459011,
+      "ms": 8
+    },
+    {
+      "at": 1793574460011,
+      "ms": 4
+    },
+    {
+      "at": 1793574461010,
+      "ms": 3
+    },
+    {
+      "at": 1793574462014,
+      "ms": 12
+    },
+    {
+      "at": 1793574463014,
+      "ms": 6
+    },
+    {
+      "at": 1793574464014,
+      "ms": 4
+    },
+    {
+      "at": 1793574465015,
+      "ms": 4
+    },
+    {
+      "at": 1793574466014,
+      "ms": 4
+    },
+    {
+      "at": 1793574467015,
+      "ms": 4
+    },
+    {
+      "at": 1793574468016,
+      "ms": 6
+    },
+    {
+      "at": 1793574469015,
+      "ms": 3
+    },
+    {
+      "at": 1793574470016,
+      "ms": 3
+    },
+    {
+      "at": 1793574471017,
+      "ms": 20
+    },
+    {
+      "at": 1793574472017,
+      "ms": 3
+    },
+    {
+      "at": 1793574473017,
+      "ms": 3
+    },
+    {
+      "at": 1793574474018,
+      "ms": 3
+    },
+    {
+      "at": 1793574475019,
+      "ms": 25
+    },
+    {
+      "at": 1793574476020,
+      "ms": 10
+    },
+    {
+      "at": 1793574477020,
+      "ms": 3
+    },
+    {
+      "at": 1793574478019,
+      "ms": 9
+    },
+    {
+      "at": 1793574479020,
+      "ms": 2
+    },
+    {
+      "at": 1793574480021,
+      "ms": 7
+    },
+    {
+      "at": 1793574481021,
+      "ms": 6
+    },
+    {
+      "at": 1793574482021,
+      "ms": 20
+    },
+    {
+      "at": 1793574483022,
+      "ms": 13
+    },
+    {
+      "at": 1793574484022,
+      "ms": 25
+    },
+    {
+      "at": 1793574485022,
+      "ms": 4
+    },
+    {
+      "at": 1793574486022,
+      "ms": 4
+    },
+    {
+      "at": 1793574487023,
+      "ms": 4
+    },
+    {
+      "at": 1793574488023,
+      "ms": 11
+    },
+    {
+      "at": 1793574489023,
+      "ms": 6
+    },
+    {
+      "at": 1793574490023,
+      "ms": 6
+    },
+    {
+      "at": 1793574491024,
+      "ms": 3
+    },
+    {
+      "at": 1793574492024,
+      "ms": 4
+    },
+    {
+      "at": 1793574493025,
+      "ms": 8
+    },
+    {
+      "at": 1793574494026,
+      "ms": 3
+    },
+    {
+      "at": 1793574495027,
+      "ms": 9
+    },
+    {
+      "at": 1793574496027,
+      "ms": 3
+    },
+    {
+      "at": 1793574497028,
+      "ms": 3
+    },
+    {
+      "at": 1793574498029,
+      "ms": 11
+    },
+    {
+      "at": 1793574499029,
+      "ms": 10
+    },
+    {
+      "at": 1793574500029,
+      "ms": 12
+    },
+    {
+      "at": 1793574501030,
+      "ms": 3
+    },
+    {
+      "at": 1793574502030,
+      "ms": 6
+    },
+    {
+      "at": 1793574503032,
+      "ms": 7
+    },
+    {
+      "at": 1793574504032,
+      "ms": 7
+    },
+    {
+      "at": 1793574505033,
+      "ms": 3
+    },
+    {
+      "at": 1793574506033,
+      "ms": 16
+    },
+    {
+      "at": 1793574507034,
+      "ms": 3
+    },
+    {
+      "at": 1793574508035,
+      "ms": 2
+    },
+    {
+      "at": 1793574509036,
+      "ms": 3
+    },
+    {
+      "at": 1793574510035,
+      "ms": 7
+    }
+  ],
+  "cycleDiagnostics": [],
+  "audit": {
+    "issues": [],
+    "info": {
+      "ledger": {
+        "open": 0,
+        "closed": 0,
+        "dupOpen": 0,
+        "dupClosed": 0,
+        "openAndClosed": 0
+      },
+      "routes": {
+        "livePositions": 200,
+        "tradeHistory": 200,
+        "progression": 200
+      },
+      "livePositionsApi": {
+        "unique": 0,
+        "open": 0,
+        "closed": 0,
+        "keys": [
+          "connectionId",
+          "sourceFilter",
+          "positions",
+          "realPositions",
+          "simulatedPositions",
+          "simulatedBook",
+          "counts",
+          "stats",
+          "partialLegacyScan",
+          "dataIntegrity"
+        ]
+      },
+      "duplicateOpenExposure": [],
+      "ledgerRecomputed": {
+        "closed": 0,
+        "wins": 0,
+        "losses": 0,
+        "realizedPnl": 0,
+        "profitFactor": null
+      },
+      "tradeHistorySummary": {
+        "total": 0,
+        "wins": 0,
+        "losses": 0,
+        "flat": 0,
+        "winRate": 0,
+        "netPnl": 0,
+        "fees": 0,
+        "volumeUsd": 0,
+        "accountingPending": 0
+      },
+      "lifetimeAll": {
+        "closedTrades": 0,
+        "wins": 0,
+        "losses": 0,
+        "realizedPnl": 0,
+        "profitFactor": null
+      },
+      "livePositionsSummary": {
+        "totalFilled": 0,
+        "totalOpen": 0,
+        "totalClosed": 0,
+        "totalPnL": 0,
+        "averageROI": 0,
+        "winRate": 0,
+        "scope": "recent_operational_window",
+        "window": {
+          "returnedOpenRows": 0,
+          "returnedClosedRows": 0,
+          "requestedClosedLimit": 1000,
+          "terminalIndexRows": 0,
+          "truncated": false
+        },
+        "lifetime": {
+          "schemaVersion": 0,
+          "connectionId": "bingx-x01",
+          "generatedAt": 0,
+          "updatedAt": 0,
+          "lanes": {
+            "all": {
+              "terminalRows": 0,
+              "executedRows": 0,
+              "closedTrades": 0,
+              "settledClosedTrades": 0,
+              "accountingPending": 0,
+              "rejectedRows": 0,
+              "errorRows": 0,
+              "cancelledRows": 0,
+              "realizedPnl": 0,
+              "grossProfit": 0,
+              "grossLoss": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakEven": 0,
+              "lifetimeVolumeUsd": 0,
+              "realizedRoiTotal": 0,
+              "realizedRoiCount": 0,
+              "longTrades": 0,
+              "shortTrades": 0,
+              "longRealizedPnl": 0,
+              "shortRealizedPnl": 0,
+              "under60Seconds": 0,
+              "under5Minutes": 0,
+              "closeOrderIdPresent": 0,
+              "closeOrderIdMissing": 0,
+              "entryAccountingComplete": 0,
+              "entryAccountingPending": 0,
+              "winRate": null,
+              "profitFactor": null,
+              "averageRealizedRoi": null
+            },
+            "real": {
+              "terminalRows": 0,
+              "executedRows": 0,
+              "closedTrades": 0,
+              "settledClosedTrades": 0,
+              "accountingPending": 0,
+              "rejectedRows": 0,
+              "errorRows": 0,
+              "cancelledRows": 0,
+              "realizedPnl": 0,
+              "grossProfit": 0,
+              "grossLoss": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakEven": 0,
+              "lifetimeVolumeUsd": 0,
+              "realizedRoiTotal": 0,
+              "realizedRoiCount": 0,
+              "longTrades": 0,
+              "shortTrades": 0,
+              "longRealizedPnl": 0,
+              "shortRealizedPnl": 0,
+              "under60Seconds": 0,
+              "under5Minutes": 0,
+              "closeOrderIdPresent": 0,
+              "closeOrderIdMissing": 0,
+              "entryAccountingComplete": 0,
+              "entryAccountingPending": 0,
+              "winRate": null,
+              "profitFactor": null,
+              "averageRealizedRoi": null
+            },
+            "simulated": {
+              "terminalRows": 0,
+              "executedRows": 0,
+              "closedTrades": 0,
+              "settledClosedTrades": 0,
+              "accountingPending": 0,
+              "rejectedRows": 0,
+              "errorRows": 0,
+              "cancelledRows": 0,
+              "realizedPnl": 0,
+              "grossProfit": 0,
+              "grossLoss": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakEven": 0,
+              "lifetimeVolumeUsd": 0,
+              "realizedRoiTotal": 0,
+              "realizedRoiCount": 0,
+              "longTrades": 0,
+              "shortTrades": 0,
+              "longRealizedPnl": 0,
+              "shortRealizedPnl": 0,
+              "under60Seconds": 0,
+              "under5Minutes": 0,
+              "closeOrderIdPresent": 0,
+              "closeOrderIdMissing": 0,
+              "entryAccountingComplete": 0,
+              "entryAccountingPending": 0,
+              "winRate": null,
+              "profitFactor": null,
+              "averageRealizedRoi": null
+            },
+            "unknown": {
+              "terminalRows": 0,
+              "executedRows": 0,
+              "closedTrades": 0,
+              "settledClosedTrades": 0,
+              "accountingPending": 0,
+              "rejectedRows": 0,
+              "errorRows": 0,
+              "cancelledRows": 0,
+              "realizedPnl": 0,
+              "grossProfit": 0,
+              "grossLoss": 0,
+              "wins": 0,
+              "losses": 0,
+              "breakEven": 0,
+              "lifetimeVolumeUsd": 0,
+              "realizedRoiTotal": 0,
+              "realizedRoiCount": 0,
+              "longTrades": 0,
+              "shortTrades": 0,
+              "longRealizedPnl": 0,
+              "shortRealizedPnl": 0,
+              "under60Seconds": 0,
+              "under5Minutes": 0,
+              "closeOrderIdPresent": 0,
+              "closeOrderIdMissing": 0,
+              "entryAccountingComplete": 0,
+              "entryAccountingPending": 0,
+              "winRate": null,
+              "profitFactor": null,
+              "averageRealizedRoi": null
+            }
+          },
+          "coverage": {
+            "terminalIndexRows": 0,
+            "uniqueTerminalIndexRows": 0,
+            "indexedContributions": 0,
+            "prunedContributions": 0,
+            "contributionWindowLimit": 10000,
+            "ignoredHistoricReplays": 0,
+            "missingPositionSnapshots": 0,
+            "complete": true
+          }
+        },
+        "all": {
+          "lifecycleRecords": 0,
+          "unfilledRecords": 0,
+          "total": 0,
+          "open": 0,
+          "closed": 0,
+          "settledClosed": 0,
+          "accountingPending": 0,
+          "accountingComplete": true,
+          "totalRealizedPnL": 0,
+          "totalUnrealizedPnL": 0,
+          "effectivePnL": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakEven": 0,
+          "winRate": 0
+        },
+        "real": {
+          "lifecycleRecords": 0,
+          "unfilledRecords": 0,
+          "total": 0,
+          "open": 0,
+          "closed": 0,
+          "settledClosed": 0,
+          "accountingPending": 0,
+          "accountingComplete": true,
+          "totalRealizedPnL": 0,
+          "totalUnrealizedPnL": 0,
+          "effectivePnL": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakEven": 0,
+          "winRate": 0
+        },
+        "simulated": {
+          "lifecycleRecords": 0,
+          "unfilledRecords": 0,
+          "total": 0,
+          "open": 0,
+          "closed": 0,
+          "settledClosed": 0,
+          "accountingPending": 0,
+          "accountingComplete": true,
+          "totalRealizedPnL": 0,
+          "totalUnrealizedPnL": 0,
+          "effectivePnL": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakEven": 0,
+          "winRate": 0
+        },
+        "complete": {
+          "positions": 0,
+          "filled": 0,
+          "open": 0,
+          "closed": 0,
+          "accountingPending": 0,
+          "partialExecutions": 0,
+          "lifetimeQuantity": 0,
+          "openQuantity": 0,
+          "closedQuantity": 0,
+          "lifetimeVolumeUsd": 0,
+          "openVolumeUsd": 0,
+          "realizedPnl": 0,
+          "unrealizedPnl": 0,
+          "fees": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "winRate": 0,
+          "averageRealizedRoi": 0,
+          "bySource": {
+            "direct-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "main-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "preset-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "signal-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "unknown": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            }
+          },
+          "byVariant": {},
+          "byIndicationType": {},
+          "protection": {
+            "overallControlSlots": 0,
+            "overallControlRows": 0,
+            "perOrderControlRows": 0,
+            "venueControlOrders": 0,
+            "exchangeControl": 0,
+            "hybridControlSystem": 0,
+            "systemClose": 0,
+            "systemCloseFallback": 0,
+            "missingVenueLegsHandledBySystem": 0,
+            "venueLegsQuantityCovered": 0,
+            "venueLegsQuantityUnknown": 0,
+            "venueLegsQuantityDrifted": 0,
+            "securityStopsRequired": 0,
+            "securityStopsArmed": 0,
+            "securityStopsMissing": 0
+          },
+          "relationIntegrity": {
+            "success": true,
+            "checkedPositions": 0,
+            "mismatchCount": 0,
+            "mismatches": []
+          }
+        },
+        "realComplete": {
+          "positions": 0,
+          "filled": 0,
+          "open": 0,
+          "closed": 0,
+          "accountingPending": 0,
+          "partialExecutions": 0,
+          "lifetimeQuantity": 0,
+          "openQuantity": 0,
+          "closedQuantity": 0,
+          "lifetimeVolumeUsd": 0,
+          "openVolumeUsd": 0,
+          "realizedPnl": 0,
+          "unrealizedPnl": 0,
+          "fees": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "winRate": 0,
+          "averageRealizedRoi": 0,
+          "bySource": {
+            "direct-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "main-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "preset-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "signal-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "unknown": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            }
+          },
+          "byVariant": {},
+          "byIndicationType": {},
+          "protection": {
+            "overallControlSlots": 0,
+            "overallControlRows": 0,
+            "perOrderControlRows": 0,
+            "venueControlOrders": 0,
+            "exchangeControl": 0,
+            "hybridControlSystem": 0,
+            "systemClose": 0,
+            "systemCloseFallback": 0,
+            "missingVenueLegsHandledBySystem": 0,
+            "venueLegsQuantityCovered": 0,
+            "venueLegsQuantityUnknown": 0,
+            "venueLegsQuantityDrifted": 0,
+            "securityStopsRequired": 0,
+            "securityStopsArmed": 0,
+            "securityStopsMissing": 0
+          },
+          "relationIntegrity": {
+            "success": true,
+            "checkedPositions": 0,
+            "mismatchCount": 0,
+            "mismatches": []
+          }
+        },
+        "simulatedComplete": {
+          "positions": 0,
+          "filled": 0,
+          "open": 0,
+          "closed": 0,
+          "accountingPending": 0,
+          "partialExecutions": 0,
+          "lifetimeQuantity": 0,
+          "openQuantity": 0,
+          "closedQuantity": 0,
+          "lifetimeVolumeUsd": 0,
+          "openVolumeUsd": 0,
+          "realizedPnl": 0,
+          "unrealizedPnl": 0,
+          "fees": 0,
+          "wins": 0,
+          "losses": 0,
+          "breakeven": 0,
+          "winRate": 0,
+          "averageRealizedRoi": 0,
+          "bySource": {
+            "direct-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "main-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "preset-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "signal-trade": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            },
+            "unknown": {
+              "positions": 0,
+              "filled": 0,
+              "open": 0,
+              "closed": 0,
+              "accountingPending": 0,
+              "partialExecutions": 0,
+              "lifetimeQuantity": 0,
+              "openQuantity": 0,
+              "closedQuantity": 0,
+              "lifetimeVolumeUsd": 0,
+              "openVolumeUsd": 0,
+              "realizedPnl": 0,
+              "unrealizedPnl": 0,
+              "fees": 0
+            }
+          },
+          "byVariant": {},
+          "byIndicationType": {},
+          "protection": {
+            "overallControlSlots": 0,
+            "overallControlRows": 0,
+            "perOrderControlRows": 0,
+            "venueControlOrders": 0,
+            "exchangeControl": 0,
+            "hybridControlSystem": 0,
+            "systemClose": 0,
+            "systemCloseFallback": 0,
+            "missingVenueLegsHandledBySystem": 0,
+            "venueLegsQuantityCovered": 0,
+            "venueLegsQuantityUnknown": 0,
+            "venueLegsQuantityDrifted": 0,
+            "securityStopsRequired": 0,
+            "securityStopsArmed": 0,
+            "securityStopsMissing": 0
+          },
+          "relationIntegrity": {
+            "success": true,
+            "checkedPositions": 0,
+            "mismatchCount": 0,
+            "mismatches": []
+          }
+        },
+        "books": {
+          "real": {
+            "total": 0,
+            "open": 0,
+            "closed": 0,
+            "settledClosed": 0,
+            "accountingPending": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakEven": 0,
+            "winRate": 0,
+            "grossProfit": 0,
+            "grossLoss": 0,
+            "grossPnl": 0,
+            "fees": 0,
+            "netPnl": 0,
+            "unrealizedPnl": 0,
+            "totalPnl": 0,
+            "profitFactor": null,
+            "profitFactorUnbounded": false,
+            "avgWin": 0,
+            "avgLoss": 0,
+            "largestWin": 0,
+            "largestLoss": 0,
+            "maxDrawdown": 0,
+            "openNotionalUsd": 0,
+            "openSymbols": 0,
+            "bySymbol": {},
+            "byStrategy": {},
+            "byHour": {}
+          },
+          "simulated": {
+            "total": 0,
+            "open": 0,
+            "closed": 0,
+            "settledClosed": 0,
+            "accountingPending": 0,
+            "wins": 0,
+            "losses": 0,
+            "breakEven": 0,
+            "winRate": 0,
+            "grossProfit": 0,
+            "grossLoss": 0,
+            "grossPnl": 0,
+            "fees": 0,
+            "netPnl": 0,
+            "unrealizedPnl": 0,
+            "totalPnl": 0,
+            "profitFactor": null,
+            "profitFactorUnbounded": false,
+            "avgWin": 0,
+            "avgLoss": 0,
+            "largestWin": 0,
+            "largestLoss": 0,
+            "maxDrawdown": 0,
+            "openNotionalUsd": 0,
+            "openSymbols": 0,
+            "bySymbol": {},
+            "byStrategy": {},
+            "byHour": {}
+          }
+        }
+      },
+      "coverage": {
+        "symbols": 15,
+        "fullyCovered": 15,
+        "uncovered": [],
+        "withStrategyKeys": 15
+      },
+      "progression": {
+        "historic": {
+          "processed": 15,
+          "total": 15,
+          "complete": true
+        },
+        "realtime": {
+          "cycles": 36,
+          "cycleCounters": {
+            "indication": 36,
+            "indicationLive": 36,
+            "strategy": 36,
+            "strategyLive": 0,
+            "realtime": 36,
+            "realtimeLive": 0,
+            "livePositions": 320
+          }
+        },
+        "breakdown": {
+          "indications": {
+            "direction": 548,
+            "move": 622,
+            "active": 148,
+            "activeAdvanced": 0,
+            "special": 0,
+            "optimal": 438,
+            "auto": 37,
+            "common": 0,
+            "signal": 16916,
+            "trend": 551,
+            "total": 19260
+          },
+          "strategies": {
+            "base": 0,
+            "main": 0,
+            "real": 0,
+            "live": 0,
+            "total": 0,
+            "baseEvaluated": 84624,
+            "mainEvaluated": 0,
+            "mainBaseInput": 0,
+            "mainPassedParents": 0,
+            "mainRelatedCreated": 0,
+            "mainPosCountRelated": 0,
+            "mainOtherRelated": 0,
+            "mainRawMaterialized": 0,
+            "realEvaluated": 0,
+            "realLogicalPassed": 0,
+            "realRelatedCreated": 0,
+            "realCoordinationEvaluated": 0,
+            "realRawInput": 0,
+            "realRawEvaluated": 0
+          }
+        }
+      }
+    }
+  },
+  "serverAlerts": []
+}

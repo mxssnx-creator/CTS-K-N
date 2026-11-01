@@ -59,6 +59,7 @@ __tests__/fixtures/legacy-technical-indicators.ts
 __tests__/integration/live-order-service.test.ts
 __tests__/integration/main-engine-live-dispatch.test.ts
 __tests__/integration/outcome-set-ceiling.test.ts
+__tests__/integration/paper-lifecycle-70-symbols.test.ts
 __tests__/integration/preset-optimizer-store.test.ts
 __tests__/integration/progression-api.test.ts
 __tests__/unit/active-outbreak-indication.test.ts
@@ -120,9 +121,13 @@ __tests__/unit/close-accounting-connections.test.ts
 __tests__/unit/close-adopted-positions.test.ts
 __tests__/unit/closeable-row-statuses.test.ts
 __tests__/unit/coherent-stage-thresholds.test.ts
+__tests__/unit/common-auto-series.test.ts
 __tests__/unit/common-category-vote.test.ts
+__tests__/unit/common-extension-reference.test.ts
+__tests__/unit/common-history.test.ts
 __tests__/unit/common-indicators-catalog.test.ts
 __tests__/unit/common-indicators-legacy-equivalence.test.ts
+__tests__/unit/common-rule-prefix-stability.test.ts
 __tests__/unit/connection-backtest-jobs.test.ts
 __tests__/unit/connection-backtest-ui-contract.test.ts
 __tests__/unit/connection-backtest.test.ts
@@ -147,6 +152,7 @@ __tests__/unit/connector-log-retention.test.ts
 __tests__/unit/control-order-capacity.test.ts
 __tests__/unit/cooperative-task-timeout.test.ts
 __tests__/unit/create-checkpoint-script.test.ts
+__tests__/unit/created-indication-counts.test.ts
 __tests__/unit/cron-generate-indications-eligibility.test.ts
 __tests__/unit/cron-time-box.test.ts
 __tests__/unit/cycle-diagnostic-timing.test.ts
@@ -241,6 +247,7 @@ __tests__/unit/halt-retires-on-own-book.test.ts
 __tests__/unit/handoff-slot-halt.test.ts
 __tests__/unit/health-route-liveness-budget.test.ts
 __tests__/unit/health-runtime-contract.test.ts
+__tests__/unit/historic-candle-tail-cache.test.ts
 __tests__/unit/historic-candle-window.test.ts
 __tests__/unit/historic-four-hour-stats.test.ts
 __tests__/unit/historic-profit-factor.test.ts
@@ -273,6 +280,7 @@ __tests__/unit/instaforex-base-connection.test.ts
 __tests__/unit/install-deployment-contract.test.ts
 __tests__/unit/leverage-tier-retry.test.ts
 __tests__/unit/leverage-units-and-liquidation-floor.test.ts
+__tests__/unit/lifecycle-count-integrity.test.ts
 __tests__/unit/liquidation-safe-leverage.test.ts
 __tests__/unit/live-bracket-geometry.test.ts
 __tests__/unit/live-close-results-feedback.test.ts
@@ -328,6 +336,7 @@ __tests__/unit/manual-close-not-reopened.test.ts
 __tests__/unit/margin-call-route.test.ts
 __tests__/unit/margin-call.test.ts
 __tests__/unit/market-data-1s-backfill.test.ts
+__tests__/unit/market-data-cache-capacity.test.ts
 __tests__/unit/market-data-fetch-deadline.test.ts
 __tests__/unit/market-data-history-contract.test.ts
 __tests__/unit/market-data-second-coverage.test.ts
@@ -376,6 +385,7 @@ __tests__/unit/portfolio-risk-budget.test.ts
 __tests__/unit/pos-count-volume-ratio.test.ts
 __tests__/unit/pos-history-batch.test.ts
 __tests__/unit/position-book-stats.test.ts
+__tests__/unit/position-context-fingerprint-memo.test.ts
 __tests__/unit/position-cost-net-results.test.ts
 __tests__/unit/position-flow-calculations.test.ts
 __tests__/unit/position-index-established-with-hash.test.ts
@@ -429,6 +439,7 @@ __tests__/unit/real-stage-accounting.test.ts
 __tests__/unit/realtime-cycle-diagnostic.test.ts
 __tests__/unit/realtime-cycle-phase-timing.test.ts
 __tests__/unit/realtime-rotation-progress.test.ts
+__tests__/unit/realtime-trailing-activation.test.ts
 __tests__/unit/realtime-trailing-update.test.ts
 __tests__/unit/reconcile-respects-slot-entry.test.ts
 __tests__/unit/redis-connection-identity.test.ts
@@ -453,7 +464,9 @@ __tests__/unit/resume-stalled-system-close.test.ts
 __tests__/unit/retention-policy.test.ts
 __tests__/unit/rollback-orphan-diagnostics.test.ts
 __tests__/unit/round-trip-cost-and-direct-default.test.ts
+__tests__/unit/round5-audit-fixes.test.ts
 __tests__/unit/row-share-and-rotating-accounting.test.ts
+__tests__/unit/rsi-reversion-neutral-zone.test.ts
 __tests__/unit/run-with-env-lifecycle.test.ts
 __tests__/unit/runtime-boot-id.test.ts
 __tests__/unit/runtime-concurrency-profile.test.ts
@@ -495,6 +508,7 @@ __tests__/unit/signal-position-policy.test.ts
 __tests__/unit/signal-positions-orders.test.ts
 __tests__/unit/signal-source-registry.test.ts
 __tests__/unit/signal-source-validation.test.ts
+__tests__/unit/signal-statistics-count-integrity.test.ts
 __tests__/unit/signal-statistics-quorum.test.ts
 __tests__/unit/signal-trailing.test.ts
 __tests__/unit/sim-live-divergence-fixes.test.ts
@@ -522,6 +536,7 @@ __tests__/unit/statistics-history-snapshot.test.ts
 __tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
+__tests__/unit/stats-canonical.test.ts
 __tests__/unit/status-canonical-position-counts.test.ts
 __tests__/unit/stop-loss-rejection-backoff.test.ts
 __tests__/unit/stopped-out-row-not-a-violation.test.ts
@@ -544,6 +559,7 @@ __tests__/unit/strategy-sets-processor.test.ts
 __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts
 __tests__/unit/strategy-stage-relations.test.ts
+__tests__/unit/strategy-tuple-coverage.test.ts
 __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/stuck-placement-sweeper.test.ts
 __tests__/unit/symbol-capacity.test.ts
@@ -575,6 +591,7 @@ __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
 __tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
+__tests__/unit/trailing-activation.test.ts
 __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trailing-family-replay-wiring.test.ts
 __tests__/unit/transient-halt-short-ttl.test.ts
@@ -591,6 +608,7 @@ __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-factor-save-precedence.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
 __tests__/unit/wilder-rsi.test.ts
+__tests__/unit/x01-explicit-authorization.test.ts
 __tests__/unit/x02-slot-protection-operator.test.ts
 app/active-exchange/layout.tsx
 app/active-exchange/page.tsx
@@ -1253,6 +1271,7 @@ docs/REMOTE-CHISEL-WORKMODE.md
 docs/REMOTE-TAILSCALE-PULL-AGENT.md
 docs/SPECIAL-VST-7D-8S-VALIDATION-2026-08-15.md
 docs/STAGE-FUNNEL-AND-PROCESSING.md
+docs/audit/round5-findings.md
 docs/baseline/STABLE-BASELINE-2026-09-19.md
 docs/baseline/candles-2026-09-19-1m.json.gz
 docs/chisel-client.service.example
@@ -1323,6 +1342,8 @@ docs/reports/20261007-sim24h-12s/SHA256SUMS
 docs/reports/20261007-sim24h-12s/report.html
 docs/reports/20261008-long-horizon/README.md
 docs/reports/20261008-long-horizon/summary.json
+docs/reports/20261019-verify-validated-funnel-45min/README.md
+docs/reports/20261019-verify-validated-funnel-45min/summary.json
 docs/reports/20261021-x01-readonly-replay/RESULTS.md
 docs/reports/20261021-x01-readonly-replay/dev-2026-10-07-to-20/report.html
 docs/reports/20261021-x01-readonly-replay/dev-2026-10-07-to-20/summary.json
@@ -1330,7 +1351,30 @@ docs/reports/20261021-x01-readonly-replay/dev-2026-10-07-to-20/validated-candida
 docs/reports/20261021-x01-readonly-replay/frozen-holdout/frozen-holdout-summary.json
 docs/reports/20261021-x01-readonly-replay/holdout-2026-09-08-to-21/report.html
 docs/reports/20261021-x01-readonly-replay/holdout-2026-09-08-to-21/summary.json
+docs/reports/20261101-lifecycle-statistics-audit/RESULTS.md
+docs/reports/20261101-lifecycle-statistics-audit/branch-inventory.csv
+docs/reports/20261101-lifecycle-statistics-audit/common-extension-summary.json
+docs/reports/20261101-lifecycle-statistics-audit/offline-15-fixed.json
+docs/reports/20261101-lifecycle-statistics-audit/offline-15-fixed.md
+docs/reports/20261101-lifecycle-statistics-audit/offline-15.json
+docs/reports/20261101-lifecycle-statistics-audit/offline-15.md
+docs/reports/20261101-lifecycle-statistics-audit/ui-http-verification.json
+docs/reports/20261101-lifecycle-statistics-audit/unit-rerun.txt
+docs/reports/20261101-lifecycle-statistics-audit/validation-evidence.json
+docs/reports/20261101-lifecycle-statistics-audit/verification-summary.json
 docs/signal-source-research.md
+docs/stress/ab-tuples-all.json
+docs/stress/ab-tuples-all.md
+docs/stress/ab-tuples-representatives.json
+docs/stress/ab-tuples-representatives.md
+docs/stress/last-6h-simulation.md
+docs/stress/offline-70-after.json
+docs/stress/offline-70-after.md
+docs/stress/offline-70-baseline.json
+docs/stress/offline-70-baseline.md
+docs/stress/offline-70-compare.md
+docs/stress/offline-70-verify.json
+docs/stress/offline-70-verify.md
 docs/system-modules-map.md
 docs/verification/older-change-integration-20260906.json
 docs/verification/redis-memory-recovery-20260905.md
@@ -1415,16 +1459,19 @@ lib/closeable-row-statuses.ts
 lib/common-indicator-config.ts
 lib/common-indicators/ao/classic.ts
 lib/common-indicators/ao/define.ts
+lib/common-indicators/ao/low-range.ts
 lib/common-indicators/ao/math.ts
 lib/common-indicators/ao/micro-rules.ts
 lib/common-indicators/ao/micro.ts
 lib/common-indicators/ao/research.ts
 lib/common-indicators/ao/research2.ts
 lib/common-indicators/ao/research3.ts
+lib/common-indicators/ao/research4.ts
 lib/common-indicators/ao/series-cache.ts
 lib/common-indicators/catalog.ts
 lib/common-indicators/categories.ts
 lib/common-indicators/context.ts
+lib/common-indicators/history.ts
 lib/common-indicators/kn-math.ts
 lib/common-indicators/legacy-rules.ts
 lib/common-indicators/new-rules.ts
@@ -1473,6 +1520,7 @@ lib/cooperative-task-timeout.ts
 lib/core/dynamic-operations.ts
 lib/core/entity-types.ts
 lib/correlation-tracking.ts
+lib/created-indication-counts.ts
 lib/cron-auth.ts
 lib/cron-engine-eligibility.ts
 lib/cron-time-box.ts
@@ -1617,6 +1665,7 @@ lib/live-dispatch-outcome.ts
 lib/live-entry-budget-block-cache.ts
 lib/live-entry-protection-admission.ts
 lib/live-entry-readiness.ts
+lib/live-execution-rows.ts
 lib/live-execution-summary.ts
 lib/live-family-statistics.ts
 lib/live-order-coordination.ts
@@ -1792,6 +1841,7 @@ lib/startup-validation.ts
 lib/statistics-overview-current-counts.ts
 lib/statistics-symbol-rows.ts
 lib/statistics-tracker.ts
+lib/stats-canonical.ts
 lib/step-based-indicators.ts
 lib/stoploss-ratio-range.ts
 lib/strategies.ts
@@ -1866,6 +1916,7 @@ lib/trade-engine/state-machine.ts
 lib/trade-engine/strategy-processor.ts
 lib/trade-engine/symbol-selection-ownership.ts
 lib/trade-engine/trade-engine.tsx
+lib/trade-engine/type-measurement-rolling.ts
 lib/trade-engine/type-measurement.ts
 lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
@@ -1874,6 +1925,7 @@ lib/trading-pair-keys.ts
 lib/trading-round-trip-cost.cjs
 lib/trading-round-trip-cost.ts
 lib/trading.ts
+lib/trailing-activation.ts
 lib/trailing-settings.ts
 lib/trend-indication.ts
 lib/types-auto-optimal.ts
@@ -1929,6 +1981,7 @@ scripts/add-bingx-credentials.js
 scripts/apply-production-settings.sh
 scripts/audit-bingx-account-readonly.ts
 scripts/audit-bingx-vst-soak-settlements.ts
+scripts/audit-common-extension-replay.ts
 scripts/audit-dca-sl-candidates.ts
 scripts/audit-live-position-ledgers.mjs
 scripts/audit-live-results.ts
@@ -1953,6 +2006,7 @@ scripts/clean-opennext-output.mjs
 scripts/cleanup-bingx-cts-protection-orders.ts
 scripts/cleanup-direct-trade-orphans.ts
 scripts/compact-direct-trade-configs.ts
+scripts/compare-offline-soak-reports.mjs
 scripts/configure-prod-trading.sh
 scripts/connect-remote-chisel.sh
 scripts/create-checkpoint.sh
@@ -2038,6 +2092,7 @@ scripts/run-managed-db-migrate.mjs
 scripts/run-minute-scheduler.mjs
 scripts/run-native-redis-coordination.mjs
 scripts/run-offline-50-engine-soak.mjs
+scripts/run-offline-engine-soak.mjs
 scripts/run-prod-20symbols-8h.sh
 scripts/run-prod-preview-check.mjs
 scripts/run-production-inline-ui-audit.mjs
@@ -2049,6 +2104,7 @@ scripts/service-control.sh
 scripts/setup-github-cli.sh
 scripts/short-range-capture.ts
 scripts/short-range-research.ts
+scripts/simulate-last-6h.ts
 scripts/simulate-signal-source-ranking.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs

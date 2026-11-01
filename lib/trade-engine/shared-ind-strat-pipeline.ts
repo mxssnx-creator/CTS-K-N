@@ -202,9 +202,11 @@ export async function runIndStratCycle(
           `[v0] [SharedPipeline] processIndication failed for ${symbol} (mode=${mode}, asOfMs=${deps.asOfMs ?? "now"}):`,
           err instanceof Error ? err.message : String(err),
         )
-    if (result.phaseDurationsMs) result.phaseDurationsMs.indication = Date.now() - indicationStartedAt
         return [] as any[]
       })
+    // Measured after the await (success and failure alike): set inside the
+    // catch only, a successful pass always reported indication=0ms.
+    if (result.phaseDurationsMs) result.phaseDurationsMs.indication = Date.now() - indicationStartedAt
     if (!shouldContinue()) return result
     result.indicationCount = Array.isArray(indications) ? indications.length : 0
     if (Array.isArray(indications)) {

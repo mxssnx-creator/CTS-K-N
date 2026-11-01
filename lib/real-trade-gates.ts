@@ -213,7 +213,14 @@ export function isBingXVirtualFundsDemo(settings: Record<string, any>): boolean 
 export function isMainnetReadOnlyConnection(settings: Record<string, any>): boolean {
   const exchange = String(settings.exchange || "").trim().toLowerCase()
   if (exchange === "bybit") return true
-  return exchange === "bingx" && !isBingXVirtualFundsDemo(settings)
+  if (exchange !== "bingx" || isBingXVirtualFundsDemo(settings)) return false
+  // Operator authorization (2026-11-01) is scoped to the canonical X01 only.
+  // Old FORCE_LIVE flags and saved toggles cannot opt a different account in.
+  const id = String(settings.id ?? settings.connection_id ?? settings.connectionId ?? "").trim().toLowerCase()
+  const allowed = String(process.env.LIVE_ORDER_CONNECTION_IDS || "").split(/[\s,]+/).map((value) => value.trim().toLowerCase())
+  return !(id === "bingx-x01" && !truthy(settings.read_only)
+    && process.env.BINGX_X01_MAINNET_LIVE === "1"
+    && process.env.ALLOW_LIVE_ORDER_PLACEMENT === "1" && allowed.includes(id))
 }
 
 /**
@@ -351,7 +358,7 @@ export function evaluateRealTradeReadiness(
     blockReason = `${label} is disabled by the operator`
   } else if (isMainnetReadOnlyConnection(settings)) {
     blockCode = "mainnet_read_only"
-    blockReason = `${label} is blocked: mainnet and Bybit connections are read-only by project policy; only BingX Prod-VST may place orders`
+    blockReason = `${label} is blocked: this mainnet/Bybit connection is read-only; canonical BingX X01 requires its explicit process authorization and placement allow-list`
   } else if (!isLiveOrderConnectionAllowed(settings)) {
     blockCode = "connection_not_allowed"
     blockReason = `${label} is not allowed for this connection by LIVE_ORDER_CONNECTION_IDS`

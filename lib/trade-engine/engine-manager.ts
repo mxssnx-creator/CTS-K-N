@@ -821,6 +821,8 @@ export class TradeEngineManager {
   private entryProcessingGeneration = 0
   private configuredSymbolCount = 0
   private attemptedSymbolsCurrentTick = 0
+  /** Longest complete realtime pass since this engine instance started (telemetry). */
+  private realtimePassMaxMs = 0
   private successfullyProcessedSymbolsCurrentTick = 0
   private uniqueSymbolsCoveredCurrentRotation = 0
   private realtimeBasketGeneration = ""
@@ -3473,6 +3475,7 @@ export class TradeEngineManager {
           realtime: this.realtimeProcessor,
           shouldContinue: scheduledGenerationIsCurrent,
         }
+        const realtimePassStartedAt = Date.now()
         const pipelineResults = await withCycleDiagnostic(
           mapWithConcurrency(symbols, getSymbolConcurrency(symbols.length), (symbol) =>
             runIndStratCycle(this.connectionId, symbol, "realtime", pipelineDeps).catch(async (err) => {
@@ -3559,6 +3562,48 @@ export class TradeEngineManager {
             ])
           } catch { /* best-effort telemetry */ }
         }
+        // Every complete pass records its duration, phase split and per-symbol
+        // spread (one HSET). Slow passes alone were visible before, so a pass
+        // under the slow threshold left no trace of how long it took.
+        try {
+          const passMs = Date.now() - realtimePassStartedAt
+          this.realtimePassMaxMs = Math.max(this.realtimePassMaxMs, passMs)
+          const phaseTotals = { indication: 0, pseudo: 0, strategy: 0 }
+          const symbolMs: number[] = []
+          const slowest: Array<{ symbol: string; ms: number }> = []
+          for (const row of (pipelineResults || []) as any[]) {
+            const phases = row?.phaseDurationsMs
+            if (phases) {
+              phaseTotals.indication += Number(phases.indication) || 0
+              phaseTotals.pseudo += Number(phases.pseudo) || 0
+              phaseTotals.strategy += Number(phases.strategy) || 0
+            }
+            const ms = Number(row?.durationMs) || 0
+            symbolMs.push(ms)
+            if (row?.symbol) slowest.push({ symbol: String(row.symbol), ms })
+          }
+          symbolMs.sort((left, right) => left - right)
+          const quantile = (q: number) => symbolMs.length > 0
+            ? symbolMs[Math.min(symbolMs.length - 1, Math.floor(q * symbolMs.length))]
+            : 0
+          slowest.sort((left, right) => right.ms - left.ms)
+          await getRedisClient().hset(
+            buildProgressionScope(this.connectionId, this.currentEngineType).progressionKey,
+            {
+              realtime_pass_last_ms: String(passMs),
+              realtime_pass_max_ms: String(this.realtimePassMaxMs),
+              realtime_pass_last_symbols: String(symbols.length),
+              realtime_pass_last_at: String(Date.now()),
+              realtime_pass_last_symbol_p50_ms: String(quantile(0.5)),
+              realtime_pass_last_symbol_p95_ms: String(quantile(0.95)),
+              realtime_pass_last_symbol_max_ms: String(symbolMs.at(-1) ?? 0),
+              realtime_pass_last_indication_ms: String(phaseTotals.indication),
+              realtime_pass_last_pseudo_ms: String(phaseTotals.pseudo),
+              realtime_pass_last_strategy_ms: String(phaseTotals.strategy),
+              realtime_pass_last_slowest: JSON.stringify(slowest.slice(0, 5)),
+            },
+          )
+        } catch { /* best-effort telemetry */ }
         if (
           !this.liveProgressionsArmed ||
           entryGeneration !== this.entryProcessingGeneration

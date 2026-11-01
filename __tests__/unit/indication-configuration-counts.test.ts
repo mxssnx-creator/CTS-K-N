@@ -8,12 +8,14 @@ import {
 } from "@/lib/common-indicator-config"
 
 // Every default Common parameter tuple: 1,899 for the 17 original types plus
-// 426 for the types ported from CTS-A-O (129 types).
+// 528 for the types ported from CTS-A-O (135 types).
 const defaultCommonTuples = COMMON_INDICATOR_DEFINITIONS.reduce((sum, definition) =>
   sum + commonIndicatorParameterConfigurations(
     definition,
     DEFAULT_COMMON_INDICATION_SETTINGS[definition.storageKey] as CommonIndicatorSettings,
   ).length, 0)
+const enabledCommonTuples = COMMON_INDICATOR_DEFINITIONS.filter(d => d.enabled).reduce((sum, definition) =>
+  sum + commonIndicatorParameterConfigurations(definition, DEFAULT_COMMON_INDICATION_SETTINGS[definition.storageKey] as CommonIndicatorSettings).length, 0)
 
 /** Common settings with only `ma` enabled (every other type off). */
 const onlyMa = Object.fromEntries(COMMON_INDICATOR_DEFINITIONS.map((definition) => [
@@ -27,7 +29,7 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 5 (then evaluate every integer through 30).
-    expect(defaultCommonTuples).toBe(2_325)
+    expect(defaultCommonTuples).toBe(2_427)
     expect(result.totalPossibleSets).toBe(47_704)
     expect(result.totalEvaluationConfigurations).toBe(16_132)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
@@ -43,7 +45,7 @@ describe("indication configuration counts", () => {
       signal: 15_228,
       trend: 102,
       // timeframes × tuples × long/short
-      common: 4 * defaultCommonTuples * 2,
+      common: 4 * enabledCommonTuples * 2,
     })
     expect(result.types.find((type) => type.type === "active")).toMatchObject({
       params: {

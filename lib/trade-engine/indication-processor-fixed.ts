@@ -108,7 +108,8 @@ import {
 } from "@/lib/indication-sets-processor"
 import { logProgressionEvent } from "@/lib/engine-progression-logs"
 import { trackIndicationStatsBatch } from "@/lib/statistics-tracker"
-import { StepBasedIndicators } from "@/lib/step-based-indicators"
+import { StepBasedIndicators, releaseTimeframeContexts } from "@/lib/step-based-indicators"
+import { commonHistoryForCycle, type CommonHistoryView } from "@/lib/common-indicators/history"
 import {
   DEFAULT_COMMON_INDICATION_SETTINGS,
   enabledCommonIndicatorTypes,
@@ -140,6 +141,7 @@ import {
 import { logRuntimeWarning } from "@/lib/runtime-log-throttle"
 import { getHistoricCandleTail } from "./market-data-cache"
 import {
+  commonMultiRangeCoordinationFor,
   computeDirectIndications,
   oneMinuteClosesOldestFirst,
   parseNumericSettingList,
@@ -199,107 +201,82 @@ const MODULE_SETTINGS_CACHE = new Map<string, { data: any; timestamp: number }>(
 type StepIndicatorSummarySnapshot = Awaited<
   ReturnType<typeof StepBasedIndicators.calculateSummariesAsync>
 >
-type StepIndicatorSummaryCacheEntry = {
-  data: StepIndicatorSummarySnapshot
-  timestamp: number
-}
 
-// Auto alignment only consumes the aggregate indicator summary. Keeping that
-// summary separate from the exhaustive Set graph prevents every realtime
-// pulse from retaining a second Cartesian result tree. The key is based on
-// the actual candle series and Common settings, never on the transient mark.
-const STEP_SUMMARY_CACHE_MAX_ENTRIES = 256
-const STEP_SUMMARY_CACHE_TTL_MS = Math.max(
-  250,
-  Math.min(10_000, Number(process.env.INDICATION_STEP_SUMMARY_CACHE_MS || 2_000) || 2_000),
-)
-const STEP_SUMMARY_CACHE = new Map<string, StepIndicatorSummaryCacheEntry>()
+// Auto's Common summaries change only when a minute completes: the key is the
+// Common history view (completed one-minute bars, lib/common-indicators/history.ts),
+// the coordinated timeframes and the Common settings. The former key hashed
+// every one-second candle (~34k String() calls per symbol and pass) and never
+// hit, so the full 9,300-configuration grid ran on every realtime pass.
+const STEP_SUMMARY_CACHE_MAX_ENTRIES = 512
+const STEP_SUMMARY_CACHE = new Map<string, StepIndicatorSummarySnapshot>()
+const STEP_SUMMARY_LATEST_KEY = new Map<string, string>()
 const STEP_SUMMARY_FLIGHTS = new Map<string, Promise<StepIndicatorSummarySnapshot>>()
+const STEP_SUMMARY_SETTINGS_SIGNATURES = new WeakMap<object, string>()
 
-function stepSummaryMarketSignature(candles: any[]): string {
-  let hash = 0x811c9dc5
-  const mix = (value: unknown): void => {
-    const text = String(value ?? "")
-    for (let index = 0; index < text.length; index++) {
-      hash ^= text.charCodeAt(index)
-      hash = Math.imul(hash, 0x01000193)
-    }
-    hash ^= 0xff
-    hash = Math.imul(hash, 0x01000193)
-  }
-  for (const candle of candles) {
-    mix(candle?.timestamp ?? candle?.time ?? candle?.t)
-    mix(candle?.open ?? candle?.o)
-    mix(candle?.high ?? candle?.h)
-    mix(candle?.low ?? candle?.l)
-    mix(candle?.close ?? candle?.c ?? candle?.price)
-    mix(candle?.volume ?? candle?.v)
-  }
-  return `${candles.length}:${(hash >>> 0).toString(36)}`
-}
-
-function stepSummaryCacheKey(
-  connectionId: string,
-  symbol: string,
-  candles: any[],
-  timeframes: number[],
-  settings: any,
-): string {
-  let settingsSignature = ""
+function stepSummarySettingsSignature(settings: any): string {
+  const holder = settings && typeof settings === "object" ? settings : null
+  const cached = holder ? STEP_SUMMARY_SETTINGS_SIGNATURES.get(holder) : undefined
+  if (cached !== undefined) return cached
+  let text = ""
   try {
-    settingsSignature = JSON.stringify({
+    text = JSON.stringify({
       commonIndicatorTypes: settings?.commonIndicatorTypes || [],
       commonSettings: settings?.commonSettings || {},
-      timeframes,
     })
   } catch {
-    settingsSignature = String(settings?.commonIndicatorTypes || "")
+    text = String(settings?.commonIndicatorTypes || "")
   }
-  return `${connectionId}:${symbol}:${stepSummaryMarketSignature(candles)}:${settingsSignature}`
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  const signature = `${text.length}:${(hash >>> 0).toString(36)}`
+  if (holder) STEP_SUMMARY_SETTINGS_SIGNATURES.set(holder, signature)
+  return signature
 }
 
-function readStepSummaryCache(key: string): StepIndicatorSummarySnapshot | null {
-  const entry = STEP_SUMMARY_CACHE.get(key)
-  if (!entry) return null
-  if (Date.now() - entry.timestamp >= STEP_SUMMARY_CACHE_TTL_MS) {
-    STEP_SUMMARY_CACHE.delete(key)
-    return null
-  }
-  // Refresh insertion order for bounded LRU-like behavior.
-  STEP_SUMMARY_CACHE.delete(key)
-  STEP_SUMMARY_CACHE.set(key, entry)
-  return entry.data
-}
-
-function writeStepSummaryCache(key: string, data: StepIndicatorSummarySnapshot): void {
+function writeStepSummaryCache(scope: string, key: string, data: StepIndicatorSummarySnapshot): void {
+  // one live entry per connection/symbol: the previous minute is never read again
+  const previous = STEP_SUMMARY_LATEST_KEY.get(scope)
+  if (previous !== undefined && previous !== key) STEP_SUMMARY_CACHE.delete(previous)
+  STEP_SUMMARY_LATEST_KEY.delete(scope)
+  STEP_SUMMARY_LATEST_KEY.set(scope, key)
   if (STEP_SUMMARY_CACHE.size >= STEP_SUMMARY_CACHE_MAX_ENTRIES && !STEP_SUMMARY_CACHE.has(key)) {
     const oldest = STEP_SUMMARY_CACHE.keys().next().value
     if (oldest !== undefined) STEP_SUMMARY_CACHE.delete(oldest)
   }
-  STEP_SUMMARY_CACHE.delete(key)
-  STEP_SUMMARY_CACHE.set(key, { data, timestamp: Date.now() })
+  STEP_SUMMARY_CACHE.set(key, data)
+  while (STEP_SUMMARY_LATEST_KEY.size > STEP_SUMMARY_CACHE_MAX_ENTRIES * 2) {
+    const oldestScope = STEP_SUMMARY_LATEST_KEY.keys().next().value
+    if (oldestScope === undefined) break
+    STEP_SUMMARY_LATEST_KEY.delete(oldestScope)
+  }
 }
 
 async function getStepIndicatorSummariesCached(
   connectionId: string,
   symbol: string,
-  candles: any[],
+  history: CommonHistoryView,
   timeframes: number[],
   settings: any,
 ): Promise<StepIndicatorSummarySnapshot> {
-  const key = stepSummaryCacheKey(connectionId, symbol, candles, timeframes, settings)
-  const cached = readStepSummaryCache(key)
+  const scope = `${connectionId}|${symbol}`
+  const key = `${scope}|${history.key}|${timeframes.join(",")}|${stepSummarySettingsSignature(settings)}`
+  const cached = STEP_SUMMARY_CACHE.get(key)
   if (cached) return cached
   const existing = STEP_SUMMARY_FLIGHTS.get(key)
   if (existing) return existing
 
   const flight = StepBasedIndicators.calculateSummariesAsync(
-    candles,
+    history.bars,
     timeframes,
     settings?.commonIndicatorTypes,
     settings?.commonSettings,
+    32,
+    { completedThroughMs: history.completedThroughMs },
   ).then((data) => {
-    writeStepSummaryCache(key, data)
+    writeStepSummaryCache(scope, key, data)
     return data
   }).finally(() => {
     STEP_SUMMARY_FLIGHTS.delete(key)
@@ -311,12 +288,23 @@ async function getStepIndicatorSummariesCached(
 function invalidateStepSummaryCache(connectionId?: string): void {
   if (!connectionId) {
     STEP_SUMMARY_CACHE.clear()
+    STEP_SUMMARY_LATEST_KEY.clear()
     return
   }
-  const prefix = `${connectionId}:`
+  const prefix = `${connectionId}|`
   for (const key of STEP_SUMMARY_CACHE.keys()) {
     if (key.startsWith(prefix)) STEP_SUMMARY_CACHE.delete(key)
   }
+  for (const scope of STEP_SUMMARY_LATEST_KEY.keys()) {
+    if (scope.startsWith(prefix)) STEP_SUMMARY_LATEST_KEY.delete(scope)
+  }
+}
+
+/** Test hooks for the per-minute Auto summary cache. */
+export const __indicationProcessorTest = {
+  getStepIndicatorSummariesCached,
+  invalidateStepSummaryCache,
+  stepSummaryCacheSize: () => STEP_SUMMARY_CACHE.size,
 }
 
 function moduleSettingsCacheSet(
@@ -365,6 +353,43 @@ function logicalStrategyIndicationSubtype(indication: any): string {
     return String(plan.id || plan.exitVariant || metadata.mode || "special")
   }
   return String(metadata.mode || config.mode || type)
+}
+
+/**
+ * Which tuples Base evaluates (audit SET-01).
+ *
+ * `representatives` (default): the lane collapse, one row per type × direction ×
+ * subtype lane, as before. Measured on 2026-10-19 (70 symbols, 10 min each):
+ * pass p50 8.2 s and strategy phase 11.4 s median, against pass p50 27.1 s and
+ * strategy phase 43.8 s median with every tuple, about 3.3× the cost.
+ * `all`: every configured tuple that qualified reaches Base, so each
+ * configuration is its own Set (advanced-config requires that batching never
+ * changes which configurations exist). Opt in with STRATEGY_TUPLE_COVERAGE=all
+ * until the pass-time budget allows it.
+ */
+export type StrategyTupleCoverage = "all" | "representatives"
+
+export function resolveStrategyTupleCoverage(raw: unknown = process.env.STRATEGY_TUPLE_COVERAGE): StrategyTupleCoverage {
+  return String(raw || "").trim().toLowerCase() === "all" ? "all" : "representatives"
+}
+
+/** The indications Base evaluates for one pass, with the counts that must reconcile. */
+export function strategyIndicationsForBase(
+  exactIndications: readonly any[],
+  fallbackIndications: readonly any[] = [],
+  coverage: StrategyTupleCoverage = resolveStrategyTupleCoverage(),
+): { indications: any[]; configured: number; passedToBase: number; collapsed: number } {
+  if (coverage === "representatives") {
+    const indications = selectStrategyIndicationRepresentatives(exactIndications, fallbackIndications)
+    return {
+      indications,
+      configured: exactIndications.length + fallbackIndications.length,
+      passedToBase: indications.length,
+      collapsed: Math.max(0, exactIndications.length - (indications.length - fallbackIndications.length)),
+    }
+  }
+  const indications = [...exactIndications, ...fallbackIndications]
+  return { indications, configured: indications.length, passedToBase: indications.length, collapsed: 0 }
 }
 
 /**
@@ -711,6 +736,8 @@ function mergeHistoricTailWithRealtime(
 
 export class IndicationProcessor {
   private connectionId: string
+  /** Base input of the last pass: configured vs passed to Base (SET-02/03 reconciliation). */
+  lastBaseCoverage: { configured: number; passedToBase: number; collapsed: number } | null = null
   // Use shared module-level cache to avoid initialization issues in cached webpack bundles
   private marketDataCache: Map<string, { data: any; timestamp: number }> = SHARED_MARKET_DATA_CACHE
   private settingsCache: { data: any; timestamp: number } | null = SHARED_SETTINGS_CACHE
@@ -1247,13 +1274,40 @@ export class IndicationProcessor {
         indicationSettings.commonCoordination?.timeframesMinutes,
         [1, 5, 15, 30],
       ).map((value) => Math.max(1, Math.round(value)))
-      const stepIndicators = await getStepIndicatorSummariesCached(
-        this.connectionId,
+      // Common reads a longer real one-minute history than the 90-minute
+      // stage window (15m / 30m indicators need more bars to warm up), of
+      // COMPLETED minutes only: the stored, venue-backfilled minutes plus this
+      // cycle's completed live minutes, or the replay series cut at asOfMs.
+      // The view (and its key) only changes when a minute completes, so Auto's
+      // summaries and the Common Set snapshot are computed once per minute,
+      // and Auto and the Set pass read the same array (shared series).
+      const commonHistory = await commonHistoryForCycle({
+        connectionId: this.connectionId,
         symbol,
         candles,
-        coordinatedTimeframes,
-        indicationSettings,
-      )
+        asOfMs: isHistorical ? Number(asOfMs) : undefined,
+        mode: isHistorical ? "historical" : "realtime",
+      }).catch(() => null)
+      const autoBars = commonHistory?.bars ?? []
+      const autoPricesOldestFirst = autoBars.length >= ENGINE_STAGE_HISTORY_MINUTES
+        ? autoBars.slice(-ENGINE_STAGE_HISTORY_MINUTES).map((bar) => bar.close)
+        : []
+      // Auto is the only consumer of the step summaries and can only fire
+      // when its Common coordination passes (the replay gate): skip the grid
+      // otherwise.
+      const autoPossible = indicationSettings.autoEnabled !== false &&
+        commonHistory !== null &&
+        autoPricesOldestFirst.length > 0 &&
+        commonMultiRangeCoordinationFor(autoPricesOldestFirst, positionCostPct, indicationSettings).passed
+      const stepIndicators = autoPossible
+        ? await getStepIndicatorSummariesCached(
+          this.connectionId,
+          symbol,
+          commonHistory!,
+          coordinatedTimeframes,
+          indicationSettings,
+        )
+        : {}
       // Extract prices safely. In replay mode the priceSource must be
       // the slice's tail candle (the simulated "current" bar), NOT the
       // live `marketData` snapshot which would leak realtime price into
@@ -1289,6 +1343,9 @@ export class IndicationProcessor {
         // throttle keys, Set entries, and dashboard ordering line up with
         // the historical point in time the indication represents.
         now: isHistorical ? Number(asOfMs) : Date.now(),
+        // Auto reads the completed minutes of the Common history.
+        autoPricesOldestFirst,
+        autoCurrent: autoBars.length > 0 ? autoBars[autoBars.length - 1] : undefined,
       })
       let indications: any[] = [...direct.beforeSignal]
 
@@ -1355,6 +1412,11 @@ export class IndicationProcessor {
           __indicationSnapshotMode: isHistorical ? "historical" : "realtime",
           __indicationSnapshotAsOfMs: isHistorical ? asOfMs : undefined,
           candles,
+          ...(commonHistory && {
+            commonCandles: commonHistory.bars,
+            __commonHistoryKey: commonHistory.key,
+            __commonCompletedThroughMs: commonHistory.completedThroughMs,
+          }),
           ...(historicalForwardCandles && { forwardCandles: historicalForwardCandles }),
           prices: pricesOldestFirst,
           priceOrder: "oldest-first",
@@ -1366,6 +1428,11 @@ export class IndicationProcessor {
             error instanceof Error ? error.message : error,
           )
           return [] as any[]
+        })
+        // The view outlives this pass (it is reused until the next minute
+        // completes); its per-timeframe series are not needed any more.
+        .finally(() => {
+          if (commonHistory) releaseTimeframeContexts(commonHistory.bars)
         })
       if (!isCurrent()) return []
 
@@ -1389,10 +1456,9 @@ export class IndicationProcessor {
           indication?.type === "auto" ||
           !exactTypes.has(String(indication?.type || "")),
         )
-        strategyIndications = selectStrategyIndicationRepresentatives(
-          exactSetIndications,
-          directFallback,
-        )
+        const base = strategyIndicationsForBase(exactSetIndications, directFallback)
+        strategyIndications = base.indications
+        this.lastBaseCoverage = { configured: base.configured, passedToBase: base.passedToBase, collapsed: base.collapsed }
       }
 
       // A generation can change while market/signal data is in flight. Drop

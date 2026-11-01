@@ -1,4 +1,5 @@
 import { advanceBlockCountLifecycle, type BlockCountLifecycle } from "./block-count-lifecycle"
+import { resolvePositionNotionalUsd } from "./live-position-pnl"
 
 /**
  * Block Count lifecycle storage.
@@ -171,7 +172,7 @@ export async function updateBlockLifecycleForClose(redis: any, position: Record<
   const direction = String(position.direction || position.side || "").toLowerCase()
   const pnl = Number(position.realizedPnL)
   if (!connectionId || !positionId || !symbol || !["long", "short"].includes(direction)) return
-  if (position.status !== "closed" || position.realizedPnlComplete === false
+  if (position.status !== "closed" || position.realizedPnlComplete === false || position.pnlAccountingComplete === false
     || position.realizedPnL == null || !Number.isFinite(pnl)) return
   const key = `block_count_pause:${connectionId}`
   const processed = `block_count_pause_processed:${connectionId}:${positionId}`
@@ -212,19 +213,28 @@ export async function updateBlockLifecycleForClose(redis: any, position: Record<
       const lifecycleKey = String(leg.lifecycleKey || leg.setKey)
       const field = `${symbol}|${lifecycleKey}`
       const entry = Number(leg.entryPrice || 0)
-      const close = Number(position.closePrice || 0)
       const quantity = Number(leg.quantity || 0)
       const total = Number(position.totalExecutedQuantity || position.quantity || 0)
-      const exactLegPnl = quantity > 0 && entry > 0 && close > 0 && total > 0
-        ? (direction === "long" ? close - entry : entry - close) * quantity
-          - Math.max(0, Number(position.tradingFees || 0)) * quantity / total
+      const averageEntry = Number(position.averageExecutionPrice || position.entryPrice || 0)
+      const partials = Array.isArray(position.partialOrderExecutions) ? position.partialOrderExecutions : []
+      // closePrice is the LAST fill. A multi-fill exit must use its complete
+      // net settlement, otherwise a final loss can reset a profitable Count
+      // (or a final gain can reset a losing one). The entry-basis correction
+      // separates Block legs opened at different prices. If reductions precede
+      // the leg, the row-wide ledger cannot prove that leg's result: retain it.
+      if (partials.some((execution: any) => Number(execution.appliedQuantity || execution.cumulativeFilledQuantity) > 0
+        && Number(execution.updatedAt) > 0 && Number(leg.addedAt) > Number(execution.updatedAt))) continue
+      const settledLegPnl = quantity > 0 && entry > 0 && averageEntry > 0 && total > 0
+        ? pnl * quantity / total + (direction === "long" ? 1 : -1) * (
+            resolvePositionNotionalUsd(position, quantity, averageEntry) - resolvePositionNotionalUsd(position, quantity, entry)
+          )
         : pnl
       changes[field] = JSON.stringify(advanceBlockCountLifecycle(parseState(stored?.[field]), {
         setKey: lifecycleKey, symbol, direction, sourceKey: lifecycleKey.split("#block:")[0],
         blockCount: Number(leg.blockCount), incrementSteps: Number(leg.incrementSteps || 2),
         executedIncrementStep: Number(leg.effectiveIncrementStep || 1),
         pauseCount: Math.max(1, Number(leg.pauseCount || leg.blockCount || 1)),
-        netPnl: exactLegPnl, updatedAt: now,
+        netPnl: settledLegPnl, updatedAt: now,
       }))
     }
     if (typeof redis.eval === "function") {

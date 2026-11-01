@@ -33,6 +33,20 @@ function markets() {
   ])
 }
 
+/**
+ * The documented RSI exception (audit F1): the frozen implementation voted
+ * momentum inside the thresholds; the reversion rule is neutral there. The
+ * frozen output is normalised the same way before comparing, so every other
+ * RSI field must still match exactly.
+ */
+function withRsiNeutralZone<T>(output: T): T {
+  const rsi = (output as any)?.rsi
+  if (!rsi || !rsi.details) return output
+  const { value, details } = rsi
+  if (value > details.oversold && value < details.overbought) rsi.direction = "neutral"
+  return output
+}
+
 describe("Common registry equivalence with the original implementation (17 types)", () => {
   const legacyDefinitions = COMMON_INDICATOR_DEFINITIONS.filter((definition) =>
     (LEGACY_COMMON_INDICATOR_TYPES as readonly string[]).includes(definition.type))
@@ -54,9 +68,9 @@ describe("Common registry equivalence with the original implementation (17 types
           for (const values of commonIndicatorParameterConfigurations(definition, settings)) {
             if (definition.type === "atr" && values.period !== 14) continue
             const parameters = { [definition.type]: values }
-            const expected = legacy.evaluateTechnicalIndicators(
+            const expected = withRsiNeutralZone(legacy.evaluateTechnicalIndicators(
               resampled, 14, [definition.type as legacy.TechnicalIndicatorResult["type"]], parameters as any, sharedOld,
-            )
+            ))
             const actual = evaluateTechnicalIndicators(resampled, 14, [definition.type], parameters, sharedNew)
             const fresh = evaluateTechnicalIndicators(resampled, 14, [definition.type], parameters)
             expect(actual).toEqual(expected)
@@ -73,11 +87,17 @@ describe("Common registry equivalence with the original implementation (17 types
 
   test("the whole default catalogue of the 17 types matches when evaluated together", () => {
     for (const market of markets()) {
-      const expected = legacy.evaluateTechnicalIndicators(market.candles, 14)
+      const expected = withRsiNeutralZone(legacy.evaluateTechnicalIndicators(market.candles, 14))
       const actual = evaluateTechnicalIndicators(market.candles, 14, [...LEGACY_COMMON_INDICATOR_TYPES])
       // ATR's baseline is the documented exception (fallback period 14 = configured 14 here).
       expect(actual).toEqual(expected)
     }
+  })
+
+  test("RSI's middle zone is neutral (documented fix, audit F1)", () => {
+    const candles = syntheticCandles("RSI-USDT", 1, 400, END, 9)
+    const result = evaluateTechnicalIndicators(candles, 14, ["rsi"], { rsi: { period: 14, oversold: 30, overbought: 70 } }).rsi!
+    if (result.value > 30 && result.value < 70) expect(result.direction).toBe("neutral")
   })
 
   test("ATR's breakout baseline uses the configured period (documented fix)", () => {

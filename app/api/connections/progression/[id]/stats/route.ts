@@ -38,9 +38,14 @@ import { scanRedisSetMembers } from "@/lib/redis-scan"
 import { parseHistoricFourHourAggregate } from "@/lib/historic-four-hour-stats"
 import { summarizeOutcomeSource } from "@/lib/outcome-source-summary"
 import { parseRollingTypeMeasurement, parseTypeMeasurement, typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
+import { readSignalForwardSummary } from "@/lib/trade-engine/signal-forward-measurement"
 import { resolveHistoricProfitFactor } from "@/lib/historic-profit-factor"
 import { normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
+import { liveRowSetKeys, summarizeLiveExecutionRows } from "@/lib/live-execution-rows"
+import { readCreatedIndicationCounts, overlayCreatedIndicationCounts } from "@/lib/created-indication-counts"
+import { canonicalizeProgressionStats, clampPct, closedWindowStats, monotonic } from "@/lib/stats-canonical"
+import { stageFunnelViolationsFromStats } from "@/lib/stage-funnel-contract"
 import { selectLiveOrderMetricsSnapshot } from "@/lib/live-order-metrics-snapshot"
 import { isExecutedRealExchangePosition } from "@/lib/live-position-source"
 import {
@@ -471,6 +476,7 @@ async function responseFromVolatileStatsSnapshot(
       },
     })
     if (!overlaid) return responseFromStatsSnapshot(snapshot)
+    overlayCreatedIndicationCounts(overlaid, await readCreatedIndicationCounts(client, connectionId, progression))
     // The heavyweight 32-symbol projection may be served stale for up to five
     // minutes while one refresh is in flight. Never freeze live lifecycle and
     // protection coverage with it: rebuild the bounded open-ledger portion on
@@ -478,8 +484,11 @@ async function responseFromVolatileStatsSnapshot(
     // current shared-control coverage is visible without a full graph rebuild.
     const activeLiveRows = currentLivePositionRows.filter((position) =>
       isOpenLiveExposureStatus(String(position.status || "").toLowerCase()) &&
-      isExecutedRealExchangePosition(position as Record<string, any>),
+      isExecutedRealExchangePosition(position as Record<string, any>) &&
+      (resolveConfirmedPositionQuantity(position as Record<string, any>) ?? 0) > 0,
     )
+    const currentExecutionRows = summarizeLiveExecutionRows(currentLivePositionRows)
+    if (overlaid.liveExecution) (overlaid.liveExecution as Record<string, any>).pendingEntries = currentExecutionRows.pendingEntries
     const freshCoverage = (position: Record<string, any>) => Object.entries(
       position.controlOrderSetCoverage && typeof position.controlOrderSetCoverage === "object"
         ? position.controlOrderSetCoverage
@@ -517,6 +526,9 @@ async function responseFromVolatileStatsSnapshot(
         : []
       const previousById = new Map(previousPositions.map((position: any) => [String(position?.id || ""), position]))
       liveOverlay.openScanned = activeLiveRows.length
+      liveOverlay.runningSets = currentExecutionRows.runningSets
+      liveOverlay.unresolvedSetRows = currentExecutionRows.unresolvedRows
+      if (liveOverlay.source !== "exchange-api") liveOverlay.open = currentExecutionRows.openRows
       liveOverlay.positions = activeLiveRows.slice(0, 50).map((position) => {
         const row = position as Record<string, any>
         const id = String(row.id || "")
@@ -530,6 +542,8 @@ async function responseFromVolatileStatsSnapshot(
           direction: String(row.direction || "").toLowerCase(),
           status: String(row.status || "").toLowerCase(),
           quantity: resolveConfirmedPositionQuantity(row) ?? 0,
+          mirroredSetCount: liveRowSetKeys(row).length,
+          mirroredSets: liveRowSetKeys(row).map((setKey) => ({ setKey, count: 1 })),
           orderId: row.orderId ? String(row.orderId) : undefined,
           controlOrderScope: row.controlOrderScope || "per_order",
           stopLossOrderId: controls.stopLossOrderId || undefined,
@@ -582,7 +596,7 @@ async function responseFromVolatileStatsSnapshot(
     if (historicFourHourRaw) {
       overlaid.historicFourHour = parseHistoricFourHourAggregate(historicFourHourRaw)
     }
-    return new Response(JSON.stringify(overlaid), {
+    return new Response(JSON.stringify(canonicalizeProgressionStats(overlaid, stageFunnelViolationsFromStats(overlaid))), {
       headers: snapshot.headers,
       status: snapshot.status,
       statusText: snapshot.statusText,
@@ -1029,18 +1043,6 @@ function aggregateOrdersBySymbol(
     return merged ? merged as Record<string, any> : null
   }
 
-  /** Strategy Sets a live row executes, from its own lineage (as live-stage
-   *  records its entries): a combined pos-count order executes exactly its
-   *  member Sets, any other row its setKey plus accumulated members. */
-  function liveRowSetKeys(position: Record<string, any>): string[] {
-    const primary = String(position.setKey || "").trim()
-    const members = Array.isArray(position.accumulatedSetKeys)
-      ? position.accumulatedSetKeys.map((key: unknown) => String(key).trim()).filter(Boolean)
-      : []
-    const keys = position.combinedPosCounts && members.length > 0 ? members : [primary, ...members]
-    return [...new Set<string>(keys.filter(Boolean))]
-  }
-
   function effectiveRealizedPnl(pos: Record<string, any>): number {
     return resolveRealizedPnl(pos) ?? 0
   }
@@ -1453,6 +1455,10 @@ export async function GET(
       ? operatorSymbols
       : resolveCanonicalSymbols(connection, es, ep, activeProgression, prehistoricHash)
     const symbolsFromArray = runtimeSymbolResolution.count
+    const signalForwardSummary = await readSignalForwardSummary(
+      connectionId,
+      runtimeSymbolResolution.symbols,
+    ).catch(() => null)
     const quickstartSymbols = normalizeSymbolList((es as any).quickstart_symbols)
     const quickstartCount = n((es as any).quickstart_symbol_count)
     const activeSelectionEpoch = String((es as any).symbol_selection_epoch || (es as any).quickstart_symbol_generation || "")
@@ -1550,8 +1556,12 @@ export async function GET(
     const liveStrategyCycles   = n(progHash.strategy_live_cycle_count)
     const liveRealtimeCycles   = n(progHash.realtime_live_cycle_count)
 
-    const realtimeIndicationCycles = churnIndicationCycles
-    const realtimeStrategyCycles   = churnStrategyCycles
+    // Counters shown across polls never go backwards within a run: a source
+    // that resets, or the pick() chain falling through to a smaller source,
+    // used to make the dashboard jump down.
+    const statsRunToken = `${progHash.epoch || ""}:${progHash.started_at || es.started_at || ""}`
+    const realtimeIndicationCycles = monotonic(`${connectionId}:${engineType}:indCycles`, statsRunToken, churnIndicationCycles)
+    const realtimeStrategyCycles   = monotonic(`${connectionId}:${engineType}:stratCycles`, statsRunToken, churnStrategyCycles)
     // realtimeCycles = total realtime ticks (churn). This is now actually
     // populated because EngineManager.startRealtimeProcessor writes
     // `realtime_cycle_count` on every tick via hincrby (previously this key
@@ -1575,7 +1585,7 @@ export async function GET(
       ? Math.round(realtimeCycleTimeSum / realtimeCycleCount)
       : n(es.last_cycle_duration)
 
-    const successRate = parseFloat(progHash.cycle_success_rate || String(es.cycle_success_rate || "100"))
+    const successRate = clampPct(progHash.cycle_success_rate ?? es.cycle_success_rate ?? 100) ?? 100
 
     // Total indications/strategies evaluated — prefer progression hash
     const indicationsTotal = pick(
@@ -1820,6 +1830,8 @@ export async function GET(
     // "which Set does this live position belong to?" tooltip without
     // extra API round-trips.
     const liveProtectionRows: Record<string, any>[] = []
+    const liveLedgerRows: Record<string, any>[] = []
+    let liveLedgerAvailable = false
     const liveOrderRelations: Array<{
       status?: string
       orderId?: string
@@ -1900,8 +1912,8 @@ export async function GET(
     }> = []
     try {
       const liveOpenIds = ((await client
-        .lrange(`live:positions:${connectionId}`, 0, -1)
-        .catch(() => [])) || []) as string[]
+        .lrange(`live:positions:${connectionId}`, 0, -1)) || []) as string[]
+      liveLedgerAvailable = true
 
       if (liveOpenIds.length > 0) {
         const rawList = await mapInBatches(
@@ -1916,6 +1928,7 @@ export async function GET(
             // placed, unconfirmed and rejected rows remain order information and
             // must not inflate the current symbol/direction position snapshot.
             const status = String(pos.status || "").toLowerCase()
+            liveLedgerRows.push(pos)
             liveOrderRelations.push({
               status,
               orderId: pos.orderId ? String(pos.orderId) : undefined,
@@ -1925,6 +1938,7 @@ export async function GET(
             })
             if (!isOpenLiveExposureStatus(status)) continue
             if (!isExecutedRealExchangePosition(pos)) continue
+            if (!((resolveConfirmedPositionQuantity(pos) ?? 0) > 0)) continue
             liveProtectionRows.push(pos)
 
             const sym = String(pos.symbol || "").trim().toUpperCase()
@@ -2117,6 +2131,7 @@ export async function GET(
     // by a few seconds. These scan-derived values are the authoritative
     // "right now" view for the coordination UI.
     const liveOpenScanned = livePositionSetRelations.length
+    const liveExecutionRows = summarizeLiveExecutionRows(liveLedgerRows)
 
     // positionsOpen = authoritative open count from atomic counters.
     // The live:positions:{connId} list scan (liveOpenScanned) is used only for
@@ -2302,6 +2317,7 @@ export async function GET(
     // `auto` is a synthetic legacy alias retained for back-compat with old runs.
     const indTypes = ["direction", "move", "active", "active_advanced", "special", "optimal", "auto", "common", "signal", "trend"] as const
     const indCounts: Record<string, number> = {}
+    const indEvaluated: Record<string, number> = {}
     await Promise.all(
       indTypes.map(async (type) => {
         // Both standalone keys are independent — issue the two GETs
@@ -2311,10 +2327,15 @@ export async function GET(
         // per-type breakdown reads.
         const fromHash = n(progHash[`indications_${type}_count`])
         const [fromKey, fromEval] = await Promise.all([
-          client.get(`indications:${connectionId}:${type}:count`).catch(() => 0),
-          client.get(`indications:${connectionId}:${type}:evaluated`).catch(() => 0),
+          client.get(`indications:${connectionId}:${type}:count`).catch(() => null),
+          client.get(`indications:${connectionId}:${type}:evaluated`).catch(() => null),
         ])
-        indCounts[type] = Math.max(fromHash, n(fromKey), n(fromEval))
+        // One unit (created indications): the standalone counter, else the
+        // progression hash field — the same order engine-stats and
+        // indications-stats read. "Evaluated" is its own figure; the former
+        // max() mixed the two units and jumped when a source changed.
+        indCounts[type] = fromKey !== null && fromKey !== undefined ? n(fromKey) : fromHash
+        indEvaluated[type] = n(fromEval)
       })
     )
     const indTotal = Object.values(indCounts).reduce((s, v) => s + v, 0) || indicationsTotal
@@ -3118,7 +3139,7 @@ export async function GET(
         let symCreated = 0, symEntries = 0, symRunning = 0, symProgressing = 0
         let symEvaluated = 0
         let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
-        let weightSum = 0, freshSymbols = 0
+        let weightSum = 0, pfWeightSum = 0, freshSymbols = 0
         const staleFields = collectPrunableStageRowFields(dh, {
           activeSymbols: activeStatsSymbolFilter,
           now: nowMs,
@@ -3143,10 +3164,16 @@ export async function GET(
           // drag the mean toward 0.
           if (c > 0) {
             weightSum  += c
-            weightedPF  += (Number(dh[`s:${symbol}:apf`])  || 0) * c
-            weightedDDT += (Number(dh[`s:${symbol}:addt`]) || 0) * c
             weightedPPS += (Number(dh[`s:${symbol}:apps`]) || 0) * c
             weightedPER += (Number(dh[`s:${symbol}:aper`]) || 0) * c
+          }
+          // Base's PF and drawdown are the validated Sets' only, weighted by
+          // how many passed the gate. Emitted Sets that failed never enter them.
+          const pfWeight = stage === "base" ? Number(dh[`s:${symbol}:vcount`] || 0) || 0 : c
+          if (pfWeight > 0) {
+            pfWeightSum += pfWeight
+            weightedPF  += (Number(dh[`s:${symbol}:${stage === "base" ? "vapf" : "apf"}`]) || 0) * pfWeight
+            weightedDDT += (Number(dh[`s:${symbol}:${stage === "base" ? "vaddt" : "addt"}`]) || 0) * pfWeight
           }
         }
         if (staleFields.length > 0) staleFieldsByKey.set(detailKey, staleFields)
@@ -3163,8 +3190,8 @@ export async function GET(
         const avgPosPerSet      = useCross && weightSum > 0
           ? weightedPPS / weightSum
           : 0
-        const avgProfitFactor   = useCross && weightSum > 0
-          ? weightedPF / weightSum
+        const avgProfitFactor   = useCross && pfWeightSum > 0
+          ? weightedPF / pfWeightSum
           : 0
         const avgProcessingMs   = useCross
           ? parseFloat(dh.avg_processing_ms || progHash[`strategy_${stage}_avg_processing_ms`] || "0")
@@ -3176,8 +3203,8 @@ export async function GET(
         // Count of positions that contributed to avgPosEvalReal (only meaningful for Real stage)
         const countPosEval      = useCross ? symEvaluated : 0
         // Drawdown time (avg minutes from strategy sets)
-        const avgDrawdownTime   = useCross && weightSum > 0
-          ? weightedDDT / weightSum
+        const avgDrawdownTime   = useCross && pfWeightSum > 0
+          ? weightedDDT / pfWeightSum
           : 0
 
         // Eval percentage per stage:
@@ -3463,14 +3490,15 @@ export async function GET(
     // Sourced entirely from local Redis — the progression hash (counters) and
     // the closed-position archive written by the live-stage pipeline. No
     // exchange history calls required.
-    let profitFactor = 0
-    let profitFactorLast12 = 0
-    let profitFactorLast25 = 0
-    let profitFactorLast75 = 0
-    let winRate = 0
-    let winRateLast12 = 0
-    let winRateLast25 = 0
-    let winRateLast75 = 0
+    // canonical basis (lib/stats-canonical.ts); null = no decided trade / infinite PF
+    let profitFactor: number | null = null
+    let profitFactorLast12: number | null = null
+    let profitFactorLast25: number | null = null
+    let profitFactorLast75: number | null = null
+    let winRate: number | null = null
+    let winRateLast12: number | null = null
+    let winRateLast25: number | null = null
+    let winRateLast75: number | null = null
     {
       const livePlaced    = n(progHash.live_orders_placed_count)
       const liveFilled    = n(progHash.live_orders_filled_count)
@@ -3494,15 +3522,22 @@ export async function GET(
       const avgHoldMin  = countSampled > 0 ? (closedEval.sumHoldMs / countSampled) / 60_000 : 0
       const avgPnl      = countSampled > 0 ? sumPnl / countSampled : 0
       const avgRoi      = lastXClosed.avgSignedR
-      profitFactor = lastXClosed.profitFactor
-      profitFactorLast12 = last12Closed.profitFactor
-      profitFactorLast25 = last25Closed.profitFactor
-      profitFactorLast75 = last75Closed.profitFactor
-      const passRate   = livePlaced > 0 ? liveFilled / livePlaced : 0
-      winRate    = lastXClosed.winRate
-      winRateLast12 = last12Closed.winRate
-      winRateLast25 = last25Closed.winRate
-      winRateLast75 = last75Closed.winRate
+      // Windows on the canonical basis (lib/stats-canonical.ts): venue-net
+      // USD, break-evens excluded. The R-multiple aggregation above stays
+      // for avgProfitFactorR / avgPosEvalReal.
+      const windowAll = closedWindowStats(sampledClosed)
+      const window12 = closedWindowStats(sampledClosed, 12)
+      const window25 = closedWindowStats(sampledClosed, 25)
+      const window75 = closedWindowStats(sampledClosed, 75)
+      profitFactor = windowAll.profitFactor.value
+      profitFactorLast12 = window12.profitFactor.value
+      profitFactorLast25 = window25.profitFactor.value
+      profitFactorLast75 = window75.profitFactor.value
+      const passRate   = livePlaced > 0 ? Math.min(1, liveFilled / livePlaced) : 0
+      winRate    = windowAll.winRate
+      winRateLast12 = window12.winRate
+      winRateLast25 = window25.winRate
+      winRateLast75 = window75.winRate
       const avgPosSize = countSampled > 0
         ? closedEval.sumVolumeUsd / countSampled
         : liveCreated > 0 ? liveVolumeUsd / liveCreated : 0
@@ -3543,13 +3578,23 @@ export async function GET(
           return attempted > 0 ? Math.round((total / attempted) * 100) / 100 : 0
         })(),
       }
+      const liveSetEvaluation = summarizeFreshStageEvaluation(strategyDetailLiveHash, {
+        symbols: activeStatsSymbolFilter, maxAgeMs: stageRowSnapshotFreshMs,
+      })
+      const liveCreatedSets = sumFreshStageRowField(strategyDetailLiveHash, "created", {
+        symbols: activeStatsSymbolFilter, maxAgeMs: stageRowSnapshotFreshMs,
+      })
+      const liveProgressingSets = sumFreshStageRowField(strategyDetailLiveHash, "progressing", {
+        symbols: activeStatsSymbolFilter, maxAgeMs: stageRowSnapshotFreshMs,
+      })
 
       stratDetail.live = {
         // Same shape as base/main/real so the UI can reuse its row renderer:
-        avgPosPerSet:        liveCreated > 0 ? 1 : 0,                  // one exchange position per Live Set
+        avgPosPerSet:        liveExecutionRows.runningSets > 0 ? liveOpenScanned / liveExecutionRows.runningSets : 0,
         avgPositionNotionalUsd: Math.round(avgPosSize * 100) / 100,
-        createdSets:         liveCreated,                               // positions actually created on exchange
-        avgProfitFactor:     Math.round(profitFactor * 1000) / 1000,    // PF from realised PnL
+        createdSets:         liveCreatedSets,
+        avgProfitFactor:     profitFactor,                              // canonical venue-net PF (null: none / infinite)
+        avgProfitFactorR:    Math.round(lastXClosed.profitFactor * 1000) / 1000, // R-multiple PF (Set ranking)
         avgProcessingTimeMs: 0,                                         // not tracked for live — handled inline
         avgPosEvalReal:      Math.round(avgRoi * 10000) / 10000,        // avg ROI fraction
         countPosEval:        countSampled,
@@ -3565,19 +3610,21 @@ export async function GET(
           : n(progHash.strategies_real_total) > 0
             ? Math.min(100, Math.round(((stratCounts.live || 0) / n(progHash.strategies_real_total)) * 1000) / 10)
             : 0,
-        passRatio: Math.round(passRate * 1000) / 10,                    // fill rate %
-        evaluated: livePlaced,
-        passed:    liveFilled,
-        failed:    Math.max(0, livePlaced - liveFilled),
+        passRatio: liveSetEvaluation.passRatio,
+        evaluated: liveSetEvaluation.evaluated,
+        passed:    liveSetEvaluation.passed,
+        failed:    liveSetEvaluation.failed,
+        orderFillRate: Math.round(passRate * 1000) / 10,
+        ordersPlaced: livePlaced,
+        ordersFilled: liveFilled,
         // Live-exclusive fields for richer UI display:
-        winRate:        lastXClosed.winRate,
+        winRate:        windowAll.winRate,
         totalPnl:       Math.round(sumPnl * 100) / 100,
         avgPnl:         Math.round(avgPnl * 100) / 100,
         openPositions:  Math.max(0, liveCreated - liveClosed),
-        // setsRunningNow for the live stage = open exchange positions (one set per exchange order)
-        setsRunningNow:   Math.max(0, liveCreated - liveClosed),
-        setsProgressing:  liveCreated,
-        setsWithOpenPositions: Math.max(0, liveCreated - liveClosed),
+        setsRunningNow:   liveExecutionRows.runningSets,
+        setsProgressing:  liveProgressingSets,
+        setsWithOpenPositions: liveExecutionRows.runningSets,
         volumeUsdTotal: Math.round(liveVolumeUsd * 100) / 100,
         dispatchSelected,
         dispatchDeferred,
@@ -3811,7 +3858,7 @@ export async function GET(
       const FRESH_MS = stageRowSnapshotFreshMs
       const nowMs = Date.now()
       const coverage = summarizeStageRowCoverage(dh)
-      let symCreated = 0, symEntries = 0, symRunning = 0
+      let symCreated = 0, symEntries = 0, symRunning = 0, symValidated = 0
       let weightedPF = 0, weightedDDT = 0, weightedPPS = 0, weightedPER = 0
       let weightSum = 0, totalRunning = 0
       const detail: Array<{ symbol: string; created: number; entries: number; running: number; avgProfitFactor: number; avgDrawdownTime: number; avgPosPerSet: number; avgPosEval: number; fresh: boolean }> = []
@@ -3824,8 +3871,13 @@ export async function GET(
         const sCreated     = Number(dh[`s:${symbol}:created`]    || 0) || 0
         const sEntries     = Number(dh[`s:${symbol}:entries`]     || 0) || 0
         const sRunning     = Number(dh[`s:${symbol}:running`]     || 0) || 0
-        const sApf         = nf(dh[`s:${symbol}:apf`], 3)
-        const sAddt        = nf(dh[`s:${symbol}:addt`], 1)
+        // Base is judged on its validated Sets only: PF, drawdown and the
+        // weight come from the Base-valid fields the Main stage publishes.
+        // Emitted Sets are reported separately as created. Other stages are
+        // already post-gate, so their own fields apply.
+        const sValidCount  = stageLabel === "base" ? Number(dh[`s:${symbol}:vcount`] || 0) || 0 : sCreated
+        const sApf         = stageLabel === "base" ? nf(dh[`s:${symbol}:vapf`], 3) : nf(dh[`s:${symbol}:apf`], 3)
+        const sAddt        = stageLabel === "base" ? nf(dh[`s:${symbol}:vaddt`], 1) : nf(dh[`s:${symbol}:addt`], 1)
         const sApps         = nf(dh[`s:${symbol}:apps`], 2)
         const sAper        = nf(dh[`s:${symbol}:aper`], 4)
         detail.push({ symbol, created: sCreated, entries: sEntries, running: sRunning, avgProfitFactor: sApf, avgDrawdownTime: sAddt, avgPosPerSet: sApps, avgPosEval: sAper, fresh })
@@ -3833,13 +3885,14 @@ export async function GET(
         symCreated  += sCreated
         symEntries  += sEntries
         symRunning  += sRunning
+        symValidated += sValidCount
         totalRunning += sRunning
-        if (sCreated > 0) {
-          weightSum   += sCreated
-          weightedPF  += sApf  * sCreated
-          weightedDDT += sAddt * sCreated
-          weightedPPS += sApps  * sCreated
-          weightedPER += sAper * sCreated
+        if (sValidCount > 0) {
+          weightSum   += sValidCount
+          weightedPF  += sApf  * sValidCount
+          weightedDDT += sAddt * sValidCount
+          weightedPPS += sApps  * sValidCount
+          weightedPER += sAper * sValidCount
         }
       }
       detail.sort((a, b) => b.created - a.created)
@@ -3850,6 +3903,9 @@ export async function GET(
           coverage,
           symbolCount:       coverage.covered,
           totalCreated:      symCreated,
+          // Base: Sets that passed the Base gate (what PF, drawdown and the
+          // processing counts are computed over). Other stages: all of theirs.
+          validatedCount:    symValidated,
           totalEntries:      symEntries,
           totalRunning:      totalRunning,
           avgProfitFactor:   weightSum > 0 ? Math.round((weightedPF  / weightSum) * 1000) / 1000 : 0,
@@ -4228,7 +4284,7 @@ export async function GET(
       return "idle"
     })()
     const rawEngineProgress = pct(ep?.progress)
-    const progress = (() => {
+    const phaseProgress = (() => {
       if (engineIsStopped) return rawEngineProgress
       if (phase === "prehistoric_data") return pct(historicProgressPercent)
       if (phase === "live_trading") return 100
@@ -4238,6 +4294,12 @@ export async function GET(
       if (phase === "initializing") return Math.max(rawEngineProgress, 5)
       return rawEngineProgress
     })()
+    // Phase floors only move progress up: a run going from prehistoric (90 %)
+    // to indications (floor 60) no longer shows 90 → 60. A stopped engine
+    // shows its own value; a new run starts again from 0.
+    const progress = engineIsStopped
+      ? phaseProgress
+      : Math.min(100, monotonic(`${connectionId}:${engineType}:progress`, statsRunToken, phaseProgress))
     const message  = ep?.detail || ep?.message || (
       phase === "prehistoric_data"
         ? `Historical processing ${historicProgressPercent}% (${historicSymbolsProcessed}/${historicSymbolsTotal || "?"} symbols)`
@@ -4560,7 +4622,7 @@ export async function GET(
     }
 
     // ── Build response ──────────────────────────────────────────────────────
-    return NextResponse.json({
+    const statsBody: Record<string, any> = {
       success: true,
       connectionId,
       engineType,
@@ -4600,6 +4662,10 @@ export async function GET(
         // What each indication type's Sets would have done over the range;
         // these closes seeded the Base gate's per-type buckets.
         typeMeasurement:        parseTypeMeasurement(prehistoricHash),
+        // Signal has no historic replay: realtime entries are graded on real
+        // bars (signal-forward-measurement.ts). Open = still being graded;
+        // closed = measured closes the Base gate reads, per direction.
+        signalForward:          signalForwardSummary,
         typeMeasurementRolling: rollingTypeMeasurement,
         timeframeSeconds:       n(prehistoricMeta.timeframeSeconds) || 1,
         configWork: {
@@ -4728,16 +4794,16 @@ export async function GET(
           ordersPlaced: n(progHash.live_orders_placed_count),
           ordersFilled: n(progHash.live_orders_filled_count),
           profitFactor: {
-            all:     Math.round(profitFactor * 1000) / 1000,
-            last12:  Math.round(profitFactorLast12 * 1000) / 1000,
-            last25:  Math.round(profitFactorLast25 * 1000) / 1000,
-            last75:  Math.round(profitFactorLast75 * 1000) / 1000,
+            all:     profitFactor,
+            last12:  profitFactorLast12,
+            last25:  profitFactorLast25,
+            last75:  profitFactorLast75,
           },
           winRate: {
-            all:    Math.round(winRate * 10) / 10,
-            last12: Math.round(winRateLast12 * 10) / 10,
-            last25: Math.round(winRateLast25 * 10) / 10,
-            last75: Math.round(winRateLast75 * 10) / 10,
+            all:    winRate,
+            last12: winRateLast12,
+            last25: winRateLast25,
+            last75: winRateLast75,
           },
         },
         isActive:         realtimeIsActive,
@@ -5155,11 +5221,7 @@ export async function GET(
         const exchangeSnapshot = liveExecutionSummary?.exchange
         const exchangePositionsAvailable = exchangeSnapshot?.positionsStatus.available === true
         const exchangeOrdersAvailable = exchangeSnapshot?.ordersStatus.available === true
-        const liveOpen = exchangePositionsAvailable
-          ? exchangeSnapshot!.openPositions
-          : liveOpenScanned > 0
-            ? liveOpenScanned
-            : liveCounterOpen
+        const liveOpen = liveExecutionSummary?.openPositions ?? (liveLedgerAvailable ? liveOpenScanned : liveCounterOpen)
         const liveVolumeUsd = exchangePositionsAvailable
           ? exchangeSnapshot!.positionNotionalUsd
           : n(progHash.live_volume_usd_total)
@@ -5290,6 +5352,8 @@ export async function GET(
           },
           live: {
             open:         liveOpen,                  // count
+            runningSets: liveExecutionRows.runningSets,
+            unresolvedSetRows: liveExecutionRows.unresolvedRows,
             symbolCount:  exchangePositionsAvailable
               ? exchangeSnapshot!.openPositionSymbols
               : authoritativeLiveBySymbol.length,
@@ -5359,6 +5423,7 @@ export async function GET(
       })(),
 
       liveExecution: {
+        pendingEntries: liveExecutionRows.pendingEntries,
         // Real exchange and paper execution must stay deliberately separate.
         // The simulated lifecycle persists its own counters, so a disabled
         // live-trade connection can be verified without presenting synthetic
@@ -5443,21 +5508,9 @@ export async function GET(
             ? dollars
             : n(liveOrderHash.live_simulated_volume_microusd_total) / 1_000_000
         })(),
-        positionsOpen: liveExecutionSummary?.openPositions ?? (() => {
-          // Prefer key-scan (liveOpenScanned) — authoritative; survives server
-          // restarts where InlineLocalRedis counters reset to 0.
-          const execCounterOpen = Math.max(
-            0,
-            n(liveOrderHash.live_positions_created_count) - n(liveOrderHash.live_positions_closed_count),
-          )
-          const execPending = Math.max(
-            0,
-            n(liveOrderHash.live_orders_placed_count) - n(liveOrderHash.live_orders_filled_count),
-          )
-          return liveOpenScanned > 0
-            ? liveOpenScanned + execPending
-            : Math.max(0, execCounterOpen + execPending)
-        })(),
+        positionsOpen: liveExecutionSummary?.openPositions ?? (liveLedgerAvailable ? liveOpenScanned : Math.max(
+          0, n(liveOrderHash.live_positions_created_count) - n(liveOrderHash.live_positions_closed_count),
+        )),
         wins: liveExecutionSummary?.wins ?? n(liveOrderHash.live_wins_count),
         losses: liveExecutionSummary?.losses ?? 0,
         breakEven: liveExecutionSummary?.breakEven ?? 0,
@@ -5797,7 +5850,11 @@ export async function GET(
       liveStrategyCount:     stratCounts.live || 0,
       totalStrategyCount:    stratTotal,
       positionsCount:        positionsOpen,
-    })
+      indicationsEvaluatedByType: indEvaluated,
+    }
+    // One value per statistic across the payload, and the funnel / sign
+    // invariants surfaced (never applied) as dataIntegrity.violations.
+    return NextResponse.json(canonicalizeProgressionStats(statsBody, stageFunnelViolationsFromStats(statsBody)))
     } catch (error) {
       console.error("[v0] [/stats] Error:", error)
       return NextResponse.json(

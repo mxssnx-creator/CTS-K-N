@@ -205,10 +205,16 @@ export async function GET() {
 
       for (const ph of progressionHashes) {
         if (ph && typeof ph === "object") {
-          totalIndicationCycles += parseInt((ph as any).indication_cycle_count || "0", 10)
-          totalStrategyCycles   += parseInt((ph as any).strategy_cycle_count   || "0", 10)
-          totalIndicationsCount += parseInt((ph as any).indications_count       || "0", 10)
-          totalStrategiesCount  += parseInt((ph as any).strategies_count        || "0", 10)
+          // a malformed or negative field counts as 0 (parseInt gave NaN, which
+          // poisoned the whole sum)
+          const count = (value: unknown) => {
+            const parsed = Math.floor(Number(value))
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : 0
+          }
+          totalIndicationCycles += count((ph as any).indication_cycle_count)
+          totalStrategyCycles   += count((ph as any).strategy_cycle_count)
+          totalIndicationsCount += count((ph as any).indications_count)
+          totalStrategiesCount  += count((ph as any).strategies_count)
         }
       }
     } catch (e) {

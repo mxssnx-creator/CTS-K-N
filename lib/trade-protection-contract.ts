@@ -12,7 +12,7 @@ export const MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO = 1.5
  * Live results on 2026-09-29 (52 settled X01 rows, 14 on X02): every row ran
  * TP 0.333 % against SL 0.5 % — the 0.5 % stop floor raised the stop and the
  * 1.5x cap set the target to 0.5/1.5, a reward/risk of 0.67 that no signal
- * quality can carry once the 0.26 % round trip is paid (net +0.07 on a win,
+ * quality can carry once the 0.15 % round trip is paid (net +0.07 on a win,
  * -0.76 on a loss; 33 % wins, PF 0.44). The Real stage had evaluated the same
  * Sets with adaptive targets of 2-10x PositionCost and their own stops.
  *

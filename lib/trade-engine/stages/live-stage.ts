@@ -9433,7 +9433,7 @@ function computeDesiredProtectionPrices(pos: LivePosition): {
 
   // A take profit below the round-trip cost is a guaranteed loss even when it
   // WINS. Production on X01: TAKEUSDT TP 0.205 % and SPXUSDT TP 0.20 % against
-  // a 0.26 % round trip — every such win booked about -0.06 %. The target must
+  // a 0.15 % round trip — every such win booked about -0.06 %. The target must
   // clear the cost plus a minimum net gain; the stop is left untouched.
   const rawTpPct = Math.max(Number(pos.takeProfit) || 0, minimumViableTakeProfitPct())
   // Guard: ensure takeProfit is numeric and non-negative before percentage calc

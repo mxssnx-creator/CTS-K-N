@@ -24,11 +24,12 @@ pre-registry implementation (`__tests__/fixtures/legacy-technical-indicators.ts`
 **ATR**: its breakout baseline is the SMA of the configured period. It used to be fixed to the 14-bar fallback,
 whatever period was configured.
 
-**The 112 types ported from CTS-A-O** come from:
+**The 118 types ported from CTS-A-O** come from:
 
 - **Math and series cache:** `lib/common-indicators/ao/{math,series-cache}.ts`;
 - **Classic registry families:** `ao/classic.ts`;
-- **Research batches:** `ao/research{,2,3}.ts`;
+- **Research batches:** `ao/research{,2,3,4}.ts`;
+- **Low-Range methods:** `ao/low-range.ts`;
 - **Single-symbol Micro events:** `ao/micro.ts`, `ao/micro-rules.ts`.
 
 The math, cache and rule bodies are ported verbatim from CTS-A-O `src/core/{math,indications}`. One deliberate
@@ -61,9 +62,51 @@ How the A-O variants map onto K-N:
 
   A-O's CCI reversion is its own type, `cciReversion`, because the original `cci` reads CCI as momentum.
 
-**Defaults.** New types are **enabled by default**. This is an operator decision of 2026-10-14 and overrides the
-AGENTS.md rule that defaults change only after validated positive results. Every category can be switched off in
-Settings → Common.
+**Defaults.** The 112 types imported on 2026-10-14 retain the operator-approved enabled defaults.
+The six additions audited on 2026-11-01 are **opt-in**: `relativeVigor`, `lowRangeEdgeTurn`,
+`lowRangeFailedBreak`, `lowRangeBreakout`, `lowRangeMidReclaim` and `lowRangeCompressionBreak`.
+The 14-day, 15-symbol candidate replay retained zero independently validated configurations after cost stress;
+see `docs/reports/20261101-lifecycle-statistics-audit/RESULTS.md`. Registration and correct execution do not
+establish profitability. Settings → Common can enable a research type explicitly.
+
+## Completed minutes, the Common history and replay
+
+Operator decision (2026-10-14): live Common and Auto evaluate **completed
+one-minute bars only**. The forming minute and any 5m / 15m / 30m bucket that
+is still forming are never read, so a Common Set or an Auto vote cannot
+repaint within its bar and live equals the Preset optimizer and the replay.
+Signals can therefore arrive up to one bar later than before.
+
+- **History** (`lib/common-indicators/history.ts`). Per connection and symbol
+  a store of completed minutes. It is backfilled from the venue's real 1m
+  klines (`loadRangeMinuteBars`; nothing under forced simulation), at most once
+  per 10 minutes; gaps after a restart are filled and stored minutes win. It is
+  extended incrementally from the live 1s feed and persisted to
+  `market_data:{conn}:{symbol}:common_1m` every 5 minutes (TTL 36 h, 256
+  symbols in process).
+- **Anchored window.** Common reads a window that starts on the hour and
+  covers `COMMON_HISTORY_MINUTES` (default 1,800 = 30 h, 90–10,080) to +59
+  minutes. Every decision within one hour reads a prefix of the same series.
+- **Per-minute caching.** The view (and its key) only changes when a minute
+  completes. Auto's grid summaries are cached per view key and only computed
+  when Auto can fire (Auto enabled and its Common coordination passing); the
+  exhaustive Set snapshot is keyed by the same view (TTL 120 s). Auto's own
+  direction, PF and coordination read the completed minutes too.
+- **Replay in one pass** (`StepBasedIndicators.createSummarySeries`). The type
+  measurement, its backfill and the connection backtest compute each anchor
+  hour's series once and read it at every bar, instead of evaluating the full
+  grid per bar. This is exact: every Common rule is prefix-stable (checked for
+  all registered types in `common-rule-prefix-stability.test.ts`), and
+  `common-auto-series.test.ts` compares the series with per-bar windows and a
+  whole replay both ways. Replays load the anchored window as warm-up.
+- **Stress runs.** Under forced simulation `COMMON_HISTORY_SIMULATED_BACKFILL=1`
+  fills the window with synthetic minutes joined to the first live price, so a
+  fresh paper engine evaluates the same window length as a real one. Never for
+  trading.
+
+The seven-day maximum accommodates every default tuple on 1/5/15/30m, including the longest warm-up
+of about 132 hours. The default remains 30 hours; benchmark memory and progression latency before increasing
+`COMMON_HISTORY_MINUTES`. New RVI and Low-Range held events reset across missing or invalid bars.
 
 ## Auto: one vote per category
 
@@ -92,7 +135,21 @@ Also:
 - `__tests__/unit/preset-optimizer.test.ts`: optimizer entries equal the live last-bar direction for every type.
 - `__tests__/unit/common-category-vote.test.ts`: category vote, storage-key cooldown, preset type inference.
 
-## Catalogue (129 types, 2,325 default tuples per timeframe)
+## Catalogue (135 types, 2,427 available default tuples per timeframe)
+
+The existing defaults enable 129 types and 2,325 tuples. The following six opt-in additions contribute
+102 available tuples; their authoritative ranges are in `lib/common-indicators/catalog.ts`.
+
+| Type | Category | Source |
+|---|---|---|
+| `relativeVigor` | oscillator | CTS-A-O `r-rvi`, `r-rvi-m` |
+| `lowRangeEdgeTurn` | structure | CTS-A-O Low-Range edge turn |
+| `lowRangeFailedBreak` | structure | CTS-A-O Low-Range failed break |
+| `lowRangeBreakout` | volatility | CTS-A-O Low-Range breakout |
+| `lowRangeMidReclaim` | structure | CTS-A-O Low-Range midpoint reclaim |
+| `lowRangeCompressionBreak` | volatility | CTS-A-O Low-Range compression break |
+
+The category tables below document the original 129-type defaults.
 
 ### Trend (26 types)
 
@@ -151,6 +208,8 @@ Also:
 | Type | Kind | Default tuples | Source | Parameters (from–to/step) |
 |---|---|---:|---|---|
 | `rsi` | state | 200 | K-N original | period 7–21/2, oversold 20–40/5, overbought 60–80/5 |
+
+Reversion rule: long only at or below oversold, short only at or above overbought, neutral between (audit F1, 2026-10-19). The former middle-zone momentum vote is removed; `rsiMomentum` keeps its own momentum middle-zone rule.
 | `stochastic` | state | 800 | K-N original | kPeriod 7–21/2, dPeriod 2–5/1, oversold 15–35/5, overbought 65–85/5 |
 | `cci` | state | 25 | K-N original | period 10–30/5, threshold 80–160/20 |
 | `williamsR` | state | 200 | K-N original | period 7–21/2, oversold -90–-70/5, overbought -30–-10/5 |

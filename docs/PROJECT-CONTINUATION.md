@@ -1,5 +1,16 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Current continuation — audit started 2026-11-01
+
+- Canonical checkout: `/workspace/CTS-K-N`, branch `codex/lifecycle-statistics-audit-20261101`. Original main `1a4d2b23a89586bb798f2ee0b563704ac53913b5`; integrated PR561 `888a65f37d445782cd04dca7af9ea0744025dfe6` and PR562 `c1f4cda8eca06de2641339882a9ebc84f9ecf4ae`. The release commit is the commit containing this entry; the exact tree and publication ancestry are recorded by the release PR. Older entries below are historical and can describe superseded rules.
+- Corrected live Set/position/pending counts, zero-current exposure, settled last-N PnL, Signal timestamp/ownership filtering and Block per-leg recovery after partials. Cached created-indication counters now share the engine's authoritative reader. Preserve 0.15% round-trip costs and all stage/protection gates.
+- Imported six additional CTS-A-O types, opt-in: RVI and five Low-Range methods. Total135 types/2427 available tuples; existing129 types/2325 tuples remain enabled. Seven-day history cap accommodates132h maximum default warm-up; default30h unchanged.
+- Validation:547 unit suites/3592 assertions and6 integration suites/86 assertions pass after documented reruns; TypeScript, ESLint and production build pass (356 complete traces). HTTP200/numeric checks on6 UI routes. Browser visual QA unavailable. See `docs/reports/20261101-lifecycle-statistics-audit/RESULTS.md` and adjacent evidence.
+- Public15-symbol/14-day research:36720 configs,41 training selections,0 independent cost-stress validations. No profitable default promoted. Source Signal providers and real venue lifecycle remain unverified.
+- User authorized exact `bingx-x01`,15symbols,minimum supported volume factor0.1. Explicit env opt-in, saved toggles, durable coordination, ownership/accounting/protection remain required. Bybit/other mainnet stay read-only. No remote deployment or mainnet order occurred: managed `/workspace/.network-clients/activate-cts.sh` is absent. No ad-hoc remote route is permitted. Remote service revision/account baseline unknown; preserve .env, Redis, credentials and systemd on eventual deployment.
+- Recoverable source checkpoint `/workspace/backups/CTS-K-N/20261101T230258Z-before-final-docs` (VERIFIED); another checkpoint precedes publication. The first15-symbol offline soak failed lifecycle coverage (zero opens) and exposed the cached-counter issue; the rebuilt rerun has0 counter mismatches/ledger errors,0 opens,1 failed liveness probe and3627ms median progression. It still fails lifecycle coverage; no production readiness claim.
+-558 published refs inventoried,484 ancestors of integrated head;74 historic/experimental refs retained individually in `branch-inventory.csv`. No earlier local work was discarded. Merge only green reviewed GitHub flow; deploy only merged green main, through managed channel, then inspect15-symbol/minimum sizing and reconcile owned orders/positions.
+
 ## Update — 2026-10-21 (latest): cost 0.15 %, Direct cost correction, boot and stats fixes
 
 - **Round trip 0.15 % systemwide** (operator decision): `lib/trading-round-trip-cost.cjs` taker 0.05 % per side (BingX `takerFeeRate`) + slippage 0.05 %; it was 0.10 % + 0.06 % (0.26 %). Tests and `docs/baseline/STABLE-BASELINE-2026-09-19.md` updated.
@@ -87,6 +98,29 @@ No production-readiness claim.
 6. After the merge: reinstall merged `main` remotely and verify HTTP, UI and stats. Then run the X02 Prod-VST lifecycle with minimum virtual volume. X01 and Bybit stay read-only.
 
 No production-readiness claim.
+
+## Handoff — 2026-10-19 (current state; supersedes the 2026-10-07 entries below)
+
+- **Canonical checkout.** `/workspace/CTS-K-N` does not exist in this container (AGENTS.md names it as the canonical checkout). The working checkout is `/home/user/CTS-K-N` (branch `claude/zen-fermat-gswxt7`, pushed to GitHub). No replacement was created at `/workspace`; recovery from the verified bundles under `/var/backups/cts-kn` (last one 2026-10-07 23:20) is an operator decision, because those bundles predate this work.
+- **Revision.** `main` is `85afc16` (PR #559 merged 2026-10-14; PR #560 Common indicators merged on top). The changes of this session sit on `claude/zen-fermat-gswxt7` above `36dccb1`. No PR was open for them: the GitHub connector failed to connect (`plugin:github:github`, 400 bad authorization header), so the draft PR and its merge are pending.
+- **Changed in this session (each with tests):**
+  - **Round-trip cost 0.15 % systemwide** (`lib/trading-round-trip-cost.*`: 2 × 0.05 % taker + 0.05 % slippage; backtest `BOT_FEES` 0.05 taker + 0.025 slippage per leg). Live labels in scripts and the stage-funnel doc updated; dated report strings kept as they were.
+  - **Base PF is the validated Sets' PF.** `createMainSets` writes `avg_profit_factor` over Base-valid Sets only (`avg_profit_factor_source: validated_base`), with per-symbol `s:{sym}:vcount/vapf/vaddt`. The stats route's Base stage (`strategyDetail.base.avgProfitFactor`, `avgDrawdownTime`) and `performanceTiers.base` are weighted by `vcount`. Before this, a 1.76 PF showed on 843 emitted Sets with 0 passed.
+  - **Signal forward measurement hardened** (`lib/trade-engine/signal-forward-measurement.ts`):
+    - a bar must reach back to the row's first minute, else the row waits (`covered`);
+    - the 4 h cap settles at the cap, not on the first bar after it;
+    - the cursor trails by 120 min, so a minute missing from one batch is graded by a later one;
+    - a per-symbol lock and exactly-once booking (`hdel` = 1);
+    - a failed read never overwrites an open row;
+    - one provider snapshot (`generatedAt`) opens at most one measurement (`signal_forward_observed:*`);
+    - Signal closes also go into the realtime rolling counters (`lib/trade-engine/type-measurement-rolling.ts`, shared with the type measurement);
+    - a symbol without measurement state is still graded, throttled to the refresh interval.
+  - **Known residual:** booking is at most once. The row is deleted before its close is booked, so a booking that fails after the delete loses that close (logged). Changing this to at-least-once would double-count on a crash, so it is documented rather than changed.
+- **Gates on the working tree.** Full Jest 535 suites / 3,595 tests passed, 0 failed (needs the local Redis on 127.0.0.1:6399 for the integration suites; no secrets used). `tsc` clean. ESLint clean on the changed files. Recreation manifests regenerated and verified (2,105 files). Production build `.next-prod`: see the build log in the session scratchpad (status recorded below).
+- **Verification run stopped, not complete.** `obs-verify3` (24 h prehistoric × 12 symbols on `bingx-x01`, paper, public BingX data, no orders) finished the prehistoric phase (12/12 symbols, 1,036,738 candles, 0 failed tasks) and then received SIGTERM at 00:34 UTC, 10 minutes into its 4 h realtime phase. Its last snapshot, taken before the Base PF fix above, showed Base 843 emitted / 0 passed with stage PF 1.76; that is the unfiltered PF the fix replaces. Its output is kept in the session scratchpad (`obs-verify3`). A new run is needed to show the validated numbers.
+- **X02 Prod-VST lifecycle test: blocked, not run.** The container has only the generic `BINGX_API_KEY`/`BINGX_API_SECRET`. `scripts/bingx-x02-vst-baseline.ts` requires `BINGX_X02_API_KEY`/`BINGX_X02_API_SECRET` and refuses any non-VST host. The generic key's owner is not established, and AGENTS.md keeps mainnet read-only, so it was not mapped onto X02. The orchestrated verifier also needs the exact operator confirmation `I authorize X02 BingX Prod-VST virtual minimum-volume lifecycle orders` and the app in maintenance with trading services inactive. Neither was given in the session, so no order was placed.
+- **Review.** The three-lens review of the Signal measurement (`wf_029990cb-f05`) reported the defects listed above; the verdicts are recorded in the session journal. Its final verification step did not finish before the session was compacted. The audit workflow (`wf_3af7a93b-a18`) was cut off before reporting, so its PF-surface audit is not complete; the Base PF surfaces above are the ones it targeted.
+- **Safety unchanged.** X01 and Bybit read-only; no mainnet orders; no production deployment; no production-readiness claim. The measured edge is still not positive after the 0.15 % round trip in the development data (gross PF about 0.93–1.01 per type and direction). Deployment of the merged `main` remains a separate explicitly authorised step.
 
 ## Continuation — 2026-10-07 ~23:00 UTC (Claude cloud session, branch `claude/zen-fermat-gswxt7`, draft PR #559)
 

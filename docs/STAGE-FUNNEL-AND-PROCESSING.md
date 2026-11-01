@@ -34,7 +34,7 @@ Main, Real and Live count their own Sets, all of which descend from Base-valid p
 ## How Base judges a Set
 
 1. **History window** (`selectBaseHistoryWindow`, `lib/strategy-coordinator.ts`). The Set's own result ring is used once it holds `prevPosMinCount` canonical closes. Until then the Set uses its symbol × type × direction bucket `pos_ring:{conn}:{symbol}:{type}:{direction}`.
-2. **PF.** With enough measured closes, the Set's PF is min(raw indication PF, mean PositionCost ratio of the window). Ratio = 1 + net % / PositionCost × 0.1, net after the real round trip (`simulatedCloseCostPercent`, ≥ 0.26 %).
+2. **PF.** With enough measured closes, the Set's PF is min(raw indication PF, mean PositionCost ratio of the window). Ratio = 1 + net % / PositionCost × 0.1, net after the real round trip (`simulatedCloseCostPercent`, 0.15 % systemwide).
 3. **Gate** (`createMainSets`):
    - too little history → awaiting;
    - PF < 1.10 or DDT too high → rejected;
@@ -59,7 +59,11 @@ Main, Real and Live count their own Sets, all of which descend from Base-valid p
     - 4 h maximum hold;
     - net of the real round trip.
   - At most one open measurement per symbol × direction × source.
-  - Closes go into `pos_ring:{conn}:{symbol}:signal:{direction}`.
+  - One provider snapshot (`metadata.signal.generatedAt`) opens at most one measurement. The snapshot is recorded per row in `signal_forward_observed:{conn}:{symbol}`, so a stopped-out entry is not re-opened by the same evaluation on the next tick.
+  - A row's cursor trails the newest bar by 120 min. A minute missing from one batch is therefore graded when a later batch returns it.
+  - A pass whose bars do not reach back to the row's first minute is not graded: the row waits. A row whose cap and lag have both passed with no such bar is expired and is not booked.
+  - Closes go into `pos_ring:{conn}:{symbol}:signal:{direction}`, and into the realtime rolling counters (`prehistoric:type_measurement_rolling:{conn}`, `n:`, `w:`, `l:`, `net:`, `ratio:` for `signal:{direction}`), the same counters the other realtime closes write.
+  - Booking is at most once. The row is deleted before its close is booked, so a booking that fails after the delete is logged and lost, never booked twice.
   - Special is not produced by the direct indications and is not measured.
 
 ## Where the counts live
@@ -74,6 +78,22 @@ Main, Real and Live count their own Sets, all of which descend from Base-valid p
 
 ## Guards
 
+### Live counts and settled windows (2026-11-01)
+
+Live `runningSets` counts distinct executed Set keys, with combined rows contributing their actual member
+keys instead of their parent. `positionsOpen` counts current filled exposure; pending entry intents have a
+separate count. A venue's symbol/direction positions can aggregate multiple Sets and are not interchangeable
+with either count. Pending orders cannot be inferred by subtracting venue positions from local rows.
+An explicit zero remaining quantity excludes a row from open exposure even when it retains historic fills.
+
+Cached overview responses refresh the created-indication counters using the same authoritative counter
+priority as engine statistics. Successful empty ledger reads replace stale cached exposure counts.
+Order placement/fill totals and fill rate are labelled as orders, never used as stage Set counts.
+
+Last-N performance windows first resolve settled net PnL and exclude incomplete accounting, then take the
+last N closes. Missing PnL is not a flat trade. Signal statistics also exclude future and provably foreign
+closes, normalize ISO/epoch timestamps and expose their effective configured lookback to the UI.
+
 - **Runtime.** `StrategyCoordinator.guardStageFunnel` checks every pass, prehistoric and realtime. A violation logs one `stage_funnel_invariant_violation` progression event per connection × symbol × message per 10 minutes. It never changes trading.
 - **Verification.** `scripts/verify-runtime-coverage.mjs` reports a funnel violation in the stats payload as an error. The observation harness and QuickStart soaks therefore fail on it.
 - **Tests.** `__tests__/unit/stage-funnel-contract.test.ts` pins the contract, the verifier rule, and the writers and readers. A static scan fails if any processing/running field is computed from the emitted pool. `__tests__/unit/prehistoric-base-history-backfill.test.ts` pins the history choice, the append order and the backfill.
@@ -81,3 +101,9 @@ Main, Real and Live count their own Sets, all of which descend from Base-valid p
 ## Rule for future changes
 
 Any new counter labelled processing, progressing, running or active goes through the stage funnel contract and counts gate-validated Sets only. A new counter that needs the emitted pool is named for it ("emitted", "created", "total").
+
+## Which profit factor is which
+
+- **Effective (validated) PF** is the Base-validated Sets' PF: `strategyDetail.base.avg_profit_factor` with `avg_profit_factor_source: "validated_base"`, and the performance tiers' Base PF, which derive from the per-symbol validated fields `s:{sym}:vapf`, weighted by `s:{sym}:vcount`. A Set that did not pass Base contributes nothing to it.
+- **Historic PF** (`historicAvgProfitFactor`, `resolveHistoricProfitFactor`) is the classic PF over every measured prehistoric close. It is the measurement that feeds Base, before the gate. It is labelled as a pre-gate measurement and is never shown as the validated result.
+- **Realtime per-type totals** (`typeMeasurementRolling`) include the realtime closes, Signal closes among them. They are measurements of the indication types, not of the validated Sets.

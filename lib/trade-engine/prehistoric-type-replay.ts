@@ -41,6 +41,7 @@ import {
   parseNumericSettingList,
   timestampMs,
 } from "./direct-indications"
+import { commonWarmupMinutes, commonWindowSlice } from "@/lib/common-indicators/history"
 
 export interface ReplayCandle {
   timestamp: number
@@ -89,8 +90,18 @@ export interface TypeReplayInput {
   indicationSettings: any
   /** The Sets' TP/SL for one indication row. */
   protectionFor: (row: { type: string; profitFactor: number; row: any }) => ReplayProtection
-  /** Step-based indicator summaries for Auto; omitted = Auto is not measured. */
+  /**
+   * Step-based indicator summaries for Auto over the anchored Common window
+   * ending at the decision bar (commonWindowSlice; the bar is complete);
+   * omitted together with stepIndicatorSeries = Auto is not measured.
+   */
   stepIndicatorsFor?: (bars: ReplayCandle[], timeframesMinutes: number[]) => Promise<any>
+  /**
+   * Preferred: the same summaries for every bar from one series per anchor
+   * hour (StepBasedIndicators.createSummarySeries) instead of one grid
+   * evaluation per bar.
+   */
+  stepIndicatorSeries?: (bars: ReplayCandle[], timeframesMinutes: number[]) => { at(index: number): Promise<any> }
   maxHoldMs?: number
   /** Positions a previous call left open; they continue with the bars after `resumeAfterMs`. */
   initialOpen?: readonly TypeReplayOpenPosition[]
@@ -203,6 +214,17 @@ function passesStrategyValidity(row: any): boolean {
   return pf >= MAIN_TRADE_BASE_PF_RATIO_MIN
 }
 
+/**
+ * Minutes of bars a replay needs before its first decision: the 90-minute
+ * stage window, or with Auto the anchored Common window its summaries read
+ * (lib/common-indicators/history.ts), so replayed Auto matches live Auto.
+ */
+export function typeReplayWarmupMinutes(indicationSettings: any): number {
+  return indicationSettings?.autoEnabled === false
+    ? ENGINE_STAGE_HISTORY_MINUTES
+    : Math.max(ENGINE_STAGE_HISTORY_MINUTES, commonWarmupMinutes())
+}
+
 export async function replayDirectIndicationTypes(input: TypeReplayInput): Promise<TypeReplayResult> {
   const bars = normalizeBars(input.bars)
   const maxHoldMs = Math.max(MINUTE_MS, Number(input.maxHoldMs) || DEFAULT_MAX_HOLD_MS)
@@ -228,6 +250,10 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
     [1, 5, 15, 30],
   ).map((value) => Math.max(1, Math.round(value)))
   const rangeStartMs = Number(input.rangeStartMs) || bars[0].timestamp
+  // one series for the whole replay: each anchor hour's series is computed once
+  const autoSeries = settings.autoEnabled !== false && input.stepIndicatorSeries
+    ? input.stepIndicatorSeries(bars, coordinatedTimeframes)
+    : null
   const rangeEndMs = Number(input.rangeEndMs) || bars[bars.length - 1].timestamp + MINUTE_MS
   const resumeAfterMs = Number(input.resumeAfterMs) || Number.NEGATIVE_INFINITY
 
@@ -292,12 +318,17 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
     // Auto is the only consumer of the step indicators and can only fire
     // when the Common coordination passes, so the costly summaries are
     // computed only then.
-    const autoPossible = Boolean(input.stepIndicatorsFor) &&
+    const autoPossible = Boolean(autoSeries || input.stepIndicatorsFor) &&
       settings.autoEnabled !== false &&
       commonMultiRangeCoordinationFor(pricesOldestFirst, positionCostPct, settings).passed
     if (autoPossible) result.stepIndicatorCalls++
+    // Auto's Common summaries read the same anchored one-minute window as
+    // live (lib/common-indicators/history.ts), ending at this completed bar.
     const stepIndicators = autoPossible
-      ? await input.stepIndicatorsFor!(history, coordinatedTimeframes).catch(() => ({}))
+      ? await (autoSeries
+        ? autoSeries.at(index)
+        : input.stepIndicatorsFor!(commonWindowSlice(bars, index), coordinatedTimeframes)
+      ).catch(() => ({}))
       : {}
     const direct = computeDirectIndications({
       symbol: input.symbol,

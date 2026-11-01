@@ -44,7 +44,7 @@ export function calculatePseudoClosePnl(input: PseudoClosePnlInput): PseudoClose
     : (entryPrice - currentPrice) * quantity
   // The real round trip (lib/trading-round-trip-cost.ts), as a live close
   // pays it. PositionCost is the PF unit and the sizing budget, not the fee:
-  // charging it (0.10 %) instead of the round trip (0.26 %) made every pseudo
+  // charging it (0.10 %) instead of the round trip (0.15 %) made every pseudo
   // close — the Base gate's input — 0.16 % better than the market allows.
   const positionCost = notional * (simulatedCloseCostPercent(positionCostPct) / 100)
   const netPnl = grossPnl - positionCost

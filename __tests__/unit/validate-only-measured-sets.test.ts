@@ -9,7 +9,8 @@ const helper = posHistorySrc.slice(posHistorySrc.indexOf("export function baseMe
 
 describe("a Set validates on measured results, not on an expectation", () => {
   test("the history gate runs BEFORE the PF/DDT comparison", () => {
-    const historyCheck = gate.indexOf("baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount)")
+    // The call also passes the window, so the minimum is capped at it (audit F-01).
+    const historyCheck = gate.indexOf("baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount, baseHistoryWindow)")
     const pfCheck = gate.indexOf("baseSet.avgProfitFactor < metricsBase.minProfitFactor")
     expect(historyCheck).toBeGreaterThan(0)
     expect(historyCheck).toBeLessThan(pfCheck)

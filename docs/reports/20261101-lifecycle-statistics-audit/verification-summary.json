@@ -1,0 +1,9 @@
+{
+  "unitSuites": 547,
+  "unitAssertionsPassed": 3592,
+  "unitAssertionsFailed": 0,
+  "rerunEvidence": "Two initial failures resolved: isolated Redis test session and legacy source guard; unit-rerun.txt: 2 suites/215 assertions passed.",
+  "integrationSuites": 6,
+  "integrationAssertionsPassed": 86,
+  "integrationAssertionsFailed": 0
+}

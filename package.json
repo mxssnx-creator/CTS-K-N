@@ -75,6 +75,7 @@
     "test:prod-preview:verify": "node scripts/verify-prod-preview.mjs",
     "test:prod-ui:max": "node scripts/verify-prod-ui-max.mjs",
     "test:prod-soak": "node scripts/verify-prod-soak.mjs",
+    "test:offline-soak-70": "OFFLINE_SYMBOL_COUNT=70 node scripts/run-offline-engine-soak.mjs",
     "scheduler:minute": "node scripts/run-minute-scheduler.mjs",
     "scheduler:minute:once": "node scripts/run-minute-scheduler.mjs --once",
     "test:scheduler:minute": "node scripts/test-minute-scheduler.mjs",

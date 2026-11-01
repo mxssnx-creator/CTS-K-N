@@ -13,6 +13,8 @@ import { registerMicro } from "./ao/micro-rules"
 import { registerResearch } from "./ao/research"
 import { registerResearch2 } from "./ao/research2"
 import { registerResearch3 } from "./ao/research3"
+import { registerResearch4 } from "./ao/research4"
+import { registerLowRange } from "./ao/low-range"
 import type { CommonSeriesContext } from "./context"
 import type { CommonRule, RuleParams } from "./legacy-rules"
 import { clamp, finite } from "./kn-math"
@@ -22,6 +24,8 @@ export const AO_RULES: ReadonlyMap<string, AoRuleSource> = collectAoRules((both)
   registerResearch(both)
   registerResearch2(both)
   registerResearch3(both)
+  registerResearch4(both)
+  registerLowRange(both)
   registerMicro(both)
 })
 
@@ -40,6 +44,12 @@ const at = (...values: number[]) => Math.ceil(Math.max(...values.map((value) => 
 const HTF4 = (tfBars: number) => 4 * 51 + tfBars
 
 export const NEW_RULE_MAPPINGS: Record<CommonCatalogType, Mapping> = {
+  relativeVigor: { source: "r-rvi", warmup: (p) => at(p.period + 6) },
+  lowRangeEdgeTurn: { source: "r-low-range-edge-turn", warmup: (p) => at(p.window + 2) },
+  lowRangeFailedBreak: { source: "r-low-range-failed-break", warmup: (p) => at(p.window + 2) },
+  lowRangeBreakout: { source: "r-low-range-breakout", warmup: (p) => at(p.window + 2) },
+  lowRangeMidReclaim: { source: "r-low-range-mid-reclaim", warmup: (p) => at(p.window + 2) },
+  lowRangeCompressionBreak: { source: "r-low-range-compression-break", warmup: (p) => at(2 * p.window) },
   // trend
   emaTrend: { source: "trend-ema", warmup: (p) => at(p.slow) },
   supertrend: { source: "trend-st", warmup: (p) => at(p.period) },
@@ -181,6 +191,27 @@ function resolveCatalogParams(entry: CommonCatalogEntry, raw: Record<string, num
   return params
 }
 
+/** Gap-sensitive A-O research rules must not carry an old event into a new run. */
+function holdContiguousEvents(raw: Int8Array, keep: number, ctx: CommonSeriesContext): Int8Array {
+  const span = Math.max(1, Math.round(keep))
+  if (span === 1) return raw
+  const out = new Int8Array(raw.length)
+  let remaining = 0, side = 0
+  const duration = ctx.tfMin * 60_000
+  for (let i = 0; i < raw.length; i++) {
+    const bar = ctx.candles[i]
+    if (i > 0 && bar.timestamp - ctx.candles[i - 1].timestamp !== duration) remaining = 0
+    if (![bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)
+      || bar.low <= 0 || bar.high < Math.max(bar.open, bar.close) || bar.low > Math.min(bar.open, bar.close)) {
+      remaining = 0
+      continue
+    }
+    if (raw[i]) { side = raw[i]; remaining = span }
+    if (remaining > 0) { out[i] = side; remaining-- }
+  }
+  return out
+}
+
 function ruleFor(entry: CommonCatalogEntry, mapping: Mapping): CommonRule {
   const source = AO_RULES.get(mapping.source)
   if (!source) throw new Error(`Common type ${entry.type}: CTS-A-O rule ${mapping.source} is not registered`)
@@ -188,7 +219,10 @@ function ruleFor(entry: CommonCatalogEntry, mapping: Mapping): CommonRule {
   const states = (ctx: CommonSeriesContext, p: RuleParams): Int8Array =>
     ctx.memo(`ao:${entry.type}:${paramKey(p)}`, () => {
       const raw = source.fn(ctx.ao(), mapping.map ? mapping.map(p) : p)
-      return entry.kind === "event" && !heldInternally ? hold(raw, p.keep ?? 1) : raw
+      if (entry.kind !== "event" || heldInternally) return raw
+      return entry.type === "relativeVigor" || mapping.source.startsWith("r-low-range-")
+        ? holdContiguousEvents(raw, p.keep ?? 1, ctx)
+        : hold(raw, p.keep ?? 1)
     })
   // bars since the last raw event (held events lose strength with age)
   const age = (ctx: CommonSeriesContext, p: RuleParams, index: number, value: number): number => {
