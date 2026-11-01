@@ -189,6 +189,7 @@ export function deriveBlockTrades(
     if (activeSkipSteps === 0 || legStep > activeSkipSteps) {
       out.push({
         signedResultR: Number((result * (multiplier > 0 ? multiplier : 1)).toFixed(12)),
+        volumeMultiplier: multiplier > 0 ? multiplier : 1,
         openedAt: trade?.openedAt,
         closedAt: trade?.closedAt,
       })

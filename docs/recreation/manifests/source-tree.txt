@@ -1362,6 +1362,8 @@ docs/reports/20261101-lifecycle-statistics-audit/ui-http-verification.json
 docs/reports/20261101-lifecycle-statistics-audit/unit-rerun.txt
 docs/reports/20261101-lifecycle-statistics-audit/validation-evidence.json
 docs/reports/20261101-lifecycle-statistics-audit/verification-summary.json
+docs/reports/20261101-walkforward-bingx-replay/RESULTS.html
+docs/reports/20261101-walkforward-bingx-replay/summary.json
 docs/signal-source-research.md
 docs/stress/ab-tuples-all.json
 docs/stress/ab-tuples-all.md

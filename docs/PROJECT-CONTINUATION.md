@@ -1,5 +1,17 @@
 # CTS v3.7 – Projektinformation und Fortsetzung
 
+## Current continuation — 2026-11-01 — staged trade replay and X02 access
+
+- Canonical checkout `/workspace/CTS-K-N`; base revision `446cdfb8891c45ea9bff4d30e707178cea8fab39`; current working branch `codex/real-stage-trade-replay-20261102`. Work is local pending commit/PR; no release or deploy yet.
+- Corrected the local train/test replay in `scripts/baseline/simulate-12h-hourly.ts`: entries at next-bar open; stop/target checks include that entry bar and resolve dual touches stop-first; exact minute-level open-capacity and marked-equity tracking; disjoint half-open train/test windows; execute only the final Block/Real descendants; select Block count on training data only; deduplicate same-symbol/same-time lanes for one-way execution using training lane score; report conventional net PF separately from the PositionCost-derived mean-R index.
+- Exposed exact Block `volumeMultiplier` from `deriveBlockTrades` and added a regression test so sizing, mark-to-market and round-trip costs scale with the applied multiplier.
+- Eight-symbol public BingX candle replay on 14 complete UTC days, 20,160 one-minute bars/symbol; input SHA-256 `48b5580fc1946fbe8a753f64b8b9dedfb55b6bedc31d525b69011e88e9681549`. 168 h training / 168 h test. Candidate matrix: ranges5–48, fixed drawdown1/last-part0.5/factor1, Base ≥50 completed training trades and mean-R index ≥1.1, Axis prev6/last2/cont1/pause8, Block ratio0.2/count2 selected on training only, TP0.50%/SL2.00%, 0.15% round-trip cost, four concurrent and one per symbol.
+- Replay: 520,327 raw candidates →53,897 unique symbol/time slots; 434 opened and 434 closed positions, 1,302 simulated order intents; 52,953 rejected at global capacity and 510 at symbol limit. $10.00→$10.1118 (+1.12%), classic net PF1.0663, max marked drawdown2.47%, gross $1.1166 / cost $1.0049, 77 of130 close-active hours positive (38 hours without closes). Bars were previously viewed, so this is exploratory and not independent validation.
+- Simulated order notional $1.3836–$3.0767 (mean $1.5436); venue minimums/precision not checked. Partial fills, funding and order-book execution are not modeled. Report with all 168 hourly rows and trade rows: `docs/reports/20261101-walkforward-bingx-replay/RESULTS.html`, `summary.json`.
+- Verification: 5 Jest suites /69 tests passed, including paper lifecycle and recording venue; TypeScript and ESLint pass; secret scan passed across 2,182 files with 0 findings; recreation manifests verify across 2,174 project files. No production build was run for this narrow replay change.
+- Actual `bingx-x02` Prod-VST test is blocked because `/workspace/.network-clients/activate-cts.sh` is absent. No managed tunnel or authenticated account baseline; no live/VST orders or cleanup occurred. Preserve all external account state and do not use alternate remote access.
+- Verified pre-edit checkpoint: `/workspace/backups/CTS-K-N/20261101T234415Z-before-corrected-14d-sim`. No deployment occurred.
+
 ## Current continuation — audit started 2026-11-01
 
 - Canonical checkout: `/workspace/CTS-K-N`, branch `codex/lifecycle-statistics-audit-20261101`. Original main `1a4d2b23a89586bb798f2ee0b563704ac53913b5`; integrated PR561 `888a65f37d445782cd04dca7af9ea0744025dfe6` and PR562 `c1f4cda8eca06de2641339882a9ebc84f9ecf4ae`. The release commit is the commit containing this entry; the exact tree and publication ancestry are recorded by the release PR. Older entries below are historical and can describe superseded rules.
