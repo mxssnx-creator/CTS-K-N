@@ -86,6 +86,13 @@ describe("Block adjustment follows the operator specification", () => {
     expect(out[1]).toBeGreaterThan(5) // recovery entry, enlarged
     expect(out[2]).toBe(5)            // after the win, back to base
   })
+
+  test("returns the exact volume multiplier used for each admitted position", () => {
+    const out = deriveBlockTrades(mk(-2, -2, 5) as any, {
+      volumeRatio: 0.2, maxStack: 6, fixedCount: 2,
+    })
+    expect(out.map((trade) => trade.volumeMultiplier)).toEqual([1, 1.4, 1.4])
+  })
 })
 
 describe("the Block multiplier cannot oversize an order", () => {

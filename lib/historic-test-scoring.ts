@@ -22,6 +22,8 @@ import type { HistoricTestStrategyFamily } from "@/lib/historic-test-settings"
 export interface HistoricTestTrade {
   /** Signed result in PositionCost units: +1 means one PositionCost of net profit. */
   signedResultR: number
+  /** Exact volume factor applied to this result by a derived sizing family. */
+  volumeMultiplier?: number
   openedAt?: number
   closedAt?: number
 }
