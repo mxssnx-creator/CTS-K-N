@@ -1,3 +1,5 @@
+import {relationalVolumeFactor,type VolumeContext} from "../../../shared/cts-volume/ratios.ts";
+import { isStrategySetExecutionEnabled, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
 import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
@@ -1462,6 +1464,7 @@ function releaseStopSem(): void {
  * shape, not the stage pipeline shape).
  */
 export interface LivePosition {
+  strategyRange?: string
   id: string
   connectionId: string
   symbol: string
@@ -1769,6 +1772,7 @@ export interface LivePosition {
   dcaTakeProfitPrice?: number
   setKey?: string
   indicationType?: string
+  relationalVolumeMultiplier?: number
   signalRisk?: SignalRisk
   exchangeData?: Record<string, unknown>
   orderId?: string
@@ -3126,6 +3130,7 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "dcaTakeProfitPrice",
     "fillCounterRecordedAt",
     "sizeMultiplier",
+    "relationalVolumeMultiplier",
     "posCountsLongSetCount",
     "posCountsShortSetCount",
     "posCountsNetSetCount",
@@ -5169,6 +5174,7 @@ async function resolveAccumulationPlan(
     {
       tradeMode: "main",
       sizeMultiplier: real?.sizeMultiplier ?? existing.sizeMultiplier,
+      relationalVolumeMultiplierOverride:existing.relationalVolumeMultiplier??1,
       allowUnboundedVariantMultiplier: Boolean(real?.combinedPosCounts || existing.combinedPosCounts),
       indicationType: real?.indicationType ?? existing.indicationType,
       marketType: existing.marketType,
@@ -13972,6 +13978,12 @@ export async function executeLivePosition(
     : presetModeEnabled && !mainModeEnabled
       ? "preset"
       : "main"
+  const relationalVolumeContext:VolumeContext={indicationType:realPosition.volumeIndicationType??realPosition.indicationType,indication:realPosition.volumeIndicationId??realPosition.indicationType,strategy:realPosition.axisWindows||realPosition.combinedPosCounts?"axis":realPosition.setVariant==="default"||!realPosition.setVariant?"normal":realPosition.setVariant,range:realPosition.strategyRange??(executionIntent==="signal"?"signals":executionIntent),symbol:realPosition.symbol}
+  const entryVolumeRatio=relationalVolumeFactor(initialConnectionSettings.relationalVolumeRatios,relationalVolumeContext)
+  const strategyProcessingAllows = (settings: Record<string, any>): boolean => isStrategySetExecutionEnabled({
+    ...realPosition, variant: realPosition.setVariant,
+    strategyRange: (realPosition as any).strategyRange ?? (executionIntent === "signal" ? "signals" : executionIntent),
+  }, normalizeStrategyExecutionPolicy(settings))
   if (executionIntent === "preset") {
     const { applySelectedPresetToRealPosition } = await import("@/lib/preset-store")
     realPosition = await applySelectedPresetToRealPosition(
@@ -14003,6 +14015,8 @@ export async function executeLivePosition(
   }
 
   const livePosition: LivePosition = {
+    relationalVolumeMultiplier: entryVolumeRatio,
+    ...((realPosition as any).strategyRange ? {strategyRange:(realPosition as any).strategyRange} : {}),
     id: isDirectPosition
       ? directTradeCanonicalPositionId(
           connectionId,
@@ -14358,6 +14372,13 @@ export async function executeLivePosition(
     const liveReadiness = executionIntent === "direct"
       ? evaluateDirectTradeLiveReadiness(connSettings, connectionId)
       : evaluateRealTradeReadiness(connSettings, readinessIntent)
+    if (!strategyProcessingAllows(connSettings)) {
+      livePosition.status = "rejected"
+      livePosition.statusReason = "Strategy processing is disabled for this exact family / coordination"
+      pushStep(livePosition, "strategy_processing", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      return livePosition
+    }
     const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined
@@ -14955,6 +14976,8 @@ export async function executeLivePosition(
           {
             tradeMode: volumeTradeModeForIntent(executionIntent),
             sizeMultiplier: realPosition.sizeMultiplier,
+            relationalVolumeMultiplierOverride:entryVolumeRatio,
+            relationalVolumeContext,
             allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
             indicationType: realPosition.indicationType,
             marketType: livePosition.marketType,
@@ -15337,6 +15360,8 @@ export async function executeLivePosition(
         // Forward the Block/DCA variant multiplier so notional is correctly
         // scaled before the exchange order is placed (absent → 1.0 identity).
         sizeMultiplier: realPosition.sizeMultiplier,
+            relationalVolumeMultiplierOverride:entryVolumeRatio,
+            relationalVolumeContext,
         // Only a combined Position-Count target represents the sum of every
         // valid Set. Ordinary Block/DCA variants remain safely bounded.
         allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
@@ -15739,7 +15764,7 @@ export async function executeLivePosition(
     const engineProcessing = freshExecutionIntent === "direct"
       ? await isCurrent()
       : isConnectionMainProcessing(freshSettings)
-    const isStillLive = freshReadiness.canPlaceRealOrders && engineProcessing && !supervisedSmokeId
+    const isStillLive = freshReadiness.canPlaceRealOrders && Math.abs(relationalVolumeFactor(freshSettings.relationalVolumeRatios,relationalVolumeContext)-entryVolumeRatio)<1e-12 && strategyProcessingAllows(freshSettings) && engineProcessing && !supervisedSmokeId
     if (await abortSuperseded()) return livePosition
     
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
@@ -15764,7 +15789,7 @@ export async function executeLivePosition(
         ? freshExecutionIntent === "direct"
           ? "Direct-Trade processor lease or live state is no longer active"
           : "Connection processing is stopped"
-        : freshReadiness.blockReason || undefined
+        : !strategyProcessingAllows(freshSettings) ? "Strategy processing is disabled for this exact family / coordination" : freshReadiness.blockReason || undefined
       livePosition.statusReason = supervisedSmokeId
         ? `Exchange order blocked before placement: supervised live-order smoke ${supervisedSmokeId} owns the account gate`
         : !engineProcessing
@@ -15843,7 +15868,7 @@ export async function executeLivePosition(
     const lockedProcessing = lockedExecutionIntent === "direct"
       ? await isCurrent()
       : isConnectionMainProcessing(lockedSettings)
-    if (!lockedProcessing || !lockedReadiness.canPlaceRealOrders) {
+    if (!lockedProcessing || !lockedReadiness.canPlaceRealOrders || !strategyProcessingAllows(lockedSettings) || Math.abs(relationalVolumeFactor(lockedSettings.relationalVolumeRatios,relationalVolumeContext)-entryVolumeRatio)>=1e-12) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
       livePosition.executionBlockCode = !lockedProcessing
@@ -15853,7 +15878,7 @@ export async function executeLivePosition(
         ? lockedExecutionIntent === "direct"
           ? "Direct-Trade processor lease or live state stopped while entry waited for admission"
           : "Connection processing stopped while entry waited for admission"
-        : lockedReadiness.blockReason
+        : !strategyProcessingAllows(lockedSettings) ? "Strategy processing is disabled for this exact family / coordination" : lockedReadiness.blockReason
       livePosition.statusReason =
         `Exchange order blocked after admission lock: ${livePosition.executionBlockReason}`
       pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)

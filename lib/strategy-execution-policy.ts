@@ -9,7 +9,40 @@
 
 export type StrategyExecutionFamily = "normal" | "trailing" | "block" | "dca" | "axis" | "signal"
 
+export type StrategyProcessingByRange = Record<string, { normal?: boolean; trailing?: boolean }>
+export const STRATEGY_PROCESSING_RANGES = ["main", "preset", "signals", "direct"] as const
+
+export function normalizeStrategyProcessingByRange(raw: unknown): StrategyProcessingByRange {
+  if (typeof raw === "string") { try { raw = JSON.parse(raw) } catch { return {} } }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const out: StrategyProcessingByRange = {}
+  for (const [range, value] of Object.entries(raw)) {
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(range) || !value || typeof value !== "object" || Array.isArray(value)) continue
+    const own: { normal?: boolean; trailing?: boolean } = {}
+    for (const key of ["normal", "trailing"] as const) if (typeof (value as any)[key] === "boolean") own[key] = (value as any)[key]
+    out[range] = own
+  }
+  return out
+}
+
+export function strategyProcessingRange(row: any): string {
+  const explicit = row?.strategyRange ?? row?.strategy_range ?? row?.coordinationRange ?? row?.coordination_range
+  if (typeof explicit === "string" && explicit.trim()) return explicit.toLowerCase()
+  if (isSignalSet(row) || String(row?.trailingMode ?? row?.trailing_mode) === "signal_dynamic") return "signals"
+  const kind = String(row?.indicationType ?? row?.indication_type ?? "").toLowerCase()
+  if (kind.includes("direct")) return "direct"
+  if (kind.includes("preset") || String(row?.setKey ?? row?.strategy_set_key ?? "").startsWith("preset:")) return "preset"
+  return "main"
+}
+
+export function strategyExecutionPolicyFor(row: any, policy: StrategyExecutionPolicy): StrategyExecutionPolicy {
+  const own = policy.processingByRange?.[strategyProcessingRange(row)]
+  return { ...policy, normalEnabled: policy.normalEnabled && own?.normal !== false,
+    trailingEnabled: policy.trailingEnabled && own?.trailing !== false }
+}
+
 export interface StrategyExecutionPolicy {
+  processingByRange?: StrategyProcessingByRange
   /**
    * Independent per-family execution switches. All four are enabled by
    * default. A disabled family is still calculated, evaluated and reported
@@ -79,6 +112,8 @@ export function normalizeStrategyExecutionPolicy(
 ): StrategyExecutionPolicy {
   const source = raw || {}
   return {
+    ...(Object.keys(normalizeStrategyProcessingByRange(source.strategyProcessingByRange ?? source.processingByRange)).length
+      ? { processingByRange: normalizeStrategyProcessingByRange(source.strategyProcessingByRange ?? source.processingByRange) } : {}),
     normalEnabled: bool(
       source.normalEnabled ?? source.normal_enabled ?? source.strategyNormalEnabled
         ?? source.variantNormalEnabled,
@@ -116,7 +151,7 @@ export function classifyStrategyExecutionFamily(set: any): StrategyExecutionFami
   // the main Normal/variant switch.  Check this before axis metadata because a
   // signal row may carry a projected axis for reporting.
   if (isSignalSet(set)) return "signal"
-  if (set?.axisWindows?.direction && Number(set?.posCountsVolumeRatio || 0) > 0) return "axis"
+  if (set?.axisWindows?.direction && Number(set?.posCountsVolumeRatio || 0) > 0 || set?.combinedPosCounts || /#(?:poscounts|axis):/.test(String(set?.setKey ?? set?.strategySetKey ?? ""))) return "axis"
   if (set?.variant === "block") return "block"
   if (set?.variant === "dca") return "dca"
   if (set?.variant === "trailing" || set?.trailingProfile) return "trailing"
@@ -149,11 +184,10 @@ export function isStrategyExecutionFamilyEnabled(
  */
 export function isMainTrailingAllowed(
   row: { indicationType?: unknown; signalRisk?: any; trailingMode?: unknown } | null | undefined,
-  policy: Pick<StrategyExecutionPolicy, "trailingEnabled">,
+  policy: Pick<StrategyExecutionPolicy, "trailingEnabled" | "processingByRange">,
 ): boolean {
-  if (policy.trailingEnabled) return true
-  if (String(row?.trailingMode || "").toLowerCase() === "signal_dynamic") return true
-  return isSignalSet(row)
+  const full = { ...DEFAULT_STRATEGY_EXECUTION_POLICY, ...policy } as StrategyExecutionPolicy
+  return strategyExecutionPolicyFor(row, full).trailingEnabled
 }
 
 /**
@@ -165,9 +199,23 @@ export function isMainTrailingAllowed(
  */
 export function applyTrailingExecutionPolicy<T extends Record<string, any>>(
   set: T,
-  policy: Pick<StrategyExecutionPolicy, "trailingEnabled">,
+  policy: Pick<StrategyExecutionPolicy, "trailingEnabled" | "processingByRange">,
 ): T {
   if (!set || !set.trailingProfile || isMainTrailingAllowed(set, policy)) return set
   const { trailingProfile: _dropped, ...rest } = set
   return rest as T
+}
+
+/** One admission decision for every exact family and range, including Signal. */
+export function isStrategySetExecutionEnabled(row: any, overall: StrategyExecutionPolicy): boolean {
+  const policy = strategyExecutionPolicyFor(row, overall)
+  const family = classifyStrategyExecutionFamily(row)
+  const trailing = Boolean(row?.trailingProfile || row?.variant === "trailing" || String(row?.trailingMode ?? row?.trailing_mode) === "signal_dynamic")
+  if (trailing && !policy.trailingEnabled) return false
+  if (family === "signal") {
+    if (row?.variant === "block") return policy.blockEnabled
+    if (row?.variant === "dca") return policy.dcaEnabled
+    return policy.normalEnabled
+  }
+  return isStrategyExecutionFamilyEnabled(family, policy)
 }

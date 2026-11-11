@@ -25,6 +25,7 @@ import { scanRedisSetMembers } from "@/lib/redis-scan"
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
 export interface RealPosition {
+  strategyRange?: string
   id: string
   connectionId: string
   symbol: string
@@ -71,6 +72,8 @@ export interface RealPosition {
   //    the LivePosition the executor produces. ────────────────────────
   setKey?: string
   parentSetKey?: string
+  volumeIndicationType?: string
+  volumeIndicationId?: string
   indicationType?: string
   signalRisk?: SignalRisk
   /** Special-only independently calculated logical legs and time/protection limits. */
@@ -483,6 +486,8 @@ function createRealPosition(
     id: `real:${connectionId}:${mainPos.symbol}:${mainPos.direction}:${Date.now()}`,
     connectionId,
     symbol: mainPos.symbol,
+    ...((mainPos as any).volume_indication_type?{volumeIndicationType:(mainPos as any).volume_indication_type}:{}),
+    ...((mainPos as any).volume_indication_id?{volumeIndicationId:(mainPos as any).volume_indication_id}:{}),
     direction: mainPos.direction,
     entryPrice: mainPos.entryPrice,
     quantity,

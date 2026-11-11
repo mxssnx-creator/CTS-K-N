@@ -8,6 +8,7 @@ const config: Config = {
   roots: ["<rootDir>/__tests__"],
   testMatch: ["**/*.test.ts", "**/*.test.tsx"],
   transform: {
+    "^.+\\.mjs$": "<rootDir>/__tests__/support/esm-jest-transform.cjs",
     "^.+\\.tsx?$": [
       "ts-jest",
       {

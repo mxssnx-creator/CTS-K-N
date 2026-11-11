@@ -1,3 +1,4 @@
+import {PORTED_CATALOG as VOLUME_SOURCE_CATALOG} from "@/shared/cts-indications/catalog.ts"
 import { DDR_DEFAULT_MAX, drawdownRatioNewestFirst, maxDrawdownRatioSetting, passesDrawdownRatio } from "@/lib/drawdown-ratio"
 import {
   BLOCK_SHARED_RELATIONS_DEFAULT,
@@ -159,6 +160,8 @@ import {
 } from "@/lib/strategy-stage-accounting"
 import {
   applyTrailingExecutionPolicy,
+  isStrategySetExecutionEnabled,
+  normalizeStrategyProcessingByRange,
   classifyStrategyExecutionFamily,
   hasAnyStrategyExecutionVariantEnabled,
   isMainTrailingAllowed,
@@ -724,6 +727,8 @@ export interface StrategyEvaluation {
 // through the same Standard/default and block/dca Adjust flow as every other
 // Base Set.
 export interface StrategySet {
+  /** Exact coordination/range policy identity, retained by derived Sets. */
+  strategyRange?: string
   setKey: string            // e.g. "BTCUSDT:direction:long" or "BTCUSDT:direction:long#block"
   indicationType: string
   direction: "long" | "short"
@@ -1042,7 +1047,16 @@ export function dedupeCanonicalStrategySets<T extends { setKey?: unknown }>(
   return { sets: unique, collapsed }
 }
 
+const VOLUME_SOURCE_IDS={tacticDca:VOLUME_SOURCE_CATALOG.filter(x=>x.id.startsWith('tactic-dca-')).map(x=>x.id),inverseAo:VOLUME_SOURCE_CATALOG.filter(x=>x.kind==='inverse').map(x=>x.id)}
+function entryVolumeIdentity(ind:any):{volumeIndicationType?:string;volumeIndicationId?:string}{
+ const common=String(ind?.config?.indicatorType??ind?.metadata?.commonIndicatorType??'');if(!common)return {};
+ const index=Number(ind?.config?.parameters?.sourceIndex??ind?.metadata?.parameters?.sourceIndex??0);
+ const source=VOLUME_SOURCE_IDS[common as keyof typeof VOLUME_SOURCE_IDS]?.[index];
+ return {volumeIndicationType:common==='tacticDca'?'tactic':common==='inverseAo'?'inverse':common,volumeIndicationId:source??common};
+}
 export interface StrategySetEntry {
+  volumeIndicationType?: string
+  volumeIndicationId?: string
   id: string
   sizeMultiplier: number
   leverage: number
@@ -1285,6 +1299,7 @@ export function selectLiveDispatchCandidates(
   candidates: StrategySet[],
   options: {
     normalEnabled?: boolean
+    processingByRange?: import("@/lib/strategy-execution-policy").StrategyProcessingByRange
     axisEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
@@ -1297,6 +1312,7 @@ export function selectLiveDispatchCandidates(
   const seenSignalBlockSlots = new Set<string>()
   const policy: StrategyExecutionPolicy = {
     normalEnabled: options.normalEnabled !== false,
+    processingByRange: options.processingByRange,
     axisEnabled: options.axisEnabled !== false,
     trailingEnabled: options.trailingEnabled !== false,
     blockEnabled: options.blockEnabled !== false,
@@ -1308,6 +1324,7 @@ export function selectLiveDispatchCandidates(
   for (const candidate of candidates) {
     const direction = normalizeStrategyDirection(candidate?.direction)
     if (!direction || !candidate?.setKey || seenKeys.has(candidate.setKey)) continue
+    if (!isStrategySetExecutionEnabled(candidate, policy)) continue
     const family = classifyStrategyExecutionFamily(candidate)
     // Signal is a separate admission family in the policy classifier, so use
     // the structural variant here to retain its distinct Signal-Block lane.
@@ -3053,6 +3070,7 @@ export class StrategyCoordinator {
     blockRowLivePauseCountRatio: number
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
+    processingByRange: import("@/lib/strategy-execution-policy").StrategyProcessingByRange
     /** Execute Main-family exchange rows only through Block adjustment rows. */
     axisEnabled: boolean
     /**
@@ -3099,6 +3117,7 @@ export class StrategyCoordinator {
     blockRowLiveMaxStack: 6,
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
+    processingByRange: {},
     axisEnabled: true,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
@@ -3832,6 +3851,7 @@ export class StrategyCoordinator {
         s.normalEnabled ?? s.normal_enabled ?? s.strategyNormalEnabled,
         true,
       )
+      this._coordinationSettings.processingByRange = normalizeStrategyProcessingByRange(s.strategyProcessingByRange)
       this._coordinationSettings.axisEnabled = bool(
         s.axisEnabled ?? s.axis_enabled ?? s.strategyAxisEnabled ?? s.variantAxisEnabled,
         true,
@@ -4971,6 +4991,7 @@ export class StrategyCoordinator {
           if (group.indicationType === "special" && !specialPositionPlan) continue
 
           entries.push({
+            ...entryVolumeIdentity(ind),
             id: `${setKey}-${entryIdx}`,
             sizeMultiplier: specialPositionPlan?.totalVolumeRatio ?? 1.0,
             leverage: 1,
@@ -5059,6 +5080,8 @@ export class StrategyCoordinator {
             : undefined
 
         const set: StrategySet = {
+          strategyRange: String(group.indications[0]?.config?.strategyRange ?? group.indications[0]?.metadata?.strategyRange ??
+            (isSignal ? "signals" : group.indicationType.includes("preset") ? "preset" : "main")).toLowerCase(),
           setKey,
           indicationType: group.indicationType,
           direction: group.direction,
@@ -9654,6 +9677,7 @@ export class StrategyCoordinator {
     if (!isCurrent()) return cancelled()
     const executionPolicy: StrategyExecutionPolicy = {
       normalEnabled: this._coordinationSettings.normalEnabled !== false,
+      processingByRange: this._coordinationSettings.processingByRange,
       axisEnabled: this._coordinationSettings.axisEnabled !== false,
       trailingEnabled: this._coordinationSettings.variants.trailing !== false,
       blockEnabled: this._coordinationSettings.variants.block !== false,
@@ -10485,6 +10509,9 @@ export class StrategyCoordinator {
                     setKey:       set.setKey,
                     parentSetKey: set.parentSetKey,
                     indicationType: set.indicationType,
+                    volumeIndicationType: bestEntry.volumeIndicationType,
+                    volumeIndicationId: bestEntry.volumeIndicationId,
+                    strategyRange: set.strategyRange,
                     setVariant:   set.variant,
                     // Normal off: DCA may seed its own base parent (step 0).
                     ...(set.variant === "dca" && !executionPolicy.normalEnabled
@@ -11008,6 +11035,7 @@ export class StrategyCoordinator {
                   trailingEnabled: trailing,
                   configSetKey,
                   strategySetKey: set.setKey,
+                  strategyRange: set.strategyRange,
                   parentSetKey: set.parentSetKey || set.setKey.split("#")[0],
                   specialPositionPlan: bestEntry.specialPositionPlan,
                   ...(profile && {
