@@ -504,3 +504,12 @@ Research: 14 complete UTC days, BCH first then XRP/SOL, 1m and 5m, 87,540 cells,
 Publication follows a reviewed PR; merge only when its required checks are green. This task does not reinstall production. Existing production revision, credentials, managed Chisel, systemd and Redis were not read or altered by this feature. An exact local publication receipt is maintained at `/workspace/backups/CTS-K-N/strategy-features-publication-20261111.json`; it records actual commit/PR/merge/check results after they become known.
 
 Release checkpoint `/workspace/backups/CTS-K-N/20261111T223944Z-before-disjoint-release-commit` verified. Final production build passed at 3 GiB heap; 27 trailing/sync/ownership tests pass. PR publication pending; no deployment or funded acceptance.
+
+
+## 2026-11-12 — integration of pending branches and Micro protection floors
+
+The canonical checkout remains `/workspace/CTS-K-N`; its tracked Micro-floor edits were preserved unchanged. Integration uses the linked worktree `/workspace/CTS-K-N-merge-20261112`, branch `codex/merge-pending-cts-20261112`, from canonical revision `93eb207`. It retains the original histories of pending strategy controls `a27feff97a523f9192b6a040e132e654a64bfe45` (#567) and stats/recovery `1545959c0be43a71e867266880d536d8b5df2e03` (#566). The existing canonical edits were captured as a binary patch and applied to this worktree with Git three-way verification; no canonical source, runtime settings, credentials, Redis or remote service was replaced.
+
+Micro/Low-Range now have independent minimum SL and trailing price-distance settings, shared between calculation and native admission; other ranges retain their global floor. Complete hosted source/strategy/ownership/type/build checks are pending on the combined source. No combined-head post-Base or exchange PF measurement is available, no profitable-default claim is made, and no production deployment is included.
+
+Verified source checkpoints were created by the repository script: `/workspace/backups/CTS-K-N/20261111T233231Z-pre-cross-project-merge-20261112` and the subsequent `pre-micro-integration-20261112` checkpoint. Publication receipt and final CI results are recorded separately after the actual push/merge. The canonical checkout's active edits remain available to its original workstream.

@@ -16,16 +16,19 @@ export const PREVIOUS_DEFAULT_PROTECTION_FLOOR_PCT = 0.5
 export const PROTECTION_FLOOR_MIN_PCT = 0.05
 export const PROTECTION_FLOOR_MAX_PCT = 10
 
-export const PROTECTION_FLOOR_KEYS = ["minStopLossPct", "minTrailingStopDistancePct"] as const
+export const PROTECTION_FLOOR_KEYS = ["minStopLossPct", "minTrailingStopDistancePct", "microMinSlDistancePct", "microMinTrailDistancePct"] as const
 export type ProtectionFloorKey = (typeof PROTECTION_FLOOR_KEYS)[number]
 
 export type ProtectionFloors = {
   minStopLossPct: number
+  microMinSlDistancePct: number
+  microMinTrailDistancePct: number
   minTrailingStopDistancePct: number
 }
 
 export const DEFAULT_PROTECTION_FLOORS: Readonly<ProtectionFloors> = Object.freeze({
   minStopLossPct: DEFAULT_MIN_STOP_LOSS_PCT,
+  microMinSlDistancePct: .1, microMinTrailDistancePct: .05,
   minTrailingStopDistancePct: DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
 })
 
@@ -54,6 +57,8 @@ export function validateProtectionFloorInput(input: Record<string, unknown> | nu
 export function resolveProtectionFloors(settings: Record<string, any> | null | undefined): ProtectionFloors {
   const raw = settings && typeof settings === "object" ? settings : {}
   return {
+    microMinSlDistancePct: normalizeProtectionFloorPct(raw.microMinSlDistancePct, .1),
+    microMinTrailDistancePct: normalizeProtectionFloorPct(raw.microMinTrailDistancePct, .05),
     minStopLossPct: normalizeProtectionFloorPct(
       raw.minStopLossPct ?? raw.min_stop_loss_pct,
       DEFAULT_MIN_STOP_LOSS_PCT,
@@ -99,4 +104,10 @@ export function applyTrailingDistanceFloorRatio(
   floorPct = getActiveProtectionFloors().minTrailingStopDistancePct,
 ): number {
   return applyTrailingDistanceFloorPct(Number(distanceRatio) * 100, floorPct) / 100
+}
+
+/** Exact range resolution shared by calculated protection and venue admission. Values are price percentages. */
+export function protectionFloorsForRange(range: unknown, floors = getActiveProtectionFloors()): ProtectionFloors {
+  if (!/^(micro|low[- ]?range)$/i.test(String(range ?? "").trim())) return floors
+  return {...floors, minStopLossPct: floors.microMinSlDistancePct, minTrailingStopDistancePct: floors.microMinTrailDistancePct}
 }

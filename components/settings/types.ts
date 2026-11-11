@@ -72,6 +72,8 @@ export interface Settings {
   // Protection floors (percent; default 0.5, range 0.05-10)
   minStopLossPct?: number
   minTrailingStopDistancePct?: number
+  microMinSlDistancePct?: number
+  microMinTrailDistancePct?: number
 
   // Trailing Configuration
   trailingEnabled: boolean

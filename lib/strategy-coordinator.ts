@@ -103,7 +103,7 @@ import {
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   normalizeProtectionPercentages,
 } from "@/lib/trade-protection-contract"
-import { getActiveProtectionFloors, setActiveProtectionFloors } from "@/lib/protection-floors"
+import { getActiveProtectionFloors, setActiveProtectionFloors, protectionFloorsForRange } from "@/lib/protection-floors"
 import {
   MAIN_TRADE_PF_RATIO_BASE,
   MAIN_TRADE_PF_RATIO_MAX,
@@ -2542,8 +2542,9 @@ const OUTCOME_SOURCE_NOTE_MS = 30_000
 // the Real stage settings and enforced here as a hard lower bound.
 const MIN_LIVE_STOP_LOSS_PCT_BASE = 0.2
 /** Base 0.2 % floor raised to the operator stop-loss floor (default 0.5 %). */
-function minLiveStopLossPct(): number {
-  return Math.max(MIN_LIVE_STOP_LOSS_PCT_BASE, getActiveProtectionFloors().minStopLossPct)
+function minLiveStopLossPct(range?: string): number {
+  const micro = /^(micro|low[- ]?range)$/i.test(range ?? "");
+  return Math.max(micro ? .01 : MIN_LIVE_STOP_LOSS_PCT_BASE, protectionFloorsForRange(range).minStopLossPct)
 }
 const MIN_LIVE_TAKE_PROFIT_PCT = 0.2
 
@@ -2552,10 +2553,11 @@ export function deriveProtectionFromProfitFactor(
   positionCostPct: number,
   sizeMultiplier = 1,
   costModel: ProtectionCostModel = conservativeCostFallbackForExchange("generic"),
+  strategyRange?: string,
 ): DerivedProtection & ProfitFactorProtection {
   const pf = sanitizeLiveProfitFactor(profitFactor, 1)
   const baseRiskPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
-  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), minLiveStopLossPct(), 5)
+  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), minLiveStopLossPct(strategyRange), 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
@@ -2574,7 +2576,7 @@ export function deriveProtectionFromProfitFactor(
     takeProfitPct,
     stopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: minLiveStopLossPct(),
+    minimumStopLossPct: minLiveStopLossPct(strategyRange),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const effectiveTakeProfitPct = protection.takeProfitPct
@@ -10416,6 +10418,8 @@ export class StrategyCoordinator {
                   effectivePF,
                   livePositionCostPct,
                   effectiveSizeMult,
+                  undefined,
+                  set.strategyRange,
                 )
                 const tp = protection.takeProfitPct
 
@@ -10451,7 +10455,7 @@ export class StrategyCoordinator {
                   // The live-stage `computeSetAwareSL` applies the same logic
                   // but we normalise here too so the RealPosition.stopLoss and
                   // the derived LivePosition.stopLoss are always in sync.
-                  sl = Math.max(0.2, resolvedTrailingProfile.stopRatio * 100)
+                  sl = Math.max(minLiveStopLossPct(set.strategyRange), resolvedTrailingProfile.stopRatio * 100)
                 }
 
                 if (!isCurrent()) return cancelled()
@@ -10985,6 +10989,7 @@ export class StrategyCoordinator {
                 const positionCostProtection = deriveProtectionFromProfitFactor(
                   bestEntry.profitFactor,
                   livePositionCostPct,
+                  1, undefined, set.strategyRange,
                 )
                 const tp = specialProtection?.takeProfitPct ??
                   activeProtection?.takeProfitPct ??

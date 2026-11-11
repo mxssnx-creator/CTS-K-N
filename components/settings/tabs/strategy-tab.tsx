@@ -181,6 +181,14 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
           <CardDescription>Minimum distances for every Main, Preset, Signal and Direct stop. Tighter stops and trailing distances are raised to the floor; wider ones stay unchanged.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2">
+          {(["microMinSlDistancePct", "microMinTrailDistancePct"] as const).map((key) => <div key={key} className="space-y-2">
+            <Label htmlFor={key}>{key === "microMinSlDistancePct" ? "Micro / Low-Range minimum SL (%)" : "Micro / Low-Range minimum trailing gap (%)"}</Label>
+            <Input id={key} type="number" min={0.05} max={10} step={0.01}
+              value={settings[key] ?? (key === "microMinSlDistancePct" ? .1 : .05)}
+              onChange={(event) => handleSettingChange(key, normalizeProtectionFloorPct(event.target.value, key === "microMinSlDistancePct" ? .1 : .05))} />
+            <p className="text-xs text-muted-foreground">Independent price distance for this range; exchange tick rules still apply.</p>
+          </div>)}
+
           <div className="space-y-2">
             <Label htmlFor="min-stop-loss-pct">Minimum stop-loss (%)</Label>
             <Input id="min-stop-loss-pct" type="number"

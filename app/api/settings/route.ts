@@ -193,7 +193,7 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
     if (normalized[key] === undefined || normalized[key] === null || normalized[key] === "") continue
     normalized[key] = normalizeProtectionFloorPct(
       normalized[key],
-      key === "minStopLossPct" ? DEFAULT_MIN_STOP_LOSS_PCT : DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
+      key === "microMinSlDistancePct" ? .1 : key === "microMinTrailDistancePct" ? .05 : key === "minStopLossPct" ? DEFAULT_MIN_STOP_LOSS_PCT : DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
     )
   }
   normalized.forced_symbols = canonicalForcedSymbols()
@@ -259,6 +259,7 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
 function getDefaultSettings(): Record<string, any> {
   return {
     minStopLossPct: DEFAULT_MIN_STOP_LOSS_PCT,
+    microMinSlDistancePct: .1, microMinTrailDistancePct: .05,
     minTrailingStopDistancePct: DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT,
     overallControlOrdersOnly: false,
     overall_control_orders_only: false,
