@@ -1,3 +1,7 @@
+## Current continuation — 2026-11-11 — independent signed blocks
+
+Canonical checkout `/workspace/CTS-K-N`; recovery parent `76a6aa2`, upstream `47a57d2662eff26720d7067287641fc952353b47`, branch `codex/independent-lastn-volume-20261111`. The containing commit and PR identify the final release revision. Latest verified pre-review checkpoint `/workspace/backups/CTS-K-N/20261111T221211Z-before-final-disjoint-review`; another verified checkpoint precedes commit/publication. See `docs/verification/disjoint-lastn-volume-20261111.md` for exact changes and validation. Current remote state is unknown; no service, Redis, credentials or account changes. Managed activation is absent. Remaining: exhaustive native policy fan-out/forward after-cost validation and owned x02 acceptance. No positive execution-PF claim. Publication/CI status is recorded in the PR, not inferred from local tests.
+
 # Active Context: CTS-K-N Trading System (main project)
 
 ## Current continuation — 2026-11-01 — staged trade replay and X02 gate
@@ -4358,3 +4362,5 @@ Scoped gates: 4 Jest suites / 28 tests passed, static slider render/save-value c
 Research: 14 complete UTC days, BCH first then XRP/SOL, 1m and 5m, 87,540 cells, cost/stress assumptions and complete per-config CSV plus frozen public inputs are linked from `docs/verification/strategy-features-20261111/report.html`. Training-only selections do not reach modeled Live (zero closes); no positive execution PF or live-profitability acceptance is claimed. New source selection stays opt-in; neutral weights 1.0 preserve defaults.
 
 Publication follows a reviewed PR; merge only when its required checks are green. This task does not reinstall production. Existing production revision, credentials, managed Chisel, systemd and Redis were not read or altered by this feature. An exact local publication receipt is maintained at `/workspace/backups/CTS-K-N/strategy-features-publication-20261111.json`; it records actual commit/PR/merge/check results after they become known.
+
+Release checkpoint `/workspace/backups/CTS-K-N/20261111T223944Z-before-disjoint-release-commit` verified. Final production build passed at 3 GiB heap; 27 trailing/sync/ownership tests pass. PR publication pending; no deployment or funded acceptance.

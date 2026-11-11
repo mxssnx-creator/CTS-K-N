@@ -1,3 +1,6 @@
+import {stageBlockPolicies,type StageBlockPolicies} from "@/lib/disjoint-last-n";
+import {blockPolicyKey} from "@/shared/cts-lastn/blocks";
+import {derivePosWindowStats} from "@/lib/pos-history";
 import {PORTED_CATALOG as VOLUME_SOURCE_CATALOG} from "@/shared/cts-indications/catalog.ts"
 import { DDR_DEFAULT_MAX, drawdownRatioNewestFirst, maxDrawdownRatioSetting, passesDrawdownRatio } from "@/lib/drawdown-ratio"
 import {
@@ -1006,6 +1009,7 @@ export interface StrategySet {
     recentPnlPcts?: number[]
     recentPositionCostPcts?: number[]
     /** True when the window it was read from is full (count ≥ window). */
+    blockDecision?: PosWindowStats["blockDecision"]
     hasSignal?: boolean
   }
 }
@@ -1938,7 +1942,7 @@ export function materializeContinuousStageRows(
     const minimumSamples = Math.max(1, Math.min(lookback, Math.floor(Number(options.minimumSamples) || ROW_WINDOW_MIN_SAMPLES)))
     const exactWindow = windowKeys
       .map((key) => options.windowBySetKey?.get(key))
-      .find((window): window is PosWindowStats => Boolean(window && window.positionCostRatioCount >= minimumSamples))
+      .find((window): window is PosWindowStats => Boolean(window && (window.blockDecision || window.positionCostRatioCount >= minimumSamples)))
 
     let sampleCount = 0
     let profitFactor = Number(source.avgProfitFactor) || 0
@@ -2017,6 +2021,7 @@ export function materializeContinuousStageRows(
       (source as unknown as Record<string, unknown>)._hasLivePositions === true,
     )
     const passes = sourceIsActive || (
+      (!exactWindow?.blockDecision || exactWindow.blockDecision.state==="qualified") &&
       profitFactor >= options.metrics.minProfitFactor &&
       drawdownTime <= options.metrics.maxDrawdownTime &&
       passesDrawdownRatio(drawdownRatioValue, Number(options.metrics.maxDrawdownRatio ?? 0))
@@ -2075,6 +2080,7 @@ export function applyExactBlockRowWindows(
     )
     // Below ROW_WINDOW_MIN_SAMPLES ratio samples the row keeps its parent's
     // validation (bootstrap) instead of being judged on one or two closes.
+    if(window?.blockDecision && window.blockDecision.state!=="qualified" && !isActive)continue
     if (!window || window.positionCostRatioCount < ROW_WINDOW_MIN_SAMPLES) {
       evaluated.push(row)
       continue
@@ -2330,12 +2336,13 @@ export function protectionEntriesFor(
  * deciding. Before, any own close (count > 0) replaced a full bucket, so one
  * close sent a Set back to "awaiting history".
  */
-export function selectBaseHistoryWindow<T extends { count: number; positionCostRatioCount: number }>(
+export function selectBaseHistoryWindow<T extends { count: number; positionCostRatioCount: number; blockDecision?:PosWindowStats["blockDecision"] }>(
   exact: T | undefined | null,
   bucket: T | undefined | null,
   minCount: number,
 ): T | undefined {
   const required = Math.max(1, minCount)
+  if(exact?.blockDecision)return exact
   if (exact && exact.positionCostRatioCount >= required) return exact
   if (bucket && bucket.positionCostRatioCount >= required) return bucket
   // Neither is complete: the one with more measured closes reports progress.
@@ -3084,6 +3091,7 @@ export class StrategyCoordinator {
     liveEvalPosCount: number
     /** Settled real closes from which a Set is judged on exchange results only (live trading). */
     liveOutcomeMinCloses: number
+    lastNBlocks?: StageBlockPolicies
   } = {
     axes: {
       prev:  { enabled: true,  maxWindow: 12 },
@@ -3204,7 +3212,9 @@ export class StrategyCoordinator {
         ? setKeys
         : setKeys.filter((setKey) => legacyClosedKeys.has(setKey))
     }
-    const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window)
+    const blocks = options.stage ? this._coordinationSettings.lastNBlocks?.[options.stage] : undefined
+    const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window,blocks)
+    if(blocks)for(const key of setKeys)if(!windows.has(key))windows.set(key,derivePosWindowStats([],window,blocks))
     // A connection that trades live judges its Sets on what the exchange
     // settled: from `liveOutcomeMinCloses` settled real closes on, a Set's
     // window is its exchange-only ring (lib/live-set-outcomes.ts) — no pseudo
@@ -3225,6 +3235,7 @@ export class StrategyCoordinator {
       window,
       this._coordinationSettings.liveOutcomeMinCloses,
       exchangeCounts,
+      blocks,
     )
     for (const [setKey, exchangeWindow] of exchangeWindows) windows.set(setKey, exchangeWindow)
     for (const [setKey, count] of exchangeCounts) {
@@ -3721,6 +3732,7 @@ export class StrategyCoordinator {
       this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
         ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
         : 20
+      this._coordinationSettings.lastNBlocks = stageBlockPolicies((s as any).lastNBlocks)
       this._liveConfigLossGateEnabled = liveConfigLossPolicy(s as Record<string, unknown>).enabled
       this._coordinationSettings.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(
         (s as any).liveOutcomeMinCloses ?? (s as any).live_outcome_min_closes,
@@ -4689,6 +4701,8 @@ export class StrategyCoordinator {
     // one Base row and made the per-config open-position limit appear global.
     const setMap = new Map<string, { indicationType: string; direction: "long" | "short"; indications: any[] }>()
 
+    const blockRevision=Object.entries(this._coordinationSettings.lastNBlocks??{}).sort(([a],[b])=>a.localeCompare(b)).map(([stage,p])=>[stage,blockPolicyKey(p)])
+    const blockSuffix=blockRevision.length?":lastn:"+encodeURIComponent(JSON.stringify(blockRevision)):""
     let groupedIndications = 0
     for (const ind of expandedIndications) {
       const indicationType = ind.type || "direction"
@@ -4714,7 +4728,7 @@ export class StrategyCoordinator {
       // already contains it, keeping legacy direct indications unambiguous.
       const key =
         `${symbol}:${indicationType}:${direction}:cfg:` +
-        encodeURIComponent(configurationIdentity || "default")
+        encodeURIComponent(configurationIdentity || "default") + blockSuffix
       if (!setMap.has(key)) {
         setMap.set(key, { indicationType, direction, indications: [] })
       }
@@ -5113,9 +5127,10 @@ export class StrategyCoordinator {
           // Attach prev-pos snapshot so Main/Real propagation paths can
           // reach it without re-fetching. Always carry the field even
           // when count==0 — keeps downstream null-checking simple.
-          ...(posStats && posStats.count > 0 && {
+          ...(posStats && (posStats.count > 0 || posStats.blockDecision) && {
             prevPos: {
               count: posStats.count,
+              blockDecision: posStats.blockDecision,
               successRate: posStats.successRate,
               profitFactor: posStats.profitFactor,
               positionCostRatio: posStats.positionCostRatio,
@@ -5607,9 +5622,10 @@ export class StrategyCoordinator {
       // reported — it simply does not become an input for Main until it has
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
-      const measuredHistoryRejection = requireMeasuredHistoryForBaseValidity
+      const blockRejection = baseSet.prevPos?.blockDecision && baseSet.prevPos.blockDecision.state!=="qualified" ? `base_disjoint_${baseSet.prevPos.blockDecision.state}` : null
+      const measuredHistoryRejection = blockRejection || (requireMeasuredHistoryForBaseValidity
         ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount, baseHistoryWindow)
-        : null
+        : null)
       if (measuredHistoryRejection) {
         baseSet.status = "invalid"
         baseSet.rejectionReason = measuredHistoryRejection
@@ -6928,7 +6944,7 @@ export class StrategyCoordinator {
       const isActiveBlock = activeBlockKeys.has(setKey)
       const isPaused = unavailableKeys.has(setKey) && !isActiveBlock
       const passesPerformance =
-        performance.passesProfitFactor &&
+        (ownWindow?.blockDecision===undefined||ownWindow.blockDecision.state==="qualified") && performance.passesProfitFactor &&
         blockObservedDrawdown <= metrics.maxDrawdownTime
       observedProfitFactorSum += blockObservedProfitFactor
       normalProfitFactorSum += blockNormalProfitFactor
@@ -6954,7 +6970,7 @@ export class StrategyCoordinator {
       // Existing exposure stays represented until terminal reconciliation;
       // a new active-position add-on must still clear its own PF/DDT and pause.
       if (!isActiveBlock && (!strategyEnabled || blockObservedDrawdown > metrics.maxDrawdownTime
-        || !Number.isFinite(blockObservedDrawdown) || (!passesPerformance && !lifecycle?.recovering) || isPaused)) continue
+        || !Number.isFinite(blockObservedDrawdown) || (ownWindow?.blockDecision && ownWindow.blockDecision.state!=="qualified") || (!passesPerformance && !lifecycle?.recovering) || isPaused)) continue
 
       const pauseWindow = Math.max(1, Math.min(32, Math.round(boundedCount * pauseRatio)))
       const parentSetKey = source.parentSetKey || source.setKey
@@ -7363,9 +7379,10 @@ export class StrategyCoordinator {
         const isActive = activeKeys.has(setKey)
         const isPaused = unavailableKeys.has(setKey) && !isActive
         const passesPerformance =
-          performance.passesProfitFactor &&
+          (ownWindow?.blockDecision===undefined||ownWindow.blockDecision.state==="qualified") && performance.passesProfitFactor &&
           blockObservedDrawdown <= metrics.maxDrawdownTime
         const emit = isActive || (strategyEnabled && blockObservedDrawdown <= metrics.maxDrawdownTime
+          && (ownWindow?.blockDecision===undefined||ownWindow.blockDecision.state==="qualified")
           && (passesPerformance || lifecycle?.recovering === true) && !isPaused)
         const stats = countStats[blockCount - 1]
         stats.calculated++
@@ -7874,9 +7891,10 @@ export class StrategyCoordinator {
       const isActive = activeKeys.has(setKey)
       const isPaused = unavailableKeys.has(setKey) && !isActive
       const passesPerformance =
-        performance.passesProfitFactor &&
+        (laneWindow?.blockDecision===undefined||laneWindow.blockDecision.state==="qualified") && performance.passesProfitFactor &&
         blockObservedDrawdown <= metrics.maxDrawdownTime
       const emit = isActive || (strategyEnabled && blockObservedDrawdown <= metrics.maxDrawdownTime
+        && (laneWindow?.blockDecision===undefined||laneWindow.blockDecision.state==="qualified")
         && (passesPerformance || lifecycle?.recovering === true) && !isPaused)
       const statsId = sourceId
         ? `signal:${blockLanePart(sourceId)}:${scope}`
@@ -11580,7 +11598,7 @@ export class StrategyCoordinator {
       // Active exposure remains valid until terminal reconciliation, even if
       // its newly-realised Set statistics have deteriorated. A candidate with
       // no exposure is withheld once its own full window fails Main PF/DDT.
-      if (activeEntries === 0 && (ownPfFails || ownDdtFails)) continue
+      if (activeEntries === 0 && (ownPfFails || ownDdtFails || ownWindow?.blockDecision && ownWindow.blockDecision.state!=="qualified")) continue
 
       hydrated.push({
         ...set,

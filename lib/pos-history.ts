@@ -1,3 +1,4 @@
+import {blockPrefix,blockRequired,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 /**
  * Position (Pos) History — lifetime, atomic, hot-path-safe.
  *
@@ -127,6 +128,7 @@ const EMPTY: PosHistoryStats = {
  * "average val for specific last count of positions").
  */
 export interface PosWindowStats {
+  blockDecision?: {state:"qualified"|"failed"|"insufficient"|"unknown";key:string;required:number;available:number};
   /** Positions actually present in the window (≤ requested N). */
   count: number
   /** Wins / count over the window, or 0 when empty. */
@@ -655,14 +657,22 @@ export async function getPosHistoryBatch(
  * is up to ~2h and the DDT *threshold* is a per-stage time ceiling, not a
  * position count.)
  */
-export function derivePosWindowStats(records: string[], window: number): PosWindowStats {
+export function derivePosWindowStats(records: string[], window: number, blocks?:BlockPolicy): PosWindowStats {
+  if(blocks){
+    const required=blockRequired(blocks),selected=(records??[]).slice(0,required);
+    const values=selected.map(row=>{const parts=row.split("|");return parts.length>=5&&parts[3]!==""&&Number.isFinite(Number(parts[3]))?Number(parts[3]):null});
+    const decision=evaluateBlocks(blockPrefix(values,required),blocks,1.000001);
+    const primary=derivePosWindowStats(selected.slice(blocks.minimal+blocks.short),blocks.long);
+    return {...primary,count:decision.count,hasSignal:decision.state==="qualified",blockDecision:{state:decision.state,key:decision.key,required,available:decision.count}};
+  }
   if (!records || records.length === 0) return EMPTY_WINDOW
   // records arrive newest-first (lpush head).
   const winN = Math.max(1, window)
   let wins = 0
   let num = 0  // total winning PnL
   let den = 0  // total losing PnL
-  let costSum = 0  // total position costs
+  let pctCount = 0
+  let quoteCount = 0
   let n = 0
   let ddtSum = 0
   let ddtCount = 0
@@ -691,6 +701,7 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
       // One unit per window: the signed net percent when the record carries
       // it (every current writer does), else the legacy quote-currency PnL.
       const outcome = Number.isFinite(pnlPct) ? pnlPct : pnl
+      if(Number.isFinite(pnlPct)) pctCount++; else quoteCount++;
       recentPnls.push(outcome)
       if (outcome > 0) {
         wins++
@@ -698,10 +709,7 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
       } else {
         den += -outcome
       }
-      // Accumulate position costs for all positions (wins & losses)
-      if (Number.isFinite(cost) && cost > 0) {
-        costSum += cost
-      }
+      // Cost is diagnostic. Both canonical and legacy realised PnL are already net.
       if (
         Number.isFinite(pnlPct) &&
         Number.isFinite(positionCostPct) &&
@@ -721,10 +729,10 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
   }
   if (n === 0) return EMPTY_WINDOW
   
-  // Cost-adjusted PF: totalWinPnL / (totalLosePnL + totalPositionCosts)
-  // This ensures profitability is measured after fees
-  const adjustedDen = den + costSum
-  const profitFactor = adjustedDen > 0 ? num / adjustedDen : (num > 0 ? 99 : 0)
+  // Never subtract fees twice or add quote costs to percentage losses.
+  // A mixed-unit window cannot establish a measured PF until canonical rows replace it.
+  const unitsKnown = !(pctCount > 0 && quoteCount > 0)
+  const profitFactor = !unitsKnown ? 0 : den > 0 ? num / den : (num > 0 ? 99 : 0)
   const ratioCount = recentPnlPcts.length
   const averagePnlPct = ratioCount > 0
     ? recentPnlPcts.reduce((sum, value) => sum + value, 0) / ratioCount
@@ -749,7 +757,7 @@ export function derivePosWindowStats(records: string[], window: number): PosWind
     averagePnlPct,
     avgDDT: ddtCount > 0 ? ddtSum / ddtCount : 0,
     drawdownRatio: drawdownRatioNewestFirst(recentPnls),
-    hasSignal: n >= winN,
+    hasSignal: unitsKnown && n >= winN,
     recentPnls,
     recentPnlPcts,
     recentPositionCostPcts,
@@ -1732,12 +1740,13 @@ export async function getStrategySetWindowBatch(
   connectionId: string,
   setKeys: string[],
   window = 12,
+  blocks?:BlockPolicy,
 ): Promise<Map<string, PosWindowStats>> {
   const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
   const out = new Map<string, PosWindowStats>()
   if (unique.length === 0) return out
   try {
-    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(window)))
+    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks):window)))
     const client = getRedisClient()
     const batchSize = 500
     for (let start = 0; start < unique.length; start += batchSize) {
@@ -1752,7 +1761,7 @@ export async function getStrategySetWindowBatch(
         const records = (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
           ? raw[1]
           : raw) as string[] | undefined
-        out.set(setKey, derivePosWindowStats(Array.isArray(records) ? records : [], winN))
+        out.set(setKey, derivePosWindowStats(Array.isArray(records) ? records : [], winN,blocks))
       })
       if (start + batchSize < unique.length) await yieldLedgerBatch()
     }

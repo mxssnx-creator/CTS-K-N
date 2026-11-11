@@ -1,3 +1,4 @@
+import {stageBlockPolicies} from "@/lib/disjoint-last-n";
 import { normalizeOverallControlOrders } from "@/lib/overall-control-orders"
 import {
   DEFAULT_BASE_MIN_STEP,
@@ -177,6 +178,7 @@ function normalizePositionCostSettings<T extends Record<string, any>>(settings: 
   if (normalized.liveConfigLossWindow !== undefined) {
     normalized.liveConfigLossWindow = normalizeLiveConfigLossWindow(normalized.liveConfigLossWindow)
   }
+  if(normalized.lastNBlocks!==undefined)normalized.lastNBlocks=stageBlockPolicies(normalized.lastNBlocks)
   if (normalized.liveOutcomeMinCloses !== undefined) {
     normalized.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(normalized.liveOutcomeMinCloses)
   }

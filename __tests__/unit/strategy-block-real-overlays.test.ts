@@ -1281,6 +1281,23 @@ describe("Real-stage Block overlays", () => {
     }
   })
 
+  test("a recovering Block cannot bypass incomplete own signed blocks while held exposure stays tracked", async () => {
+    const id = `${connectionId}-signed-recovery`, client=getRedisClient();
+    const coordinator=new StrategyCoordinator(id) as any;
+    coordinator._coordinationSettings.variants.block=true;
+    coordinator._coordinationSettings.blockMaxStack=1;
+    coordinator._coordinationSettings.lastNBlocks={real:{long:20,short:10,minimal:3,shortPolarity:"negative",minimalPolarity:"negative"}};
+    const parent=source("BTCUSDT:trend:long","long"), key=`${parent.setKey}#block:1`;
+    await client.hset(`block_count_pause:${id}`,{[`BTCUSDT|${key}`]:JSON.stringify({setKey:key,symbol:"BTCUSDT",direction:"long",incrementStep:2,remaining:0,recovering:true})});
+    try {
+      const metrics={minProfitFactor:1.2,maxDrawdownTime:240,confidence:.5,description:"signed"};
+      const cold=await coordinator.buildIndependentBlockCountOverlaysForReal("BTCUSDT",[parent],metrics,undefined,new Set(),false,false);
+      expect(cold).toEqual([]);
+      const held=await coordinator.buildIndependentBlockCountOverlaysForReal("BTCUSDT",[parent],metrics,undefined,new Set([key]),false,false);
+      expect(held.map((set:StrategySet)=>set.setKey)).toEqual([key]);
+    } finally {await client.del(`block_count_pause:${id}`,`strategy_block_pf_stats:${id}`)}
+  })
+
   test("retains an active count without allowing it to validate another count", async () => {
     const client = getRedisClient()
     const coordinator = new StrategyCoordinator(connectionId) as any

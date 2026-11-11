@@ -1,4 +1,6 @@
 "use client"
+import {BlockPolicyFields} from "@/shared/cts-lastn/fields"
+import {stageBlockPolicies} from "@/lib/disjoint-last-n"
 import {VolumeRatioSliders} from "@/shared/cts-volume/sliders.tsx"
 import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, resolveTrailingSwitch } from "@/lib/strategy-execution-policy"
 
@@ -137,6 +139,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
     <TabsContent value="strategy" className="space-y-4">
       <Card><CardHeader><CardTitle>Relational volume · Strategy types & Ranges</CardTitle></CardHeader><CardContent><VolumeRatioSliders  value={settings.relationalVolumeRatios} onChange={v=>handleSettingChange("relationalVolumeRatios",v)} buckets={{strategies:['normal','trailing','axis','block','dca','pause'],ranges:['main','preset','signals','direct']}}/></CardContent></Card>
 
+      <Card><CardHeader><CardTitle>Independent Last-N blocks</CardTitle></CardHeader><CardContent>{(["base","main","real","live"] as const).map(stage=><BlockPolicyFields key={stage} label={stage+" Last-N blocks"} value={stageBlockPolicies(settings.lastNBlocks)[stage]} onChange={p=>{const next=stageBlockPolicies(settings.lastNBlocks);if(p)next[stage]=p;else delete next[stage];handleSettingChange("lastNBlocks",next)}}/>)}</CardContent></Card>
       <Card>
         <CardHeader><CardTitle>Strategy processing · Normal & Trailing</CardTitle><CardDescription>Normal keeps calculated evidence for additional strategies when disabled. Standalone Normal and Trailing entries require Normal. Trailing off applies across every strategy. Overall and range switches must both allow processing.</CardDescription></CardHeader>
         <CardContent className="space-y-3">

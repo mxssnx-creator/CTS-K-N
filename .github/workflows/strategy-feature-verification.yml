@@ -20,4 +20,6 @@ jobs:
       - run: corepack pnpm install --frozen-lockfile
       - run: pnpm run typecheck
       - run: pnpm run test:strategy-features
+      - run: pnpm run test:lastn-blocks
+      - run: pnpm exec jest --runInBand --testPathPatterns=project-order-identity
       - run: pnpm run build
