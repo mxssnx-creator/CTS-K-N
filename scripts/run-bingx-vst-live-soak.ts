@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { classifyVstSoakExternalProtectionOrder } from "@/lib/bingx-vst-soak-audit"
+import { classifyVstSoakExternalProtectionOrder, normalizeVstSoakOrderId } from "@/lib/bingx-vst-soak-audit"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
@@ -524,7 +524,7 @@ async function main(): Promise<void> {
     `${symbol}:${direction}`
 
   const trackControlOrder = (orderId: unknown, symbol: SoakSymbol, kind: string) => {
-    const normalizedOrderId = String(orderId || "")
+    const normalizedOrderId = normalizeVstSoakOrderId(orderId)
     if (!normalizedOrderId) return
     allOwnedControlOrderIds.add(normalizedOrderId)
     trackedVenueOrderIds.set(normalizedOrderId, { symbol, kind })
@@ -1884,13 +1884,13 @@ async function main(): Promise<void> {
         if (!initiallyArmed || !(initiallyArmed.executedQuantity > 0)) {
           throw new Error("Live-stage trailing probe did not resolve its confirmed position")
         }
-        initialStopOrderId = String(initiallyArmed.stopLossOrderId)
-        takeProfitOrderId = String(initiallyArmed.takeProfitOrderId)
+        initialStopOrderId = String(initiallyArmed.stopLossOrderId || "")
+        takeProfitOrderId = String(initiallyArmed.takeProfitOrderId || "")
         initialSecurityStopOrderId = String(initiallyArmed.securityStopOrderId || "")
         trackControlOrder(initialStopOrderId, symbol, "trailing-static-replaced")
         trackControlOrder(takeProfitOrderId, symbol, "take-profit-cancelled")
         trackControlOrder(initialSecurityStopOrderId, symbol, "security-static-replaced")
-        const initialProtectionDeadline = Date.now() + 60_000
+        const initialProtectionDeadline = Date.now() + 240_000
         let initiallyReconciled: any = null
         do {
           await liveStageModule.reconcileLivePositions(connectionId, connector, {

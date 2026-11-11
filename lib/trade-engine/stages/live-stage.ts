@@ -4502,6 +4502,8 @@ async function recoverEntryOrderByClientId(
     timeoutMs?: number
     /** Total budget across every connector lookup in this recovery attempt. */
     totalTimeoutMs?: number
+    /** Successful tick snapshot: recover known accepted controls without more I/O. */
+    liveOrderIds?: Set<string> | null
   } = {},
 ): Promise<any | null> {
   if (!connector || !clientOrderId) return null
@@ -4519,11 +4521,32 @@ async function recoverEntryOrderByClientId(
   const normalize = (candidate: any): any | null => {
     const raw = candidate?.order ?? candidate?.data ?? candidate
     if (!raw || candidate?.success === false) return null
-    const echoedClientId = firstNonEmptyIdentifier(raw?.clientOrderId, raw?.clientOrderID, raw?.client_oid)
+    const candidateSymbol = String(raw?.symbol || "").toUpperCase().replace(/[-_/]/g, "")
+    if (candidateSymbol && candidateSymbol !== symbol.toUpperCase().replace(/[-_/]/g, "")) return null
+    const echoedClientId = firstNonEmptyIdentifier(raw?.clientOrderId, raw?.clientOrderID, raw?.client_oid, raw?.clOrdId)
     if (echoedClientId && !matchesClientOrderId(echoedClientId)) return null
     const orderId = firstNonEmptyIdentifier(raw?.orderId, raw?.orderID, raw?.id, raw?.ordId)
     if (!orderId) return null
     return { ...raw, success: true, orderId, clientOrderId: lookupClientOrderId }
+  }
+
+  const observed = (options.liveOrderIds as LiveOrderIdSet | null | undefined)?.observedOrdersById
+  if (observed) {
+    const fromSnapshot = (candidate: any) => {
+      const echoed = firstNonEmptyIdentifier(candidate?.clientOrderId, candidate?.clientOrderID, candidate?.client_oid, candidate?.clOrdId)
+      if (!echoed || !matchesClientOrderId(echoed)) return null
+      const observedSymbol = String(candidate?.symbol || "").toUpperCase().replace(/[-_/]/g, "")
+      if (observedSymbol && observedSymbol !== symbol.toUpperCase().replace(/[-_/]/g, "")) return null
+      return normalize(candidate)
+    }
+    const direct = fromSnapshot(observed.get(lookupClientOrderId) ?? observed.get(clientOrderId))
+    if (direct) return direct
+    // Older BingX IDs can contain uppercase characters. Other venues keep
+    // their exact client-ID identity; no case-insensitive adoption applies.
+    if (bingx) for (const candidate of observed.values()) {
+      const recovered = fromSnapshot(candidate)
+      if (recovered) return recovered
+    }
   }
 
   for (const lookup of [
@@ -10340,6 +10363,7 @@ async function updateProtectionOrders(
       connector,
       pos.symbol,
       pending.clientOrderId,
+      { liveOrderIds },
     )
     const recoveredStatus = String(recovered?.status || "").toLowerCase()
     const terminalStatuses = new Set([
@@ -11106,7 +11130,7 @@ async function settleSlotControlsWithoutGuess(
   for (const leg of pendingLegs) {
     const pending = position.pendingProtectionOrders?.[leg]
     if (!pending?.clientOrderId) continue
-    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId)
+    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId, { liveOrderIds })
     const recoveredId = firstNonEmptyIdentifier(recovered?.orderId, recovered?.id)
     if (recoveredId) {
       if (leg === "stopLoss") position.stopLossOrderId = recoveredId
@@ -11997,7 +12021,7 @@ async function reconcileAggregateProtectionBook(
         && existingSecurityOwner?.id === leader.id
       if (pendingBlocksPlacement) leader.securityStopStatus = "pending"
       if (pending?.clientOrderId) {
-        const recovered = await recoverEntryOrderByClientId(connector, leader.symbol, pending.clientOrderId)
+        const recovered = await recoverEntryOrderByClientId(connector, leader.symbol, pending.clientOrderId, { liveOrderIds })
         const recoveredId = firstNonEmptyIdentifier(recovered?.orderId, recovered?.id)
         if (recoveredId) {
           const recoveredQuantity = controlOrderRequestedQuantity(recovered, 0)

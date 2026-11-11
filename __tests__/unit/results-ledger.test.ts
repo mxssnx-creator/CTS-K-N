@@ -163,7 +163,7 @@ describe("the lifetime summary shape the existing routes read", () => {
     const shown = simulatedBookForDisplay(book, {})
     expect(shown).toMatchObject({ valuationAvailable: false, total: 1700, open: 702, closed: 998, wins: 0, losses: 0, netPnl: 0, grossLoss: 0, winRate: 0, settledClosed: 0 })
     expect(simulatedBookForDisplay(book, { CTS_SIMULATED_BOOK_VALUATION: "1" }).netPnl).toBe(-2171362107.19)
-    expect(readFileSync(resolve(process.cwd(), "lib/live-execution-summary.ts"), "utf8")).toContain("simulated: simulatedBookForDisplay(computePositionBookStats(lanes.simulated")
+    expect(readFileSync(resolve(process.cwd(), "lib/live-execution-summary.ts"), "utf8")).toContain("simulated: simulatedBookForDisplay(computePositionBookStats(bookLanes.simulated")
     expect(readFileSync(resolve(process.cwd(), "components/stats/simulated-book-panel.tsx"), "utf8")).toContain("export const SIMULATED_RESULTS_VISIBLE = true")
   })
   test("the background run advances the ledger", () => {

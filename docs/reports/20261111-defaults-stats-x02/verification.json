@@ -14,7 +14,7 @@
     "externalNetworkBlocked": true,
     "scope": "before strict-read/account-cache follow-up; final rerun pending"
   },
-  "typecheck": "passed",
+  "typecheck": "passed after snapshot recovery and offline research harness",
   "changedFileLint": "passed",
   "initialProductionBuild": {
     "passed": true,
@@ -32,13 +32,14 @@
     "durationPolicy": "minimum",
     "requestedMinimumDurationMs": 1800000,
     "completedCyclesAtCheckpoint": 7,
-    "status": "first complete pass stopped on transient position-read timeout; cleaned and restarting",
-    "finalCleanup": "first pass cleanup complete; fresh authenticated baseline 0 positions/0 orders",
+    "status": "two acceptance passes stopped; both reconciled; complete rerun pending",
+    "finalCleanup": "both failed passes reconciled; latest authenticated snapshot0 positions/0 orders",
     "baselinePositions": 0,
     "baselineOrders": 0,
     "earlierFailedProbeManuallyReconciled": true,
     "attemptedCycles": 8,
-    "snapshotRetry": "read-only timeout retries, bounded 60-second lifecycle, no mutation replay"
+    "snapshotRetry": "read-only timeout retries, bounded 60-second lifecycle, no mutation replay",
+    "protectionFollowUp": "successful tick snapshot recovers exact pending client IDs without extra lookups; no fictitious undefined order tracked"
   },
   "performance": {
     "entryBudgetMs": 300,
@@ -71,5 +72,46 @@
     "failed": 0,
     "nativeRedis": true,
     "externalNetworkBlocked": true
+  },
+  "publishedDraftPr": "https://github.com/mxssnx-creator/CTS-K-N/pull/566",
+  "publishedHead": "5b4a3fb31109a9db778d720ac56993626c98855f",
+  "latestCompleteUnitRun": {
+    "suites": 555,
+    "passedSuites": 553,
+    "failedSuites": 2,
+    "passedTests": 3677,
+    "failedTests": 2,
+    "resolvedBeforeRerun": [
+      "stale bookLanes source assertion",
+      "semantic replay deadline at30s; passes unchanged result assertions with explicit120s allowance in69.94s"
+    ],
+    "finalRerun": "pending"
+  },
+  "followUpProtectionChecks": {
+    "passedSuites": 6,
+    "passedTests": 151,
+    "scope": "including Overall, aggregate protection, snapshot-based pending TP recovery and invalid order IDs"
+  },
+  "semanticReplay": {
+    "passed": true,
+    "tests": 3,
+    "continuousEquivalenceMs": 69940,
+    "scope": "expanded minimum-2 exhaustive grid; dispatch timing budgets unchanged"
+  },
+  "githubSmoke": "passed at published5b4a3fb",
+  "vercel": "cts-k-n BLOCKED before build, including unchanged main47a57d2; no build events",
+  "freshDcaResearch": {
+    "completeUTCdays": 14,
+    "warmupDays": 2,
+    "base5mBars": 13824,
+    "inputSha256": "871dce43eababf3a5cd51d9158b31e67819e39ce69c91acc0a01f3ebc17c31e4",
+    "symbols": [
+      "BCH-USDT",
+      "XRP-USDT",
+      "SOL-USDT"
+    ],
+    "frozenValidationPasses": 0,
+    "defaultsPromoted": false,
+    "details": "training qualification0/9/5; frozen XRP/SOL final-week PF0.5196/0.3947 at base cost and0.3510/0.2617 at stress"
   }
 }

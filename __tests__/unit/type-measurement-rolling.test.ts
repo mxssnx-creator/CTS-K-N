@@ -53,6 +53,8 @@ describe("per-type measurement continues in realtime", () => {
   const bars = wavyBars(300)
   beforeEach(() => { venueBars.current = bars })
 
+  // This semantic equivalence check executes fresh, resumed and continuous
+  // replays of the exhaustive minimum-2 grid. It is not a latency benchmark.
   test("fresh, then resumed: buckets hold exactly the continuous replay's closes", async () => {
     const connectionId = `rolling-${Date.now()}-${Math.random()}`
     const split = bars[180].timestamp + MINUTE
@@ -96,7 +98,7 @@ describe("per-type measurement continues in realtime", () => {
     expect(await ringLength(connectionId)).toBe(continuous.closes.length)
     const windows = await getPosWindowBatch(connectionId, "BTCUSDT", [{ indicationType: "direction", direction: "long" }], 25)
     expect(windows.get("direction|long")?.count ?? 0).toBeGreaterThan(0)
-  })
+  }, 120_000)
 
   test("a held lock makes a concurrent advance stand back", async () => {
     const connectionId = `rolling-lock-${Date.now()}-${Math.random()}`

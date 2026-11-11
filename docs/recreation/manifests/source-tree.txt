@@ -2090,6 +2090,7 @@ scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
+scripts/research-dca-matrix.ts
 scripts/resolve-instance-redis-url.mjs
 scripts/restart.sh
 scripts/retire-unsubmitted-live-records.mjs

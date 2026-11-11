@@ -1,3 +1,9 @@
+/** Unset JavaScript values must never become fictitious tracked venue IDs. */
+export function normalizeVstSoakOrderId(value: unknown): string {
+  const id = String(value ?? "").trim()
+  return !id || /^(?:undefined|null|nan|0+)$/i.test(id) ? "" : id
+}
+
 export const VST_SOAK_PROGRESSION_FIELDS = [
   "live_orders_placed_count",
   "live_orders_filled_count",

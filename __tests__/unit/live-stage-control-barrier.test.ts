@@ -237,6 +237,46 @@ describe("executing Live-stage control barriers", () => {
     })).resolves.toMatchObject({ orderId: "accepted-open-protection" })
   })
 
+  test("recovers a pending TP from the successful tick snapshot without private order lookups or resubmission", async () => {
+    const position = livePosition({
+      stopLoss: 5, takeProfit: 5, stopLossArmedQuantity: 1,
+      pendingProtectionOrders: { takeProfit: { clientOrderId: "ktLegacyTP", triggerPrice: 105, quantity: 1 } },
+    })
+    const exchange = connector({
+      exchange: "bingx",
+      getOrderDetails: jest.fn(async () => { throw new Error("Private lookup must not run") }),
+      getOpenOrder: jest.fn(async () => { throw new Error("Private lookup must not run") }),
+      getOpenOrders: jest.fn(async () => [
+        { orderId: "sl-1", symbol: "BTC-USDT", status: "open" },
+        { orderId: "accepted-tp", clientOrderID: "ktlegacytp", symbol: "BTC-USDT", status: "open", origQty: 1, stopPrice: 105 },
+      ]),
+      placeStopOrder: jest.fn(),
+    })
+    const snapshot = await __liveStageTest.fetchLiveOrderIdSet(exchange)
+    await __liveStageTest.updateProtectionOrders(exchange, position, "recover-tick-snapshot", snapshot)
+    expect(position.takeProfitOrderId).toBe("accepted-tp")
+    expect(position.takeProfitArmedQuantity).toBe(1)
+    expect(position.pendingProtectionOrders?.takeProfit).toBeUndefined()
+    expect(exchange.getOrderDetails).not.toHaveBeenCalled()
+    expect(exchange.getOpenOrder).not.toHaveBeenCalled()
+    expect(exchange.getOpenOrders).toHaveBeenCalledTimes(1)
+    expect(exchange.placeStopOrder).not.toHaveBeenCalled()
+    expect(exchange.cancelOrder).not.toHaveBeenCalled()
+  })
+
+  test("cannot recover another symbol's order through a matching client-ID echo", async () => {
+    const exchange = connector({
+      exchange: "bingx",
+      getOrderDetails: jest.fn(async () => ({ orderId: "other-symbol", clientOrderID: "owned-client", symbol: "ETH-USDT", status: "open" })),
+      getOpenOrder: jest.fn(async () => null),
+      getOpenOrders: jest.fn(async () => []),
+    })
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange, symbol: "BTCUSDT", clientOrderId: "owned-client",
+      placementPromise: Promise.resolve({ success: false, error: "socket reset" }), initialError: "socket reset", graceMs: 1,
+    })).resolves.toBeNull()
+  })
+
   test("selects side-aware authoritative venue ticker prices", () => {
     const ticker = __liveStageTest.normalizeVenueTicker({
       bidPrice: "0.0099",
