@@ -7,7 +7,7 @@ import {
 import { normalizeTradeDirection } from "@/lib/trade-direction"
 import { getExchangeLiveStateSummary } from "@/lib/exchange-live-state-summary"
 import { getLiveExecutionSummary } from "@/lib/live-execution-summary"
-import { emptyPositionBookStats, mergePositionBookStats } from "@/lib/position-book-stats"
+import { unavailablePositionBookStats, mergePositionBookStats } from "@/lib/position-book-stats"
 import {
   isConnectionAssignedToMain,
   isConnectionProcessingEnabled,
@@ -221,10 +221,9 @@ export async function GET(request: Request) {
             }))
           : []
 
-        // Balance cache shape is { balance: number, timestamp: number }.
-        // The exchange connectors expose wallet balance at this layer. Equity
-        // and free margin are therefore conservative derived values based on
-        // the same canonical open-position snapshot, never a mirrored total.
+        // Wallet, equity and free margin come from the same account-wide
+        // connector response. CTS-owned exposure is only a subset of that
+        // account and must never be used to manufacture equity/free margin.
         const cachedBalance = optionalNum(balanceCache?.balance)
         const currency  = (balanceCache?.currency as string) || "USDT"
         const balanceTs = toTimestamp(balanceCache?.timestamp ?? balanceCache?.updated_at)
@@ -236,8 +235,12 @@ export async function GET(request: Request) {
         // consumers. Fallback balances are never exposed as exchange money.
         const totalBal = isFallbackBalance ? 0 : cachedBalance ?? 0
         const systemUnrealizedPnl = positionsDataAvailable ? exchangeSnapshot.unrealizedPnl : 0
-        const equity = totalBal + systemUnrealizedPnl
-        const estimatedAvailable = Math.max(0, equity - systemMarginUsd)
+        const reportedEquity = optionalNum(balanceCache?.equity)
+        const reportedAvailable = optionalNum(balanceCache?.availableMargin ?? balanceCache?.available)
+        const equityDataAvailable = balanceDataAvailable && reportedEquity !== null
+        const availableDataAvailable = balanceDataAvailable && reportedAvailable !== null
+        const equity = isFallbackBalance ? 0 : reportedEquity ?? 0
+        const available = isFallbackBalance ? 0 : reportedAvailable ?? 0
 
         return {
           connectionId: connId,
@@ -266,11 +269,13 @@ export async function GET(request: Request) {
           volumeUsd: Math.round(systemNotionalUsd * 100) / 100,
           balance: {
             total:     totalBal,
-            available: estimatedAvailable,
+            available,
             equity,
             currency,
             updatedAt: balanceTs,
             dataAvailable: balanceDataAvailable,
+            equityDataAvailable,
+            availableDataAvailable,
             isFallback: isFallbackBalance,
           },
           positions: systemPositions.slice(0, 20),
@@ -311,7 +316,7 @@ export async function GET(request: Request) {
       perConnection.map((connection) => String(connection.balance.currency || "USDT").toUpperCase()),
     )
     const accountDataAvailable = perConnection.length > 0 &&
-      perConnection.every((connection) => connection.balance.dataAvailable) &&
+      perConnection.every((connection) => connection.balance.dataAvailable && connection.balance.equityDataAvailable) &&
       accountCurrencies.size === 1
     const positionsDataAvailable = perConnection.length > 0 &&
       perConnection.every((connection) => connection.positionsDataAvailable)
@@ -336,8 +341,8 @@ export async function GET(request: Request) {
     const simulatedBooks = await Promise.all(
       activeConns.map((conn) =>
         getLiveExecutionSummary(String(conn.id))
-          .then((summary) => summary.books?.simulated)
-          .catch(() => emptyPositionBookStats()),
+          .then((summary) => summary.books?.simulated ?? unavailablePositionBookStats())
+          .catch(() => unavailablePositionBookStats()),
       ),
     )
     return NextResponse.json({

@@ -5,6 +5,8 @@ import {
   mergePositionBookStats,
   positionBookRowState,
   splitPositionBookStats,
+  simulatedBookForDisplay,
+  unavailablePositionBookStats,
 } from "@/lib/position-book-stats"
 
 const h = (hour: number) => Date.UTC(2026, 8, 27, hour, 5, 0)
@@ -110,6 +112,31 @@ describe("computePositionBookStats", () => {
     expect(book.bySymbol.ETHUSDT).toMatchObject({ open: 1, closed: 1, losses: 1, netPnl: -4 })
     expect(book.byHour["2"]).toMatchObject({ closed: 1, netPnl: -4 })
     expect(positionBookRowState(rows[5])).toBeNull()
+  })
+
+  test("pending entries and shared control orders stay independent of filled positions", () => {
+    const book = computePositionBookStats([
+      open({ status: "simulated", stopLossOrderId: "shared-sl", takeProfitOrderId: "shared-tp" }),
+      open({ status: "simulated", stopLossOrderId: "shared-sl", takeProfitOrderId: "shared-tp" }),
+      { status: "pending", executedQuantity: 0, quantity: 3, stopLossOrderId: "not-armed" },
+      closed(1, { stopLossOrderId: "old-sl" }),
+    ])
+    expect(book).toMatchObject({ open: 2, closed: 1, pendingEntries: 1, controlOrders: 2 })
+  })
+
+  test("valuation availability survives aggregation without presenting suppressed values as measured zero", () => {
+    const valued = computePositionBookStats([closed(3)])
+    const unvalued = simulatedBookForDisplay(computePositionBookStats([open()]), {})
+    expect(unvalued).toMatchObject({ valuationAvailable: false, open: 1, bySymbol: { ETHUSDT: { open: 1 } } })
+    expect(mergePositionBookStats([valued, unvalued])).toMatchObject({
+      valuationAvailable: false, open: 1, closed: 1, netPnl: 0,
+    })
+  })
+
+  test("an unreadable constituent book cannot become a successful empty aggregate", () => {
+    expect(mergePositionBookStats([emptyPositionBookStats(), unavailablePositionBookStats()]))
+      .toMatchObject({ dataAvailable: false, valuationAvailable: false })
+    expect(mergePositionBookStats([])).toMatchObject({ dataAvailable: true, open: 0 })
   })
 })
 

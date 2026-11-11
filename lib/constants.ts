@@ -72,9 +72,8 @@ export const MIN_VOLUME_STEP_RATIO = 0.2
 export const MAX_VOLUME_STEP_RATIO = 1.8
 
 // Base indication windows are exhaustive from the configured minimum through
-// MAX_BASE_STEP. Five is the operator-requested fresh-install default; values
-// 2, 3, and 4 remain selectable and changing the lower bound never samples the
-// remaining integer windows.
+// MAX_BASE_STEP. Two is the operator-requested fresh-install default;
+// changing the lower bound never samples the remaining integer windows.
 //
 // The upper bound was 30, which truncated the Direction and Move indications
 // exactly where they were still improving. Measured over 22 symbols on
@@ -102,19 +101,31 @@ export const MAX_BASE_STEP = 30
  * they happened to share a constant. The window grid gets its own bound.
  */
 export const MAX_INDICATION_WINDOW = 48
-export const DEFAULT_BASE_MIN_STEP = 5
+export const DEFAULT_BASE_MIN_STEP = 2
 /**
- * Default for the trailing minimum step (range 2-30). It shared DEFAULT_BASE_MIN_STEP
- * (5) with minStep / indicationRangeMin and the settings comment even said 4;
- * operator default since 2026-09-29 is 8, independent of the base step. Saved
- * per-connection values (X01 11, X02 7) are the operator's and are not touched.
+ * Trailing starts at step three by default, independently of the Base default.
+ * Explicit saved values remain configurable; trailing cannot precede the
+ * configured Base minimum.
  */
-export const DEFAULT_TRAILING_MIN_STEP = 8
+export const DEFAULT_TRAILING_MIN_STEP = 3
 
 export function normalizeBaseMinStep(raw: unknown): number {
   const parsed = Number(raw)
   if (!Number.isFinite(parsed)) return DEFAULT_BASE_MIN_STEP
   return Math.max(MIN_BASE_STEP, Math.min(MAX_BASE_STEP, Math.round(parsed)))
+}
+
+export function normalizeTrailingMinStep(
+  raw: unknown,
+  baseMinimumStep: unknown = DEFAULT_BASE_MIN_STEP,
+): number {
+  const base = normalizeBaseMinStep(baseMinimumStep)
+  const parsed = Number(raw)
+  const step = raw === undefined || raw === null || raw === "" ||
+    !Number.isFinite(parsed) || parsed <= 0
+    ? DEFAULT_TRAILING_MIN_STEP
+    : Math.round(parsed)
+  return Math.max(base, Math.min(MAX_BASE_STEP, step))
 }
 
 /** Independent balance-recalculation ratio; unlike shared channel factors,

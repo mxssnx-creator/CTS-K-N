@@ -3181,10 +3181,10 @@ function mergeLivePositionSnapshotSources(
     : { ...hashPosition, ...legacy }
 }
 
-async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
+async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string, strict = false): Promise<LivePosition | null> {
   const [legacyRaw, hash] = await Promise.all([
-    client.get(`live:position:${positionId}`).catch(() => null),
-    client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null),
+    client.get(`live:position:${positionId}`).catch((error: unknown) => { if (strict) throw error; return null }),
+    client.hgetall(positionHashKey(connectionId, positionId)).catch((error: unknown) => { if (strict) throw error; return null }),
   ])
   return mergeLivePositionSnapshotSources(legacyRaw, hash)
 }
@@ -4413,7 +4413,9 @@ function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "
   const kind = String(prefix || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const symbol = String(position.symbol || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const suffix = nanoid(8).replace(/[^a-zA-Z0-9]/g, "")
-  return `${clientOrderSystemTypePrefix(position.connectionId, position.executionIntent)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
+  // BingX echoes client IDs in lowercase. Persist the same canonical value
+  // we submit so an ambiguous acknowledgement remains recoverable by ID.
+  return `${clientOrderSystemTypePrefix(position.connectionId, position.executionIntent)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32).toLowerCase()
 }
 
 function firstNonEmptyIdentifier(...values: unknown[]): string | undefined {
@@ -4503,6 +4505,9 @@ async function recoverEntryOrderByClientId(
   } = {},
 ): Promise<any | null> {
   if (!connector || !clientOrderId) return null
+  const bingx = String(connector.exchange ?? connector.exchangeId ?? connector.constructor?.name ?? "").toLowerCase().includes("bingx")
+  const lookupClientOrderId = bingx ? clientOrderId.toLowerCase() : clientOrderId
+  const matchesClientOrderId = (value: string) => (bingx ? value.toLowerCase() : value) === lookupClientOrderId
   const startedAt = Date.now()
   const totalTimeoutMs = Math.max(1, Number(options.totalTimeoutMs || 0) || Number.POSITIVE_INFINITY)
   const timeoutForLookup = (): number | null => {
@@ -4515,18 +4520,18 @@ async function recoverEntryOrderByClientId(
     const raw = candidate?.order ?? candidate?.data ?? candidate
     if (!raw || candidate?.success === false) return null
     const echoedClientId = firstNonEmptyIdentifier(raw?.clientOrderId, raw?.clientOrderID, raw?.client_oid)
-    if (echoedClientId && echoedClientId !== clientOrderId) return null
+    if (echoedClientId && !matchesClientOrderId(echoedClientId)) return null
     const orderId = firstNonEmptyIdentifier(raw?.orderId, raw?.orderID, raw?.id, raw?.ordId)
     if (!orderId) return null
-    return { ...raw, success: true, orderId, clientOrderId }
+    return { ...raw, success: true, orderId, clientOrderId: lookupClientOrderId }
   }
 
   for (const lookup of [
     typeof connector.getOrderDetails === "function"
-      ? () => connector.getOrderDetails(symbol, undefined, clientOrderId)
+      ? () => connector.getOrderDetails(symbol, undefined, lookupClientOrderId)
       : null,
     typeof connector.getOpenOrder === "function"
-      ? () => connector.getOpenOrder(symbol, undefined, clientOrderId)
+      ? () => connector.getOpenOrder(symbol, undefined, lookupClientOrderId)
       : null,
   ]) {
     if (!lookup) continue
@@ -4552,12 +4557,12 @@ async function recoverEntryOrderByClientId(
         `recoverEntryOrderByClientId.openOrders(${symbol})`,
       )
       const match = Array.isArray(orders)
-        ? orders.find((order: any) => firstNonEmptyIdentifier(
+        ? orders.find((order: any) => matchesClientOrderId(firstNonEmptyIdentifier(
             order?.clientOrderId,
             order?.clientOrderID,
             order?.client_oid,
             order?.clOrdId,
-          ) === clientOrderId)
+          ) || ""))
         : null
       return normalize(match)
     } catch { /* authoritative sync will retry */ }
@@ -9116,10 +9121,10 @@ async function placeProtectionOrder(
       console.warn(`${tag} QUOTA_EXCEEDED (code=110206): TP/SL order limit reached — caller will suspend placement`)
       return { orderId: "QUOTA_EXCEEDED", armedQuantity: 0 }
     }
-    // result.error is the connector's normalized venue-side message.
-    // Log verbatim so operators see the EXACT venue rejection.
+    // A response deadline is delivery-ambiguous, not a venue rejection.
+    const deliveryState = isAmbiguousControlOrderDelivery(errMsg) ? "DELIVERY UNCONFIRMED" : "VENUE REJECTED"
     console.warn(
-      `${tag} VENUE REJECTED: error="${result?.error || "unknown"}" code=${result?.code ?? "n/a"} latency=${latencyMs}ms`,
+      `${tag} ${deliveryState}: error="${result?.error || "unknown"}" code=${result?.code ?? "n/a"} latency=${latencyMs}ms`,
     )
     return { orderId: null, armedQuantity: 0 }
   } catch (err) {
@@ -19772,11 +19777,11 @@ function isPreFillWithoutExchangeHandle(
 /**
  * Get all live positions for a connection.
  */
-export async function getLivePositions(connectionId: string): Promise<LivePosition[]> {
+export async function getLivePositions(connectionId: string, options: { strict?: boolean } = {}): Promise<LivePosition[]> {
   await initRedis()
   const client = getRedisClient()
   try {
-    const ids = ((await client.lrange(`live:positions:${connectionId}`, 0, -1).catch(() => [])) || []) as string[]
+    const ids = ((await client.lrange(`live:positions:${connectionId}`, 0, -1)) || []) as string[]
 
     // Deduplicate while preserving order — the open index may contain stale
     // duplicates from retried writes.
@@ -19797,12 +19802,13 @@ export async function getLivePositions(connectionId: string): Promise<LivePositi
       const values = await Promise.all(
         uniqueIds
           .slice(offset, offset + READ_BATCH_SIZE)
-          .map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
+          .map((id) => readLivePositionSnapshot(client, connectionId, id, options.strict)),
       )
       for (const pos of values) if (pos) positions.push(pos)
     }
     return positions
   } catch (err) {
+    if (options.strict) throw err
     console.warn(`${LOG_PREFIX} Error getting live positions:`, err)
     return []
   }
@@ -19825,12 +19831,13 @@ export async function getLivePositionsByStatus(
  */
 export async function getClosedLivePositions(
   connectionId: string,
-  limit = 200
+  limit = 200,
+  options: { strict?: boolean } = {},
 ): Promise<LivePosition[]> {
   await initRedis()
   const client = getRedisClient()
   try {
-    const ids = ((await client.lrange(`live:positions:${connectionId}:closed`, 0, limit - 1).catch(() => [])) || []) as string[]
+    const ids = ((await client.lrange(`live:positions:${connectionId}:closed`, 0, limit - 1)) || []) as string[]
 
     // Deduplicate + batch GETs concurrently (same rationale as getLivePositions).
     const uniqueIds: string[] = []
@@ -19849,12 +19856,13 @@ export async function getClosedLivePositions(
       const values = await Promise.all(
         uniqueIds
           .slice(offset, offset + READ_BATCH_SIZE)
-          .map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
+          .map((id) => readLivePositionSnapshot(client, connectionId, id, options.strict)),
       )
       for (const pos of values) if (pos) positions.push(pos)
     }
     return positions
   } catch (err) {
+    if (options.strict) throw err
     console.warn(`${LOG_PREFIX} getClosedLivePositions error:`, err)
     return []
   }

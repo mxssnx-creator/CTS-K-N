@@ -11,6 +11,7 @@ import { tradingPairKey } from "@/lib/trading-pair-keys"
 import { createVstReadPacer } from "@/lib/bingx-vst-read-pacer"
 import { readFreshPositionSnapshot } from "@/lib/fresh-position-snapshot"
 import { resolveVstSoakPlan, parseVstSoakCandidateSymbols, vstSoakCoverageDirection } from "@/lib/bingx-vst-soak-plan"
+import { mapWithConcurrency } from "@/lib/bounded-concurrency"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -317,6 +318,10 @@ async function main(): Promise<void> {
   const preflightOnly = process.env.BINGX_VST_SOAK_PREFLIGHT_ONLY === "1"
   const requestedDuration = finite(process.env.BINGX_VST_SOAK_DURATION_MS) || EXACT_DURATION_MS
   const allowShort = process.env.BINGX_VST_SOAK_ALLOW_SHORT === "1"
+  // Coverage runs may need longer than their requested minimum on a slow
+  // network. Keep the legacy exact-duration contract unless explicitly opted
+  // into a minimum-duration acceptance run; record both requested and actual.
+  const minimumDuration = process.env.BINGX_VST_SOAK_DURATION_POLICY === "minimum"
   const maxPositionNotionalUsd = Math.min(
     DEFAULT_VST_SOAK_POSITION_NOTIONAL_CAP_USD,
     Math.max(
@@ -348,6 +353,7 @@ async function main(): Promise<void> {
     authenticatedDemoOrders: !preflightOnly,
     preflightOnly,
     requestedDurationMs: preflightOnly ? 0 : requestedDuration,
+    durationPolicy: minimumDuration ? "minimum" : "exact",
     startedAt: new Date(runStartedMs).toISOString(),
     success: false,
     cleanupComplete: false,
@@ -403,7 +409,7 @@ async function main(): Promise<void> {
     process.exitCode = 2
     return
   }
-  if (!preflightOnly && requestedDuration !== EXACT_DURATION_MS && !allowShort) {
+  if (!preflightOnly && (requestedDuration !== EXACT_DURATION_MS || minimumDuration) && !allowShort) {
     report.errors.push(`The authenticated soak must run exactly ${EXACT_DURATION_MS}ms unless BINGX_VST_SOAK_ALLOW_SHORT=1 is explicit`)
     await persistReport()
     console.error(`[bingx-vst-soak] BLOCKED report=${reportPath}`)
@@ -600,14 +606,27 @@ async function main(): Promise<void> {
     direction: "long" | "short",
     expectedQuantity: number,
     quantityStep: number,
-    timeoutMs = 20_000,
+    timeoutMs = 60_000,
   ): Promise<number> => {
     const deadline = Date.now() + timeoutMs
     const tolerance = Math.max(quantityStep / 2, 1e-12)
     let observed = 0
     do {
       assertNotAborted()
-      const rows = await readFreshPositionSnapshot(connector, symbol)
+      // This local acceptance harness can traverse a slower network than the
+      // installed engine. Use the existing lifecycle deadline for an actual
+      // post-mutation snapshot; never accept a cached answer to save time.
+      let rows: unknown[]
+      try {
+        rows = await readFreshPositionSnapshot(connector, symbol, Math.min(25_000, Math.max(1, deadline - Date.now())))
+      } catch (error) {
+        // These are idempotent reads only. Give a transient network timeout
+        // another fresh observation within the same bounded lifecycle; never
+        // replay an entry, accumulation or close to infer whether it landed.
+        if (Date.now() >= deadline || !/timeout|timed out|fetch failed|ECONNRESET|ETIMEDOUT/i.test(errorText(error))) throw error
+        await sleep(400)
+        continue
+      }
       assertSnapshotHealthy("positions")
       const active = activePositions(rows).filter((row: any) => normalizeSymbol(row?.symbol) === symbol)
       const conflicting = active.find((row: any) => positionDirectionOf(row) !== direction)
@@ -1054,8 +1073,19 @@ async function main(): Promise<void> {
       import("@/lib/trade-engine/stages/live-stage"),
     ])
     if (coveragePlan.targetSymbols > SYMBOL_CANDIDATES.length) {
-      const response = await fetch(`${VST_ORIGIN}/openApi/swap/v2/quote/contracts`, { method: "GET", signal: AbortSignal.timeout(15_000) })
-      if (!response.ok) throw new Error(`VST contract catalog returned HTTP ${response.status}`)
+      let response: Response | undefined
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          response = await fetch(`${VST_ORIGIN}/openApi/swap/v2/quote/contracts`, { method: "GET", signal: AbortSignal.timeout(15_000) })
+          break
+        } catch (error) {
+          if (attempt === 1) throw error
+          // Only a public read is retried after a transport timeout. Venue
+          // writes and rejected/invalid catalog responses are never replayed.
+          await sleep(1_000)
+        }
+      }
+      if (!response?.ok) throw new Error(`VST contract catalog returned HTTP ${response?.status ?? "unavailable"}`)
       candidateCatalog = await response.json()
       symbolCandidates = parseVstSoakCandidateSymbols(candidateCatalog, SYMBOL_CANDIDATES)
       if (symbolCandidates.length < coveragePlan.minimumSymbols) throw new Error("VST contract catalog cannot cover the requested symbol count")
@@ -1197,8 +1227,9 @@ async function main(): Promise<void> {
     const candidateErrors = new Map<SoakSymbol, string>()
     const unoccupiedCandidates = symbolCandidates.filter((symbol) =>
       !occupiedSymbols.has(symbol) && !excludedSymbolSet.has(symbol))
-    const liquidityRows: Array<{ symbol: SoakSymbol; bid: number; ask: number; last: number }> = []
-    for (const symbol of unoccupiedCandidates) {
+    // These are public quote reads. Preserve input order while bounding the
+    // requests, rather than waiting for up to 128 serial network round trips.
+    const liquidityRows = await mapWithConcurrency(unoccupiedCandidates, 4, async (symbol) => {
       try {
         const ticker = await connector.getTicker(symbol)
         if (!ticker) {
@@ -1212,17 +1243,17 @@ async function main(): Promise<void> {
           if (minimum.notionalUsdt * 2 > maxPositionNotionalUsd + 1e-8) throw new Error("Minimum entry plus accumulation exceeds the virtual-position notional cap")
         }
         candidateTickers.set(symbol, ticker)
-        liquidityRows.push({
+        return {
           symbol,
           bid: finite(ticker?.bid),
           ask: finite(ticker?.ask),
           last: finite(ticker?.last),
-        })
+        }
       } catch (error) {
         candidateErrors.set(symbol, errorText(error))
-        liquidityRows.push({ symbol, bid: 0, ask: 0, last: 0 })
+        return { symbol, bid: 0, ask: 0, last: 0 }
       }
-    }
+    })
     const rankedLiquidity = auditModule.rankVstSoakSymbolLiquidity(
       liquidityRows,
       MAX_VST_SOAK_SPREAD_BPS,
@@ -1253,7 +1284,9 @@ async function main(): Promise<void> {
 
     const rulesBySymbol = new Map<SoakSymbol, any>()
     for (const symbol of soakSymbols) {
-      const rules = await rulesModule.fetchBingXInstrumentRules(symbol, fetch, VST_ORIGIN)
+      const rules = candidateCatalog
+        ? rulesModule.parseBingXInstrumentRules(candidateCatalog, symbol)
+        : await rulesModule.fetchBingXInstrumentRules(symbol, fetch, VST_ORIGIN)
       const ticker = candidateTickers.get(symbol) || await connector.getTicker(symbol)
       const marketPrice = finite(ticker?.last || ticker?.ask || ticker?.bid)
       if (!(marketPrice > 0)) throw new Error(`No Prod-VST price for ${symbol}`)
@@ -1846,8 +1879,10 @@ async function main(): Promise<void> {
           connector,
           { stopLossPct, takeProfitPct },
         )
-        if (!initiallyArmed?.stopLossOrderId || !initiallyArmed?.takeProfitOrderId) {
-          throw new Error("Live-stage did not arm initial VST row stop-loss and take-profit")
+        // Overall mode persists row intent first; slot reconciliation owns
+        // venue placement. Validate the complete control set after that pass.
+        if (!initiallyArmed || !(initiallyArmed.executedQuantity > 0)) {
+          throw new Error("Live-stage trailing probe did not resolve its confirmed position")
         }
         initialStopOrderId = String(initiallyArmed.stopLossOrderId)
         takeProfitOrderId = String(initiallyArmed.takeProfitOrderId)
@@ -1855,16 +1890,24 @@ async function main(): Promise<void> {
         trackControlOrder(initialStopOrderId, symbol, "trailing-static-replaced")
         trackControlOrder(takeProfitOrderId, symbol, "take-profit-cancelled")
         trackControlOrder(initialSecurityStopOrderId, symbol, "security-static-replaced")
-        await liveStageModule.reconcileLivePositions(connectionId, connector, {
-          skipSimulatedSweep: true,
-          skipOrphanAdoption: true,
-          reconcileMode: true,
-        })
-        const initiallyReconciled = (await liveStageModule.getLivePositions(connectionId))
-          .find((position: any) => position.id === positionId)
-        initialStopOrderId = String(initiallyReconciled?.stopLossOrderId || "")
-        takeProfitOrderId = String(initiallyReconciled?.takeProfitOrderId || "")
-        initialSecurityStopOrderId = String(initiallyReconciled?.securityStopOrderId || "")
+        const initialProtectionDeadline = Date.now() + 60_000
+        let initiallyReconciled: any = null
+        do {
+          await liveStageModule.reconcileLivePositions(connectionId, connector, {
+            skipSimulatedSweep: true,
+            skipOrphanAdoption: true,
+            reconcileMode: true,
+          })
+          initiallyReconciled = await liveStageModule.getLivePositionSnapshot(connectionId, positionId)
+          initialStopOrderId = String(initiallyReconciled?.stopLossOrderId || "")
+          takeProfitOrderId = String(initiallyReconciled?.takeProfitOrderId || "")
+          initialSecurityStopOrderId = String(initiallyReconciled?.securityStopOrderId || "")
+          trackControlOrder(initialStopOrderId, symbol, "trailing-static-replaced")
+          trackControlOrder(takeProfitOrderId, symbol, "take-profit-cancelled")
+          trackControlOrder(initialSecurityStopOrderId, symbol, "security-static-replaced")
+          if (initialStopOrderId && takeProfitOrderId && initialSecurityStopOrderId) break
+          await sleep(1_000)
+        } while (Date.now() < initialProtectionDeadline)
         if (!initialStopOrderId || !takeProfitOrderId || !initialSecurityStopOrderId) {
           throw new Error("Live-stage did not arm the complete row SL/TP plus slot security-stop set")
         }
@@ -2059,12 +2102,31 @@ async function main(): Promise<void> {
         // This captures any control created immediately before an exception,
         // including a security replacement whose caller did not receive a
         // successful return value.
+        let canRemoveProbe = false
         try {
-          const persisted = (await liveStageModule.getLivePositions(connectionId))
-            .find((position: any) => position.id === positionId)
+          const persisted = await liveStageModule.getLivePositionSnapshot(connectionId, positionId)
           trackControlOrder(persisted?.stopLossOrderId, symbol, "trailing-finally-stop")
           trackControlOrder(persisted?.takeProfitOrderId, symbol, "trailing-finally-take-profit")
           trackControlOrder(persisted?.securityStopOrderId, symbol, "trailing-finally-security")
+          const pending = Object.values(persisted?.pendingProtectionOrders || {}) as Array<{ clientOrderId?: string }>
+          const clients = new Set<string>([
+            ...pending.map(value => String(value?.clientOrderId || "").toLowerCase()),
+            ...((persisted?.exchangeData?.clientOrderIds || []) as Array<{ kind?: string; clientOrderId?: string }>)
+              .filter(value => ["stop_loss", "take_profit", "security_stop"].includes(String(value.kind)))
+              .map(value => String(value.clientOrderId || "").toLowerCase()),
+          ].filter(Boolean))
+          // A timeout can leave an accepted control known only by its durable
+          // client ID. Recover that exact order before exception cleanup; do
+          // not classify every same-symbol system order as test-owned.
+          if (clients.size) {
+            const orders = await connector.getOpenOrders(symbol, { forceRefresh: true })
+            assertSnapshotHealthy("orders")
+            for (const order of orders) {
+              const clientId = String(order.clientOrderId ?? order.clientOrderID ?? "").toLowerCase()
+              if (clients.has(clientId)) trackControlOrder(orderIdOf(order), symbol, "trailing-finally-client-recovered")
+            }
+          }
+          canRemoveProbe = pending.length === 0
         } catch {
           // The outer cleanup still retains every ID observed before this
           // point and will fail closed if the symbol is not exclusive.
@@ -2073,12 +2135,17 @@ async function main(): Promise<void> {
         // artificial strategy record eagerly so a later cycle can only match
         // its own pseudo position, even if the harness is expanded to reuse a
         // symbol/direction pair.
-        await Promise.all([
-          redisClient.del(jsonKey).catch(() => 0),
-          redisClient.del(hashKey).catch(() => 0),
-        ])
-        if (typeof redisClient.lrem === "function") {
-          await redisClient.lrem(openIndexKey, 0, positionId).catch(() => 0)
+        // Retain unresolved durable client IDs for recovery if the provider
+        // could not confirm delivery. An exception must not erase ownership
+        // evidence while an accepted control might still be on the venue.
+        if (canRemoveProbe) {
+          await Promise.all([
+            redisClient.del(jsonKey).catch(() => 0),
+            redisClient.del(hashKey).catch(() => 0),
+          ])
+          if (typeof redisClient.lrem === "function") {
+            await redisClient.lrem(openIndexKey, 0, positionId).catch(() => 0)
+          }
         }
       }
     }
@@ -2460,7 +2527,7 @@ async function main(): Promise<void> {
     if (report.actualSoakDurationMs < requestedDuration) {
       throw new Error(`Soak duration was short: ${report.actualSoakDurationMs}ms < ${requestedDuration}ms`)
     }
-    if (report.durationDifferenceMs > report.durationToleranceMs) {
+    if (!minimumDuration && report.durationDifferenceMs > report.durationToleranceMs) {
       throw new Error(
         `Soak duration exceeded exact-window tolerance: difference=${report.durationDifferenceMs}ms ` +
         `tolerance=${report.durationToleranceMs}ms`,

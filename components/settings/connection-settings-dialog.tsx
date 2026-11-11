@@ -4,6 +4,7 @@ import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 
 import {
   DEFAULT_BASE_MIN_STEP,
+  DEFAULT_TRAILING_MIN_STEP,
   DEFAULT_VOLUME_STEP_RATIO,
   MAX_BASE_STEP,
   MAX_VOLUME_FACTOR,
@@ -11,10 +12,10 @@ import {
   MIN_VOLUME_FACTOR,
   MIN_VOLUME_STEP_RATIO,
   MIN_BASE_STEP,
-  normalizeBaseMinStep,
   normalizeIdentityVolumeFactor,
   normalizeVolumeStepRatio,
 } from "@/lib/constants"
+import { resolveMinimumStepSettings } from "@/lib/minimum-step-settings"
 import { DEFAULT_SYMBOL_COUNT } from "@/lib/symbol-selection-defaults"
 import { MarginCallPanel } from "@/components/settings/margin-call-panel"
 import { HistoricTestSection } from "@/components/settings/historic-test-section"
@@ -517,11 +518,7 @@ export function ConnectionSettingsDialog({
           dcaBreakevenProfitPct: dca.breakevenProfitPct,
           dcaCooldownSeconds: dca.cooldownSeconds,
           dcaMaxPositionVolumeRatio: dca.maxPositionVolumeRatio,
-          minStep: normalizeBaseMinStep(coord.minStep ?? p.minStep),
-          trailingMinStep: Math.max(
-            normalizeBaseMinStep(coord.minStep ?? p.minStep),
-            normalizeBaseMinStep(coord.trailingMinStep ?? p.trailingMinStep),
-          ),
+          ...resolveMinimumStepSettings({ ...p, ...coord }),
         })
       }
 
@@ -736,10 +733,7 @@ export function ConnectionSettingsDialog({
               if (Number.isFinite(nested) && nested >= 1) return snap(nested)
               return DEFAULT_COORDINATION_SETTINGS.liveEvalPosCount
             })(),
-            minStep: normalizeBaseMinStep(
-              (settings as Record<string, unknown>).minStep ??
-              (coord as Record<string, unknown>).minStep,
-            ),
+            ...resolveMinimumStepSettings({ ...settings, coordination_settings: coord }),
             maxStopLossRatio: (() => {
               const snap = (n: number) => Math.min(2.5, Math.max(0.25, Math.round(n / 0.25) * 0.25))
               const flat = Number((settings as Record<string, unknown>).maxStopLossRatio ?? (settings as Record<string, unknown>).max_stoploss_ratio)
@@ -747,13 +741,6 @@ export function ConnectionSettingsDialog({
               const nested = Number((coord as Record<string, unknown>).maxStopLossRatio ?? (coord as Record<string, unknown>).max_stoploss_ratio)
               if (Number.isFinite(nested) && nested >= 0.25) return snap(nested)
               return DEFAULT_COORDINATION_SETTINGS.maxStopLossRatio ?? 2.5
-            })(),
-            trailingMinStep: (() => {
-              const flat = Number((settings as Record<string, unknown>).trailingMinStep)
-              if (Number.isFinite(flat) && flat >= 2) return Math.min(30, Math.max(2, Math.round(flat)))
-              const nested = Number((coord as Record<string, unknown>).trailingMinStep)
-              if (Number.isFinite(nested) && nested >= 2) return Math.min(30, Math.max(2, Math.round(nested)))
-              return DEFAULT_COORDINATION_SETTINGS.trailingMinStep
             })(),
           })
         }
@@ -1460,7 +1447,7 @@ export function ConnectionSettingsDialog({
                       className="py-2"
                     />
                     <div className="flex justify-between text-[10px] text-muted-foreground">
-                      <span>{coordination.minStep} — include all Base windows</span><span className="text-muted-foreground/60">default {DEFAULT_BASE_MIN_STEP}</span><span>30 — only slow trailing</span>
+                      <span>{coordination.minStep} — include all Base windows</span><span className="text-muted-foreground/60">default {DEFAULT_TRAILING_MIN_STEP}</span><span>30 — only slow trailing</span>
                     </div>
                   </div>
 

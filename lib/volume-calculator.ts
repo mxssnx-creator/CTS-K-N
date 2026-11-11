@@ -331,6 +331,7 @@ export class VolumeCalculator {
     // the exchange API is unreachable or the connection has no real key.
     let balance = 10000
     let balanceIsFallback = true
+    let accountSnapshot: Record<string, unknown> = { equity: "", availableMargin: "", unrealizedProfit: "" }
     try {
       const cachedBalance = await getSettings(`connection_balance:${connectionId}`)
       const cachedNumeric = cachedBalance?.balance ? parseFloat(String(cachedBalance.balance)) : 0
@@ -391,6 +392,14 @@ export class VolumeCalculator {
             if (result?.success && result?.balance && result.balance > 0) {
               balance = result.balance
               balanceIsFallback = false
+              // Preserve account-wide venue values. They cannot be rebuilt
+              // from the smaller subset of positions owned by CTS.
+              accountSnapshot = {
+                equity: Number.isFinite(result.equity) ? result.equity : "",
+                availableMargin: Number.isFinite(result.availableMargin) ? result.availableMargin : "",
+                unrealizedProfit: Number.isFinite(result.unrealizedProfit) ? result.unrealizedProfit : "",
+                ...(result.settlementAsset ? { currency: result.settlementAsset } : {}),
+              }
             }
           } catch {
             // getBalance threw (e.g. 100421 timestamp error) — use the $10k default.
@@ -403,6 +412,8 @@ export class VolumeCalculator {
         // two minutes, long enough to cover a full 15-symbol cycle at 1 Hz.
         await setSettings(`connection_balance:${connectionId}`, {
           balance,
+          ...accountSnapshot,
+          timestamp: Date.now(),
           updated_at: new Date().toISOString(),
           is_fallback: balanceIsFallback,
         })

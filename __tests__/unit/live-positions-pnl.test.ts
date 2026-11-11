@@ -7,6 +7,11 @@ const mockInitRedis = jest.fn()
 const mockGetConnection = jest.fn()
 const mockKeys = jest.fn()
 const mockGet = jest.fn()
+const mockServeSerializedResponseSWR = jest.fn()
+
+jest.mock("@/lib/serialized-response-swr", () => ({
+  serveSerializedResponseSWR: (...args: unknown[]) => mockServeSerializedResponseSWR(...args),
+}))
 
 jest.mock("@/lib/trade-engine/stages/live-stage", () => ({
   getLivePositions: (...args: unknown[]) => mockGetLivePositions(...args),
@@ -41,6 +46,37 @@ describe("live positions PnL enrichment", () => {
     })
     mockGetConnection.mockResolvedValue({ is_live_trade: "1", live_trade_requested: "1" })
     mockKeys.mockResolvedValue([])
+  })
+
+  test("production caches keep summary, full lists and simulated inclusion independent", async () => {
+    const previous = process.env.NODE_ENV
+    ;(process.env as Record<string, string | undefined>).NODE_ENV = "production"
+    mockServeSerializedResponseSWR.mockResolvedValue(new Response("{}"))
+    try {
+      for (const suffix of ["", "&summaryOnly=1", "&includeSimulated=1", "&summaryOnly=1&includeSimulated=1"]) {
+        await GET(new Request(`http://localhost/api/trading/live-positions?connectionId=bingx-x02${suffix}`))
+      }
+      const keys = mockServeSerializedResponseSWR.mock.calls.map(call => call[0].key)
+      expect(new Set(keys).size).toBe(4)
+    } finally {
+      ;(process.env as Record<string, string | undefined>).NODE_ENV = previous
+    }
+  })
+
+  test("a failed database read is unavailable rather than a successful empty book", async () => {
+    mockInitRedis.mockRejectedValueOnce(new Error("Database unavailable"))
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x02"))
+    expect(response.status).toBe(503)
+    expect(await response.json()).toMatchObject({ success: false, error: "live_positions_unavailable", stats: null })
+  })
+
+  test("requests strict lifecycle reads and surfaces a lower-level snapshot failure", async () => {
+    mockGetLivePositions.mockRejectedValueOnce(new Error("Snapshot unavailable"))
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connection_id=bingx-x02"))
+    expect(mockGetLivePositions).toHaveBeenCalledWith("bingx-x02", { strict: true })
+    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("bingx-x02", 200, { strict: true })
+    expect(response.status).toBe(503)
+    expect((await response.json()).stats).toBeNull()
   })
 
   test("keeps unfilled live intents available for diagnostics without counting positions or outcomes", async () => {
@@ -124,6 +160,23 @@ describe("live positions PnL enrichment", () => {
     expect(row).not.toHaveProperty("accumulatedSetKeys")
     expect(row).not.toHaveProperty("partialOrderExecutions")
     expect(row.exchangeData).not.toHaveProperty("internalRecoveryPayload")
+  })
+
+  test("summary polling preserves simulated activity without sending the position lists repeatedly", async () => {
+    mockGetLivePositions.mockResolvedValue([
+      { id: "sim-open", symbol: "BCHUSDT", status: "simulated", executedQuantity: 1, averageExecutionPrice: 100, stopLossOrderId: "sim-stop" },
+      { id: "sim-pending", symbol: "XRPUSDT", executionMode: "simulation", status: "pending", executedQuantity: 0, quantity: 2 },
+    ])
+    const response = await GET(new Request("http://localhost/api/trading/live-positions?connectionId=bingx-x02&source=simulated&summaryOnly=1"))
+    const body = await response.json()
+    expect(body.simulatedBook.stats).toMatchObject({
+      open: 1, pendingEntries: 1, controlOrders: 1, valuationAvailable: false,
+    })
+    expect(body.positions).toEqual([])
+    expect(body.realPositions).toEqual([])
+    expect(body.simulatedPositions).toEqual([])
+    expect(body.simulatedBook.open).toEqual([])
+    expect(body.simulatedBook.closed).toEqual([])
   })
 
   test("preserves Signal-Trailing lane identity and dynamic profile in the compact view", async () => {
@@ -281,7 +334,7 @@ describe("live positions PnL enrichment", () => {
     ))
     const body = await response.json()
 
-    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("bingx-x01", 200)
+    expect(mockGetClosedLivePositions).toHaveBeenCalledWith("bingx-x01", 200, { strict: true })
     expect(body.positions.map((position: any) => position.id)).toEqual([
       "newer-closed",
       "transition",

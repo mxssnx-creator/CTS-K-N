@@ -28,19 +28,19 @@ describe("indication configuration counts", () => {
     const result = calculateIndicationConfigurationCounts({}, undefined)
 
     // Fresh installations start the exhaustive Base window at the configured
-    // default of 5 (then evaluate every integer through 30).
+    // default of 2 (then evaluate every integer through MAX_INDICATION_WINDOW).
     expect(defaultCommonTuples).toBe(2_427)
-    expect(result.totalPossibleSets).toBe(47_704)
-    expect(result.totalEvaluationConfigurations).toBe(16_132)
+    expect(result.totalPossibleSets).toBe(47_938)
+    expect(result.totalEvaluationConfigurations).toBe(16_249)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(result.settings.enabledCommonIndicators).toBe(129)
     expect(Object.fromEntries(result.types.map((type) => [type.type, type.possibleSets]))).toEqual({
-      direction: 1_590,
-      move: 1_590,
+      direction: 1_698,
+      move: 1_698,
       active: 9_774,
       active_advanced: 36,
       special: 520,
-      optimal: 264,
+      optimal: 282,
       auto: 0,
       signal: 15_228,
       trend: 102,

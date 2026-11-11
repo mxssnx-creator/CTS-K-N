@@ -24,12 +24,11 @@ import {
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
 import {
-  DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP,
-  MAX_BASE_STEP,
   MAX_VOLUME_FACTOR,
   MIN_VOLUME_FACTOR,
-  normalizeBaseMinStep,
 } from "@/lib/constants"
+import { resolveMinimumStepSettings } from "@/lib/minimum-step-settings"
+import { clampBlockVolumeRatio } from "@/lib/block-volume-ratio-bounds"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
 import { applyIncomingHistoricPrecedence, historicTestSettingsToHashFields, normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
@@ -294,12 +293,9 @@ function normalizeIdentityVolumeFactors<T extends Record<string, any>>(settings:
 
 function normalizeUnlimitedPipeline<T extends Record<string, any>>(settings: T): T {
   const mutable = settings as Record<string, any>
-  const minStep = normalizeBaseMinStep(mutable.minStep)
+  const { minStep, trailingMinStep } = resolveMinimumStepSettings(mutable)
   mutable.minStep = minStep
-  mutable.trailingMinStep = Math.max(
-    minStep,
-    Math.min(MAX_BASE_STEP, Math.round(Number(mutable.trailingMinStep) || DEFAULT_TRAILING_MIN_STEP)),
-  )
+  mutable.trailingMinStep = trailingMinStep
   mutable.strategyRealSetsSafetyCeiling = 0
   mutable.maxRealSets = 0
   mutable.strategyLiveSetsCeiling = 0
@@ -486,10 +482,8 @@ export async function GET(
     // Include defaults for newer coordination knobs so existing production
     // connections expose stable values before the first save after upgrade.
     const settings: Record<string, any> = normalizeUnlimitedPipeline({
-      minStep: DEFAULT_BASE_MIN_STEP,
       maxStopLossRatio: 2.5,
       minStopLossRatio: 0.25,
-      trailingMinStep: DEFAULT_TRAILING_MIN_STEP,
       ...jsonSettings,
       ...hashSettings,
     })
@@ -534,6 +528,7 @@ export async function GET(
     ))
     const coordinationSettings = {
       ...storedCoord,
+      ...resolveMinimumStepSettings(settings),
       axes: normalizeStrategyAxes(
         storedCoord.axes && typeof storedCoord.axes === "object" ? storedCoord.axes : undefined,
         settings,
@@ -578,11 +573,8 @@ export async function GET(
         settings.blockOnly,
         settings.variantBlockOnly,
       ), true),
-      blockVolumeRatio: asBoundedNumber(
+      blockVolumeRatio: clampBlockVolumeRatio(
         firstDefined(storedCoord.blockVolumeRatio, settings.blockVolumeRatio),
-        1.0,
-        0.25,
-        3.0,
       ),
       blockProfitFactorRatio: normalizeBlockProfitFactorRatio(
         firstDefined(

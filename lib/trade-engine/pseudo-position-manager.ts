@@ -1331,9 +1331,12 @@ export class PseudoPositionManager {
       const eligible = open.filter(
         (p) => now - new Date(p.opened_at || p.created_at || 0).getTime() >= minAgeMs,
       )
-      const excess = Math.max(0, eligible.length - cap)
+      // Young rows still occupy the cap. Roll eligible older rows first;
+      // excluding young rows from the total can leave an overfull book idle.
+      const excess = Math.min(eligible.length, Math.max(0, open.length - cap))
       if (excess <= 0) return { closed: 0, wins: 0, losses: 0 }
 
+      let closed = 0
       let wins = 0
       let losses = 0
       for (let i = 0; i < excess; i++) {
@@ -1361,10 +1364,11 @@ export class PseudoPositionManager {
           side,
           current_price: String(closePrice),
         }, closePrice)
+        closed++
         if (isWin) wins++
         else losses++
       }
-      return { closed: excess, wins, losses }
+      return { closed, wins, losses }
     } catch (e) {
       console.warn(`[v0] enforceSimBoundedLifecycle failed for ${symbol}:`, e)
       return { closed: 0, wins: 0, losses: 0 }

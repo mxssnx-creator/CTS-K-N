@@ -126,11 +126,8 @@ import {
   getRuntimeCapabilityConcurrency,
   getRuntimeConcurrencyProfile,
 } from "@/lib/runtime-concurrency-profile"
-import {
-  DEFAULT_TRAILING_MIN_STEP,
-  MAX_BASE_STEP,
-  MIN_BASE_STEP,
-} from "@/lib/constants"
+import { resolveMinimumStepSettings } from "@/lib/minimum-step-settings"
+import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import {
   countOpenMainBreakdown,
   mainSetHasOpenLineage,
@@ -4438,19 +4435,9 @@ export class StrategyCoordinator {
       // Progress Sets view and live control-order SL anchoring on the exact
       // range matrix the operator just saved.
       const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
-      let trailingMinStep = DEFAULT_TRAILING_MIN_STEP
-      // Unset means the trailing default (8), not the base step (5).
-      const rawMin = Number(
-        settings.trailingMinStep ??
-        settings.trailing_min_step ??
-        DEFAULT_TRAILING_MIN_STEP,
+      const { trailingMinStep } = resolveMinimumStepSettings(
+        mergeConnectionSettings(appSettings, connSettings),
       )
-      if (Number.isFinite(rawMin)) {
-        trailingMinStep = Math.min(
-          MAX_BASE_STEP,
-          Math.max(MIN_BASE_STEP, Math.round(rawMin)),
-        )
-      }
       // Redis hashes store booleans as strings: "false" must disable too.
       const enabledMaster = resolveTrailingSwitch(settings, true)
       if (!enabledMaster) {

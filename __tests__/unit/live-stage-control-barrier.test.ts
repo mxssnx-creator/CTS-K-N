@@ -199,6 +199,44 @@ describe("executing Live-stage control barriers", () => {
     expect(exchange.getOrderDetails).not.toHaveBeenCalled()
   })
 
+  test("recovers BingX's lowercase echo of an older mixed-case protection client ID", async () => {
+    const getOrderDetails = jest.fn(async () => ({
+      orderId: "accepted-protection", clientOrderID: "ktourhashmslbtcusd123", status: "open",
+    }))
+    const exchange = connector({ exchange: "bingx", getOrderDetails })
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange, symbol: "BTCUSDT", clientOrderId: "ktOurHashmSLBTCUSD123",
+      placementPromise: Promise.resolve({ success: false, error: "socket reset" }),
+      initialError: "socket reset", graceMs: 1,
+    })).resolves.toMatchObject({ orderId: "accepted-protection", recoveredFromAmbiguousWrite: "client_order_id" })
+    expect(getOrderDetails).toHaveBeenCalledWith("BTCUSDT", undefined, "ktourhashmslbtcusd123")
+  })
+
+  test("case folding cannot adopt a different order on a case-sensitive exchange", async () => {
+    const exchange = connector({
+      exchange: "bybit",
+      getOrderDetails: jest.fn(async () => ({ orderId: "other-order", clientOrderId: "casesensitiveid", status: "open" })),
+      getOpenOrder: jest.fn(async () => null), getOpenOrders: jest.fn(async () => []),
+    })
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange, symbol: "BTCUSDT", clientOrderId: "CaseSensitiveId",
+      placementPromise: Promise.resolve({ success: false, error: "socket reset" }),
+      initialError: "socket reset", graceMs: 1,
+    })).resolves.toBeNull()
+  })
+
+  test("BingX open-order fallback matches the same canonical client ID", async () => {
+    const exchange = connector({
+      exchange: "bingx", getOrderDetails: jest.fn(async () => null), getOpenOrder: jest.fn(async () => null),
+      getOpenOrders: jest.fn(async () => [{ orderId: "accepted-open-protection", clientOrderID: "ktourhashmslbtcusd123", status: "open" }]),
+    })
+    await expect(__liveStageTest.reconcileAmbiguousProtectionWrite({
+      connector: exchange, symbol: "BTCUSDT", clientOrderId: "ktOurHashmSLBTCUSD123",
+      placementPromise: Promise.resolve({ success: false, error: "socket reset" }),
+      initialError: "socket reset", graceMs: 1,
+    })).resolves.toMatchObject({ orderId: "accepted-open-protection" })
+  })
+
   test("selects side-aware authoritative venue ticker prices", () => {
     const ticker = __liveStageTest.normalizeVenueTicker({
       bidPrice: "0.0099",

@@ -1,0 +1,75 @@
+{
+  "sourceBase": "47a57d2662eff26720d7067287641fc952353b47",
+  "branch": "codex/x02-stats-minimum-steps-20261111",
+  "defaults": {
+    "minStep": 2,
+    "trailingMinStep": 3,
+    "explicitSavedOverridesPreserved": true
+  },
+  "unit": {
+    "suites": 553,
+    "tests": 3655,
+    "failed": 0,
+    "nativeRedis": true,
+    "externalNetworkBlocked": true,
+    "scope": "before strict-read/account-cache follow-up; final rerun pending"
+  },
+  "typecheck": "passed",
+  "changedFileLint": "passed",
+  "initialProductionBuild": {
+    "passed": true,
+    "completeTraces": 356,
+    "scope": "Before final acknowledgement/body fixes"
+  },
+  "finalProductionBuild": "investigating silent compile exit; final rebuild pending",
+  "browserApiVerification": "pending",
+  "x02": {
+    "environment": "prod-vst",
+    "targetSymbols": 30,
+    "quoteCandidates": 40,
+    "positionNotionalCapUsd": 25,
+    "minimumVenueVolume": true,
+    "durationPolicy": "minimum",
+    "requestedMinimumDurationMs": 1800000,
+    "completedCyclesAtCheckpoint": 7,
+    "status": "first complete pass stopped on transient position-read timeout; cleaned and restarting",
+    "finalCleanup": "first pass cleanup complete; fresh authenticated baseline 0 positions/0 orders",
+    "baselinePositions": 0,
+    "baselineOrders": 0,
+    "earlierFailedProbeManuallyReconciled": true,
+    "attemptedCycles": 8,
+    "snapshotRetry": "read-only timeout retries, bounded 60-second lifecycle, no mutation replay"
+  },
+  "performance": {
+    "entryBudgetMs": 300,
+    "protectionBudgetMs": 1000,
+    "recordingVenueAssertions": "passed",
+    "baselineJestConsoleOverheadMs": 538.591789,
+    "measurement": "Production removes console.log. Benchmark suppresses Jest source-map console formatting; thresholds unchanged."
+  },
+  "limitations": [
+    "Technical lifecycle fixtures do not establish market-strategy profitability.",
+    "No new independent 14-day holdout or globally optimal PF/drawdown configuration is claimed.",
+    "Legacy paper valuation remains explicitly unavailable by default.",
+    "Managed remote-access helper absent; no server deployment or X01/Bybit/mainnet orders."
+  ],
+  "integration": {
+    "suites": 6,
+    "tests": 86,
+    "failed": 0,
+    "nativeRedis": true,
+    "externalNetworkBlocked": true
+  },
+  "fullLint": "passed",
+  "releaseSecretScan": {
+    "files": 2191,
+    "findings": 0
+  },
+  "focusedFollowUp": {
+    "suites": 12,
+    "tests": 366,
+    "failed": 0,
+    "nativeRedis": true,
+    "externalNetworkBlocked": true
+  }
+}

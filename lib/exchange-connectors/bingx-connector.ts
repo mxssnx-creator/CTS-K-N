@@ -23,6 +23,7 @@ import {
 import { resolveAuthoritativeTradeDirection } from "@/lib/trade-direction"
 import { ErrorHandler, ErrorCode } from "@/lib/error-handling"
 import { logRuntimeInfo } from "@/lib/runtime-log-throttle"
+import { withTimeout } from "@/lib/async-safety"
 
 /**
  * BingX Exchange Connector
@@ -62,6 +63,8 @@ type BingXSnapshotResult = {
 }
 
 export class BingXConnector extends BaseExchangeConnector {
+  // Stable provider identity survives production class-name minification.
+  readonly exchange = "bingx"
   private static swapMarkets = new Map<string, { symbols: Set<string>; expiresAt: number }>()
   private static swapMarketsInFlight = new Map<string, Promise<Set<string>>>()
   private static invalidTickerSymbols = new Map<string, number>()
@@ -845,7 +848,34 @@ export class BingXConnector extends BaseExchangeConnector {
    * numbers for ergonomic arithmetic at call sites.
    */
   private async safeJson(response: Response): Promise<any> {
-    const text = await response.text()
+    // Fetch can resolve at the headers while its body is still stalled. The
+    // transport slot deadline has ended by then, so bound the complete body
+    // separately and cancel its reader on failure instead of hanging a quote
+    // worker or treating an incomplete account response as an empty book.
+    const deadline = Date.now() + this.timeout
+    const reader = response.body?.getReader()
+    let text = ""
+    if (reader) {
+      const decoder = new TextDecoder()
+      try {
+        while (true) {
+          const remaining = deadline - Date.now()
+          if (remaining <= 0) throw new Error("BingX response body deadline exceeded")
+          const chunk = await withTimeout(reader.read(), remaining, "BingX response body")
+          if (chunk.done) break
+          text += decoder.decode(chunk.value, { stream: true })
+        }
+        text += decoder.decode()
+      } catch (error) {
+        void reader.cancel(error).catch(() => undefined)
+        throw error
+      } finally {
+        reader.releaseLock()
+      }
+    } else {
+      // Minimal response adapters used by the SDK/tests may expose text only.
+      text = await withTimeout(response.text(), this.timeout, "BingX response body")
+    }
     if (!text) return {}
     // (?<="orderId":\s*) lookbehind then a bare numeric (one or more
     // digits, possibly negative) → wrap in quotes. `g` so every
@@ -932,8 +962,11 @@ export class BingXConnector extends BaseExchangeConnector {
           }))
           const usdtBalance = balances.find((asset) => asset.asset === "USDT")?.total ?? 0
           const settlement = rows.find((asset: any) => String(asset.asset).toUpperCase() === "USDT")
+          if (!settlement) throw new Error("Library settlement balance was not present")
           const accountEquity = settlement?.equity == null || settlement.equity === ""
             ? Number.NaN : Number(settlement.equity)
+          const rawAvailable = settlement.availableMargin ?? settlement.free
+          const availableMargin = rawAvailable == null || rawAvailable === "" ? Number.NaN : Number(rawAvailable)
           const sdkPositive = Math.max(
             usdtBalance,
             Number.isFinite(accountEquity) ? accountEquity : 0,
@@ -943,11 +976,13 @@ export class BingXConnector extends BaseExchangeConnector {
             throw new Error("Library balance was zero; falling back to REST")
           }
           this.sdkLastError = ""
-          this.appendLog(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${sdkPositive.toFixed(4)} USDT`)
+          this.appendLog(`[${new Date().toISOString()}] ✓ Account balance via bingx-api: ${usdtBalance.toFixed(4)} USDT`)
           return {
             success: true,
-            balance: sdkPositive,
+            balance: usdtBalance,
             ...(Number.isFinite(accountEquity) ? { equity: accountEquity } : {}),
+            ...(Number.isFinite(availableMargin) ? { availableMargin } : {}),
+            settlementAsset: "USDT",
             balances,
             capabilities: this.getCapabilities(),
             logs: this.logs,
@@ -1112,14 +1147,18 @@ export class BingXConnector extends BaseExchangeConnector {
       const usdtBalance = Number.parseFloat(settlementEntry.balance || settlementEntry.walletBalance || "0") || 0
       const parsedEquity = settlementEntry.equity == null || settlementEntry.equity === ""
         ? Number.NaN : Number(settlementEntry.equity)
-      const availableMargin = Number.parseFloat(settlementEntry.availableMargin || settlementEntry.free || "0") || 0
+      const rawAvailable = settlementEntry.availableMargin ?? settlementEntry.free
+      const availableMargin = rawAvailable == null || rawAvailable === "" ? Number.NaN : Number(rawAvailable)
+      const rawUnrealized = settlementEntry.unrealizedProfit ?? settlementEntry.unrealizedPnl ?? settlementEntry.unrealizedPNL
       const unrealizedProfit = Number.parseFloat(
         settlementEntry.unrealizedProfit
         || settlementEntry.unrealizedPnl
         || settlementEntry.unrealizedPNL
         || "0",
       ) || 0
-      const equity = Number.isFinite(parsedEquity) ? parsedEquity : usdtBalance + unrealizedProfit
+      const equity = Number.isFinite(parsedEquity) ? parsedEquity
+        : rawUnrealized != null && rawUnrealized !== "" && Number.isFinite(Number(rawUnrealized))
+          ? usdtBalance + Number(rawUnrealized) : Number.NaN
 
       // Get BTC price from market data (for display only — silent failure OK)
       let btcPrice = 0
@@ -1174,8 +1213,8 @@ export class BingXConnector extends BaseExchangeConnector {
       return {
         success: true,
         balance: usdtBalance,
-        equity,
-        availableMargin,
+        ...(Number.isFinite(equity) ? { equity } : {}),
+        ...(Number.isFinite(availableMargin) ? { availableMargin } : {}),
         unrealizedProfit,
         settlementAsset,
         btcPrice: btcPrice,
