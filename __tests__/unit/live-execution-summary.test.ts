@@ -4,8 +4,8 @@ const mockGetExchange = jest.fn()
 const mockGetLifetime = jest.fn()
 
 jest.mock("@/lib/live-position-read-model", () => ({
-  getOpenLivePositionReadModels: (...args: unknown[]) => mockGetOpen(...args),
-  getClosedLivePositionReadModels: (...args: unknown[]) => mockGetClosed(...args),
+  getOpenLivePositionReadModelsStrict: (...args: unknown[]) => mockGetOpen(...args),
+  getClosedLivePositionReadModelsStrict: (...args: unknown[]) => mockGetClosed(...args),
   LIVE_POSITION_OPEN_READ_LIMIT: 2000,
   LIVE_POSITION_CLOSED_READ_LIMIT: 1000,
 }))
@@ -25,6 +25,14 @@ const {
 } = require("@/lib/live-execution-summary")
 
 describe("live execution summary", () => {
+  test("keeps pending paper intents in the independent book without counting an executed position", async () => {
+    mockGetOpen.mockResolvedValue([{ id: "paper-pending", status: "pending", executionMode: "simulation", executedQuantity: 0, quantity: 2 }])
+    const summary = await getLiveExecutionSummary("paper-pending-fixture")
+    expect(summary.books.simulated).toMatchObject({ open: 0, closed: 0, pendingEntries: 1 })
+    expect(summary.totalPositions).toBe(0)
+    expect(mockGetOpen).toHaveBeenCalledWith("paper-pending-fixture", 2000, { includeKnownNonResults: true })
+  })
+
   beforeEach(() => {
     jest.clearAllMocks()
     clearLiveExecutionSummaryCache()
@@ -204,8 +212,8 @@ describe("live execution summary", () => {
 
     const summary = await getLiveExecutionSummary("bingx-real")
 
-    expect(mockGetOpen).toHaveBeenCalledWith("bingx-real", 2000)
-    expect(mockGetClosed).toHaveBeenCalledWith("bingx-real", 1000)
+    expect(mockGetOpen).toHaveBeenCalledWith("bingx-real", 2000, { includeKnownNonResults: true })
+    expect(mockGetClosed).toHaveBeenCalledWith("bingx-real", 1000, { includeKnownNonResults: true })
     expect(summary.totalPositions).toBe(6)
     expect(summary.openPositions).toBe(1)
     expect(summary.openSymbols).toBe(1)

@@ -421,7 +421,7 @@ export default function LiveTradingPage() {
               </div>
             ) : (
               <>
-                <LiveOverviewCompact account={account} positions={realPositions} analytics={historyResponse?.analytics || null} />
+                <LiveOverviewCompact account={account} positions={realPositions} positionsAvailable={positionResponse !== null} analytics={historyResponse?.analytics || null} />
                 <LivePositionTable
                   positions={realPositions}
                   busyId={busyId}

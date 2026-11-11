@@ -370,10 +370,10 @@ async function buildLivePositionsResponse(request: Request) {
     const client = getRedisClient()
 
     const [open, closed, connection, lifetimeSummary] = await Promise.all([
-      getLivePositions(connectionId),
-      getClosedLivePositions(connectionId, closedLimit),
+      getLivePositions(connectionId, { strict: true }),
+      getClosedLivePositions(connectionId, closedLimit, { strict: true }),
       getConnection(connectionId).catch(() => null),
-      readLivePositionLifetimeSummary(client, connectionId),
+      readLivePositionLifetimeSummary(client, connectionId, { strict: true }),
     ])
 
     // Fallback: also read positions stored under alternate key patterns.
@@ -383,8 +383,8 @@ async function buildLivePositionsResponse(request: Request) {
     const altPositions: any[] = []
     const seenIds = new Set<string>([...open.map((p) => p.id!).filter(Boolean), ...closed.map((p) => p.id!).filter(Boolean)])
     for (const key of altKeys) {
+      const raw = await client.get(key)
       try {
-        const raw = await client.get(key)
         if (raw) {
           const p = JSON.parse(raw)
           if (!seenIds.has(p.id)) {
@@ -447,7 +447,8 @@ async function buildLivePositionsResponse(request: Request) {
     // simulatedPositions, simulatedBook.open/closed, 3.5 MB each) next to 10 real positions: 10.3 MB.
     // They stay out unless asked for (includeSimulated=1) or requested as the source (source=simulated).
     const includeSimulated = searchParams.get("includeSimulated") === "1" || sourceFilter === "simulated"
-    const positionViews = all.map(toLivePositionView)
+    const summaryOnly = searchParams.get("summaryOnly") === "1"
+    const positionViews = summaryOnly ? [] : all.map(toLivePositionView)
     const viewsById = new Map(positionViews.map((position) => [String(position.id), position]))
     const viewFor = (position: any) => viewsById.get(String(position.id)) || toLivePositionView(position)
 
@@ -466,15 +467,15 @@ async function buildLivePositionsResponse(request: Request) {
     return NextResponse.json({
       connectionId,
       sourceFilter,
-      positions: (includeSimulated ? filtered : filtered.filter((p) => p.dataSource !== "simulated")).map(viewFor),
-      realPositions: realPositions.map(viewFor),
-      simulatedPositions: includeSimulated ? simulatedPositions.map(viewFor) : [],
+      positions: summaryOnly ? [] : (includeSimulated ? filtered : filtered.filter((p) => p.dataSource !== "simulated")).map(viewFor),
+      realPositions: summaryOnly ? [] : realPositions.map(viewFor),
+      simulatedPositions: includeSimulated && !summaryOnly ? simulatedPositions.map(viewFor) : [],
       // Independent simulated book: counters and lists come from one
       // classifier so the UI can never show "0 open" beside open rows.
       simulatedBook: {
         stats: simulatedBookForDisplay(computePositionBookStats(simulatedPositions)),
-        open: includeSimulated ? simulatedPositions.filter((p) => positionBookRowState(p) === "open").map(viewFor) : [],
-        closed: includeSimulated ? simulatedPositions.filter((p) => positionBookRowState(p) === "closed").map(viewFor) : [],
+        open: includeSimulated && !summaryOnly ? simulatedPositions.filter((p) => positionBookRowState(p) === "open").map(viewFor) : [],
+        closed: includeSimulated && !summaryOnly ? simulatedPositions.filter((p) => positionBookRowState(p) === "closed").map(viewFor) : [],
       },
       counts: {
         total: all.length,
@@ -553,7 +554,9 @@ async function buildLivePositionsResponse(request: Request) {
       simulatedPositions: [],
       counts: { total: 0, real: 0, simulated: 0 },
       stats: null,
-    })
+      success: false,
+      error: "live_positions_unavailable",
+    }, { status: 503 })
   }
 }
 
@@ -572,9 +575,11 @@ export async function GET(request: Request) {
   const closedLimit = closedLimitOf(url.searchParams.get("closedLimit"))
   const status = url.searchParams.get("status") || "all"
   const source = (url.searchParams.get("source") || "all").toLowerCase()
+  const includeSimulated = url.searchParams.get("includeSimulated") === "1"
+  const summaryOnly = url.searchParams.get("summaryOnly") === "1"
   return serveSerializedResponseSWR({
     namespace: "live-positions",
-    key: `${connectionId}|${closedLimit}|${status}|${source}`,
+    key: JSON.stringify([connectionId, closedLimit, status, source, includeSimulated, summaryOnly]),
     freshMs: 2_000,
     maxStaleMs: 15_000,
     serveExpiredImmediately: true,

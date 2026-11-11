@@ -6,18 +6,21 @@ import { strategyIndicationConfigurationIdentity, withoutVolatileIndicationConfi
 
 const src = (p: string) => readFileSync(resolve(process.cwd(), p), "utf8")
 
-describe("Min Trailing Step defaults to 8, independent of the base step", () => {
+describe("operator minimum steps: Base 2 and trailing 3", () => {
   test("the constants", () => {
-    expect(DEFAULT_TRAILING_MIN_STEP).toBe(8)
-    expect(DEFAULT_BASE_MIN_STEP).toBe(5) // minStep / indicationRangeMin are unchanged
+    expect(DEFAULT_TRAILING_MIN_STEP).toBe(3)
+    expect(DEFAULT_BASE_MIN_STEP).toBe(2)
   })
   test("every trailingMinStep default uses it, and the base-step users do not", () => {
-    for (const f of ["components/settings/utils.ts", "components/settings/strategy-coordination-section.tsx", "app/api/settings/connections/[id]/settings/route.ts", "lib/strategy-coordinator.ts", "lib/redis-migrations.ts"]) {
+    for (const f of ["components/settings/utils.ts", "components/settings/strategy-coordination-section.tsx", "lib/redis-migrations.ts", "lib/trailing-settings.ts"]) {
       const text = src(f)
       expect(text).not.toMatch(/trailingMinStep\s*[:=]\s*(String\()?DEFAULT_BASE_MIN_STEP/)
       expect(text).toContain("DEFAULT_TRAILING_MIN_STEP")
     }
     expect(src("components/settings/utils.ts")).toMatch(/minStep:\s*DEFAULT_BASE_MIN_STEP/)
+    for (const f of ["app/api/settings/connections/[id]/settings/route.ts", "lib/strategy-coordinator.ts", "components/settings/connection-settings-dialog.tsx"]) {
+      expect(src(f)).toContain("resolveMinimumStepSettings")
+    }
   })
 })
 

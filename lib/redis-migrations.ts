@@ -1661,9 +1661,9 @@ const migrations: Migration[] = [
         await client.hset("settings:system", sysWrites028)
       }
 
-      // ── 2. Seed minStep default (5) for all connections ──────────────────
+      // ── 2. Seed the current minStep default for connections missing it ───
       //
-      // minStep (range 2-30, default 5) was added to the per-connection
+      // minStep (range 2-30) was added to the per-connection
       // strategy settings in the same session as this migration. Backfill
       // the default into connection_settings:{id} for every existing
       // connection so the engine reads the correct floor immediately without
@@ -1696,14 +1696,14 @@ const migrations: Migration[] = [
           | null
         const have028 = existing028 || {}
         if (!have028["minStep"]) {
-          await client.hset(settingsKey, { minStep: "5" })
+          await client.hset(settingsKey, { minStep: String(DEFAULT_BASE_MIN_STEP) })
           seeded028++
         }
       }
 
       console.log(
         `[v0] Migration 028: pinned live_sync_interval_ms=200 in settings:system; ` +
-        `seeded minStep=5 into ${seeded028}/${connKeys028.length} connection_settings hashes`,
+        `seeded minStep=${DEFAULT_BASE_MIN_STEP} into ${seeded028}/${connKeys028.length} connection_settings hashes`,
       )
     },
     down: async (client: any) => {
@@ -2155,7 +2155,7 @@ const migrations: Migration[] = [
         mainEvalPosCount:     "3",
         realEvalPosCount:     "3",
         // Entry step
-        minStep:              "5",
+        minStep:              String(DEFAULT_BASE_MIN_STEP),
         updated_at:           now,
       }).catch(() => {})
 
@@ -2536,7 +2536,7 @@ const migrations: Migration[] = [
         blockActiveLiveEnabled: "true",
         mainEvalPosCount:       "3",
         realEvalPosCount:       "3",
-        minStep:                "5",
+        minStep:                String(DEFAULT_BASE_MIN_STEP),
         updated_at:             now,
       }).catch(() => {})
 

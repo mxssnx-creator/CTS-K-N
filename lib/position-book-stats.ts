@@ -25,6 +25,13 @@ export interface PositionBookBucket {
 }
 
 export interface PositionBookStats {
+  /** False when the book could not be read; zero counts must not be inferred. */
+  dataAvailable?: boolean
+  /** False means financial fields are suppressed, not measured zeroes. */
+  valuationAvailable?: boolean
+  pendingEntries?: number
+  /** Distinct tracked control-order references, not venue-wide order totals. */
+  controlOrders?: number
   total: number
   open: number
   closed: number
@@ -145,6 +152,10 @@ export function emptyPositionBookStats(): PositionBookStats {
   return computePositionBookStats([])
 }
 
+export function unavailablePositionBookStats(): PositionBookStats {
+  return { ...emptyPositionBookStats(), dataAvailable: false, valuationAvailable: false }
+}
+
 /** Aggregate one book. Callers must pass rows of a single source only. */
 export function computePositionBookStats(positions: Row[]): PositionBookStats {
   const bySymbol: Record<string, PositionBookBucket> = {}
@@ -166,6 +177,8 @@ export function computePositionBookStats(positions: Row[]): PositionBookStats {
   let openNotionalUsd = 0
   let largestWin = 0
   let largestLoss = 0
+  let pendingEntries = 0
+  const controlOrderIds = new Set<string>()
 
   for (const position of Array.isArray(positions) ? positions : []) {
     if (!position || typeof position !== "object") continue
@@ -204,6 +217,10 @@ export function computePositionBookStats(positions: Row[]): PositionBookStats {
       }
     } else if (isOpenRow(position)) {
       open++
+      for (const value of [position.stopLossOrderId, position.takeProfitOrderId, position.securityStopOrderId]) {
+        const id = String(value || "").trim()
+        if (id) controlOrderIds.add(`${position.connectionId ?? position.connection_id ?? ""}:${id}`)
+      }
       openSymbols.add(symbol)
       bucket(bySymbol, symbol).open++
       bucket(byStrategy, strategy).open++
@@ -214,6 +231,8 @@ export function computePositionBookStats(positions: Row[]): PositionBookStats {
         const notional = resolvePositionNotionalUsd(position, qty, entry)
         if (Number.isFinite(notional)) openNotionalUsd += Math.abs(notional)
       }
+    } else if (isLiveOpenStatus(position.status)) {
+      pendingEntries++
     }
   }
 
@@ -235,6 +254,10 @@ export function computePositionBookStats(positions: Row[]): PositionBookStats {
     return map
   }
   return {
+    dataAvailable: true,
+    valuationAvailable: true,
+    pendingEntries,
+    controlOrders: controlOrderIds.size,
     total: open + closed,
     open,
     closed,
@@ -288,6 +311,7 @@ export function mergePositionBookStats(
     (book): book is PositionBookStats => Boolean(book && typeof book === "object"),
   )
   const out = emptyPositionBookStats()
+  out.dataAvailable = books.every(book => book.dataAvailable !== false)
   const addMap = (target: Record<string, PositionBookBucket>, src: Record<string, PositionBookBucket>) => {
     for (const [k, b] of Object.entries(src)) {
       const t = bucket(target, k)
@@ -297,6 +321,8 @@ export function mergePositionBookStats(
   }
   let symbolsUpper = 0
   for (const b of books) {
+    out.pendingEntries = (out.pendingEntries || 0) + (b.pendingEntries || 0)
+    out.controlOrders = (out.controlOrders || 0) + (b.controlOrders || 0)
     out.open += b.open; out.closed += b.closed; out.settledClosed += b.settledClosed
     out.accountingPending += b.accountingPending
     out.wins += b.wins; out.losses += b.losses; out.breakEven += b.breakEven
@@ -323,7 +349,7 @@ export function mergePositionBookStats(
   out.profitFactorUnbounded = out.grossLoss === 0 && out.grossProfit > 0
   out.avgWin = out.wins > 0 ? round(out.grossProfit / out.wins) : 0
   out.avgLoss = out.losses > 0 ? round(-out.grossLoss / out.losses) : 0
-  return out
+  return out.dataAvailable === false || books.some(book => book.valuationAvailable === false) ? withoutBookValuation(out) : out
 }
 
 /**
@@ -339,14 +365,26 @@ export function simulatedBookValuationEnabled(env: Record<string, string | undef
 }
 
 export function withoutBookValuation(book: PositionBookStats): PositionBookStats {
+  const countsOnly = (buckets: Record<string, PositionBookBucket>) => Object.fromEntries(
+    Object.entries(buckets).map(([key, value]) => [key, {
+      ...emptyBucket(), open: value.open, closed: value.closed,
+    }]),
+  )
   return {
     ...emptyPositionBookStats(),
+    dataAvailable: book.dataAvailable,
+    valuationAvailable: false,
+    pendingEntries: book.pendingEntries,
+    controlOrders: book.controlOrders,
     total: book.total,
     open: book.open,
     closed: book.closed,
     settledClosed: 0,
     accountingPending: 0,
     openSymbols: book.openSymbols,
+    bySymbol: countsOnly(book.bySymbol),
+    byStrategy: countsOnly(book.byStrategy),
+    byHour: countsOnly(book.byHour),
   }
 }
 

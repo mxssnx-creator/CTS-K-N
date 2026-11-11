@@ -49,6 +49,33 @@ describe("bounded simulation lifecycle", () => {
     expect(source("lib/trade-engine/pseudo-position-manager.ts"))
       .toContain("const currentPrice = Number(exitPrice) > 0 ? Number(exitPrice) : parseFloat(position.current_price || \"0\")")
   })
+
+  test("young rows occupy the cap while only old eligible rows are rolled", async () => {
+    process.env.FORCE_SIMULATED = "1"
+    process.env.FORCE_LIVE = "0"
+    const manager = new PseudoPositionManager("forced-aged-sim")
+    const old = { id: "old", opened_at: new Date(Date.now() - 60_000).toISOString(), entry_price: "100", side: "long" }
+    ;(manager as any).listPositions = jest.fn(async () => [old, { ...old, id: "young", opened_at: new Date().toISOString() }])
+    const close = jest.fn(async () => undefined)
+    ;(manager as any).closePosition = close
+    await expect(manager.enforceSimBoundedLifecycle("BTCUSDT", { maxOpenPerSymbol: 1, minAgeMs: 30_000 }))
+      .resolves.toMatchObject({ closed: 1 })
+    expect(close).toHaveBeenCalledWith("old", expect.any(String), expect.anything(), expect.any(Number))
+  })
+
+  test("invalid direction is skipped without reporting an unexecuted close", async () => {
+    process.env.FORCE_SIMULATED = "1"
+    process.env.FORCE_LIVE = "0"
+    const manager = new PseudoPositionManager("invalid-direction-sim")
+    ;(manager as any).listPositions = jest.fn(async () => [
+      { id: "invalid", opened_at: "2026-01-01T00:00:00Z", entry_price: "100", side: "long", direction: "short" },
+    ])
+    const close = jest.fn(async () => undefined)
+    ;(manager as any).closePosition = close
+    await expect(manager.enforceSimBoundedLifecycle("BTCUSDT", { maxOpenPerSymbol: 0 }))
+      .resolves.toEqual({ closed: 0, wins: 0, losses: 0 })
+    expect(close).not.toHaveBeenCalled()
+  })
 })
 
 describe("adaptive Trend take profit", () => {
