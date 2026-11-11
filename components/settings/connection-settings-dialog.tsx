@@ -421,6 +421,7 @@ export function ConnectionSettingsDialog({
         coordination_settings: coordination,
         historic_test_settings: historicTest,
         normalEnabled:        coordination.normalEnabled,
+        strategyProcessingByRange: coordination.processingByRange ?? {},
         axisEnabled:          coordination.axisEnabled,
         prevPosMinCount:      coordination.prevPosMinCount,
         mainEvalPosCount:     coordination.mainEvalPosCount,
@@ -684,6 +685,7 @@ export function ConnectionSettingsDialog({
               : typeof (settings as Record<string, unknown>).blockRowRealEvalPosCount === "number"
                 ? Number((settings as Record<string, unknown>).blockRowRealEvalPosCount)
                 : DEFAULT_COORDINATION_SETTINGS.blockRowRealEvalPosCount,
+            processingByRange: coord.processingByRange ?? (settings as any).strategyProcessingByRange ?? {},
             normalEnabled: typeof coord.normalEnabled === "boolean"
               ? coord.normalEnabled
               : typeof (settings as Record<string, unknown>).normalEnabled === "boolean"
@@ -851,6 +853,7 @@ export function ConnectionSettingsDialog({
         coordinationSettings:  coordination, // legacy alias
         historic_test_settings: historicTest,
         normalEnabled: coordination.normalEnabled,
+        strategyProcessingByRange: coordination.processingByRange ?? {},
         axisEnabled: coordination.axisEnabled,
         // Persist both indication channels in the same ordered transaction as
         // the rest of the dialog. This produces one coherent hot reload and

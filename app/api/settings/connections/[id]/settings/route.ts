@@ -1,3 +1,5 @@
+import {relationalVolumeSettings} from "@/shared/cts-volume/ratios.ts";
+import { normalizeStrategyProcessingByRange } from "@/lib/strategy-execution-policy"
 import { clampStageProfitFactorPatch, MAIN_TRADE_PF_RATIO_MAX } from "@/lib/main-trade-profit-factor"
 import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 import { type NextRequest, NextResponse } from "next/server"
@@ -207,9 +209,12 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "block_volume_step_ratio",
   "overallControlOrdersOnly", "overall_control_orders_only",
   "control_orders",
+  "trailingEnabled",
   "variantTrailingEnabled",
   "variantBlockEnabled",
   "normalEnabled",
+  "relationalVolumeRatios",
+  "strategyProcessingByRange",
   "blockOnlyEnabled",
   "variantDcaEnabled",
   "axisPrevEnabled",
@@ -541,6 +546,7 @@ export async function GET(
       variants: {
         ...storedVariants,
         trailing: asBoolean(firstDefined(
+          settings.trailingEnabled,
           storedVariants.trailing,
           settings.strategyBaseTrailingEnabled,
           settings.variantTrailingEnabled,
@@ -562,6 +568,7 @@ export async function GET(
       },
       // Canonical main execution-family switch. Retired exclusive-family
       // values are not fallbacks and cannot control dispatch.
+      processingByRange: normalizeStrategyProcessingByRange(settings.strategyProcessingByRange ?? storedCoord.processingByRange),
       normalEnabled: asBoolean(firstDefined(
         storedCoord.normalEnabled,
         storedCoord.normal_enabled,
@@ -1202,6 +1209,8 @@ export async function PATCH(
     }
 
     const flatKnobs: Record<string, string> = {}
+    if(settings.relationalVolumeRatios!==undefined)flatKnobs.relationalVolumeRatios=JSON.stringify(relationalVolumeSettings(settings.relationalVolumeRatios,true))
+    if (settings.strategyProcessingByRange !== undefined) flatKnobs.strategyProcessingByRange = JSON.stringify(normalizeStrategyProcessingByRange(settings.strategyProcessingByRange))
     const knobKeys = [
       "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
       "minStep", "maxStopLossRatio", "minStopLossRatio", "portfolioRiskBudgetPercent", "trailingMinStep", "posCountsVolumeRatio",
@@ -1276,6 +1285,7 @@ export async function PATCH(
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
       if (typeof coord.blockRowLiveEnabled === "boolean") flatKnobs.blockRowLiveEnabled = String(coord.blockRowLiveEnabled)
+      flatKnobs.strategyProcessingByRange = JSON.stringify(normalizeStrategyProcessingByRange(settings.strategyProcessingByRange ?? coord.processingByRange ?? merged.strategyProcessingByRange))
       if (typeof coord.normalEnabled === "boolean") flatKnobs.normalEnabled = String(coord.normalEnabled)
       if (typeof coord.blockOnlyEnabled === "boolean") flatKnobs.blockOnlyEnabled = String(coord.blockOnlyEnabled)
       const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)
@@ -1308,10 +1318,11 @@ export async function PATCH(
       )
       flatKnobs.strategyBaseTrailingVariants = JSON.stringify(normalizedTrailing)
       const trailingEnabled = parseStoredBoolean(
-        (coord.variants as Record<string, unknown> | undefined)?.trailing ?? merged.strategyBaseTrailingEnabled,
+        settings.trailingEnabled ?? (coord.variants as Record<string, unknown> | undefined)?.trailing ?? merged.trailingEnabled ?? merged.strategyBaseTrailingEnabled,
         true,
       )
       flatKnobs.strategyBaseTrailingEnabled = trailingEnabled ? "true" : "false"
+      flatKnobs.trailingEnabled = trailingEnabled ? "true" : "false"
 
       const dca = normalizeDcaProfile({ ...merged, ...coord })
       flatKnobs.dcaMaxSteps = String(dca.maxSteps)
@@ -1414,6 +1425,11 @@ export async function PATCH(
       ] as Array<[string, string | null]>) if (v !== null) flatKnobs[k] = v
     }
 
+    // Keep the physical-entry rechecks on the same persisted processing policy as the strategy selector.
+    for (const key of ["normalEnabled", "trailingEnabled", "variantTrailingEnabled", "strategyProcessingByRange", "relationalVolumeRatios"] as const) {
+      const value = flatKnobs[key] ?? merged[key]
+      if (value !== undefined) connectionPatch[key] = typeof value === "object" ? JSON.stringify(value) : String(value)
+    }
     flatKnobs.settings_version = settingsVersion
     const settingsPatch = {
       ...serializeConnectionSettingsHash(merged),

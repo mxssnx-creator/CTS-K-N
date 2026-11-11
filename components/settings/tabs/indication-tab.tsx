@@ -1,4 +1,6 @@
 "use client"
+import {COMMON_CATALOG_TYPES} from "@/lib/common-indicators/catalog"
+import {VolumeRatioSliders} from "@/shared/cts-volume/sliders.tsx"
 
 import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -65,6 +67,8 @@ export function IndicationTab({ settings, handleSettingChange, getMinIndicationI
       </TabsList>
 
       <TabsContent value="main" className="space-y-4">
+      <Card><CardHeader><CardTitle>Relational volume · Indication types</CardTitle></CardHeader><CardContent><VolumeRatioSliders overall value={settings.relationalVolumeRatios} onChange={v=>handleSettingChange("relationalVolumeRatios",v)} buckets={{indicationTypes:['direction','move','active','common','technical','trend','break','special','signal','tactic','inverse',...COMMON_CATALOG_TYPES]}}/></CardContent></Card>
+
         <Tabs value={indicationMainSubTab} onValueChange={setIndicationMainSubTab}>
           <TabsList className="h-auto w-full flex-wrap justify-start">
             <TabsTrigger value="main">Default · Direction / Move / Active</TabsTrigger>

@@ -1,3 +1,4 @@
+import {PORTED_CATALOG} from "@/shared/cts-indications/catalog.ts"
 /**
  * Generic checks over every Common type (the 17 original ones and the types
  * ported from CTS-A-O): catalogue / registry consistency, causality (a bar's
@@ -86,11 +87,12 @@ describe("Common catalogue and registry", () => {
   })
 
   test("every ported type maps to a registered CTS-A-O rule and its parameters", () => {
-    expect(COMMON_CATALOG.length).toBe(118)
+    expect(COMMON_CATALOG.length).toBe(120)
     for (const entry of COMMON_CATALOG) {
       const mapping = NEW_RULE_MAPPINGS[entry.type]
       expect(mapping).toBeDefined()
-      expect(AO_RULES.has(mapping.source)).toBe(true)
+      if(entry.type==="tacticDca"||entry.type==="inverseAo")expect(PORTED_CATALOG.some(source=>entry.type==="tacticDca"?source.id.startsWith("tactic-dca-"):source.kind==="inverse")).toBe(true)
+      else expect(AO_RULES.has(mapping.source)).toBe(true)
       expect(entry.sources.length).toBeGreaterThan(0)
     }
     // Stable-02 belongs to the CTS-G project, the Micro relations need the whole universe: neither is ported

@@ -1,4 +1,6 @@
 "use client"
+import {VolumeRatioSliders} from "@/shared/cts-volume/sliders.tsx"
+import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, resolveTrailingSwitch } from "@/lib/strategy-execution-policy"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -93,6 +95,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   // blockAdjustment / dcaAdjustment are legacy mirrors kept in step for older readers.
   const blockAdjustmentEnabled = parseStoredBoolean(settings.variantBlockEnabled ?? settings.blockAdjustment, true)
   const axisEnabled = parseStoredBoolean(settings.axisEnabled, true)
+  const processingByRange = normalizeStrategyProcessingByRange(settings.strategyProcessingByRange)
   // DCA is off unless enabled, exactly as the engine defaults it.
   const dcaAdjustmentEnabled = parseStoredBoolean(settings.variantDcaEnabled ?? settings.dcaAdjustment, false)
   const dcaVolumes: number[] = Array.isArray(settings.dcaStepVolumeMultipliers)
@@ -132,6 +135,16 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
 
   return (
     <TabsContent value="strategy" className="space-y-4">
+      <Card><CardHeader><CardTitle>Relational volume · Strategy types & Ranges</CardTitle></CardHeader><CardContent><VolumeRatioSliders  value={settings.relationalVolumeRatios} onChange={v=>handleSettingChange("relationalVolumeRatios",v)} buckets={{strategies:['normal','trailing','axis','block','dca','pause'],ranges:['main','preset','signals','direct']}}/></CardContent></Card>
+
+      <Card>
+        <CardHeader><CardTitle>Strategy processing · Normal & Trailing</CardTitle><CardDescription>Normal keeps calculated evidence for additional strategies when disabled. Standalone Normal and Trailing entries require Normal. Trailing off applies across every strategy. Overall and range switches must both allow processing.</CardDescription></CardHeader>
+        <CardContent className="space-y-3">
+          <label className="flex items-center justify-between text-sm">Normal · overall<Switch checked={parseStoredBoolean(settings.normalEnabled,true)} onCheckedChange={v=>handleSettingChange("normalEnabled",v)} /></label>
+          <label className="flex items-center justify-between text-sm">Trailing · overall<Switch checked={resolveTrailingSwitch(settings)} onCheckedChange={v=>handleSettingChange("trailingEnabled",v)} /></label>
+          {STRATEGY_PROCESSING_RANGES.map(range=><div key={range} className="grid grid-cols-3 items-center gap-3"><span className="text-xs capitalize">{range}</span>{(["normal","trailing"] as const).map(key=><label key={key} className="flex items-center gap-2 text-xs"><Switch aria-label={`${range} ${key} processing`} checked={processingByRange[range]?.[key] !== false} onCheckedChange={v=>handleSettingChange("strategyProcessingByRange",{...processingByRange,[range]:{...processingByRange[range],[key]:v}})} />{key}</label>)}</div>)}
+        </CardContent>
+      </Card>
       <Card>
         <CardHeader>
           <CardTitle>Deactivate losing live Sets / configs</CardTitle>

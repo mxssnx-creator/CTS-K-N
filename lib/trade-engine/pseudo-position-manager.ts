@@ -383,6 +383,8 @@ export class PseudoPositionManager {
   async createPosition(params: {
     symbol: string
     indicationType: string
+    volumeIndicationType?: string
+    volumeIndicationId?: string
     side: "long" | "short"
     entryPrice: number
     /** Explicit market-price TP used by live/coordinator dispatch. */
@@ -400,6 +402,7 @@ export class PseudoPositionManager {
     trailingEnabled: boolean
     configSetKey?: string  // unique fingerprint of the config combination
     strategyConfigId?: string  // StrategyConfig.id (DB primary key) — optional link into the historic-fill Set keyspace
+    strategyRange?: string
     strategySetKey?: string // exact coordinated Set identity (not the config fingerprint)
     parentSetKey?: string   // authoritative Base Set identity
     /**
@@ -602,6 +605,9 @@ export class PseudoPositionManager {
         connection_id: this.connectionId,
         symbol: params.symbol,
         indication_type: params.indicationType,
+        ...(params.volumeIndicationType?{volume_indication_type:params.volumeIndicationType}:{}),
+        ...(params.volumeIndicationId?{volume_indication_id:params.volumeIndicationId}:{}),
+        ...(params.strategyRange ? { strategy_range: params.strategyRange } : {}),
         side: params.side,
         config_set_key: configSetKey,
         active_config_identity: exactConfigIdentity,

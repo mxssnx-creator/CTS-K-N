@@ -94,7 +94,8 @@
     "vercel-build": "node scripts/build-next-with-trace-retry.mjs",
     "prevercel-build": "node scripts/remove-stray-bun-lock.mjs && node scripts/verify-source-syntax.mjs && node scripts/clean-next-dist.mjs",
     "postvercel-build": "node scripts/normalize-next-env.mjs && node scripts/prepare-standalone-assets.mjs",
-    "test:all:isolated": "NODE_OPTIONS=\"${NODE_OPTIONS:-} --require=$(pwd)/scripts/test-network-isolation.cjs\" node node_modules/jest/bin/jest.js --runInBand --detectOpenHandles --passWithNoTests"
+    "test:all:isolated": "NODE_OPTIONS=\"${NODE_OPTIONS:-} --require=$(pwd)/scripts/test-network-isolation.cjs\" node node_modules/jest/bin/jest.js --runInBand --detectOpenHandles --passWithNoTests",
+    "test:strategy-features": "jest --runInBand --testPathPatterns=\"relational-volume|strategy-processing-ranges|volume-calculator-variants|common-indicators-catalog\" && node --import tsx --test shared/cts-volume/ui.test.tsx && node --experimental-strip-types --test shared/cts-indications/ported.test.ts shared/cts-volume/ratios.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

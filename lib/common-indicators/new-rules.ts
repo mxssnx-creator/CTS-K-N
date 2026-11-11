@@ -1,3 +1,5 @@
+import {portedStates} from "@/shared/cts-indications/index.ts"
+import {PORTED_CATALOG} from "@/shared/cts-indications/catalog"
 /**
  * Rules of the Common types ported from CTS-A-O (see ./catalog.ts for the
  * parameters). Each type runs one ported CTS-A-O rule on the shared context's
@@ -44,6 +46,8 @@ const at = (...values: number[]) => Math.ceil(Math.max(...values.map((value) => 
 const HTF4 = (tfBars: number) => 4 * 51 + tfBars
 
 export const NEW_RULE_MAPPINGS: Record<CommonCatalogType, Mapping> = {
+  tacticDca:{source:"tactic-dca",warmup:()=>160},
+  inverseAo:{source:"inverse",warmup:()=>80},
   relativeVigor: { source: "r-rvi", warmup: (p) => at(p.period + 6) },
   lowRangeEdgeTurn: { source: "r-low-range-edge-turn", warmup: (p) => at(p.window + 2) },
   lowRangeFailedBreak: { source: "r-low-range-failed-break", warmup: (p) => at(p.window + 2) },
@@ -213,6 +217,13 @@ function holdContiguousEvents(raw: Int8Array, keep: number, ctx: CommonSeriesCon
 }
 
 function ruleFor(entry: CommonCatalogEntry, mapping: Mapping): CommonRule {
+  if(entry.type==="tacticDca"||entry.type==="inverseAo"){
+    const sources=PORTED_CATALOG.filter(s=>entry.type==="tacticDca"?s.id.startsWith("tactic-dca-"):s.kind==="inverse")
+    const resolve=(raw:Record<string,number>|undefined)=>{const index=raw?.sourceIndex??0;if(!Number.isInteger(index)||index<0||index>=sources.length)throw new Error("Unknown Tactic / Inverse source index");return {sourceIndex:index}}
+    const states=(ctx:CommonSeriesContext,p:RuleParams)=>ctx.memo(`ported:${entry.type}:${p.sourceIndex}`,()=>ctx.candles[0]?.timestamp>0&&[1,5,15,30].includes(ctx.tfMin)?portedStates('ASSET-USDT',ctx.tfMin,ctx.candles,[sources[p.sourceIndex].id]).states[sources[p.sourceIndex].id]:new Int8Array(ctx.length))
+    return {type:entry.type,kind:"state",resolve,warmup:()=>entry.type==="tacticDca"?160:80,states,
+      at(ctx,p,index){const value=states(ctx,p)[index]??0;return {direction:value>0?"long":value<0?"short":"neutral",strength:value?0.6:0,value:ctx.candles[index]?.close??0,signal:value,details:{sourceIndex:p.sourceIndex,state:value}}}}
+  }
   const source = AO_RULES.get(mapping.source)
   if (!source) throw new Error(`Common type ${entry.type}: CTS-A-O rule ${mapping.source} is not registered`)
   const heldInternally = isHeldInternally(mapping.source)
