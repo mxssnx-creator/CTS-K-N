@@ -4399,3 +4399,12 @@ The canonical checkout remains `/workspace/CTS-K-N`; its tracked Micro-floor edi
 Micro/Low-Range now have independent minimum SL and trailing price-distance settings, shared between calculation and native admission; other ranges retain their global floor. Complete hosted source/strategy/ownership/type/build checks are pending on the combined source. No combined-head post-Base or exchange PF measurement is available, no profitable-default claim is made, and no production deployment is included.
 
 Verified source checkpoints were created by the repository script: `/workspace/backups/CTS-K-N/20261111T233231Z-pre-cross-project-merge-20261112` and the subsequent `pre-micro-integration-20261112` checkpoint. Publication receipt and final CI results are recorded separately after the actual push/merge. The canonical checkout's active edits remain available to its original workstream.
+
+
+## 2026-11-12 — interrupted x02 study and durable recovery checkpoints
+
+Canonical checkout `/workspace/CTS-K-N`, source base `d16f74359d08f05cf7c8ec836e17187d7f25cc83`; published main before this follow-up is `99ae41a9876e62565ab43bdb64aef9344544fa06` (PR #570, both required workflows green). Verified pre-edit/recovery checkpoint: `/workspace/backups/CTS-K-N/20261112T052912Z-before-owned-recovery-20261112`.
+
+The new twelve-symbol run did not finish: ten complete flat cycles, then the executor disappeared after a 243-unit COTI entry. No native final report exists. Independent exact-ID/quantity recovery closed only that owned quantity. All 62 acknowledged run/recovery IDs were subsequently terminal, all per-side own opening/closing quantities netted to zero and no own open orders remained. Eleven distinct symbols executed; twelve-symbol acceptance and strict complete-account baseline restoration remain unproven. Termination cause is unknown. This diagnostic lifecycle study is not an alpha-PF result.
+
+The follow-up writes private fsynced atomic recovery snapshots before venue dispatch and after responses/errors, retaining pending exact write identities, acknowledged exposure and the isolated Redis path. Running snapshots stay incomplete. Forty-two focused tests and TypeScript passed. See `docs/verification/x02-twelve-symbol-interrupted-recovery-20261112.md`. Publication must use the reviewed green PR flow. Production revision/health, managed Chisel, systemd, settings and persistence were not changed; reinstall, remote stability and full twelve-symbol/native-strategy acceptance remain pending.
