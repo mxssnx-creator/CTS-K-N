@@ -121,6 +121,31 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(stats.positionCostRatioCount).toBe(2)
   })
 
+  test("disjoint signed blocks preserve long PF and require all 33 own settled closes", () => {
+    const blocks={long:20,short:10,minimal:3,shortPolarity:"negative" as const,minimalPolarity:"negative" as const}
+    const records=[...Array(13).fill("-100|30|1|-1|0.1"),...Array(20).fill("200|40|1|2|0.1")]
+    const stats=derivePosWindowStats(records,20,blocks)
+    expect(stats.count).toBe(33);expect(stats.profitFactor).toBe(99);expect(stats.averagePnlPct).toBe(2)
+    expect(stats.blockDecision?.state).toBe("qualified");expect(stats.hasSignal).toBe(true)
+    expect(derivePosWindowStats(records.slice(1),20,blocks).blockDecision?.state).toBe("insufficient")
+    expect(derivePosWindowStats(["-1|0|1||",...records.slice(1)],20,blocks).blockDecision?.state).toBe("unknown")
+  })
+
+  test("fees already included in realised returns never enter the PF denominator again", () => {
+    const records=["10|20|2|0.30|0.10","-1|30|4|-0.10|0.10"]
+    const withDiagnosticFees=derivePosWindowStats(records,2)
+    expect(withDiagnosticFees.profitFactor).toBeCloseTo(3,12)
+    expect(withDiagnosticFees.hasSignal).toBe(true)
+    expect(withDiagnosticFees.profitFactor).toBe(derivePosWindowStats(records.map(r=>r.replace(/\|[^|]+\|/,"|0|")),2).profitFactor)
+  })
+
+  test("mixed legacy quote and canonical percentage rows cannot qualify a complete PF window", () => {
+    const result=derivePosWindowStats(["-4|0|1||","200|0|1|0.20|0.10"],2)
+    expect(result.count).toBe(2)
+    expect(result.hasSignal).toBe(false)
+    expect(result.profitFactor).toBe(0)
+  })
+
   test("mixed writers share one unit: a USDT pseudo close and a percent measurement", () => {
     // A pseudo close of +2 USDT (+0.2 %) and a measured close of -0.3 %
     // booked as pnl -0.3: the window PF compares 0.2 % with 0.3 %.

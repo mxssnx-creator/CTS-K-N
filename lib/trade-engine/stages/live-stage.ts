@@ -205,6 +205,7 @@ import {
   applyTrailingDistanceFloorPct,
   applyTrailingDistanceFloorRatio,
   getActiveProtectionFloors,
+  protectionFloorsForRange,
   setActiveProtectionFloors,
 } from "@/lib/protection-floors"
 import { logRuntimeError, logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
@@ -471,8 +472,9 @@ async function loadExchangeQuantityRules(
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE = 0.2
 /** Exchange minimum raised to the operator stop-loss floor (default 0.5 %). */
-function minExchangeStopLossPercent(): number {
-  return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE, getActiveProtectionFloors().minStopLossPct)
+function minExchangeStopLossPercent(range?: string): number {
+  const micro = /^(micro|low[- ]?range)$/i.test(range ?? "");
+  return Math.max(micro ? .01 : MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE, protectionFloorsForRange(range).minStopLossPct)
 }
 const SIGNAL_ADMISSION_LOCK_TTL_MS = 15_000
 const SIGNAL_ADMISSION_WAIT_MS = 2_000
@@ -1289,6 +1291,7 @@ function computeSetAwareSL(
   setVariant: LivePosition["setVariant"],
   trailingProfile: LivePosition["trailingProfile"] | undefined,
   takeProfitPct?: unknown,
+  strategyRange?: string,
 ): number {
   let candidateSl: number
   if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
@@ -1299,20 +1302,20 @@ function computeSetAwareSL(
     // in sync from the first tick.
     const trailingSl = isSignalDynamicTrailingProfile(trailingProfile)
       ? Math.max(0.8, (trailingProfile.minStopRatio ?? trailingProfile.stopRatio) * 100)
-      : applyTrailingDistanceFloorPct(trailingProfile.stopRatio * 100)
-    candidateSl = Math.max(minExchangeStopLossPercent(), trailingSl)
+      : applyTrailingDistanceFloorPct(trailingProfile.stopRatio * 100, protectionFloorsForRange(strategyRange).minTrailingStopDistancePct)
+    candidateSl = Math.max(minExchangeStopLossPercent(strategyRange), trailingSl)
   } else {
     // For all other variants (default, block, dca, pause) the PF-derived value
     // is already variant-adjusted (block: scaled up by sizeMultiplier, dca: 0.5×).
     // Enforce the minimum floor in all cases.
-    candidateSl = Math.max(minExchangeStopLossPercent(), derivedSl)
+    candidateSl = Math.max(minExchangeStopLossPercent(strategyRange), derivedSl)
   }
   return normalizeProtectionPercentages({
     takeProfitPct,
     fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
     stopLossPct: candidateSl,
     minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
-    minimumStopLossPct: minExchangeStopLossPercent(),
+    minimumStopLossPct: minExchangeStopLossPercent(strategyRange),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   }).stopLossPct
 }
@@ -1464,6 +1467,7 @@ function releaseStopSem(): void {
  * shape, not the stage pipeline shape).
  */
 export interface LivePosition {
+  capturedMicroProtection?: {slPct: number; trailPct: number}
   strategyRange?: string
   id: string
   connectionId: string
@@ -2553,20 +2557,20 @@ async function refreshEntryOrderAccounting(
   return position.entryAccountingComplete
 }
 
-function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjusted: boolean; reason?: string } {
+function normalizeStopLossPercent(rawStopLoss: unknown, strategyRange?: string): { value: number; adjusted: boolean; reason?: string } {
   const n = Number(rawStopLoss)
   if (!Number.isFinite(n) || n <= 0) {
     return {
-      value: minExchangeStopLossPercent(),
+      value: minExchangeStopLossPercent(strategyRange),
       adjusted: true,
-      reason: `missing/disabled SL normalized to minimum ${minExchangeStopLossPercent()}%`,
+      reason: `missing/disabled SL normalized to minimum ${minExchangeStopLossPercent(strategyRange)}%`,
     }
   }
-  if (n < minExchangeStopLossPercent()) {
+  if (n < minExchangeStopLossPercent(strategyRange)) {
     return {
-      value: minExchangeStopLossPercent(),
+      value: minExchangeStopLossPercent(strategyRange),
       adjusted: true,
-      reason: `SL ${n}% below minimum ${minExchangeStopLossPercent()}% — using minimum`,
+      reason: `SL ${n}% below minimum ${minExchangeStopLossPercent(strategyRange)}% — using minimum`,
     }
   }
   return { value: n, adjusted: false }
@@ -2580,15 +2584,15 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
  * beyond the systemwide 1.5×TP contract.
  */
 function normalizeLivePositionProtection(
-  position: Pick<LivePosition, "takeProfit" | "stopLoss">,
+  position: Pick<LivePosition, "takeProfit" | "stopLoss" | "strategyRange" | "capturedMicroProtection">,
 ): { takeProfitPct: number; stopLossPct: number } {
   const protection = normalizeProtectionPercentages({
     takeProfitPct: position.takeProfit,
     fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
     stopLossPct: position.stopLoss,
-    fallbackStopLossPct: minExchangeStopLossPercent(),
+    fallbackStopLossPct: position.capturedMicroProtection?.slPct ?? minExchangeStopLossPercent(position.strategyRange),
     minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
-    minimumStopLossPct: minExchangeStopLossPercent(),
+    minimumStopLossPct: position.capturedMicroProtection?.slPct ?? minExchangeStopLossPercent(position.strategyRange),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   position.takeProfit = protection.takeProfitPct
@@ -9507,7 +9511,7 @@ function ratchetManualTrailingStop(pos: LivePosition): boolean {
 
   const requestedDistancePct = Number(manual.trailingDistancePct)
   const distancePct = Number.isFinite(requestedDistancePct) && requestedDistancePct > 0
-    ? applyTrailingDistanceFloorPct(requestedDistancePct)
+    ? applyTrailingDistanceFloorPct(requestedDistancePct, pos.capturedMicroProtection?.trailPct ?? protectionFloorsForRange(pos.strategyRange).minTrailingStopDistancePct)
     : requestedDistancePct
   const markPrice = getProtectionReferencePrice(pos)
   if (!Number.isFinite(distancePct) || distancePct <= 0 || !Number.isFinite(markPrice) || markPrice <= 0) {
@@ -13864,7 +13868,7 @@ export async function executeLivePosition(
     const failures = entry?.consecutiveFailures ?? 1
     const stepIdx = Math.min(failures - 1, MARGIN_COOLDOWN_STEPS_MS.length - 1)
     const cooldownSec = Math.round((MARGIN_COOLDOWN_STEPS_MS[stepIdx] ?? MARGIN_COOLDOWN_MAX_MS) / 1000)
-    const normalizedSkippedSl = normalizeStopLossPercent(realPosition.stopLoss).value
+    const normalizedSkippedSl = normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange).value
     const normalizedSkippedTp = Math.max(0, Number(realPosition.takeProfit) || 0)
     const skipped: LivePosition = {
       id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${Date.now()}:${nanoid(8)}`,
@@ -14016,6 +14020,7 @@ export async function executeLivePosition(
 
   const livePosition: LivePosition = {
     relationalVolumeMultiplier: entryVolumeRatio,
+    ...(/^(micro|low[- ]?range)$/i.test(realPosition.strategyRange ?? "") ? {capturedMicroProtection:{slPct:protectionFloorsForRange(realPosition.strategyRange).minStopLossPct,trailPct:protectionFloorsForRange(realPosition.strategyRange).minTrailingStopDistancePct}} : {}),
     ...((realPosition as any).strategyRange ? {strategyRange:(realPosition as any).strategyRange} : {}),
     id: isDirectPosition
       ? directTradeCanonicalPositionId(
@@ -14064,10 +14069,11 @@ export async function executeLivePosition(
     //   • block/dca/default: normalised PF-derived value (already variant-scaled
     //     by sizeMultiplier in deriveProtectionFromProfitFactor at dispatch)
     stopLoss: computeSetAwareSL(
-      normalizeStopLossPercent(realPosition.stopLoss).value,
+      normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange).value,
       realPosition.setVariant,
       realPosition.trailingProfile,
       realPosition.takeProfit,
+      realPosition.strategyRange,
     ),
     takeProfit: realPosition.takeProfit,
     // Immutable assignment snapshot — preserved across overrides so the
@@ -14147,7 +14153,7 @@ export async function executeLivePosition(
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
   normalizeLivePositionProtection(livePosition)
 
-  const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss)
+  const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange)
   if (normalizedInitialSl.adjusted) {
     pushStep(livePosition, "protection_sl_normalized", true, normalizedInitialSl.reason!)
     logProgressionEvent(
@@ -14174,7 +14180,7 @@ export async function executeLivePosition(
     livePosition.trailingProfile &&
     livePosition.trailingProfile.stopRatio > 0
   ) {
-    const trailSl = Math.max(minExchangeStopLossPercent(), livePosition.trailingProfile.stopRatio * 100)
+    const trailSl = Math.max(minExchangeStopLossPercent(livePosition.strategyRange), livePosition.trailingProfile.stopRatio * 100)
     if (Math.abs(trailSl - normalizedInitialSl.value) > 0.001) {
       pushStep(
         livePosition,
@@ -23072,7 +23078,7 @@ export async function recalculateAndApplySLTP(
       if (!position.trailingActive) position.trailingStopPrice = undefined
     }
     const normalizedOverrideSl = overrides?.stopLossPct !== undefined
-      ? normalizeStopLossPercent(overrides.stopLossPct)
+      ? normalizeStopLossPercent(overrides.stopLossPct, position.strategyRange)
       : null
     if (normalizedOverrideSl) position.stopLoss = normalizedOverrideSl.value
     if (overrides?.takeProfitPct !== undefined) position.takeProfit = overrides.takeProfitPct

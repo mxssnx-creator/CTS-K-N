@@ -7,6 +7,7 @@ import {
   getActiveProtectionFloors,
   normalizeProtectionFloorPct,
   resolveProtectionFloors,
+  protectionFloorsForRange,
   setActiveProtectionFloors,
   validateProtectionFloorInput,
 } from "@/lib/protection-floors"
@@ -32,8 +33,8 @@ describe("protection floor normalization", () => {
   test("defaults are 0.6 % for SL and trailing distance (raised from 0.5 % on 2026-10-06)", () => {
     expect(DEFAULT_MIN_STOP_LOSS_PCT).toBe(0.6)
     expect(DEFAULT_MIN_TRAILING_STOP_DISTANCE_PCT).toBe(0.6)
-    expect(resolveProtectionFloors(undefined)).toEqual({ minStopLossPct: 0.6, minTrailingStopDistancePct: 0.6 })
-    expect(getActiveProtectionFloors()).toEqual({ minStopLossPct: 0.6, minTrailingStopDistancePct: 0.6 })
+    expect(resolveProtectionFloors(undefined)).toEqual({ minStopLossPct: 0.6, minTrailingStopDistancePct: 0.6, microMinSlDistancePct: .1, microMinTrailDistancePct: .05 })
+    expect(getActiveProtectionFloors()).toEqual({ minStopLossPct: 0.6, minTrailingStopDistancePct: 0.6, microMinSlDistancePct: .1, microMinTrailDistancePct: .05 })
   })
 
   test("clamps into 0.05–10 and falls back on garbage", () => {
@@ -43,7 +44,7 @@ describe("protection floor normalization", () => {
     expect(normalizeProtectionFloorPct("abc", 0.5)).toBe(0.5)
     expect(normalizeProtectionFloorPct("", 0.5)).toBe(0.5)
     expect(resolveProtectionFloors({ min_stop_loss_pct: 1, minTrailingStopDistancePct: 0.7 }))
-      .toEqual({ minStopLossPct: 1, minTrailingStopDistancePct: 0.7 })
+      .toEqual({ minStopLossPct: 1, minTrailingStopDistancePct: 0.7, microMinSlDistancePct: .1, microMinTrailDistancePct: .05 })
   })
 
   test("API validation rejects out-of-range and non-numeric values only when present", () => {
@@ -144,3 +145,17 @@ describe("Main lane enforcement", () => {
     expect(deriveProtectionFromProfitFactor(1.3, 0.1, 1, venueCosts).stopLossPct).toBe(0.2)
   })
 })
+
+
+describe("Micro independent protection floors",()=>{
+ test("range math and live floor resolution share settings without changing ordinary ranges",()=>{
+  setActiveProtectionFloors({minStopLossPct:1,microMinSlDistancePct:.08,microMinTrailDistancePct:.05});
+  expect(protectionFloorsForRange("micro").minStopLossPct).toBe(.08);
+  expect(protectionFloorsForRange("Low-Range").minTrailingStopDistancePct).toBe(.05);
+  expect(protectionFloorsForRange("minimal").minStopLossPct).toBe(1);
+  const actual=deriveProtectionFromProfitFactor(1.3,.1,1,undefined,"micro");
+  expect(actual.stopLossPct).toBe(.1);
+  expect(actual.takeProfitPct).toBeLessThan(deriveProtectionFromProfitFactor(1.3,.1).takeProfitPct);
+  expect(validateProtectionFloorInput({microMinSlDistancePct:-1,microMinTrailDistancePct:11})).toHaveLength(2);
+ });
+});

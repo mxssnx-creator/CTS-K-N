@@ -17,7 +17,7 @@
  * NOW: 100% Redis-backed, no SQL.
  */
 
-import { applyTrailingDistanceFloorRatio } from "@/lib/protection-floors"
+import { applyTrailingDistanceFloorRatio, protectionFloorsForRange } from "@/lib/protection-floors"
 import {
   takeProfitRatio,
   trailingActivationThreshold,
@@ -930,7 +930,7 @@ export class RealtimeProcessor {
       const rawStopRatio = parseFloat(position.trailing_stop_ratio || "0")
       // Operator floor: a configured trailing distance is raised to the
       // minimum trailing-stop distance (default 0.5 %), never lowered.
-      const stopRatio = rawStopRatio > 0 ? applyTrailingDistanceFloorRatio(rawStopRatio) : rawStopRatio
+      const stopRatio = rawStopRatio > 0 ? applyTrailingDistanceFloorRatio(rawStopRatio, protectionFloorsForRange(position.strategyRange ?? position.strategy_range).minTrailingStopDistancePct) : rawStopRatio
       let stepRatio = parseFloat(position.trailing_step_ratio || "0")
       const client = getRedisClient()
       const hashKey = `pseudo_position:${this.connectionId}:${position.id}`
