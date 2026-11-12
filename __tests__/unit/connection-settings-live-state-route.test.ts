@@ -22,6 +22,27 @@ describe("connection settings canonical Live state", () => {
   beforeEach(() => jest.clearAllMocks())
 
   test.each([
+    [{}, 2, 3],
+    [{ minStep: 5, trailingMinStep: 8 }, 5, 8],
+    [{ coordination_settings: { minStep: 7, trailingMinStep: 11 } }, 7, 11],
+    [{ minStep: 8, trailingMinStep: 3 }, 8, 8],
+  ])("GET preserves the stored minimum pair and Block ratio: %p", async (saved, minStep, trailingMinStep) => {
+    mockConnection.mockResolvedValue({
+      id: "bingx-x02", exchange: "bingx", is_live_trade: "0",
+      connection_settings: { ...saved, blockVolumeRatio: 0.2 },
+    })
+    mockHash.mockResolvedValue({})
+    const response = await GET(new Request("http://localhost/api/settings/connections/bingx-x02/settings"), {
+      params: Promise.resolve({ id: "bingx-x02" }),
+    })
+    const body = await response.json()
+    expect(response.status).toBe(200)
+    expect(body.settings).toMatchObject({ minStep, trailingMinStep })
+    expect(body.settings.coordination_settings).toMatchObject({ minStep, trailingMinStep, blockVolumeRatio: 0.2 })
+    expect(mockWrite).not.toHaveBeenCalled()
+  })
+
+  test.each([
     ["1", "0", "1", true, true],
     ["0", "1", "0", false, false],
     ["0", "1", "1", false, true],

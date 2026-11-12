@@ -28,7 +28,15 @@ export function mergeConnectionSettings<T extends Record<string, any>>(
 ): T & Record<string, any> {
   const merged = normalizeOverallControlOrders(deepMerge(current || {}, normalizeOverallControlOrders(incoming || {}))) as T & Record<string, any>
   const mutable = merged as Record<string, any>
-  const coordination = isPlainObject(mutable.coordination_settings)
+  const existingCoordination = isPlainObject(current?.coordination_settings)
+    ? current.coordination_settings
+    : isPlainObject(current?.coordinationSettings) ? current.coordinationSettings : undefined
+  const incomingCoordination = isPlainObject(incoming?.coordination_settings)
+    ? incoming.coordination_settings
+    : isPlainObject(incoming?.coordinationSettings) ? incoming.coordinationSettings : undefined
+  const coordination = incomingCoordination
+    ? deepMerge(existingCoordination || {}, incomingCoordination)
+    : isPlainObject(mutable.coordination_settings)
     ? mutable.coordination_settings
     : isPlainObject(mutable.coordinationSettings)
       ? mutable.coordinationSettings
@@ -36,6 +44,15 @@ export function mergeConnectionSettings<T extends Record<string, any>>(
   if (coordination) {
     mutable.coordination_settings = coordination
     mutable.coordinationSettings = coordination
+  }
+  // A nested partial edit must beat an older flat mirror before the API
+  // normalizes both values. Otherwise saving step 2 can silently restore 5.
+  for (const [camel, snake] of [["minStep", "min_step"], ["trailingMinStep", "trailing_min_step"]]) {
+    const value = incoming?.[camel] ?? incoming?.[snake] ??
+      incomingCoordination?.[camel] ?? incomingCoordination?.[snake]
+    if (value === undefined || value === null || value === "") continue
+    mutable[camel] = value
+    if (coordination) coordination[camel] = value
   }
   // Normalize the pos-count coordination ratio at the canonical merge point so
   // an out-of-range value can never reach the persisted connection settings,

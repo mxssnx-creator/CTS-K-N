@@ -16,19 +16,19 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import type { LiveTradingAnalytics, ProfitFactorMetric } from "@/lib/live-trading-analytics"
 import type { LiveAccountSummary, LivePositionView } from "@/components/live-trading/live-trading-types"
+import { liveOverviewExposure } from "./live-overview-exposure"
 import {
   formatCompactMoney,
   formatDuration,
   formatMoney,
   formatProfitFactor,
-  positionMargin,
-  positionPnl,
 } from "@/components/live-trading/live-trading-format"
 
 interface LiveOverviewCompactProps {
   account: LiveAccountSummary | null
   positions: LivePositionView[]
   analytics: LiveTradingAnalytics | null
+  positionsAvailable?: boolean
 }
 
 function tone(value: number): string {
@@ -73,14 +73,14 @@ function PerformanceWindow({ label, metric }: { label: string; metric?: ProfitFa
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</span>
         <Badge variant="outline" className="h-4 px-1 text-[9px] font-mono">
-          {metric?.trades || 0} trades
+          {metric ? `${metric.trades} trades` : "Unavailable"}
         </Badge>
       </div>
       <div className="flex items-end justify-between gap-2">
         <div>
-          <div className={`text-sm font-semibold tabular-nums ${tone(pnl)}`}>{formatCompactMoney(pnl)}</div>
+          <div className={`text-sm font-semibold tabular-nums ${tone(pnl)}`}>{metric ? formatCompactMoney(pnl) : "—"}</div>
           <div className="text-[10px] text-muted-foreground">
-            {metric?.wins || 0}W / {metric?.losses || 0}L · {Number(metric?.winRate ?? 0).toFixed(0)}%
+            {metric ? `${metric.wins}W / ${metric.losses}L · ${Number(metric.winRate).toFixed(0)}%` : "History unavailable"}
           </div>
         </div>
         <div className="text-right">
@@ -92,68 +92,77 @@ function PerformanceWindow({ label, metric }: { label: string; metric?: ProfitFa
   )
 }
 
-export function LiveOverviewCompact({ account, positions, analytics }: LiveOverviewCompactProps) {
+export function LiveOverviewCompact({ account, positions, analytics, positionsAvailable = true }: LiveOverviewCompactProps) {
   // The live-position endpoint is the canonical engine ledger. Use its exact
   // currently visible rows for position-derived totals so account-cache lag
   // cannot produce mismatched counts/PnL after an operator close or reload.
-  const positionPnlTotal = positions.reduce((sum, position) => sum + positionPnl(position), 0)
-  const positionMarginTotal = positions.reduce((sum, position) => sum + positionMargin(position), 0)
-  const positionNotionalTotal = positions.reduce(
-    (sum, position) => sum + positionMargin(position) * Math.max(1, Number(position.leverage) || 1),
-    0,
-  )
-  const openPnl = positions.length > 0 ? positionPnlTotal : account?.unrealizedPnl ?? 0
-  const margin = positions.length > 0 ? positionMarginTotal : account?.marginUsd ?? 0
-  const notional = positions.length > 0 ? positionNotionalTotal : account?.volumeUsd ?? 0
+  const exposure = liveOverviewExposure(positions, account)
+  const positionDataAvailable = positionsAvailable || account?.positionsDataAvailable === true
+  const balanceDataAvailable = account !== null && account.balance.dataAvailable !== false
+  const equityDataAvailable = balanceDataAvailable && account?.balance.equityDataAvailable !== false
+  const availableDataAvailable = balanceDataAvailable && account?.balance.availableDataAvailable !== false
+  const openPnl = positionsAvailable ? exposure.unrealizedPnl : account?.unrealizedPnl ?? 0
+  const margin = positionsAvailable ? exposure.margin : account?.marginUsd ?? 0
+  const notional = positionsAvailable ? exposure.notional : account?.volumeUsd ?? 0
   const balance = account?.balance.total ?? 0
-  const equity = positions.length > 0 ? balance + openPnl : account?.balance.equity ?? balance
-  const available = Math.max(0, equity - margin)
+  const equity = account?.balance.equity ?? 0
+  const available = account?.balance.available ?? 0
   const currency = account?.balance.currency || "USDT"
   const marginRatio = equity > 0 ? (margin / equity) * 100 : 0
   const drawdown = analytics?.drawdown3d
-  const longPositions = positions.filter((position) => String(position.direction ?? position.side).toLowerCase().includes("long")).length
-  const shortPositions = positions.filter((position) => String(position.direction ?? position.side).toLowerCase().includes("short")).length
 
   return (
     <section className="space-y-2" aria-label="Live account and performance overview">
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
         <MetricCard
           icon={WalletCards}
           label="Balance"
-          value={formatMoney(balance, currency)}
-          detail={`Free est. ${formatCompactMoney(available, currency)}`}
+          value={balanceDataAvailable ? formatMoney(balance, currency) : "—"}
+          detail={balanceDataAvailable ? availableDataAvailable ? `Available ${formatCompactMoney(available, currency)}` : "Available margin unavailable" : "Balance snapshot unavailable"}
         />
         <MetricCard
           icon={BarChart3}
           label="Equity"
-          value={formatMoney(equity, currency)}
-          detail={`${openPnl >= 0 ? "+" : ""}${formatCompactMoney(openPnl, currency)} open PnL`}
+          value={equityDataAvailable ? formatMoney(equity, currency) : "—"}
+          detail={equityDataAvailable ? "Exchange account equity" : "Equity snapshot unavailable"}
           valueClassName={tone(equity - balance)}
         />
         <MetricCard
           icon={Gauge}
           label="Margin"
-          value={formatMoney(margin, currency)}
-          detail={`${marginRatio.toFixed(1)}% · ${formatCompactMoney(notional, currency)} notional`}
+          value={positionDataAvailable ? formatMoney(margin, currency) : "—"}
+          detail={positionDataAvailable ? `${equityDataAvailable ? `${marginRatio.toFixed(1)}% · ` : ""}${formatCompactMoney(notional, currency)} notional` : "Position snapshot unavailable"}
         />
         <MetricCard
           icon={CircleDollarSign}
           label="Open Profit"
-          value={formatMoney(openPnl, currency)}
-          detail="Unrealized, exchange-synced"
+          value={positionDataAvailable ? formatMoney(openPnl, currency) : "—"}
+          detail={positionDataAvailable ? "Unrealized, filled positions" : "Position snapshot unavailable"}
           valueClassName={tone(openPnl)}
         />
         <MetricCard
           icon={Layers3}
           label="Open positions"
-          value={String(positions.length)}
-          detail={`${longPositions} long · ${shortPositions} short`}
+          value={positionsAvailable ? String(exposure.positions) : "—"}
+          detail={positionsAvailable ? `${exposure.long} long · ${exposure.short} short · ${exposure.pendingIntents} pending intents` : "Position snapshot unavailable"}
+        />
+        <MetricCard
+          icon={Layers3}
+          label="Exchange positions"
+          value={exposure.exchangePositions === null ? "—" : String(exposure.exchangePositions)}
+          detail="Aggregate symbol/side positions"
+        />
+        <MetricCard
+          icon={Activity}
+          label="Open orders"
+          value={exposure.exchangeOrders === null ? "—" : String(exposure.exchangeOrders)}
+          detail={exposure.exchangeOrders === null ? "Order snapshot unavailable" : "CTS-tracked exchange orders"}
         />
         <MetricCard
           icon={Clock3}
           label="Drawdown time · 3d"
-          value={formatDuration(drawdown?.currentDurationMs || drawdown?.maxDurationMs || 0)}
-          detail={drawdown?.inDrawdown
+          value={drawdown ? formatDuration(drawdown.currentDurationMs || drawdown.maxDurationMs || 0) : "—"}
+          detail={!drawdown ? "History unavailable" : drawdown.inDrawdown
             ? `Active · depth ${formatCompactMoney(drawdown.currentDepth)}`
             : `Max ${formatDuration(drawdown?.maxDurationMs || 0)} · ${drawdown?.episodes || 0} episodes`}
           valueClassName={drawdown?.inDrawdown ? "text-amber-600 dark:text-amber-400" : "text-foreground"}
@@ -189,7 +198,7 @@ export function LiveOverviewCompact({ account, positions, analytics }: LiveOverv
                   <div key={window} className="rounded-md border bg-muted/20 px-2 py-2 text-center">
                     <div className="text-base font-bold tabular-nums">{formatProfitFactor(metric?.profitFactor, metric?.infinite)}</div>
                     <div className="text-[9px] uppercase tracking-wide text-muted-foreground">Last {window}</div>
-                    <div className="mt-0.5 text-[9px] text-muted-foreground">{metric?.wins || 0}W / {metric?.losses || 0}L</div>
+                    <div className="mt-0.5 text-[9px] text-muted-foreground">{metric ? `${metric.wins}W / ${metric.losses}L` : "Unavailable"}</div>
                   </div>
                 )
               })}
@@ -206,7 +215,7 @@ export function LiveOverviewCompact({ account, positions, analytics }: LiveOverv
             <div className="grid grid-cols-3 gap-1.5">
               {(["4h", "24h", "48h"] as const).map((window) => (
                 <div key={window} className="rounded-md border bg-muted/20 px-2 py-2 text-center">
-                  <div className="text-base font-bold tabular-nums">{analytics?.orderWindows[window] || 0}</div>
+                  <div className="text-base font-bold tabular-nums">{analytics ? analytics.orderWindows[window] : "—"}</div>
                   <div className="text-[9px] uppercase tracking-wide text-muted-foreground">{window}</div>
                 </div>
               ))}

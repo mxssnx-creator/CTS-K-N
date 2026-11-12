@@ -5,12 +5,20 @@ import {
   deriveVstSoakProtectionBand,
   evaluateVstSoakOrderHeadroom,
   normalizeVstSoakCounterSnapshot,
+  normalizeVstSoakOrderId,
   parseVstSoakExcludedSymbols,
   rankVstSoakSymbolLiquidity,
   vstSoakDirectionForCycle,
 } from "@/lib/bingx-vst-soak-audit"
 
 describe("BingX Prod-VST soak accounting audit", () => {
+  test.each([undefined, null, Number.NaN, "undefined", "null", "NaN", "", "  ", 0, "0"])("never tracks an unset venue order ID (%s)", value => {
+    expect(normalizeVstSoakOrderId(value)).toBe("")
+  })
+  test("preserves exact large venue IDs and opaque identifiers", () => {
+    expect(normalizeVstSoakOrderId("12345678901234567890")).toBe("12345678901234567890")
+    expect(normalizeVstSoakOrderId(" sl-1 ")).toBe("sl-1")
+  })
   test("derives liquidation-safe long and short row/security bands", () => {
     expect(deriveVstSoakProtectionBand({
       direction: "long",

@@ -13,6 +13,7 @@ export interface SimulatedBookListing {
   stats: PositionBookStats
   open: PositionView[]
   closed: PositionView[]
+  stale?: boolean
 }
 
 function money(value: number | null | undefined): string {
@@ -41,10 +42,14 @@ function Metric({ label, value, className, testId }: { label: string; value: str
 
 /** Metric grid for one independent simulated (paper) book. */
 export function SimulatedBookMetrics({ book, testIdPrefix = "sim" }: { book: PositionBookStats; testIdPrefix?: string }) {
+  const valuationAvailable = book.valuationAvailable !== false
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
-      <Metric label="Open" value={book.open} testId={`${testIdPrefix}-open`} />
-      <Metric label="Closed" value={book.closed} testId={`${testIdPrefix}-closed`} />
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+      <Metric label="Open positions" value={book.open} testId={`${testIdPrefix}-open`} />
+      <Metric label="Closed positions" value={book.closed} testId={`${testIdPrefix}-closed`} />
+      <Metric label="Pending entry intents" value={book.pendingEntries ?? "—"} testId={`${testIdPrefix}-pending`} />
+      <Metric label="Tracked control orders" value={book.controlOrders ?? "—"} testId={`${testIdPrefix}-orders`} />
+      {valuationAvailable && <>
       <Metric label="W / L / BE" value={`${book.wins} / ${book.losses} / ${book.breakEven}`} testId={`${testIdPrefix}-wlbe`} />
       <Metric label="Win rate" value={`${book.winRate.toFixed(1)}%`} testId={`${testIdPrefix}-winrate`} />
       <Metric label="Profit factor" value={formatProfitFactor(book)} testId={`${testIdPrefix}-pf`} />
@@ -55,11 +60,12 @@ export function SimulatedBookMetrics({ book, testIdPrefix = "sim" }: { book: Pos
       <Metric label="Unrealized" value={money(book.unrealizedPnl)} className={tone(book.unrealizedPnl)} testId={`${testIdPrefix}-unrealized`} />
       <Metric label="Avg win / loss" value={`${money(book.avgWin)} / ${money(book.avgLoss)}`} />
       <Metric label="Open notional" value={money(book.openNotionalUsd)} testId={`${testIdPrefix}-notional`} />
+      </>}
     </div>
   )
 }
 
-function PositionRows({ rows, kind, testId }: { rows: PositionView[]; kind: "open" | "closed"; testId: string }) {
+function PositionRows({ rows, kind, testId, valuationAvailable }: { rows: PositionView[]; kind: "open" | "closed"; testId: string; valuationAvailable: boolean }) {
   if (rows.length === 0) return <p className="text-xs text-muted-foreground">No {kind} simulated positions.</p>
   return (
     <div className="max-h-64 overflow-auto rounded border" data-testid={testId}>
@@ -82,7 +88,7 @@ function PositionRows({ rows, kind, testId }: { rows: PositionView[]; kind: "ope
                 <td className="p-1.5">{String(row.direction || row.side || "—")}</td>
                 <td className="p-1.5">{String(row.status || "—")}</td>
                 <td className="p-1.5 text-right">{Number(row.entryPrice || row.averageExecutionPrice || 0).toPrecision(6)}</td>
-                <td className={`p-1.5 text-right ${tone(pnl)}`}>{money(pnl)}</td>
+                <td className={`p-1.5 text-right ${valuationAvailable ? tone(pnl) : ""}`}>{valuationAvailable ? money(pnl) : "—"}</td>
               </tr>
             )
           })}
@@ -121,22 +127,17 @@ function BucketTable({ title, buckets }: { title: string; buckets: PositionBookS
  * Clearly labelled simulated section. Simulated figures are never mixed into
  * the exchange/real cards; this panel is the only place they are shown.
  */
-/**
- * Simulated (paper) results are not shown: they are calculations, not executed orders.
- * The API delivers the simulated book without valuation by default; this keeps the cards
- * from rendering an empty "Simulated" panel on the dashboard, statistics, tracking,
- * live-trading and analysis pages.
- */
-export const SIMULATED_RESULTS_VISIBLE = false
+export const SIMULATED_RESULTS_VISIBLE = true
 
 function SimulatedBookCardInner({
   book,
   open,
   closed,
-  title = "Simulated positions",
+  title = "Simulated positions and orders",
   description = "Paper / simulated-connector book — independent of real exchange figures",
   showBreakdown = true,
   testIdPrefix = "sim",
+  stale = false,
 }: {
   book: PositionBookStats | null | undefined
   open?: PositionView[]
@@ -145,7 +146,9 @@ function SimulatedBookCardInner({
   description?: string
   showBreakdown?: boolean
   testIdPrefix?: string
+  stale?: boolean
 }) {
+  const valuationAvailable = book?.valuationAvailable !== false
   return (
     <Card className="border-dashed border-violet-400/60" data-testid={`${testIdPrefix}-card`}>
       <CardHeader className="pb-2">
@@ -157,10 +160,12 @@ function SimulatedBookCardInner({
         <CardDescription className="text-xs">{description}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {book ? <SimulatedBookMetrics book={book} testIdPrefix={testIdPrefix} /> : (
+        {stale && <p className="text-xs text-amber-600" role="status">Update unavailable; showing the last simulated snapshot.</p>}
+        {book && book.dataAvailable !== false ? <SimulatedBookMetrics book={book} testIdPrefix={testIdPrefix} /> : (
           <p className="text-xs text-muted-foreground">No simulated statistics available.</p>
         )}
-        {showBreakdown && book && (
+        {book && book.dataAvailable !== false && !valuationAvailable && <p className="text-xs text-muted-foreground">Simulated valuation is unavailable for this book. Activity counts remain available.</p>}
+        {showBreakdown && book && valuationAvailable && (
           <div className="grid gap-3 md:grid-cols-3">
             <BucketTable title="By symbol" buckets={book.bySymbol} />
             <BucketTable title="By strategy family" buckets={book.byStrategy} />
@@ -170,13 +175,13 @@ function SimulatedBookCardInner({
         {open && (
           <div className="space-y-1">
             <div className="text-xs font-medium">Open simulated ({open.length})</div>
-            <PositionRows rows={open} kind="open" testId={`${testIdPrefix}-open-list`} />
+            <PositionRows rows={open} kind="open" testId={`${testIdPrefix}-open-list`} valuationAvailable={valuationAvailable} />
           </div>
         )}
         {closed && (
           <div className="space-y-1">
             <div className="text-xs font-medium">Closed simulated ({closed.length})</div>
-            <PositionRows rows={closed} kind="closed" testId={`${testIdPrefix}-closed-list`} />
+            <PositionRows rows={closed} kind="closed" testId={`${testIdPrefix}-closed-list`} valuationAvailable={valuationAvailable} />
           </div>
         )}
       </CardContent>
@@ -188,28 +193,37 @@ function SimulatedBookCardInner({
 export function useSimulatedBook(connectionId: string | null | undefined, refreshMs = 5000): SimulatedBookListing | null {
   const [listing, setListing] = useState<SimulatedBookListing | null>(null)
   useEffect(() => {
+    setListing(null)
     if (!connectionId) {
       setListing(null)
       return
     }
     let cancelled = false
+    let loading = false
+    const controller = new AbortController()
     const load = async () => {
+      if (loading) return
+      loading = true
       try {
         const response = await fetch(
-          `/api/trading/live-positions?connectionId=${encodeURIComponent(connectionId)}&source=simulated`,
-          { cache: "no-store" },
+          `/api/trading/live-positions?connectionId=${encodeURIComponent(connectionId)}&source=simulated&summaryOnly=1`,
+          { cache: "no-store", signal: controller.signal },
         )
-        if (!response.ok) return
+        if (!response.ok) throw new Error("Simulated snapshot unavailable")
         const payload = await response.json()
-        if (!cancelled && payload?.simulatedBook?.stats) setListing(payload.simulatedBook)
+        if (!payload?.simulatedBook?.stats) throw new Error("Simulated snapshot missing")
+        if (!cancelled) setListing(payload.simulatedBook)
       } catch {
-        // keep last good listing
+        if (!cancelled) setListing(previous => previous ? { ...previous, stale: true } : null)
+      } finally {
+        loading = false
       }
     }
     void load()
     const timer = setInterval(load, refreshMs)
     return () => {
       cancelled = true
+      controller.abort()
       clearInterval(timer)
     }
   }, [connectionId, refreshMs])
@@ -221,8 +235,7 @@ function ConnectionSimulatedBookInner({ connectionId, testIdPrefix = "sim" }: { 
   return (
     <SimulatedBookCard
       book={listing?.stats}
-      open={listing?.open ?? []}
-      closed={listing?.closed ?? []}
+      stale={listing?.stale}
       testIdPrefix={testIdPrefix}
     />
   )

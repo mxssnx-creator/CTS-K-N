@@ -17,7 +17,7 @@ jest.mock("@/lib/exchange-live-state-summary", () => ({
 
 jest.mock("@/lib/exchange-account-performance", () => ({
   calculateExchangeAccountPerformance15h: () => ({ dataAvailable: false }),
-  recordAndCalculateExchangeAccountPerformance15h: jest.fn(),
+  recordAndCalculateExchangeAccountPerformance15h: jest.fn(async () => ({ dataAvailable: true })),
 }))
 
 const { GET } = require("@/app/api/exchange/live-summary/route")
@@ -98,5 +98,30 @@ describe("exchange live summary route", () => {
     mockGetSettings.mockResolvedValue({ balance, timestamp: Date.now() })
     const response = await GET(new Request("http://localhost/api/exchange/live-summary?connectionId=bingx-x02"))
     expect((await response.json()).totals.accountDataAvailable).toBe(false)
+  })
+
+  test("uses account equity and available margin independently of tracked CTS exposure", async () => {
+    mockGetSettings.mockResolvedValue({ balance: 100, equity: 123, availableMargin: 87, timestamp: Date.now(), is_fallback: false })
+    const response = await GET(new Request("http://localhost/api/exchange/live-summary?connectionId=bingx-x02"))
+    const body = await response.json()
+    expect(body.connections[0].balance).toMatchObject({
+      total: 100, equity: 123, available: 87, dataAvailable: true, equityDataAvailable: true, availableDataAvailable: true,
+    })
+    expect(body.totals).toMatchObject({ totalBalance: 100, equity: 123, availableBalance: 87, accountDataAvailable: true })
+  })
+
+  test("a legacy wallet-only cache never fabricates account equity or free margin", async () => {
+    mockGetSettings.mockResolvedValue({ balance: 100, timestamp: Date.now(), is_fallback: false })
+    const response = await GET(new Request("http://localhost/api/exchange/live-summary?connectionId=bingx-x02"))
+    const body = await response.json()
+    expect(body.connections[0].balance).toMatchObject({ total: 100, dataAvailable: true, equityDataAvailable: false, availableDataAvailable: false })
+    expect(body.totals.accountDataAvailable).toBe(false)
+    expect(body.connections[0].balance.equity).not.toBe(104.5)
+  })
+
+  test("preserves measured zero free margin and negative equity", async () => {
+    mockGetSettings.mockResolvedValue({ balance: 100, equity: -5, availableMargin: 0, timestamp: Date.now(), is_fallback: false })
+    const response = await GET(new Request("http://localhost/api/exchange/live-summary?connectionId=bingx-x02"))
+    expect((await response.json()).connections[0].balance).toMatchObject({ equity: -5, available: 0, equityDataAvailable: true, availableDataAvailable: true })
   })
 })

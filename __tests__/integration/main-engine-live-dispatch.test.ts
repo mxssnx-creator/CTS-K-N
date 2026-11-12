@@ -589,6 +589,12 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     // Exclude the one-time Jest/TS module transform from the dispatch budget;
     // the measured contract starts when the already-loaded live stage begins
     // routing the position to the connector.
+    // Jest also resolves a TypeScript stack for every console.log. Profiling
+    // the baseline showed hundreds of milliseconds in source-map parsing;
+    // production strips these logs. Keep the same routing/protection budgets
+    // while measuring execution rather than the test runner's stack formatter.
+    const quietLogs = jest.spyOn(console, "log").mockImplementation(() => {})
+    try {
     const dispatchStartedAt = performance.now()
     const result = await executeLivePosition(connection.id, {
       id: "real-main-1",
@@ -629,6 +635,9 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(firstEntryRequestAt - dispatchStartedAt).toBeLessThan(300)
     expect(Math.max(...protectionRequestTimes) - dispatchStartedAt).toBeLessThan(1_000)
     expect(performance.now() - dispatchStartedAt).toBeLessThan(1_000)
+    } finally {
+      quietLogs.mockRestore()
+    }
   })
 
   test("blocks a negative settled live Set before any entry while other exact configurations remain eligible", async () => {

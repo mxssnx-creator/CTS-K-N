@@ -658,7 +658,7 @@ describe("requested regression guardrails", () => {
     const coordinationSection = read("components/settings/strategy-coordination-section.tsx")
 
     expect(constants).toContain("export const MIN_BASE_STEP = 2")
-    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 5")
+    expect(constants).toContain("export const DEFAULT_BASE_MIN_STEP = 2")
     expect(manager).toContain("MAX_BASE_STEP - minStep + 1")
     expect(manager).toContain("(_, index) => index + minStep")
     expect(settingsTab).toContain("Steps generated: 2, 3, 4, …, 29, 30")

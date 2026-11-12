@@ -89,6 +89,7 @@ __tests__/unit/bingx-instrument-rules.test.ts
 __tests__/unit/bingx-library-fast-path.test.ts
 __tests__/unit/bingx-public-api.test.ts
 __tests__/unit/bingx-rate-limit-timing.test.ts
+__tests__/unit/bingx-response-body-deadline.test.ts
 __tests__/unit/bingx-ticker-admission.test.ts
 __tests__/unit/bingx-vst-environment.test.ts
 __tests__/unit/bingx-vst-migration.test.ts
@@ -296,9 +297,11 @@ __tests__/unit/live-entry-readiness.test.ts
 __tests__/unit/live-execution-honours-entry-protection-halt.test.ts
 __tests__/unit/live-execution-summary.test.ts
 __tests__/unit/live-family-statistics.test.ts
+__tests__/unit/live-ledger-read-errors.test.ts
 __tests__/unit/live-order-coordination.test.ts
 __tests__/unit/live-order-metrics-snapshot.test.ts
 __tests__/unit/live-order-preflight.test.ts
+__tests__/unit/live-overview-exposure.test.ts
 __tests__/unit/live-pnl-calculation.test.ts
 __tests__/unit/live-pos-count-target.test.ts
 __tests__/unit/live-position-actions.test.ts
@@ -345,6 +348,8 @@ __tests__/unit/market-data-second-coverage.test.ts
 __tests__/unit/market-data-synthetic-continuation.test.ts
 __tests__/unit/min-stop-loss-ratio.test.ts
 __tests__/unit/minimum-scales-with-variant.test.ts
+__tests__/unit/minimum-step-runtime-parity.test.ts
+__tests__/unit/minimum-step-settings.test.ts
 __tests__/unit/minimum-volume-enforcement.test.ts
 __tests__/unit/minute-scheduler-once-retry.test.ts
 __tests__/unit/missing-route-callers.test.ts
@@ -541,6 +546,7 @@ __tests__/unit/statistics-overview-current-counts.test.ts
 __tests__/unit/statistics-rollups.test.ts
 __tests__/unit/statistics-ui-correctness.test.ts
 __tests__/unit/stats-canonical.test.ts
+__tests__/unit/stats-display-rendering.test.ts
 __tests__/unit/status-canonical-position-counts.test.ts
 __tests__/unit/stop-loss-rejection-backoff.test.ts
 __tests__/unit/stopped-out-row-not-a-violation.test.ts
@@ -609,6 +615,7 @@ __tests__/unit/unplaced-rows-not-exposure.test.ts
 __tests__/unit/unsubmitted-live-retention.test.ts
 __tests__/unit/validate-only-measured-sets.test.ts
 __tests__/unit/venue-position-close.test.ts
+__tests__/unit/volume-balance-snapshot.test.ts
 __tests__/unit/volume-calculator-variants.test.ts
 __tests__/unit/volume-factor-save-precedence.test.ts
 __tests__/unit/volume-identity-systemwide.test.ts
@@ -1095,6 +1102,7 @@ components/indications/indication-filters-advanced.tsx
 components/indications/indication-filters.tsx
 components/indications/indication-row-compact.tsx
 components/live-trading/live-overview-compact.tsx
+components/live-trading/live-overview-exposure.ts
 components/live-trading/live-position-table.tsx
 components/live-trading/live-trading-format.ts
 components/live-trading/live-trading-types.ts
@@ -1369,6 +1377,8 @@ docs/reports/20261101-lifecycle-statistics-audit/validation-evidence.json
 docs/reports/20261101-lifecycle-statistics-audit/verification-summary.json
 docs/reports/20261101-walkforward-bingx-replay/RESULTS.html
 docs/reports/20261101-walkforward-bingx-replay/summary.json
+docs/reports/20261111-defaults-stats-x02/recovered-ref-inventory.csv
+docs/reports/20261111-defaults-stats-x02/verification.json
 docs/signal-source-research.md
 docs/stress/ab-tuples-all.json
 docs/stress/ab-tuples-all.md
@@ -1722,6 +1732,7 @@ lib/memory-manager.ts
 lib/metric-formatting.ts
 lib/metrics-aggregator.ts
 lib/metrics-collector.ts
+lib/minimum-step-settings.ts
 lib/monitoring-logger.ts
 lib/multi-range-coordination.ts
 lib/orchestrated-verifier-safety.ts
@@ -2090,6 +2101,7 @@ scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
+scripts/research-dca-matrix.ts
 scripts/resolve-instance-redis-url.mjs
 scripts/restart.sh
 scripts/retire-unsubmitted-live-records.mjs
