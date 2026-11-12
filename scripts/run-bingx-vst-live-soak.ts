@@ -12,6 +12,7 @@ import { createVstReadPacer } from "@/lib/bingx-vst-read-pacer"
 import { readFreshPositionSnapshot } from "@/lib/fresh-position-snapshot"
 import { resolveVstSoakPlan, parseVstSoakCandidateSymbols, vstSoakCoverageDirection } from "@/lib/bingx-vst-soak-plan"
 import { mapWithConcurrency } from "@/lib/bounded-concurrency"
+import { vstSoakRequestEvidence, writeVstSoakCheckpoint } from "@/lib/bingx-vst-soak-checkpoint"
 
 const VST_PRIMARY_ORIGIN = "https://open-api-vst.bingx.com"
 const VST_FALLBACK_ORIGIN = "https://open-api-vst.bingx.pro"
@@ -383,16 +384,16 @@ async function main(): Promise<void> {
     errors: [] as string[],
   }
 
-  const persistReport = async () => {
-    report.finishedAt = new Date().toISOString()
+  let recoverySnapshot: () => unknown = () => ({ runId, runSuffix, redisSnapshotPath, state: "initializing" })
+  const writeAttempts: Record<string, unknown>[] = []
+  const persistReport = async (final = true) => {
+    if (final) report.finishedAt = new Date().toISOString()
+    report.checkpointAt = new Date().toISOString()
+    report.checkpointState = final ? "final" : "running"
+    report.recovery = { snapshot: recoverySnapshot(), writes: writeAttempts }
     report.actualElapsedMs = Date.now() - runStartedMs
     report.network.blockedRequests = network.filter((row) => row.blocked).length
-    const serialized = `${JSON.stringify(report, null, 2)}\n`
-    if ((apiKey && serialized.includes(apiKey)) || (apiSecret && serialized.includes(apiSecret))) {
-      throw new Error("Credential redaction invariant failed; refusing to write the soak report")
-    }
-    await mkdir(reportDir, { recursive: true })
-    await writeFile(reportPath, serialized, { encoding: "utf8", mode: 0o600 })
+    writeVstSoakCheckpoint(reportPath, report, [apiKey, apiSecret])
   }
 
   if (apiKey.length < 10 || apiSecret.length < 10) {
@@ -488,12 +489,24 @@ async function main(): Promise<void> {
     }
     await pacePrivateRead(method, url.pathname)
     started = Date.now()
+    const writeAttempt = method === "GET" ? undefined : {
+      method, pathname: url.pathname, startedAtMs: started, state: "dispatch-recorded",
+      ...vstSoakRequestEvidence(url, init?.body),
+    }
+    if (writeAttempt) writeAttempts.push(writeAttempt)
+    // A killed executor never reaches finally. Preserve acknowledged exposure and exact
+    // pending write identities before dispatch, including callbacks from the live bridge.
+    await persistReport(false)
     try {
       const response = await nativeFetch(input as any, init)
       network.push({ method, pathname: url.pathname, startedAtMs: started, status: response.status, durationMs: Date.now() - started })
+      if (writeAttempt) Object.assign(writeAttempt, { state: "http-response", httpStatus: response.status })
+      await persistReport(false)
       return response
     } catch (error) {
       network.push({ method, pathname: url.pathname, startedAtMs: started, durationMs: Date.now() - started, error: errorText(error) })
+      if (writeAttempt) Object.assign(writeAttempt, { state: "outcome-unknown" })
+      await persistReport(false)
       throw error
     }
   }) as typeof fetch
@@ -512,6 +525,13 @@ async function main(): Promise<void> {
     quantity: number
     quantityStep: number
   }>()
+  recoverySnapshot = () => ({
+    runId, runSuffix, redisSnapshotPath,
+    ownedExposure: [...ownedExposureBySlot.values()],
+    trackedVenueOrders: [...trackedVenueOrderIds].map(([orderId, value]) => ({ orderId, ...value })),
+    trackedControlOrders: [...trackedControlOrders].map(([orderId, symbol]) => ({ orderId, symbol })),
+    confirmedAbsentControlOrderIds: [...confirmedAbsentControlOrderIds],
+  })
   let abortRequested = false
   process.once("SIGINT", () => { abortRequested = true })
   process.once("SIGTERM", () => { abortRequested = true })
@@ -2179,6 +2199,7 @@ async function main(): Promise<void> {
         errors: [],
       }
       report.cycles.push(cycle)
+      await persistReport(false)
       try {
         assertSoakHostGuard()
         await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_entry`)
@@ -2526,6 +2547,7 @@ async function main(): Promise<void> {
         throw error
       } finally {
         cycle.finishedAt = new Date().toISOString()
+        await persistReport(false)
       }
       console.log(
         `[bingx-vst-soak] cycle=${index + 1}/${cyclePlans.length} path=${tradePath.id} ` +

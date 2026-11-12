@@ -96,6 +96,7 @@ __tests__/unit/bingx-vst-migration.test.ts
 __tests__/unit/bingx-vst-read-pacer.test.ts
 __tests__/unit/bingx-vst-runtime-routing.test.ts
 __tests__/unit/bingx-vst-soak-audit.test.ts
+__tests__/unit/bingx-vst-soak-checkpoint.test.ts
 __tests__/unit/bingx-vst-soak-plan.test.ts
 __tests__/unit/bingx-x02-vst-baseline.test.ts
 __tests__/unit/block-additive-lifecycle.test.ts
@@ -1401,6 +1402,7 @@ docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-features-20261111.md
 docs/verification/strategy-features-20261111/report.html
 docs/verification/strategy-features-20261111/results.json
+docs/verification/x02-twelve-symbol-interrupted-recovery-20261112.md
 drizzle.config.ts
 eslint.config.mjs
 fix-bun-permissions.sh
@@ -1455,6 +1457,7 @@ lib/bingx-instrument-rules.ts
 lib/bingx-public-api.ts
 lib/bingx-vst-read-pacer.ts
 lib/bingx-vst-soak-audit.ts
+lib/bingx-vst-soak-checkpoint.ts
 lib/bingx-vst-soak-plan.ts
 lib/block-count-lifecycle.ts
 lib/block-count-outcomes.ts
