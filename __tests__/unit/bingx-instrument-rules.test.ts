@@ -40,6 +40,18 @@ describe("BingX instrument rules", () => {
     expect(minimum.notionalUsdt).toBeCloseTo(2.05)
   })
 
+  test("refreshes a thin-price accumulation minimum instead of reusing the entry quantity", () => {
+    const rules = parseBingXInstrumentRules({ code: 0, data: [{ symbol: "ONE-USDT",
+      quantityPrecision: 0, pricePrecision: 7, tradeMinQuantity: 1, tradeMinUSDT: 2, status: 1 }] }, "ONEUSDT")
+    const oldEntry = getMinimumBingXSmokeQuantity(rules, 0.0015319)
+    const movedPrice = 0.00146
+    expect(oldEntry.quantity * movedPrice).toBeLessThan(2)
+    const refreshed = getMinimumBingXSmokeQuantity(rules, movedPrice, 1.1)
+    expect(refreshed.quantity).toBe(1507)
+    expect(refreshed.notionalUsdt).toBeGreaterThanOrEqual(2.2)
+    expect(refreshed.quantity % rules.quantityStep).toBe(0)
+  })
+
   test("fails closed for unknown instruments", () => {
     expect(() => parseBingXInstrumentRules(payload, "BTCUSDT")).toThrow("not found")
   })

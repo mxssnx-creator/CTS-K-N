@@ -523,3 +523,12 @@ The canonical checkout remains `/workspace/CTS-K-N`; its tracked Micro-floor edi
 Micro/Low-Range now have independent minimum SL and trailing price-distance settings, shared between calculation and native admission; other ranges retain their global floor. Complete hosted source/strategy/ownership/type/build checks are pending on the combined source. No combined-head post-Base or exchange PF measurement is available, no profitable-default claim is made, and no production deployment is included.
 
 Verified source checkpoints were created by the repository script: `/workspace/backups/CTS-K-N/20261111T233231Z-pre-cross-project-merge-20261112` and the subsequent `pre-micro-integration-20261112` checkpoint. Publication receipt and final CI results are recorded separately after the actual push/merge. The canonical checkout's active edits remain available to its original workstream.
+
+
+## 2026-11-12 — merged Micro policy and fresh VST accumulation quantities
+
+PR #569 merged to main at cec9ce163976411d2a9558e8e7131f3569e1ac4b after both hosted verification workflows passed. The canonical checkout retains all integrated strategy controls and the current-main fixes. No production deployment or mainnet mutation was performed.
+
+The bounded x02 lifecycle study completed separate owned GTC and JST cycles, including entry, accumulation, native protection and confirmed close; the GTC cycle also verified native trailing replacements. A subsequent ONE accumulation was rejected because it reused the older entry quote and quantity after the executable venue minimum changed. The partial owned entry was closed and both attempts ended with zero recorded owned quantity/control residuals. Other account systems changed their inventory during the study, so strict baseline restoration and full twelve-symbol acceptance remain unproven. No strategy profitability result is inferred from these diagnostic lifecycle probes.
+
+The follow-up harness derives each accumulation from a fresh ticker, applies a 10% minimum-notional buffer to each independent virtual-fund leg, and rechecks the hard position cap before entry and accumulation. The report now records cleanupOwnedComplete independently while preserving the strict complete-baseline check and its failures. Instrument-rule/soak-plan regressions: 10 passed; TypeScript check passed.

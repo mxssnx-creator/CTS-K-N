@@ -1020,6 +1020,9 @@ async function main(): Promise<void> {
         exposureQuantity: remainingOwnedExposure,
         controlOrders: residualOwnedOrders.length,
       }
+      // Report the independently proven owned cleanup even if another system changes the account baseline.
+      // The complete-baseline invariant below remains strict and still fails the overall soak.
+      report.cleanupOwnedComplete = remainingOwnedExposure <= 1e-12 && residualOwnedOrders.length === 0
       if (remainingOwnedExposure > 1e-12 || residualOwnedOrders.length > 0) {
         cleanupErrors.push(
           `residual owned soak state: quantity=${remainingOwnedExposure}, orders=${residualOwnedOrders.length}`,
@@ -1239,7 +1242,7 @@ async function main(): Promise<void> {
         if (candidateCatalog && ticker) {
           const rules = rulesModule.parseBingXInstrumentRules(candidateCatalog, symbol)
           const price = finite(ticker.last || ticker.ask || ticker.bid)
-          const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, price)
+          const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, price, 1.1)
           if (minimum.notionalUsdt * 2 > maxPositionNotionalUsd + 1e-8) throw new Error("Minimum entry plus accumulation exceeds the virtual-position notional cap")
         }
         candidateTickers.set(symbol, ticker)
@@ -1311,10 +1314,10 @@ async function main(): Promise<void> {
         priceTick,
         minQuantity: rules.minQuantity,
         minNotionalUsdt: rules.minNotionalUsdt,
-        minimumOrderNotionalUsdt: rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice).notionalUsdt,
+        minimumOrderNotionalUsdt: rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice, 1.1).notionalUsdt,
         status: rules.status,
       }
-      const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice)
+      const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice, 1.1)
       if (minimum.notionalUsdt * 2 > maxPositionNotionalUsd + 1e-8) {
         throw new Error(
           symbol + ": venue minimum for entry plus accumulation (" +
@@ -2187,8 +2190,11 @@ async function main(): Promise<void> {
         const marketPrice = finite(ticker?.last || ticker?.ask || ticker?.bid)
         if (!(marketPrice > 0)) throw new Error(`No current price for ${symbol}`)
         cycle.marketPrice = marketPrice
-        const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice)
+        const minimum = rulesModule.getMinimumBingXSmokeQuantity(rules, marketPrice, 1.1)
         cycle.requestedEntryQuantity = minimum.quantity
+        if (minimum.notionalUsdt * 2 > maxPositionNotionalUsd + 1e-8) {
+          throw new Error(`${symbol}: current entry plus accumulation minima exceed the hard VST position notional cap`)
+        }
 
         cycle.entry = await placeManagedOrder({
           symbol,
@@ -2226,12 +2232,21 @@ async function main(): Promise<void> {
         assertSoakHostGuard()
         await assertSharedAccountOrderHeadroom(`cycle_${index + 1}_accumulation`)
 
+        // Venue minimum quantity changes with the market. The entry quote can be several minutes old
+        // after fill reconciliation, so derive this independently submitted leg from a fresh quote.
+        const accumulationTicker = await connector.getTicker(symbol)
+        const accumulationPrice = finite(accumulationTicker?.last || accumulationTicker?.ask || accumulationTicker?.bid)
+        if (!(accumulationPrice > 0)) throw new Error(`No current accumulation price for ${symbol}`)
+        const accumulationMinimum = rulesModule.getMinimumBingXSmokeQuantity(rules, accumulationPrice, 1.1)
+        if ((cycle.entry.filledQuantity + accumulationMinimum.quantity) * accumulationPrice > maxPositionNotionalUsd + 1e-8) {
+          throw new Error(`${symbol}: refreshed accumulation would exceed the hard VST position notional cap`)
+        }
         cycle.accumulation = await placeManagedOrder({
           symbol,
           side: direction,
           positionDirection: direction,
-          quantity: minimum.quantity,
-          price: marketPrice,
+          quantity: accumulationMinimum.quantity,
+          price: accumulationPrice,
           controlId: safeClientId(`ctsvst${tradePath.orderPrefix}${progression}`, runSuffix, index),
           reduceOnly: false,
           updateCounters: true,
