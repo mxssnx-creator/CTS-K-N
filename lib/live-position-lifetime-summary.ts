@@ -389,17 +389,18 @@ function laneFromHash(hash: Record<string, unknown>, lane: LivePositionLifetimeL
 export async function readLivePositionLifetimeSummary(
   client: RedisClientLike,
   connectionId: string,
+  options: { strict?: boolean } = {},
 ): Promise<LivePositionLifetimeSummary> {
   const redis = client as any
   const [hash, terminalIndexRows, indexedContributions] = await Promise.all([
     typeof redis.hgetall === "function"
-      ? redis.hgetall(livePositionLifetimeSummaryKey(connectionId)).catch(() => ({}))
+      ? redis.hgetall(livePositionLifetimeSummaryKey(connectionId)).catch((error: unknown) => { if (options.strict) throw error; return {} })
       : Promise.resolve({}),
     typeof redis.llen === "function"
-      ? redis.llen(`live:positions:${connectionId}:closed`).catch(() => 0)
+      ? redis.llen(`live:positions:${connectionId}:closed`).catch((error: unknown) => { if (options.strict) throw error; return 0 })
       : Promise.resolve(0),
     typeof redis.hlen === "function"
-      ? redis.hlen(livePositionLifetimeContributionsKey(connectionId)).catch(() => 0)
+      ? redis.hlen(livePositionLifetimeContributionsKey(connectionId)).catch((error: unknown) => { if (options.strict) throw error; return 0 })
       : Promise.resolve(0),
   ])
   const uniqueTerminalIndexRows = Math.max(
@@ -453,6 +454,7 @@ export async function readLivePositionLifetimeSummary(
 
 export async function getLivePositionLifetimeSummary(
   connectionId: string,
+  options: { strict?: boolean } = {},
 ): Promise<LivePositionLifetimeSummary> {
   await initRedis()
   const client = getRedisClient()
@@ -465,7 +467,7 @@ export async function getLivePositionLifetimeSummary(
     const ledger = await readResultLedger(client, connectionId)
     if (ledger && ledger.meta.complete) return lifetimeSummaryFromLedger(ledger)
   } catch { /* fall back to the recorded summary */ }
-  return readLivePositionLifetimeSummary(client, connectionId)
+  return readLivePositionLifetimeSummary(client, connectionId, options)
 }
 
 export function lifetimeLaneDerived(lane: LivePositionLifetimeLane): {

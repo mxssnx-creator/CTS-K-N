@@ -1,4 +1,5 @@
 "use client"
+import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, type StrategyProcessingByRange } from "@/lib/strategy-execution-policy"
 
 /**
  * Strategy Coordination Settings Section
@@ -111,6 +112,7 @@ export interface CoordinationSettings {
   blockRowLiveMaxStack: number
   blockRowLivePauseCountRatio: number
   /** Normal/default strategy family; all evaluation remains available when off. */
+  processingByRange?: StrategyProcessingByRange
   normalEnabled: boolean
   /** Execute Main positions through Block adjustment rows only. */
   axisEnabled: boolean
@@ -214,9 +216,9 @@ export interface CoordinationSettings {
 /**
  * Operator-spec defaults.
  * - trailing: on, block: on, dca: off (per directive)
- * - minStep: 5 (default; exhaustive configured minimum through 30)
+ * - minStep: 2 (default; exhaustive configured minimum through 30)
  * - maxStopLossRatio: 2.5 (default=max; range 0.25-2.5, step 0.25)
- * - trailingMinStep: 8 (default; range 2-30)
+ * - trailingMinStep: 3 (default; range 2-30)
  * - PF defaults set in DEFAULT_STRATEGY_PROFILE (base=1.0, main/real=1.2)
  */
 export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
@@ -246,6 +248,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   blockRowLiveMaxStack: 6,
   blockRowLivePauseCountRatio: 1.0,
   normalEnabled: true,
+  processingByRange: {},
   axisEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
@@ -820,6 +823,10 @@ export function StrategyCoordinationSection({
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
+          <p className="text-xs text-muted-foreground">Overall Normal controls standalone Normal and Trailing entries. Their calculations remain available to enabled Axis, Block and DCA. Overall Trailing controls all trailing, including Signals.</p>
+          <div className="space-y-2" aria-label="Strategy processing by coordination">
+            {STRATEGY_PROCESSING_RANGES.map(range=><div key={range} className="grid grid-cols-3 items-center gap-3"><span className="text-xs capitalize">{range}</span>{(["normal","trailing"] as const).map(key=><label key={key} className="flex items-center gap-2 text-xs"><Switch aria-label={`${range} ${key} processing`} checked={value.processingByRange?.[range]?.[key] !== false} onCheckedChange={checked=>onChange({...value,processingByRange:{...value.processingByRange,[range]:{...value.processingByRange?.[range],[key]:checked}}})} />{key}</label>)}</div>)}
+          </div>
           <div className="flex items-start justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 p-3">
             <div className="flex-1 min-w-0">
               <Label className="text-sm font-semibold">Normal strategy</Label>

@@ -153,3 +153,14 @@ describe("Main variant cache follows the measured history", () => {
     expect(coordinator).toContain("#ec=${bEC}#h=${hist}`")
   })
 })
+
+
+describe("disjoint stage qualification",()=>{
+ test("incomplete exact blocks cannot fall back to a profitable parent; held rows remain reconcilable",()=>{
+  const source=sourceSet(),policy={long:20,short:10,minimal:3,shortPolarity:"negative" as const,minimalPolarity:"negative" as const};
+  const window=derivePosWindowStats([],20,policy);
+  const options={stage:"real" as const,lookback:20,metrics:{minProfitFactor:1.1,maxDrawdownTime:240},windowBySetKey:new Map([[source.setKey+"#row_real#row_live",window]])};
+  expect(materializeContinuousStageRows([source],options).rows).toHaveLength(0);
+  expect(materializeContinuousStageRows([source],{...options,activeSetKeys:new Set([source.setKey])}).rows).toHaveLength(1);
+ });
+})

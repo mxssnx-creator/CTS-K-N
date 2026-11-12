@@ -1,0 +1,29 @@
+name: Strategy feature verification
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  features:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+      CTS_BUILD_NODE_HEAP_MB: '4096'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run test:strategy-features
+      - run: pnpm run test:lastn-blocks
+      - run: pnpm exec jest --runInBand --testPathPatterns=project-order-identity
+      - name: Micro floors, minimum steps, partial controls and venue read evidence
+        run: >-
+          pnpm exec jest --runInBand
+          --testPathPatterns="protection-floors|minimum-step-runtime-parity|minimum-step-settings|live-stage-control-barrier|live-ledger-read-errors|bingx-response-body-deadline|stats-display-rendering|volume-balance-snapshot"
+      - run: pnpm run build

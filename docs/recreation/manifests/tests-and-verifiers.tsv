@@ -11,6 +11,7 @@ integration	__tests__/integration/preset-optimizer-store.test.ts
 integration	__tests__/integration/progression-api.test.ts
 operator-tool	__tests__/diagnostic-cleanup.ts
 operator-tool	__tests__/fixtures/legacy-technical-indicators.ts
+operator-tool	__tests__/support/esm-jest-transform.cjs
 operator-tool	components/test-dashboard.tsx
 operator-tool	components/test-live-orders.tsx
 operator-tool	scripts/autotest-drift.mjs
@@ -75,6 +76,7 @@ unit	__tests__/unit/bingx-instrument-rules.test.ts
 unit	__tests__/unit/bingx-library-fast-path.test.ts
 unit	__tests__/unit/bingx-public-api.test.ts
 unit	__tests__/unit/bingx-rate-limit-timing.test.ts
+unit	__tests__/unit/bingx-response-body-deadline.test.ts
 unit	__tests__/unit/bingx-ticker-admission.test.ts
 unit	__tests__/unit/bingx-vst-environment.test.ts
 unit	__tests__/unit/bingx-vst-migration.test.ts
@@ -282,9 +284,11 @@ unit	__tests__/unit/live-entry-readiness.test.ts
 unit	__tests__/unit/live-execution-honours-entry-protection-halt.test.ts
 unit	__tests__/unit/live-execution-summary.test.ts
 unit	__tests__/unit/live-family-statistics.test.ts
+unit	__tests__/unit/live-ledger-read-errors.test.ts
 unit	__tests__/unit/live-order-coordination.test.ts
 unit	__tests__/unit/live-order-metrics-snapshot.test.ts
 unit	__tests__/unit/live-order-preflight.test.ts
+unit	__tests__/unit/live-overview-exposure.test.ts
 unit	__tests__/unit/live-pnl-calculation.test.ts
 unit	__tests__/unit/live-pos-count-target.test.ts
 unit	__tests__/unit/live-position-actions.test.ts
@@ -331,6 +335,8 @@ unit	__tests__/unit/market-data-second-coverage.test.ts
 unit	__tests__/unit/market-data-synthetic-continuation.test.ts
 unit	__tests__/unit/min-stop-loss-ratio.test.ts
 unit	__tests__/unit/minimum-scales-with-variant.test.ts
+unit	__tests__/unit/minimum-step-runtime-parity.test.ts
+unit	__tests__/unit/minimum-step-settings.test.ts
 unit	__tests__/unit/minimum-volume-enforcement.test.ts
 unit	__tests__/unit/minute-scheduler-once-retry.test.ts
 unit	__tests__/unit/missing-route-callers.test.ts
@@ -404,6 +410,7 @@ unit	__tests__/unit/progression-order-aggregation.test.ts
 unit	__tests__/unit/progression-scope.test.ts
 unit	__tests__/unit/progression-stability.test.ts
 unit	__tests__/unit/progression-stats-rows-and-lineage.test.ts
+unit	__tests__/unit/project-order-identity.test.ts
 unit	__tests__/unit/protection-adopt-by-client-id.test.ts
 unit	__tests__/unit/protection-allowed-range.test.ts
 unit	__tests__/unit/protection-floor-migration.test.ts
@@ -441,6 +448,7 @@ unit	__tests__/unit/redis-persistence-cleanup.test.ts
 unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
+unit	__tests__/unit/relational-volume.test.ts
 unit	__tests__/unit/release-entry-lock-on-early-exit.test.ts
 unit	__tests__/unit/request-sequence.test.ts
 unit	__tests__/unit/requested-regressions.test.ts
@@ -525,6 +533,7 @@ unit	__tests__/unit/statistics-overview-current-counts.test.ts
 unit	__tests__/unit/statistics-rollups.test.ts
 unit	__tests__/unit/statistics-ui-correctness.test.ts
 unit	__tests__/unit/stats-canonical.test.ts
+unit	__tests__/unit/stats-display-rendering.test.ts
 unit	__tests__/unit/status-canonical-position-counts.test.ts
 unit	__tests__/unit/stop-loss-rejection-backoff.test.ts
 unit	__tests__/unit/stopped-out-row-not-a-violation.test.ts
@@ -539,6 +548,7 @@ unit	__tests__/unit/strategy-indication-representatives.test.ts
 unit	__tests__/unit/strategy-main-set-deduplication.test.ts
 unit	__tests__/unit/strategy-memory-guard.test.ts
 unit	__tests__/unit/strategy-position-entry-ledger.test.ts
+unit	__tests__/unit/strategy-processing-ranges.test.ts
 unit	__tests__/unit/strategy-profit-factor-contract.test.ts
 unit	__tests__/unit/strategy-real-materialization-limit.test.ts
 unit	__tests__/unit/strategy-real-stats.test.ts
@@ -592,6 +602,7 @@ unit	__tests__/unit/unplaced-rows-not-exposure.test.ts
 unit	__tests__/unit/unsubmitted-live-retention.test.ts
 unit	__tests__/unit/validate-only-measured-sets.test.ts
 unit	__tests__/unit/venue-position-close.test.ts
+unit	__tests__/unit/volume-balance-snapshot.test.ts
 unit	__tests__/unit/volume-calculator-variants.test.ts
 unit	__tests__/unit/volume-factor-save-precedence.test.ts
 unit	__tests__/unit/volume-identity-systemwide.test.ts

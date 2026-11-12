@@ -46,6 +46,30 @@ describe("BingX Prod-VST connector contract", () => {
     )
   })
 
+  test.each([[100, 123, 87], [100, 0, 0], [0, 123, 0]])("SDK balance keeps wallet %s separate from equity %s and free margin %s", async (wallet, equity, free) => {
+    global.fetch = jest.fn(async () => { throw new Error("Unexpected network call") }) as typeof fetch
+    const connector = new BingXConnector({ apiKey: "demo-api-key", apiSecret: "demo-api-secret", isTestnet: true, apiType: "perpetual_futures" })
+    jest.spyOn(connector as any, "getSdkAccountService").mockResolvedValue({
+      getPerpetualSwapAccountAssetInformation: async () => ({ code: 0, data: { balance: { asset: "USDT", balance: String(wallet), equity: String(equity), availableMargin: String(free) } } }),
+    })
+    await expect(connector.getBalance()).resolves.toMatchObject({ success: true, balance: wallet, equity, availableMargin: free, settlementAsset: "USDT" })
+    expect((global.fetch as jest.Mock).mock.calls.every(([url]) => new URL(String(url)).pathname.endsWith("/server/time"))).toBe(true)
+  })
+
+  test("REST wallet-only responses leave unknown account equity and free margin absent", async () => {
+    global.fetch = jest.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
+      if (url.pathname.includes("server/time")) return Response.json({ code: 0, data: { serverTime: Date.now() } })
+      if (url.pathname.includes("/user/balance")) return Response.json({ code: 0, data: { balance: { asset: "USDT", balance: "100" } } })
+      return Response.json({ code: 0, data: { lastPrice: "60000" } })
+    }) as typeof fetch
+    const connector = new BingXConnector({ apiKey: "demo-api-key", apiSecret: "demo-api-secret", isTestnet: true, apiType: "perpetual_futures" })
+    const result = await connector.getBalance()
+    expect(result).toMatchObject({ success: true, balance: 100 })
+    expect(result.equity).toBeUndefined()
+    expect(result.availableMargin).toBeUndefined()
+  })
+
   test("anchors a slow VST time sample at response arrival so the next signature stays behind the venue clock", async () => {
     const originalNow = Date.now
     let now = 1_700_000_000_000

@@ -17,7 +17,7 @@
  * NOW: 100% Redis-backed, no SQL.
  */
 
-import { applyTrailingDistanceFloorRatio } from "@/lib/protection-floors"
+import { applyTrailingDistanceFloorRatio, protectionFloorsForRange } from "@/lib/protection-floors"
 import {
   takeProfitRatio,
   trailingActivationThreshold,
@@ -772,23 +772,27 @@ export class RealtimeProcessor {
    * activating or ratcheting a trailing stop. An already armed stop is kept
    * as-is (never loosened); it simply stops moving. Signal keeps its own lane.
    */
-  private _trailingPolicy: { enabled: boolean; at: number } | null = null
+  private _trailingPolicy: { enabled: boolean; at: number; processingByRange?: import("@/lib/strategy-execution-policy").StrategyProcessingByRange } | null = null
   private async isTrailingAllowedFor(position: any): Promise<boolean> {
     const now = Date.now()
     if (!this._trailingPolicy || now - this._trailingPolicy.at > 5_000) {
       let enabled = this._trailingPolicy?.enabled ?? true
+      let processingByRange = this._trailingPolicy?.processingByRange
       try {
         const settings = await getCanonicalConnectionSettingsOverlay(this.connectionId)
-        enabled = normalizeStrategyExecutionPolicy(settings).trailingEnabled
+        const policy = normalizeStrategyExecutionPolicy(settings)
+        enabled = policy.trailingEnabled
+        processingByRange = policy.processingByRange
       } catch { /* keep last known value */ }
-      this._trailingPolicy = { enabled, at: now }
+      this._trailingPolicy = { enabled, at: now, processingByRange }
     }
     return isMainTrailingAllowed(
       {
+        ...position,
         indicationType: position?.indication_type ?? position?.indicationType,
         trailingMode: position?.trailing_mode,
       },
-      { trailingEnabled: this._trailingPolicy.enabled },
+      { trailingEnabled: this._trailingPolicy.enabled, processingByRange: this._trailingPolicy.processingByRange },
     )
   }
 
@@ -926,7 +930,7 @@ export class RealtimeProcessor {
       const rawStopRatio = parseFloat(position.trailing_stop_ratio || "0")
       // Operator floor: a configured trailing distance is raised to the
       // minimum trailing-stop distance (default 0.5 %), never lowered.
-      const stopRatio = rawStopRatio > 0 ? applyTrailingDistanceFloorRatio(rawStopRatio) : rawStopRatio
+      const stopRatio = rawStopRatio > 0 ? applyTrailingDistanceFloorRatio(rawStopRatio, protectionFloorsForRange(position.strategyRange ?? position.strategy_range).minTrailingStopDistancePct) : rawStopRatio
       let stepRatio = parseFloat(position.trailing_step_ratio || "0")
       const client = getRedisClient()
       const hashKey = `pseudo_position:${this.connectionId}:${position.id}`

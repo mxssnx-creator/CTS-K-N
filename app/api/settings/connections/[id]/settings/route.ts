@@ -1,3 +1,5 @@
+import {relationalVolumeSettings} from "@/shared/cts-volume/ratios.ts";
+import { normalizeStrategyProcessingByRange } from "@/lib/strategy-execution-policy"
 import { clampStageProfitFactorPatch, MAIN_TRADE_PF_RATIO_MAX } from "@/lib/main-trade-profit-factor"
 import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 import { type NextRequest, NextResponse } from "next/server"
@@ -24,12 +26,11 @@ import {
   readStoredIndicationProfile,
 } from "@/lib/active-indication-profile"
 import {
-  DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP,
-  MAX_BASE_STEP,
   MAX_VOLUME_FACTOR,
   MIN_VOLUME_FACTOR,
-  normalizeBaseMinStep,
 } from "@/lib/constants"
+import { resolveMinimumStepSettings } from "@/lib/minimum-step-settings"
+import { clampBlockVolumeRatio } from "@/lib/block-volume-ratio-bounds"
 import { changedSettingKeys, settingsValuesEqual } from "@/lib/settings-diff"
 import { maskConnectionSecrets, maskConnectionSettings } from "@/lib/connection-secrets"
 import { applyIncomingHistoricPrecedence, historicTestSettingsToHashFields, normalizeHistoricTestSettings } from "@/lib/historic-test-settings"
@@ -207,9 +208,12 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "block_volume_step_ratio",
   "overallControlOrdersOnly", "overall_control_orders_only",
   "control_orders",
+  "trailingEnabled",
   "variantTrailingEnabled",
   "variantBlockEnabled",
   "normalEnabled",
+  "relationalVolumeRatios",
+  "strategyProcessingByRange",
   "blockOnlyEnabled",
   "variantDcaEnabled",
   "axisPrevEnabled",
@@ -294,12 +298,9 @@ function normalizeIdentityVolumeFactors<T extends Record<string, any>>(settings:
 
 function normalizeUnlimitedPipeline<T extends Record<string, any>>(settings: T): T {
   const mutable = settings as Record<string, any>
-  const minStep = normalizeBaseMinStep(mutable.minStep)
+  const { minStep, trailingMinStep } = resolveMinimumStepSettings(mutable)
   mutable.minStep = minStep
-  mutable.trailingMinStep = Math.max(
-    minStep,
-    Math.min(MAX_BASE_STEP, Math.round(Number(mutable.trailingMinStep) || DEFAULT_TRAILING_MIN_STEP)),
-  )
+  mutable.trailingMinStep = trailingMinStep
   mutable.strategyRealSetsSafetyCeiling = 0
   mutable.maxRealSets = 0
   mutable.strategyLiveSetsCeiling = 0
@@ -486,10 +487,8 @@ export async function GET(
     // Include defaults for newer coordination knobs so existing production
     // connections expose stable values before the first save after upgrade.
     const settings: Record<string, any> = normalizeUnlimitedPipeline({
-      minStep: DEFAULT_BASE_MIN_STEP,
       maxStopLossRatio: 2.5,
       minStopLossRatio: 0.25,
-      trailingMinStep: DEFAULT_TRAILING_MIN_STEP,
       ...jsonSettings,
       ...hashSettings,
     })
@@ -534,6 +533,7 @@ export async function GET(
     ))
     const coordinationSettings = {
       ...storedCoord,
+      ...resolveMinimumStepSettings(settings),
       axes: normalizeStrategyAxes(
         storedCoord.axes && typeof storedCoord.axes === "object" ? storedCoord.axes : undefined,
         settings,
@@ -541,6 +541,7 @@ export async function GET(
       variants: {
         ...storedVariants,
         trailing: asBoolean(firstDefined(
+          settings.trailingEnabled,
           storedVariants.trailing,
           settings.strategyBaseTrailingEnabled,
           settings.variantTrailingEnabled,
@@ -562,6 +563,7 @@ export async function GET(
       },
       // Canonical main execution-family switch. Retired exclusive-family
       // values are not fallbacks and cannot control dispatch.
+      processingByRange: normalizeStrategyProcessingByRange(settings.strategyProcessingByRange ?? storedCoord.processingByRange),
       normalEnabled: asBoolean(firstDefined(
         storedCoord.normalEnabled,
         storedCoord.normal_enabled,
@@ -578,11 +580,8 @@ export async function GET(
         settings.blockOnly,
         settings.variantBlockOnly,
       ), true),
-      blockVolumeRatio: asBoundedNumber(
+      blockVolumeRatio: clampBlockVolumeRatio(
         firstDefined(storedCoord.blockVolumeRatio, settings.blockVolumeRatio),
-        1.0,
-        0.25,
-        3.0,
       ),
       blockProfitFactorRatio: normalizeBlockProfitFactorRatio(
         firstDefined(
@@ -1202,6 +1201,8 @@ export async function PATCH(
     }
 
     const flatKnobs: Record<string, string> = {}
+    if(settings.relationalVolumeRatios!==undefined)flatKnobs.relationalVolumeRatios=JSON.stringify(relationalVolumeSettings(settings.relationalVolumeRatios,true))
+    if (settings.strategyProcessingByRange !== undefined) flatKnobs.strategyProcessingByRange = JSON.stringify(normalizeStrategyProcessingByRange(settings.strategyProcessingByRange))
     const knobKeys = [
       "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
       "minStep", "maxStopLossRatio", "minStopLossRatio", "portfolioRiskBudgetPercent", "trailingMinStep", "posCountsVolumeRatio",
@@ -1276,6 +1277,7 @@ export async function PATCH(
       if (typeof coord.blockActiveRealEnabled === "boolean") flatKnobs.blockActiveRealEnabled = String(coord.blockActiveRealEnabled)
       if (typeof coord.blockActiveLiveEnabled === "boolean") flatKnobs.blockActiveLiveEnabled = String(coord.blockActiveLiveEnabled)
       if (typeof coord.blockRowLiveEnabled === "boolean") flatKnobs.blockRowLiveEnabled = String(coord.blockRowLiveEnabled)
+      flatKnobs.strategyProcessingByRange = JSON.stringify(normalizeStrategyProcessingByRange(settings.strategyProcessingByRange ?? coord.processingByRange ?? merged.strategyProcessingByRange))
       if (typeof coord.normalEnabled === "boolean") flatKnobs.normalEnabled = String(coord.normalEnabled)
       if (typeof coord.blockOnlyEnabled === "boolean") flatKnobs.blockOnlyEnabled = String(coord.blockOnlyEnabled)
       const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)
@@ -1308,10 +1310,11 @@ export async function PATCH(
       )
       flatKnobs.strategyBaseTrailingVariants = JSON.stringify(normalizedTrailing)
       const trailingEnabled = parseStoredBoolean(
-        (coord.variants as Record<string, unknown> | undefined)?.trailing ?? merged.strategyBaseTrailingEnabled,
+        settings.trailingEnabled ?? (coord.variants as Record<string, unknown> | undefined)?.trailing ?? merged.trailingEnabled ?? merged.strategyBaseTrailingEnabled,
         true,
       )
       flatKnobs.strategyBaseTrailingEnabled = trailingEnabled ? "true" : "false"
+      flatKnobs.trailingEnabled = trailingEnabled ? "true" : "false"
 
       const dca = normalizeDcaProfile({ ...merged, ...coord })
       flatKnobs.dcaMaxSteps = String(dca.maxSteps)
@@ -1414,6 +1417,11 @@ export async function PATCH(
       ] as Array<[string, string | null]>) if (v !== null) flatKnobs[k] = v
     }
 
+    // Keep the physical-entry rechecks on the same persisted processing policy as the strategy selector.
+    for (const key of ["normalEnabled", "trailingEnabled", "variantTrailingEnabled", "strategyProcessingByRange", "relationalVolumeRatios"] as const) {
+      const value = flatKnobs[key] ?? merged[key]
+      if (value !== undefined) connectionPatch[key] = typeof value === "object" ? JSON.stringify(value) : String(value)
+    }
     flatKnobs.settings_version = settingsVersion
     const settingsPatch = {
       ...serializeConnectionSettingsHash(merged),

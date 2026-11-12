@@ -1,7 +1,7 @@
 import { simulatedBookForDisplay } from "@/lib/position-book-stats"
 import {
-  getClosedLivePositionReadModels,
-  getOpenLivePositionReadModels,
+  getClosedLivePositionReadModelsStrict,
+  getOpenLivePositionReadModelsStrict,
   LIVE_POSITION_CLOSED_READ_LIMIT,
   LIVE_POSITION_OPEN_READ_LIMIT,
   type LivePositionReadModel,
@@ -152,10 +152,10 @@ function timestampOf(position: LivePositionReadModel): number {
 
 async function buildSummary(connectionId: string): Promise<LiveExecutionSummary> {
   const [openRows, closedRows, exchange, lifetime] = await Promise.all([
-    getOpenLivePositionReadModels(connectionId, LIVE_POSITION_OPEN_READ_LIMIT),
-    getClosedLivePositionReadModels(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT),
+    getOpenLivePositionReadModelsStrict(connectionId, LIVE_POSITION_OPEN_READ_LIMIT, { includeKnownNonResults: true }),
+    getClosedLivePositionReadModelsStrict(connectionId, LIVE_POSITION_CLOSED_READ_LIMIT, { includeKnownNonResults: true }),
     getExchangeLiveStateSummary(connectionId),
-    getLivePositionLifetimeSummary(connectionId),
+    getLivePositionLifetimeSummary(connectionId, { strict: true }),
   ])
 
   // The open compatibility index may still contain a terminal row while a
@@ -169,6 +169,10 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     byIdentity.set(positionIdentity(position, openRows.length + index), position)
   })
   const positions = [...byIdentity.values()].filter(isExecutedLivePosition)
+  // Paper activity and pending intents are valid book diagnostics even when
+  // the results ledger has excluded them from exchange performance results.
+  const bookLanes: Record<LivePositionSource, LivePositionReadModel[]> = { real: [], simulated: [], unknown: [] }
+  for (const row of byIdentity.values()) bookLanes[getLivePositionSource(row as Record<string, any>)].push(row)
   const lanes: Record<LivePositionSource, LivePositionReadModel[]> = {
     real: [],
     simulated: [],
@@ -321,9 +325,9 @@ async function buildSummary(connectionId: string): Promise<LiveExecutionSummary>
     unknown,
     all,
     books: {
-      real: computePositionBookStats(lanes.real as Array<Record<string, any>>),
-      simulated: simulatedBookForDisplay(computePositionBookStats(lanes.simulated as Array<Record<string, any>>)),
-      unknown: computePositionBookStats(lanes.unknown as Array<Record<string, any>>),
+      real: computePositionBookStats(bookLanes.real as Array<Record<string, any>>),
+      simulated: simulatedBookForDisplay(computePositionBookStats(bookLanes.simulated as Array<Record<string, any>>)),
+      unknown: computePositionBookStats(bookLanes.unknown as Array<Record<string, any>>),
     },
     exchange,
     complete:

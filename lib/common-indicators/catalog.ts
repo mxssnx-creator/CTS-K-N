@@ -1,3 +1,4 @@
+import {PORTED_CATALOG} from "@/shared/cts-indications/catalog"
 /**
  * Catalogue of the Common types ported from CTS-A-O (classic registry families,
  * the three research batches and the single-symbol Micro events). Pure data and
@@ -88,6 +89,14 @@ const entry = <T extends string>(
 })
 
 export const COMMON_CATALOG = [
+  entry("tacticDca", "structure", "state", ["tactic-dca"], "Tactic · DCA decline / recovery",
+    "Independent CTS-A-O decline levels, spacing bases, recovery ratios and confirmation methods. Source index selects one exact catalogue configuration; PF qualification remains independent.", {
+      sourceIndex: range("Tactic source index (see catalogue)",0,3,1,0,PORTED_CATALOG.filter(s=>s.id.startsWith("tactic-dca-")).length-1),
+    }, {defaultEnabled:false}),
+  entry("inverseAo", "structure", "state", ["inverse"], "Inverse · CTS-A-O",
+    "Original CTS-A-O inverse states, before entry. No return negation. Independent configuration history. Market/pair sources remain unavailable without a matched reference universe.", {
+      sourceIndex: range("Inverse source index (see catalogue)",0,5,1,0,PORTED_CATALOG.filter(s=>s.kind==="inverse").length-1),
+    }, {defaultEnabled:false}),
   entry("relativeVigor", "oscillator", "event", ["r-rvi", "r-rvi-m"], "Relative Vigor Index cross",
     "RVI crosses its signal above zero (long) or below zero (short); gaps restart the warm-up.", {
       period: range("Period", 10, 20, 10, 1, 100), keep: keep(1),

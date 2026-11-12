@@ -489,11 +489,11 @@ export function SystemOverview() {
             </div>
           </div>
         </div>
-        {simulatedBook && (simulatedBook.total > 0 || simulatedBook.open > 0) ? (
+        {simulatedBook && (simulatedBook.total > 0 || simulatedBook.open > 0 || (simulatedBook.pendingEntries || 0) > 0 || simulatedBook.dataAvailable === false) ? (
           <div className="mt-3">
             <SimulatedBookCard
               book={simulatedBook}
-              title="Simulated positions (all Main connections)"
+              title="Simulated positions and orders (all Main connections)"
               showBreakdown={false}
               testIdPrefix="dashboard-sim"
             />

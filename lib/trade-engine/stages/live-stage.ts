@@ -1,3 +1,5 @@
+import {relationalVolumeFactor,type VolumeContext} from "../../../shared/cts-volume/ratios.ts";
+import { isStrategySetExecutionEnabled, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
 import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
@@ -203,6 +205,7 @@ import {
   applyTrailingDistanceFloorPct,
   applyTrailingDistanceFloorRatio,
   getActiveProtectionFloors,
+  protectionFloorsForRange,
   setActiveProtectionFloors,
 } from "@/lib/protection-floors"
 import { logRuntimeError, logRuntimeInfo, logRuntimeWarning } from "@/lib/runtime-log-throttle"
@@ -469,8 +472,9 @@ async function loadExchangeQuantityRules(
 const LOG_PREFIX = "[v0] [LivePositionStage]"
 const MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE = 0.2
 /** Exchange minimum raised to the operator stop-loss floor (default 0.5 %). */
-function minExchangeStopLossPercent(): number {
-  return Math.max(MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE, getActiveProtectionFloors().minStopLossPct)
+function minExchangeStopLossPercent(range?: string): number {
+  const micro = /^(micro|low[- ]?range)$/i.test(range ?? "");
+  return Math.max(micro ? .01 : MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE, protectionFloorsForRange(range).minStopLossPct)
 }
 const SIGNAL_ADMISSION_LOCK_TTL_MS = 15_000
 const SIGNAL_ADMISSION_WAIT_MS = 2_000
@@ -1287,6 +1291,7 @@ function computeSetAwareSL(
   setVariant: LivePosition["setVariant"],
   trailingProfile: LivePosition["trailingProfile"] | undefined,
   takeProfitPct?: unknown,
+  strategyRange?: string,
 ): number {
   let candidateSl: number
   if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
@@ -1297,20 +1302,20 @@ function computeSetAwareSL(
     // in sync from the first tick.
     const trailingSl = isSignalDynamicTrailingProfile(trailingProfile)
       ? Math.max(0.8, (trailingProfile.minStopRatio ?? trailingProfile.stopRatio) * 100)
-      : applyTrailingDistanceFloorPct(trailingProfile.stopRatio * 100)
-    candidateSl = Math.max(minExchangeStopLossPercent(), trailingSl)
+      : applyTrailingDistanceFloorPct(trailingProfile.stopRatio * 100, protectionFloorsForRange(strategyRange).minTrailingStopDistancePct)
+    candidateSl = Math.max(minExchangeStopLossPercent(strategyRange), trailingSl)
   } else {
     // For all other variants (default, block, dca, pause) the PF-derived value
     // is already variant-adjusted (block: scaled up by sizeMultiplier, dca: 0.5×).
     // Enforce the minimum floor in all cases.
-    candidateSl = Math.max(minExchangeStopLossPercent(), derivedSl)
+    candidateSl = Math.max(minExchangeStopLossPercent(strategyRange), derivedSl)
   }
   return normalizeProtectionPercentages({
     takeProfitPct,
     fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
     stopLossPct: candidateSl,
     minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
-    minimumStopLossPct: minExchangeStopLossPercent(),
+    minimumStopLossPct: minExchangeStopLossPercent(strategyRange),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   }).stopLossPct
 }
@@ -1462,6 +1467,8 @@ function releaseStopSem(): void {
  * shape, not the stage pipeline shape).
  */
 export interface LivePosition {
+  capturedMicroProtection?: {slPct: number; trailPct: number}
+  strategyRange?: string
   id: string
   connectionId: string
   symbol: string
@@ -1769,6 +1776,7 @@ export interface LivePosition {
   dcaTakeProfitPrice?: number
   setKey?: string
   indicationType?: string
+  relationalVolumeMultiplier?: number
   signalRisk?: SignalRisk
   exchangeData?: Record<string, unknown>
   orderId?: string
@@ -2549,20 +2557,20 @@ async function refreshEntryOrderAccounting(
   return position.entryAccountingComplete
 }
 
-function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjusted: boolean; reason?: string } {
+function normalizeStopLossPercent(rawStopLoss: unknown, strategyRange?: string): { value: number; adjusted: boolean; reason?: string } {
   const n = Number(rawStopLoss)
   if (!Number.isFinite(n) || n <= 0) {
     return {
-      value: minExchangeStopLossPercent(),
+      value: minExchangeStopLossPercent(strategyRange),
       adjusted: true,
-      reason: `missing/disabled SL normalized to minimum ${minExchangeStopLossPercent()}%`,
+      reason: `missing/disabled SL normalized to minimum ${minExchangeStopLossPercent(strategyRange)}%`,
     }
   }
-  if (n < minExchangeStopLossPercent()) {
+  if (n < minExchangeStopLossPercent(strategyRange)) {
     return {
-      value: minExchangeStopLossPercent(),
+      value: minExchangeStopLossPercent(strategyRange),
       adjusted: true,
-      reason: `SL ${n}% below minimum ${minExchangeStopLossPercent()}% — using minimum`,
+      reason: `SL ${n}% below minimum ${minExchangeStopLossPercent(strategyRange)}% — using minimum`,
     }
   }
   return { value: n, adjusted: false }
@@ -2576,15 +2584,15 @@ function normalizeStopLossPercent(rawStopLoss: unknown): { value: number; adjust
  * beyond the systemwide 1.5×TP contract.
  */
 function normalizeLivePositionProtection(
-  position: Pick<LivePosition, "takeProfit" | "stopLoss">,
+  position: Pick<LivePosition, "takeProfit" | "stopLoss" | "strategyRange" | "capturedMicroProtection">,
 ): { takeProfitPct: number; stopLossPct: number } {
   const protection = normalizeProtectionPercentages({
     takeProfitPct: position.takeProfit,
     fallbackTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
     stopLossPct: position.stopLoss,
-    fallbackStopLossPct: minExchangeStopLossPercent(),
+    fallbackStopLossPct: position.capturedMicroProtection?.slPct ?? minExchangeStopLossPercent(position.strategyRange),
     minimumTakeProfitPct: MIN_EXCHANGE_STOP_LOSS_PERCENT_BASE,
-    minimumStopLossPct: minExchangeStopLossPercent(),
+    minimumStopLossPct: position.capturedMicroProtection?.slPct ?? minExchangeStopLossPercent(position.strategyRange),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   position.takeProfit = protection.takeProfitPct
@@ -3126,6 +3134,7 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     "dcaTakeProfitPrice",
     "fillCounterRecordedAt",
     "sizeMultiplier",
+    "relationalVolumeMultiplier",
     "posCountsLongSetCount",
     "posCountsShortSetCount",
     "posCountsNetSetCount",
@@ -3181,10 +3190,10 @@ function mergeLivePositionSnapshotSources(
     : { ...hashPosition, ...legacy }
 }
 
-async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string): Promise<LivePosition | null> {
+async function readLivePositionSnapshot(client: any, connectionId: string, positionId: string, strict = false): Promise<LivePosition | null> {
   const [legacyRaw, hash] = await Promise.all([
-    client.get(`live:position:${positionId}`).catch(() => null),
-    client.hgetall(positionHashKey(connectionId, positionId)).catch(() => null),
+    client.get(`live:position:${positionId}`).catch((error: unknown) => { if (strict) throw error; return null }),
+    client.hgetall(positionHashKey(connectionId, positionId)).catch((error: unknown) => { if (strict) throw error; return null }),
   ])
   return mergeLivePositionSnapshotSources(legacyRaw, hash)
 }
@@ -4413,7 +4422,9 @@ function makeDurableClientOrderId(prefix: string, position: Pick<LivePosition, "
   const kind = String(prefix || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const symbol = String(position.symbol || "x").replace(/[^a-zA-Z0-9]/g, "").slice(0, 6)
   const suffix = nanoid(8).replace(/[^a-zA-Z0-9]/g, "")
-  return `${clientOrderSystemTypePrefix(position.connectionId, position.executionIntent)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32)
+  // BingX echoes client IDs in lowercase. Persist the same canonical value
+  // we submit so an ambiguous acknowledgement remains recoverable by ID.
+  return `${clientOrderSystemTypePrefix(position.connectionId, position.executionIntent)}${kind}${symbol}${Date.now().toString(36)}${suffix}`.slice(0, 32).toLowerCase()
 }
 
 function firstNonEmptyIdentifier(...values: unknown[]): string | undefined {
@@ -4500,9 +4511,14 @@ async function recoverEntryOrderByClientId(
     timeoutMs?: number
     /** Total budget across every connector lookup in this recovery attempt. */
     totalTimeoutMs?: number
+    /** Successful tick snapshot: recover known accepted controls without more I/O. */
+    liveOrderIds?: Set<string> | null
   } = {},
 ): Promise<any | null> {
   if (!connector || !clientOrderId) return null
+  const bingx = String(connector.exchange ?? connector.exchangeId ?? connector.constructor?.name ?? "").toLowerCase().includes("bingx")
+  const lookupClientOrderId = bingx ? clientOrderId.toLowerCase() : clientOrderId
+  const matchesClientOrderId = (value: string) => (bingx ? value.toLowerCase() : value) === lookupClientOrderId
   const startedAt = Date.now()
   const totalTimeoutMs = Math.max(1, Number(options.totalTimeoutMs || 0) || Number.POSITIVE_INFINITY)
   const timeoutForLookup = (): number | null => {
@@ -4514,19 +4530,40 @@ async function recoverEntryOrderByClientId(
   const normalize = (candidate: any): any | null => {
     const raw = candidate?.order ?? candidate?.data ?? candidate
     if (!raw || candidate?.success === false) return null
-    const echoedClientId = firstNonEmptyIdentifier(raw?.clientOrderId, raw?.clientOrderID, raw?.client_oid)
-    if (echoedClientId && echoedClientId !== clientOrderId) return null
+    const candidateSymbol = String(raw?.symbol || "").toUpperCase().replace(/[-_/]/g, "")
+    if (candidateSymbol && candidateSymbol !== symbol.toUpperCase().replace(/[-_/]/g, "")) return null
+    const echoedClientId = firstNonEmptyIdentifier(raw?.clientOrderId, raw?.clientOrderID, raw?.client_oid, raw?.clOrdId)
+    if (echoedClientId && !matchesClientOrderId(echoedClientId)) return null
     const orderId = firstNonEmptyIdentifier(raw?.orderId, raw?.orderID, raw?.id, raw?.ordId)
     if (!orderId) return null
-    return { ...raw, success: true, orderId, clientOrderId }
+    return { ...raw, success: true, orderId, clientOrderId: lookupClientOrderId }
+  }
+
+  const observed = (options.liveOrderIds as LiveOrderIdSet | null | undefined)?.observedOrdersById
+  if (observed) {
+    const fromSnapshot = (candidate: any) => {
+      const echoed = firstNonEmptyIdentifier(candidate?.clientOrderId, candidate?.clientOrderID, candidate?.client_oid, candidate?.clOrdId)
+      if (!echoed || !matchesClientOrderId(echoed)) return null
+      const observedSymbol = String(candidate?.symbol || "").toUpperCase().replace(/[-_/]/g, "")
+      if (observedSymbol && observedSymbol !== symbol.toUpperCase().replace(/[-_/]/g, "")) return null
+      return normalize(candidate)
+    }
+    const direct = fromSnapshot(observed.get(lookupClientOrderId) ?? observed.get(clientOrderId))
+    if (direct) return direct
+    // Older BingX IDs can contain uppercase characters. Other venues keep
+    // their exact client-ID identity; no case-insensitive adoption applies.
+    if (bingx) for (const candidate of observed.values()) {
+      const recovered = fromSnapshot(candidate)
+      if (recovered) return recovered
+    }
   }
 
   for (const lookup of [
     typeof connector.getOrderDetails === "function"
-      ? () => connector.getOrderDetails(symbol, undefined, clientOrderId)
+      ? () => connector.getOrderDetails(symbol, undefined, lookupClientOrderId)
       : null,
     typeof connector.getOpenOrder === "function"
-      ? () => connector.getOpenOrder(symbol, undefined, clientOrderId)
+      ? () => connector.getOpenOrder(symbol, undefined, lookupClientOrderId)
       : null,
   ]) {
     if (!lookup) continue
@@ -4552,12 +4589,12 @@ async function recoverEntryOrderByClientId(
         `recoverEntryOrderByClientId.openOrders(${symbol})`,
       )
       const match = Array.isArray(orders)
-        ? orders.find((order: any) => firstNonEmptyIdentifier(
+        ? orders.find((order: any) => matchesClientOrderId(firstNonEmptyIdentifier(
             order?.clientOrderId,
             order?.clientOrderID,
             order?.client_oid,
             order?.clOrdId,
-          ) === clientOrderId)
+          ) || ""))
         : null
       return normalize(match)
     } catch { /* authoritative sync will retry */ }
@@ -5169,6 +5206,7 @@ async function resolveAccumulationPlan(
     {
       tradeMode: "main",
       sizeMultiplier: real?.sizeMultiplier ?? existing.sizeMultiplier,
+      relationalVolumeMultiplierOverride:existing.relationalVolumeMultiplier??1,
       allowUnboundedVariantMultiplier: Boolean(real?.combinedPosCounts || existing.combinedPosCounts),
       indicationType: real?.indicationType ?? existing.indicationType,
       marketType: existing.marketType,
@@ -9116,10 +9154,10 @@ async function placeProtectionOrder(
       console.warn(`${tag} QUOTA_EXCEEDED (code=110206): TP/SL order limit reached — caller will suspend placement`)
       return { orderId: "QUOTA_EXCEEDED", armedQuantity: 0 }
     }
-    // result.error is the connector's normalized venue-side message.
-    // Log verbatim so operators see the EXACT venue rejection.
+    // A response deadline is delivery-ambiguous, not a venue rejection.
+    const deliveryState = isAmbiguousControlOrderDelivery(errMsg) ? "DELIVERY UNCONFIRMED" : "VENUE REJECTED"
     console.warn(
-      `${tag} VENUE REJECTED: error="${result?.error || "unknown"}" code=${result?.code ?? "n/a"} latency=${latencyMs}ms`,
+      `${tag} ${deliveryState}: error="${result?.error || "unknown"}" code=${result?.code ?? "n/a"} latency=${latencyMs}ms`,
     )
     return { orderId: null, armedQuantity: 0 }
   } catch (err) {
@@ -9501,7 +9539,7 @@ function ratchetManualTrailingStop(pos: LivePosition): boolean {
 
   const requestedDistancePct = Number(manual.trailingDistancePct)
   const distancePct = Number.isFinite(requestedDistancePct) && requestedDistancePct > 0
-    ? applyTrailingDistanceFloorPct(requestedDistancePct)
+    ? applyTrailingDistanceFloorPct(requestedDistancePct, pos.capturedMicroProtection?.trailPct ?? protectionFloorsForRange(pos.strategyRange).minTrailingStopDistancePct)
     : requestedDistancePct
   const markPrice = getProtectionReferencePrice(pos)
   if (!Number.isFinite(distancePct) || distancePct <= 0 || !Number.isFinite(markPrice) || markPrice <= 0) {
@@ -10335,6 +10373,7 @@ async function updateProtectionOrders(
       connector,
       pos.symbol,
       pending.clientOrderId,
+      { liveOrderIds },
     )
     const recoveredStatus = String(recovered?.status || "").toLowerCase()
     const terminalStatuses = new Set([
@@ -11101,7 +11140,7 @@ async function settleSlotControlsWithoutGuess(
   for (const leg of pendingLegs) {
     const pending = position.pendingProtectionOrders?.[leg]
     if (!pending?.clientOrderId) continue
-    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId)
+    const recovered = await recoverEntryOrderByClientId(connector, position.symbol, pending.clientOrderId, { liveOrderIds })
     const recoveredId = firstNonEmptyIdentifier(recovered?.orderId, recovered?.id)
     if (recoveredId) {
       if (leg === "stopLoss") position.stopLossOrderId = recoveredId
@@ -11992,7 +12031,7 @@ async function reconcileAggregateProtectionBook(
         && existingSecurityOwner?.id === leader.id
       if (pendingBlocksPlacement) leader.securityStopStatus = "pending"
       if (pending?.clientOrderId) {
-        const recovered = await recoverEntryOrderByClientId(connector, leader.symbol, pending.clientOrderId)
+        const recovered = await recoverEntryOrderByClientId(connector, leader.symbol, pending.clientOrderId, { liveOrderIds })
         const recoveredId = firstNonEmptyIdentifier(recovered?.orderId, recovered?.id)
         if (recoveredId) {
           const recoveredQuantity = controlOrderRequestedQuantity(recovered, 0)
@@ -13858,7 +13897,7 @@ export async function executeLivePosition(
     const failures = entry?.consecutiveFailures ?? 1
     const stepIdx = Math.min(failures - 1, MARGIN_COOLDOWN_STEPS_MS.length - 1)
     const cooldownSec = Math.round((MARGIN_COOLDOWN_STEPS_MS[stepIdx] ?? MARGIN_COOLDOWN_MAX_MS) / 1000)
-    const normalizedSkippedSl = normalizeStopLossPercent(realPosition.stopLoss).value
+    const normalizedSkippedSl = normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange).value
     const normalizedSkippedTp = Math.max(0, Number(realPosition.takeProfit) || 0)
     const skipped: LivePosition = {
       id: `live:${connectionId}:${realPosition.symbol}:${realPosition.direction}:${Date.now()}:${nanoid(8)}`,
@@ -13972,6 +14011,12 @@ export async function executeLivePosition(
     : presetModeEnabled && !mainModeEnabled
       ? "preset"
       : "main"
+  const relationalVolumeContext:VolumeContext={indicationType:realPosition.volumeIndicationType??realPosition.indicationType,indication:realPosition.volumeIndicationId??realPosition.indicationType,strategy:realPosition.axisWindows||realPosition.combinedPosCounts?"axis":realPosition.setVariant==="default"||!realPosition.setVariant?"normal":realPosition.setVariant,range:realPosition.strategyRange??(executionIntent==="signal"?"signals":executionIntent),symbol:realPosition.symbol}
+  const entryVolumeRatio=relationalVolumeFactor(initialConnectionSettings.relationalVolumeRatios,relationalVolumeContext)
+  const strategyProcessingAllows = (settings: Record<string, any>): boolean => isStrategySetExecutionEnabled({
+    ...realPosition, variant: realPosition.setVariant,
+    strategyRange: (realPosition as any).strategyRange ?? (executionIntent === "signal" ? "signals" : executionIntent),
+  }, normalizeStrategyExecutionPolicy(settings))
   if (executionIntent === "preset") {
     const { applySelectedPresetToRealPosition } = await import("@/lib/preset-store")
     realPosition = await applySelectedPresetToRealPosition(
@@ -14003,6 +14048,9 @@ export async function executeLivePosition(
   }
 
   const livePosition: LivePosition = {
+    relationalVolumeMultiplier: entryVolumeRatio,
+    ...(/^(micro|low[- ]?range)$/i.test(realPosition.strategyRange ?? "") ? {capturedMicroProtection:{slPct:protectionFloorsForRange(realPosition.strategyRange).minStopLossPct,trailPct:protectionFloorsForRange(realPosition.strategyRange).minTrailingStopDistancePct}} : {}),
+    ...((realPosition as any).strategyRange ? {strategyRange:(realPosition as any).strategyRange} : {}),
     id: isDirectPosition
       ? directTradeCanonicalPositionId(
           connectionId,
@@ -14050,10 +14098,11 @@ export async function executeLivePosition(
     //   • block/dca/default: normalised PF-derived value (already variant-scaled
     //     by sizeMultiplier in deriveProtectionFromProfitFactor at dispatch)
     stopLoss: computeSetAwareSL(
-      normalizeStopLossPercent(realPosition.stopLoss).value,
+      normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange).value,
       realPosition.setVariant,
       realPosition.trailingProfile,
       realPosition.takeProfit,
+      realPosition.strategyRange,
     ),
     takeProfit: realPosition.takeProfit,
     // Immutable assignment snapshot — preserved across overrides so the
@@ -14133,7 +14182,7 @@ export async function executeLivePosition(
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
   normalizeLivePositionProtection(livePosition)
 
-  const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss)
+  const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange)
   if (normalizedInitialSl.adjusted) {
     pushStep(livePosition, "protection_sl_normalized", true, normalizedInitialSl.reason!)
     logProgressionEvent(
@@ -14160,7 +14209,7 @@ export async function executeLivePosition(
     livePosition.trailingProfile &&
     livePosition.trailingProfile.stopRatio > 0
   ) {
-    const trailSl = Math.max(minExchangeStopLossPercent(), livePosition.trailingProfile.stopRatio * 100)
+    const trailSl = Math.max(minExchangeStopLossPercent(livePosition.strategyRange), livePosition.trailingProfile.stopRatio * 100)
     if (Math.abs(trailSl - normalizedInitialSl.value) > 0.001) {
       pushStep(
         livePosition,
@@ -14358,6 +14407,13 @@ export async function executeLivePosition(
     const liveReadiness = executionIntent === "direct"
       ? evaluateDirectTradeLiveReadiness(connSettings, connectionId)
       : evaluateRealTradeReadiness(connSettings, readinessIntent)
+    if (!strategyProcessingAllows(connSettings)) {
+      livePosition.status = "rejected"
+      livePosition.statusReason = "Strategy processing is disabled for this exact family / coordination"
+      pushStep(livePosition, "strategy_processing", false, livePosition.statusReason)
+      await savePosition(livePosition)
+      return livePosition
+    }
     const isLiveTradeEnabled = liveReadiness.canPlaceRealOrders
     livePosition.executionMode = liveReadiness.executionMode
     livePosition.executionBlockCode = liveReadiness.blockCode || undefined
@@ -14955,6 +15011,8 @@ export async function executeLivePosition(
           {
             tradeMode: volumeTradeModeForIntent(executionIntent),
             sizeMultiplier: realPosition.sizeMultiplier,
+            relationalVolumeMultiplierOverride:entryVolumeRatio,
+            relationalVolumeContext,
             allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
             indicationType: realPosition.indicationType,
             marketType: livePosition.marketType,
@@ -15337,6 +15395,8 @@ export async function executeLivePosition(
         // Forward the Block/DCA variant multiplier so notional is correctly
         // scaled before the exchange order is placed (absent → 1.0 identity).
         sizeMultiplier: realPosition.sizeMultiplier,
+            relationalVolumeMultiplierOverride:entryVolumeRatio,
+            relationalVolumeContext,
         // Only a combined Position-Count target represents the sum of every
         // valid Set. Ordinary Block/DCA variants remain safely bounded.
         allowUnboundedVariantMultiplier: realPosition.combinedPosCounts === true,
@@ -15739,7 +15799,7 @@ export async function executeLivePosition(
     const engineProcessing = freshExecutionIntent === "direct"
       ? await isCurrent()
       : isConnectionMainProcessing(freshSettings)
-    const isStillLive = freshReadiness.canPlaceRealOrders && engineProcessing && !supervisedSmokeId
+    const isStillLive = freshReadiness.canPlaceRealOrders && Math.abs(relationalVolumeFactor(freshSettings.relationalVolumeRatios,relationalVolumeContext)-entryVolumeRatio)<1e-12 && strategyProcessingAllows(freshSettings) && engineProcessing && !supervisedSmokeId
     if (await abortSuperseded()) return livePosition
     
     const isTestnetConnection = reCheckTruthy(freshSettings.is_testnet)
@@ -15764,7 +15824,7 @@ export async function executeLivePosition(
         ? freshExecutionIntent === "direct"
           ? "Direct-Trade processor lease or live state is no longer active"
           : "Connection processing is stopped"
-        : freshReadiness.blockReason || undefined
+        : !strategyProcessingAllows(freshSettings) ? "Strategy processing is disabled for this exact family / coordination" : freshReadiness.blockReason || undefined
       livePosition.statusReason = supervisedSmokeId
         ? `Exchange order blocked before placement: supervised live-order smoke ${supervisedSmokeId} owns the account gate`
         : !engineProcessing
@@ -15843,7 +15903,7 @@ export async function executeLivePosition(
     const lockedProcessing = lockedExecutionIntent === "direct"
       ? await isCurrent()
       : isConnectionMainProcessing(lockedSettings)
-    if (!lockedProcessing || !lockedReadiness.canPlaceRealOrders) {
+    if (!lockedProcessing || !lockedReadiness.canPlaceRealOrders || !strategyProcessingAllows(lockedSettings) || Math.abs(relationalVolumeFactor(lockedSettings.relationalVolumeRatios,relationalVolumeContext)-entryVolumeRatio)>=1e-12) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
       livePosition.executionBlockCode = !lockedProcessing
@@ -15853,7 +15913,7 @@ export async function executeLivePosition(
         ? lockedExecutionIntent === "direct"
           ? "Direct-Trade processor lease or live state stopped while entry waited for admission"
           : "Connection processing stopped while entry waited for admission"
-        : lockedReadiness.blockReason
+        : !strategyProcessingAllows(lockedSettings) ? "Strategy processing is disabled for this exact family / coordination" : lockedReadiness.blockReason
       livePosition.statusReason =
         `Exchange order blocked after admission lock: ${livePosition.executionBlockReason}`
       pushStep(livePosition, "entry_protection_admission", false, livePosition.statusReason)
@@ -19772,11 +19832,11 @@ function isPreFillWithoutExchangeHandle(
 /**
  * Get all live positions for a connection.
  */
-export async function getLivePositions(connectionId: string): Promise<LivePosition[]> {
+export async function getLivePositions(connectionId: string, options: { strict?: boolean } = {}): Promise<LivePosition[]> {
   await initRedis()
   const client = getRedisClient()
   try {
-    const ids = ((await client.lrange(`live:positions:${connectionId}`, 0, -1).catch(() => [])) || []) as string[]
+    const ids = ((await client.lrange(`live:positions:${connectionId}`, 0, -1)) || []) as string[]
 
     // Deduplicate while preserving order — the open index may contain stale
     // duplicates from retried writes.
@@ -19797,12 +19857,13 @@ export async function getLivePositions(connectionId: string): Promise<LivePositi
       const values = await Promise.all(
         uniqueIds
           .slice(offset, offset + READ_BATCH_SIZE)
-          .map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
+          .map((id) => readLivePositionSnapshot(client, connectionId, id, options.strict)),
       )
       for (const pos of values) if (pos) positions.push(pos)
     }
     return positions
   } catch (err) {
+    if (options.strict) throw err
     console.warn(`${LOG_PREFIX} Error getting live positions:`, err)
     return []
   }
@@ -19825,12 +19886,13 @@ export async function getLivePositionsByStatus(
  */
 export async function getClosedLivePositions(
   connectionId: string,
-  limit = 200
+  limit = 200,
+  options: { strict?: boolean } = {},
 ): Promise<LivePosition[]> {
   await initRedis()
   const client = getRedisClient()
   try {
-    const ids = ((await client.lrange(`live:positions:${connectionId}:closed`, 0, limit - 1).catch(() => [])) || []) as string[]
+    const ids = ((await client.lrange(`live:positions:${connectionId}:closed`, 0, limit - 1)) || []) as string[]
 
     // Deduplicate + batch GETs concurrently (same rationale as getLivePositions).
     const uniqueIds: string[] = []
@@ -19849,12 +19911,13 @@ export async function getClosedLivePositions(
       const values = await Promise.all(
         uniqueIds
           .slice(offset, offset + READ_BATCH_SIZE)
-          .map((id) => readLivePositionSnapshot(client, connectionId, id).catch(() => null)),
+          .map((id) => readLivePositionSnapshot(client, connectionId, id, options.strict)),
       )
       for (const pos of values) if (pos) positions.push(pos)
     }
     return positions
   } catch (err) {
+    if (options.strict) throw err
     console.warn(`${LOG_PREFIX} getClosedLivePositions error:`, err)
     return []
   }
@@ -23047,7 +23110,7 @@ export async function recalculateAndApplySLTP(
       if (!position.trailingActive) position.trailingStopPrice = undefined
     }
     const normalizedOverrideSl = overrides?.stopLossPct !== undefined
-      ? normalizeStopLossPercent(overrides.stopLossPct)
+      ? normalizeStopLossPercent(overrides.stopLossPct, position.strategyRange)
       : null
     if (normalizedOverrideSl) position.stopLoss = normalizedOverrideSl.value
     if (overrides?.takeProfitPct !== undefined) position.takeProfit = overrides.takeProfitPct

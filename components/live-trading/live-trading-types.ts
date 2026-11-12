@@ -180,6 +180,9 @@ export interface LiveAccountSummary {
   name: string
   exchange: string
   openPositions: number
+  openOrders?: number
+  positionsDataAvailable?: boolean
+  ordersDataAvailable?: boolean
   longPositions: number
   shortPositions: number
   unrealizedPnl: number
@@ -191,6 +194,9 @@ export interface LiveAccountSummary {
     equity: number
     currency: string
     updatedAt: number | null
+    dataAvailable?: boolean
+    equityDataAvailable?: boolean
+    availableDataAvailable?: boolean
   }
 }
 

@@ -1,3 +1,4 @@
+import {blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 /**
  * Real exchange results per strategy Set.
  *
@@ -338,12 +339,13 @@ export async function getLiveSetWindowBatch(
   window: number,
   minCloses = DEFAULT_LIVE_OUTCOME_MIN_CLOSES,
   knownCounts?: Map<string, number>,
+  blocks?:BlockPolicy,
 ): Promise<Map<string, PosWindowStats>> {
   const out = new Map<string, PosWindowStats>()
   const counts = knownCounts || await getLiveSetClosedCounts(connectionId, setKeys)
   const eligible = [...counts.entries()].filter(([, count]) => count >= Math.max(1, minCloses))
   if (eligible.length === 0) return out
-  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(window)))
+  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks):window)))
   try {
     const client: any = getRedisClient()
     for (let start = 0; start < eligible.length; start += 500) {
@@ -354,7 +356,7 @@ export async function getLiveSetWindowBatch(
       batch.forEach(([setKey, count], index) => {
         const raw = pipelineValue(results?.[index])
         const records = Array.isArray(raw) ? raw.map(String) : []
-        const stats = derivePosWindowStats(records, winN)
+        const stats = derivePosWindowStats(records, winN,blocks)
         if (stats.count > 0) out.set(setKey, { ...stats, outcomeSource: "exchange", exchangeCloses: count })
       })
     }

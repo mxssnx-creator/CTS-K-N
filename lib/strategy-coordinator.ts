@@ -1,3 +1,7 @@
+import {stageBlockPolicies,type StageBlockPolicies} from "@/lib/disjoint-last-n";
+import {blockPolicyKey} from "@/shared/cts-lastn/blocks";
+import {derivePosWindowStats} from "@/lib/pos-history";
+import {PORTED_CATALOG as VOLUME_SOURCE_CATALOG} from "@/shared/cts-indications/catalog.ts"
 import { DDR_DEFAULT_MAX, drawdownRatioNewestFirst, maxDrawdownRatioSetting, passesDrawdownRatio } from "@/lib/drawdown-ratio"
 import {
   BLOCK_SHARED_RELATIONS_DEFAULT,
@@ -99,7 +103,7 @@ import {
   MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   normalizeProtectionPercentages,
 } from "@/lib/trade-protection-contract"
-import { getActiveProtectionFloors, setActiveProtectionFloors } from "@/lib/protection-floors"
+import { getActiveProtectionFloors, setActiveProtectionFloors, protectionFloorsForRange } from "@/lib/protection-floors"
 import {
   MAIN_TRADE_PF_RATIO_BASE,
   MAIN_TRADE_PF_RATIO_MAX,
@@ -126,11 +130,8 @@ import {
   getRuntimeCapabilityConcurrency,
   getRuntimeConcurrencyProfile,
 } from "@/lib/runtime-concurrency-profile"
-import {
-  DEFAULT_TRAILING_MIN_STEP,
-  MAX_BASE_STEP,
-  MIN_BASE_STEP,
-} from "@/lib/constants"
+import { resolveMinimumStepSettings } from "@/lib/minimum-step-settings"
+import { mergeConnectionSettings } from "@/lib/connection-settings-merge"
 import {
   countOpenMainBreakdown,
   mainSetHasOpenLineage,
@@ -159,6 +160,8 @@ import {
 } from "@/lib/strategy-stage-accounting"
 import {
   applyTrailingExecutionPolicy,
+  isStrategySetExecutionEnabled,
+  normalizeStrategyProcessingByRange,
   classifyStrategyExecutionFamily,
   hasAnyStrategyExecutionVariantEnabled,
   isMainTrailingAllowed,
@@ -724,6 +727,8 @@ export interface StrategyEvaluation {
 // through the same Standard/default and block/dca Adjust flow as every other
 // Base Set.
 export interface StrategySet {
+  /** Exact coordination/range policy identity, retained by derived Sets. */
+  strategyRange?: string
   setKey: string            // e.g. "BTCUSDT:direction:long" or "BTCUSDT:direction:long#block"
   indicationType: string
   direction: "long" | "short"
@@ -1001,6 +1006,7 @@ export interface StrategySet {
     recentPnlPcts?: number[]
     recentPositionCostPcts?: number[]
     /** True when the window it was read from is full (count ≥ window). */
+    blockDecision?: PosWindowStats["blockDecision"]
     hasSignal?: boolean
   }
 }
@@ -1042,7 +1048,16 @@ export function dedupeCanonicalStrategySets<T extends { setKey?: unknown }>(
   return { sets: unique, collapsed }
 }
 
+const VOLUME_SOURCE_IDS={tacticDca:VOLUME_SOURCE_CATALOG.filter(x=>x.id.startsWith('tactic-dca-')).map(x=>x.id),inverseAo:VOLUME_SOURCE_CATALOG.filter(x=>x.kind==='inverse').map(x=>x.id)}
+function entryVolumeIdentity(ind:any):{volumeIndicationType?:string;volumeIndicationId?:string}{
+ const common=String(ind?.config?.indicatorType??ind?.metadata?.commonIndicatorType??'');if(!common)return {};
+ const index=Number(ind?.config?.parameters?.sourceIndex??ind?.metadata?.parameters?.sourceIndex??0);
+ const source=VOLUME_SOURCE_IDS[common as keyof typeof VOLUME_SOURCE_IDS]?.[index];
+ return {volumeIndicationType:common==='tacticDca'?'tactic':common==='inverseAo'?'inverse':common,volumeIndicationId:source??common};
+}
 export interface StrategySetEntry {
+  volumeIndicationType?: string
+  volumeIndicationId?: string
   id: string
   sizeMultiplier: number
   leverage: number
@@ -1285,6 +1300,7 @@ export function selectLiveDispatchCandidates(
   candidates: StrategySet[],
   options: {
     normalEnabled?: boolean
+    processingByRange?: import("@/lib/strategy-execution-policy").StrategyProcessingByRange
     axisEnabled?: boolean
     trailingEnabled?: boolean
     blockEnabled?: boolean
@@ -1297,6 +1313,7 @@ export function selectLiveDispatchCandidates(
   const seenSignalBlockSlots = new Set<string>()
   const policy: StrategyExecutionPolicy = {
     normalEnabled: options.normalEnabled !== false,
+    processingByRange: options.processingByRange,
     axisEnabled: options.axisEnabled !== false,
     trailingEnabled: options.trailingEnabled !== false,
     blockEnabled: options.blockEnabled !== false,
@@ -1308,6 +1325,7 @@ export function selectLiveDispatchCandidates(
   for (const candidate of candidates) {
     const direction = normalizeStrategyDirection(candidate?.direction)
     if (!direction || !candidate?.setKey || seenKeys.has(candidate.setKey)) continue
+    if (!isStrategySetExecutionEnabled(candidate, policy)) continue
     const family = classifyStrategyExecutionFamily(candidate)
     // Signal is a separate admission family in the policy classifier, so use
     // the structural variant here to retain its distinct Signal-Block lane.
@@ -1921,7 +1939,7 @@ export function materializeContinuousStageRows(
     const minimumSamples = Math.max(1, Math.min(lookback, Math.floor(Number(options.minimumSamples) || ROW_WINDOW_MIN_SAMPLES)))
     const exactWindow = windowKeys
       .map((key) => options.windowBySetKey?.get(key))
-      .find((window): window is PosWindowStats => Boolean(window && window.positionCostRatioCount >= minimumSamples))
+      .find((window): window is PosWindowStats => Boolean(window && (window.blockDecision || window.positionCostRatioCount >= minimumSamples)))
 
     let sampleCount = 0
     let profitFactor = Number(source.avgProfitFactor) || 0
@@ -2000,6 +2018,7 @@ export function materializeContinuousStageRows(
       (source as unknown as Record<string, unknown>)._hasLivePositions === true,
     )
     const passes = sourceIsActive || (
+      (!exactWindow?.blockDecision || exactWindow.blockDecision.state==="qualified") &&
       profitFactor >= options.metrics.minProfitFactor &&
       drawdownTime <= options.metrics.maxDrawdownTime &&
       passesDrawdownRatio(drawdownRatioValue, Number(options.metrics.maxDrawdownRatio ?? 0))
@@ -2058,6 +2077,7 @@ export function applyExactBlockRowWindows(
     )
     // Below ROW_WINDOW_MIN_SAMPLES ratio samples the row keeps its parent's
     // validation (bootstrap) instead of being judged on one or two closes.
+    if(window?.blockDecision && window.blockDecision.state!=="qualified" && !isActive)continue
     if (!window || window.positionCostRatioCount < ROW_WINDOW_MIN_SAMPLES) {
       evaluated.push(row)
       continue
@@ -2313,12 +2333,13 @@ export function protectionEntriesFor(
  * deciding. Before, any own close (count > 0) replaced a full bucket, so one
  * close sent a Set back to "awaiting history".
  */
-export function selectBaseHistoryWindow<T extends { count: number; positionCostRatioCount: number }>(
+export function selectBaseHistoryWindow<T extends { count: number; positionCostRatioCount: number; blockDecision?:PosWindowStats["blockDecision"] }>(
   exact: T | undefined | null,
   bucket: T | undefined | null,
   minCount: number,
 ): T | undefined {
   const required = Math.max(1, minCount)
+  if(exact?.blockDecision)return exact
   if (exact && exact.positionCostRatioCount >= required) return exact
   if (bucket && bucket.positionCostRatioCount >= required) return bucket
   // Neither is complete: the one with more measured closes reports progress.
@@ -2521,8 +2542,9 @@ const OUTCOME_SOURCE_NOTE_MS = 30_000
 // the Real stage settings and enforced here as a hard lower bound.
 const MIN_LIVE_STOP_LOSS_PCT_BASE = 0.2
 /** Base 0.2 % floor raised to the operator stop-loss floor (default 0.5 %). */
-function minLiveStopLossPct(): number {
-  return Math.max(MIN_LIVE_STOP_LOSS_PCT_BASE, getActiveProtectionFloors().minStopLossPct)
+function minLiveStopLossPct(range?: string): number {
+  const micro = /^(micro|low[- ]?range)$/i.test(range ?? "");
+  return Math.max(micro ? .01 : MIN_LIVE_STOP_LOSS_PCT_BASE, protectionFloorsForRange(range).minStopLossPct)
 }
 const MIN_LIVE_TAKE_PROFIT_PCT = 0.2
 
@@ -2531,10 +2553,11 @@ export function deriveProtectionFromProfitFactor(
   positionCostPct: number,
   sizeMultiplier = 1,
   costModel: ProtectionCostModel = conservativeCostFallbackForExchange("generic"),
+  strategyRange?: string,
 ): DerivedProtection & ProfitFactorProtection {
   const pf = sanitizeLiveProfitFactor(profitFactor, 1)
   const baseRiskPct = Number.isFinite(positionCostPct) && positionCostPct > 0 ? positionCostPct : 0.1
-  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), minLiveStopLossPct(), 5)
+  const stopLossPct = clampNumber(baseRiskPct * Math.max(0.1, sizeMultiplier), minLiveStopLossPct(strategyRange), 5)
   const costBufferPct = (
     (costModel.takerFeeBpsPerSide * 2) +
     costModel.estimatedSpreadBps +
@@ -2553,7 +2576,7 @@ export function deriveProtectionFromProfitFactor(
     takeProfitPct,
     stopLossPct,
     minimumTakeProfitPct: MIN_LIVE_TAKE_PROFIT_PCT,
-    minimumStopLossPct: minLiveStopLossPct(),
+    minimumStopLossPct: minLiveStopLossPct(strategyRange),
     maxStopLossToTakeProfitRatio: MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO,
   })
   const effectiveTakeProfitPct = protection.takeProfitPct
@@ -3053,6 +3076,7 @@ export class StrategyCoordinator {
     blockRowLivePauseCountRatio: number
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
+    processingByRange: import("@/lib/strategy-execution-policy").StrategyProcessingByRange
     /** Execute Main-family exchange rows only through Block adjustment rows. */
     axisEnabled: boolean
     /**
@@ -3066,6 +3090,7 @@ export class StrategyCoordinator {
     liveEvalPosCount: number
     /** Settled real closes from which a Set is judged on exchange results only (live trading). */
     liveOutcomeMinCloses: number
+    lastNBlocks?: StageBlockPolicies
   } = {
     axes: {
       prev:  { enabled: true,  maxWindow: 12 },
@@ -3099,6 +3124,7 @@ export class StrategyCoordinator {
     blockRowLiveMaxStack: 6,
     blockRowLivePauseCountRatio: 1.0,
     normalEnabled: true,
+    processingByRange: {},
     axisEnabled: true,
     /**
      * Operator coordination ratio. Default 3.0; conversion to direct physical
@@ -3185,7 +3211,9 @@ export class StrategyCoordinator {
         ? setKeys
         : setKeys.filter((setKey) => legacyClosedKeys.has(setKey))
     }
-    const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window)
+    const blocks = options.stage ? this._coordinationSettings.lastNBlocks?.[options.stage] : undefined
+    const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window,blocks)
+    if(blocks)for(const key of setKeys)if(!windows.has(key))windows.set(key,derivePosWindowStats([],window,blocks))
     // A connection that trades live judges its Sets on what the exchange
     // settled: from `liveOutcomeMinCloses` settled real closes on, a Set's
     // window is its exchange-only ring (lib/live-set-outcomes.ts) — no pseudo
@@ -3206,6 +3234,7 @@ export class StrategyCoordinator {
       window,
       this._coordinationSettings.liveOutcomeMinCloses,
       exchangeCounts,
+      blocks,
     )
     for (const [setKey, exchangeWindow] of exchangeWindows) windows.set(setKey, exchangeWindow)
     for (const [setKey, count] of exchangeCounts) {
@@ -3702,6 +3731,7 @@ export class StrategyCoordinator {
       this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
         ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
         : 20
+      this._coordinationSettings.lastNBlocks = stageBlockPolicies((s as any).lastNBlocks)
       this._liveConfigLossGateEnabled = liveConfigLossPolicy(s as Record<string, unknown>).enabled
       this._coordinationSettings.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(
         (s as any).liveOutcomeMinCloses ?? (s as any).live_outcome_min_closes,
@@ -3832,6 +3862,7 @@ export class StrategyCoordinator {
         s.normalEnabled ?? s.normal_enabled ?? s.strategyNormalEnabled,
         true,
       )
+      this._coordinationSettings.processingByRange = normalizeStrategyProcessingByRange(s.strategyProcessingByRange)
       this._coordinationSettings.axisEnabled = bool(
         s.axisEnabled ?? s.axis_enabled ?? s.strategyAxisEnabled ?? s.variantAxisEnabled,
         true,
@@ -4438,19 +4469,9 @@ export class StrategyCoordinator {
       // Progress Sets view and live control-order SL anchoring on the exact
       // range matrix the operator just saved.
       const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
-      let trailingMinStep = DEFAULT_TRAILING_MIN_STEP
-      // Unset means the trailing default (8), not the base step (5).
-      const rawMin = Number(
-        settings.trailingMinStep ??
-        settings.trailing_min_step ??
-        DEFAULT_TRAILING_MIN_STEP,
+      const { trailingMinStep } = resolveMinimumStepSettings(
+        mergeConnectionSettings(appSettings, connSettings),
       )
-      if (Number.isFinite(rawMin)) {
-        trailingMinStep = Math.min(
-          MAX_BASE_STEP,
-          Math.max(MIN_BASE_STEP, Math.round(rawMin)),
-        )
-      }
       // Redis hashes store booleans as strings: "false" must disable too.
       const enabledMaster = resolveTrailingSwitch(settings, true)
       if (!enabledMaster) {
@@ -4669,6 +4690,8 @@ export class StrategyCoordinator {
     // one Base row and made the per-config open-position limit appear global.
     const setMap = new Map<string, { indicationType: string; direction: "long" | "short"; indications: any[] }>()
 
+    const blockRevision=Object.entries(this._coordinationSettings.lastNBlocks??{}).sort(([a],[b])=>a.localeCompare(b)).map(([stage,p])=>[stage,blockPolicyKey(p)])
+    const blockSuffix=blockRevision.length?":lastn:"+encodeURIComponent(JSON.stringify(blockRevision)):""
     let groupedIndications = 0
     for (const ind of expandedIndications) {
       const indicationType = ind.type || "direction"
@@ -4694,7 +4717,7 @@ export class StrategyCoordinator {
       // already contains it, keeping legacy direct indications unambiguous.
       const key =
         `${symbol}:${indicationType}:${direction}:cfg:` +
-        encodeURIComponent(configurationIdentity || "default")
+        encodeURIComponent(configurationIdentity || "default") + blockSuffix
       if (!setMap.has(key)) {
         setMap.set(key, { indicationType, direction, indications: [] })
       }
@@ -4971,6 +4994,7 @@ export class StrategyCoordinator {
           if (group.indicationType === "special" && !specialPositionPlan) continue
 
           entries.push({
+            ...entryVolumeIdentity(ind),
             id: `${setKey}-${entryIdx}`,
             sizeMultiplier: specialPositionPlan?.totalVolumeRatio ?? 1.0,
             leverage: 1,
@@ -5059,6 +5083,8 @@ export class StrategyCoordinator {
             : undefined
 
         const set: StrategySet = {
+          strategyRange: String(group.indications[0]?.config?.strategyRange ?? group.indications[0]?.metadata?.strategyRange ??
+            (isSignal ? "signals" : group.indicationType.includes("preset") ? "preset" : "main")).toLowerCase(),
           setKey,
           indicationType: group.indicationType,
           direction: group.direction,
@@ -5090,9 +5116,10 @@ export class StrategyCoordinator {
           // Attach prev-pos snapshot so Main/Real propagation paths can
           // reach it without re-fetching. Always carry the field even
           // when count==0 — keeps downstream null-checking simple.
-          ...(posStats && posStats.count > 0 && {
+          ...(posStats && (posStats.count > 0 || posStats.blockDecision) && {
             prevPos: {
               count: posStats.count,
+              blockDecision: posStats.blockDecision,
               successRate: posStats.successRate,
               profitFactor: posStats.profitFactor,
               positionCostRatio: posStats.positionCostRatio,
@@ -5584,9 +5611,10 @@ export class StrategyCoordinator {
       // reported — it simply does not become an input for Main until it has
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
-      const measuredHistoryRejection = requireMeasuredHistoryForBaseValidity
+      const blockRejection = baseSet.prevPos?.blockDecision && baseSet.prevPos.blockDecision.state!=="qualified" ? `base_disjoint_${baseSet.prevPos.blockDecision.state}` : null
+      const measuredHistoryRejection = blockRejection || (requireMeasuredHistoryForBaseValidity
         ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount, baseHistoryWindow)
-        : null
+        : null)
       if (measuredHistoryRejection) {
         baseSet.status = "invalid"
         baseSet.rejectionReason = measuredHistoryRejection
@@ -6905,7 +6933,7 @@ export class StrategyCoordinator {
       const isActiveBlock = activeBlockKeys.has(setKey)
       const isPaused = unavailableKeys.has(setKey) && !isActiveBlock
       const passesPerformance =
-        performance.passesProfitFactor &&
+        (ownWindow?.blockDecision===undefined||ownWindow.blockDecision.state==="qualified") && performance.passesProfitFactor &&
         blockObservedDrawdown <= metrics.maxDrawdownTime
       observedProfitFactorSum += blockObservedProfitFactor
       normalProfitFactorSum += blockNormalProfitFactor
@@ -6931,7 +6959,7 @@ export class StrategyCoordinator {
       // Existing exposure stays represented until terminal reconciliation;
       // a new active-position add-on must still clear its own PF/DDT and pause.
       if (!isActiveBlock && (!strategyEnabled || blockObservedDrawdown > metrics.maxDrawdownTime
-        || !Number.isFinite(blockObservedDrawdown) || (!passesPerformance && !lifecycle?.recovering) || isPaused)) continue
+        || !Number.isFinite(blockObservedDrawdown) || (ownWindow?.blockDecision && ownWindow.blockDecision.state!=="qualified") || (!passesPerformance && !lifecycle?.recovering) || isPaused)) continue
 
       const pauseWindow = Math.max(1, Math.min(32, Math.round(boundedCount * pauseRatio)))
       const parentSetKey = source.parentSetKey || source.setKey
@@ -7340,9 +7368,10 @@ export class StrategyCoordinator {
         const isActive = activeKeys.has(setKey)
         const isPaused = unavailableKeys.has(setKey) && !isActive
         const passesPerformance =
-          performance.passesProfitFactor &&
+          (ownWindow?.blockDecision===undefined||ownWindow.blockDecision.state==="qualified") && performance.passesProfitFactor &&
           blockObservedDrawdown <= metrics.maxDrawdownTime
         const emit = isActive || (strategyEnabled && blockObservedDrawdown <= metrics.maxDrawdownTime
+          && (ownWindow?.blockDecision===undefined||ownWindow.blockDecision.state==="qualified")
           && (passesPerformance || lifecycle?.recovering === true) && !isPaused)
         const stats = countStats[blockCount - 1]
         stats.calculated++
@@ -7851,9 +7880,10 @@ export class StrategyCoordinator {
       const isActive = activeKeys.has(setKey)
       const isPaused = unavailableKeys.has(setKey) && !isActive
       const passesPerformance =
-        performance.passesProfitFactor &&
+        (laneWindow?.blockDecision===undefined||laneWindow.blockDecision.state==="qualified") && performance.passesProfitFactor &&
         blockObservedDrawdown <= metrics.maxDrawdownTime
       const emit = isActive || (strategyEnabled && blockObservedDrawdown <= metrics.maxDrawdownTime
+        && (laneWindow?.blockDecision===undefined||laneWindow.blockDecision.state==="qualified")
         && (passesPerformance || lifecycle?.recovering === true) && !isPaused)
       const statsId = sourceId
         ? `signal:${blockLanePart(sourceId)}:${scope}`
@@ -9654,6 +9684,7 @@ export class StrategyCoordinator {
     if (!isCurrent()) return cancelled()
     const executionPolicy: StrategyExecutionPolicy = {
       normalEnabled: this._coordinationSettings.normalEnabled !== false,
+      processingByRange: this._coordinationSettings.processingByRange,
       axisEnabled: this._coordinationSettings.axisEnabled !== false,
       trailingEnabled: this._coordinationSettings.variants.trailing !== false,
       blockEnabled: this._coordinationSettings.variants.block !== false,
@@ -10387,6 +10418,8 @@ export class StrategyCoordinator {
                   effectivePF,
                   livePositionCostPct,
                   effectiveSizeMult,
+                  undefined,
+                  set.strategyRange,
                 )
                 const tp = protection.takeProfitPct
 
@@ -10422,7 +10455,7 @@ export class StrategyCoordinator {
                   // The live-stage `computeSetAwareSL` applies the same logic
                   // but we normalise here too so the RealPosition.stopLoss and
                   // the derived LivePosition.stopLoss are always in sync.
-                  sl = Math.max(0.2, resolvedTrailingProfile.stopRatio * 100)
+                  sl = Math.max(minLiveStopLossPct(set.strategyRange), resolvedTrailingProfile.stopRatio * 100)
                 }
 
                 if (!isCurrent()) return cancelled()
@@ -10485,6 +10518,9 @@ export class StrategyCoordinator {
                     setKey:       set.setKey,
                     parentSetKey: set.parentSetKey,
                     indicationType: set.indicationType,
+                    volumeIndicationType: bestEntry.volumeIndicationType,
+                    volumeIndicationId: bestEntry.volumeIndicationId,
+                    strategyRange: set.strategyRange,
                     setVariant:   set.variant,
                     // Normal off: DCA may seed its own base parent (step 0).
                     ...(set.variant === "dca" && !executionPolicy.normalEnabled
@@ -10953,6 +10989,7 @@ export class StrategyCoordinator {
                 const positionCostProtection = deriveProtectionFromProfitFactor(
                   bestEntry.profitFactor,
                   livePositionCostPct,
+                  1, undefined, set.strategyRange,
                 )
                 const tp = specialProtection?.takeProfitPct ??
                   activeProtection?.takeProfitPct ??
@@ -11008,6 +11045,7 @@ export class StrategyCoordinator {
                   trailingEnabled: trailing,
                   configSetKey,
                   strategySetKey: set.setKey,
+                  strategyRange: set.strategyRange,
                   parentSetKey: set.parentSetKey || set.setKey.split("#")[0],
                   specialPositionPlan: bestEntry.specialPositionPlan,
                   ...(profile && {
@@ -11552,7 +11590,7 @@ export class StrategyCoordinator {
       // Active exposure remains valid until terminal reconciliation, even if
       // its newly-realised Set statistics have deteriorated. A candidate with
       // no exposure is withheld once its own full window fails Main PF/DDT.
-      if (activeEntries === 0 && (ownPfFails || ownDdtFails)) continue
+      if (activeEntries === 0 && (ownPfFails || ownDdtFails || ownWindow?.blockDecision && ownWindow.blockDecision.state!=="qualified")) continue
 
       hydrated.push({
         ...set,

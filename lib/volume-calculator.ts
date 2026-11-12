@@ -1,3 +1,4 @@
+import {relationalVolumeFactor,type VolumeContext} from "../shared/cts-volume/ratios.ts";
 /**
  * Volume Calculator - Ratio-Based System
  * 
@@ -189,6 +190,7 @@ interface VolumeCalculationParams {
   /** Signal-specific Main-channel factor; identity 1 for non-Signal orders. */
   signalVolumeFactor?: number
   /** Originating indication type. Only `signal` activates signalVolumeFactor. */
+  relationalVolumeMultiplier?: number
   indicationType?: string
   // Adjust-type variant multiplier: block=1.5-2.0, dca=0.5, others=1.0.
   // Applied after liveEngineFactor; absent/undefined → 1.0 (no scaling).
@@ -331,6 +333,7 @@ export class VolumeCalculator {
     // the exchange API is unreachable or the connection has no real key.
     let balance = 10000
     let balanceIsFallback = true
+    let accountSnapshot: Record<string, unknown> = { equity: "", availableMargin: "", unrealizedProfit: "" }
     try {
       const cachedBalance = await getSettings(`connection_balance:${connectionId}`)
       const cachedNumeric = cachedBalance?.balance ? parseFloat(String(cachedBalance.balance)) : 0
@@ -391,6 +394,14 @@ export class VolumeCalculator {
             if (result?.success && result?.balance && result.balance > 0) {
               balance = result.balance
               balanceIsFallback = false
+              // Preserve account-wide venue values. They cannot be rebuilt
+              // from the smaller subset of positions owned by CTS.
+              accountSnapshot = {
+                equity: Number.isFinite(result.equity) ? result.equity : "",
+                availableMargin: Number.isFinite(result.availableMargin) ? result.availableMargin : "",
+                unrealizedProfit: Number.isFinite(result.unrealizedProfit) ? result.unrealizedProfit : "",
+                ...(result.settlementAsset ? { currency: result.settlementAsset } : {}),
+              }
             }
           } catch {
             // getBalance threw (e.g. 100421 timestamp error) — use the $10k default.
@@ -403,6 +414,8 @@ export class VolumeCalculator {
         // two minutes, long enough to cover a full 15-symbol cycle at 1 Hz.
         await setSettings(`connection_balance:${connectionId}`, {
           balance,
+          ...accountSnapshot,
+          timestamp: Date.now(),
           updated_at: new Date().toISOString(),
           is_fallback: balanceIsFallback,
         })
@@ -469,6 +482,7 @@ export class VolumeCalculator {
       presetVolumeFactor,
       signalVolumeFactor,
       indicationType,
+      relationalVolumeMultiplier = 1,
       sizeMultiplier,
       allowUnboundedVariantMultiplier = false,
       minimumNotionalCeilingAllowanceUsd,
@@ -558,7 +572,7 @@ export class VolumeCalculator {
         : 1
     // Base coordination remains exactly 1. Main/Preset and Signal are
     // independent, explicit ratios applied once at the Live boundary.
-    const liveEngineFactor = channelVolumeFactor * effectiveSignalVolumeFactor
+    const liveEngineFactor = channelVolumeFactor * effectiveSignalVolumeFactor * (Number.isFinite(relationalVolumeMultiplier)&&relationalVolumeMultiplier>0?Math.min(25,relationalVolumeMultiplier):1)
 
     // ── Resolve the effective minimum that MUST be honored ──────────
     // Take the larger of the per-pair minimum and the universal $5
@@ -1200,6 +1214,8 @@ export class VolumeCalculator {
     currentPrice: number,
     options: {
       tradeMode?: "main" | "preset"
+      relationalVolumeContext?: VolumeContext
+      relationalVolumeMultiplierOverride?: number
       /** Originating indication; `signal` applies the independent Signal factor. */
       indicationType?: string
       // Block/DCA variant multiplier from RealPosition.sizeMultiplier.
@@ -1433,6 +1449,7 @@ export class VolumeCalculator {
         presetVolumeFactor,
         signalVolumeFactor,
         indicationType: options.indicationType,
+        relationalVolumeMultiplier: options.relationalVolumeMultiplierOverride ?? relationalVolumeFactor(settings.relationalVolumeRatios,{indicationType:options.indicationType,...options.relationalVolumeContext,symbol}),
         // Variant multiplier forwarded from the callsite (Block/DCA sizing).
         sizeMultiplier: options.sizeMultiplier,
         allowUnboundedVariantMultiplier: options.allowUnboundedVariantMultiplier === true,

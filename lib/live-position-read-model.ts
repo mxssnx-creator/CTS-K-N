@@ -257,6 +257,7 @@ async function readPositionIndex(
   indexKey: string,
   limit: number,
   maximumLimit: number,
+  options: { strict?: boolean; includeKnownNonResults?: boolean } = {},
 ): Promise<LivePositionReadModel[]> {
   const parsedLimit = Number.isFinite(limit) ? Math.floor(limit) : maximumLimit
   // Zero historically meant "all". Preserve caller compatibility while
@@ -267,11 +268,11 @@ async function readPositionIndex(
   )
   const ids = await client
     .lrange(indexKey, 0, normalizedLimit - 1)
-    .catch(() => [])
+    .catch(error => { if (options.strict) throw error; return [] })
   // Rows the results ledger has classified as final non-results (simulated, never traded, foreign) are not
   // loaded: on X02 they were almost every row of the newest 1,000 closed and 2,000 open ids, read again
   // every few seconds (4,300 rows per second, the app at 100 % CPU).
-  const skip = await readLedgerSkipSet(client, connectionId).catch(() => null)
+  const skip = options.includeKnownNonResults ? null : await readLedgerSkipSet(client, connectionId).catch(() => null)
   const uniqueIds = withoutKnownNonResults(Array.from(new Set(ids.filter(Boolean))), skip)
   if (uniqueIds.length === 0) return []
 
@@ -280,11 +281,12 @@ async function readPositionIndex(
   for (let offset = 0; offset < uniqueIds.length; offset += batchSize) {
     const batch = uniqueIds.slice(offset, offset + batchSize)
     const [legacySnapshots, hashes] = await Promise.all([
-      client.mget(...batch.map((id) => `live:position:${id}`)).catch(() =>
-        batch.map(() => null),
-      ),
+      client.mget(...batch.map((id) => `live:position:${id}`)).catch(error => {
+        if (options.strict) throw error
+        return batch.map(() => null)
+      }),
       Promise.all(batch.map((id) =>
-        client.hgetall(`live_positions:${connectionId}:${id}`).catch(() => ({})),
+        client.hgetall(`live_positions:${connectionId}:${id}`).catch(error => { if (options.strict) throw error; return {} }),
       )),
     ])
     for (let index = 0; index < batch.length; index++) {
@@ -353,6 +355,7 @@ export async function getOpenLivePositionReadModels(
 export async function getOpenLivePositionReadModelsStrict(
   connectionId: string,
   limit = 500,
+  options: { includeKnownNonResults?: boolean } = {},
 ): Promise<LivePositionReadModel[]> {
   await initRedis()
   const client = getRedisClient()
@@ -362,12 +365,14 @@ export async function getOpenLivePositionReadModelsStrict(
     `live:positions:${connectionId}`,
     limit,
     LIVE_POSITION_OPEN_READ_LIMIT,
+    { ...options, strict: true },
   )
 }
 
 export async function getClosedLivePositionReadModelsStrict(
   connectionId: string,
   limit = 1_000,
+  options: { includeKnownNonResults?: boolean } = {},
 ): Promise<LivePositionReadModel[]> {
   await initRedis()
   const client = getRedisClient()
@@ -377,6 +382,7 @@ export async function getClosedLivePositionReadModelsStrict(
     `live:positions:${connectionId}:closed`,
     limit,
     LIVE_POSITION_CLOSED_READ_LIMIT,
+    { ...options, strict: true },
   )
 }
 
