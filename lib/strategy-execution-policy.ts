@@ -37,8 +37,10 @@ export function strategyProcessingRange(row: any): string {
 
 export function strategyExecutionPolicyFor(row: any, policy: StrategyExecutionPolicy): StrategyExecutionPolicy {
   const own = policy.processingByRange?.[strategyProcessingRange(row)]
-  return { ...policy, normalEnabled: policy.normalEnabled && own?.normal !== false,
-    trailingEnabled: policy.trailingEnabled && own?.trailing !== false }
+  // Signal has an independent engine master; its explicit range controls still apply.
+  const signal = isSignalSet(row) || String(row?.trailingMode ?? row?.trailing_mode) === "signal_dynamic"
+  return { ...policy, normalEnabled: (signal || policy.normalEnabled) && own?.normal !== false,
+    trailingEnabled: (signal || policy.trailingEnabled) && own?.trailing !== false }
 }
 
 export interface StrategyExecutionPolicy {
@@ -211,7 +213,10 @@ export function isStrategySetExecutionEnabled(row: any, overall: StrategyExecuti
   const policy = strategyExecutionPolicyFor(row, overall)
   const family = classifyStrategyExecutionFamily(row)
   const trailing = Boolean(row?.trailingProfile || row?.variant === "trailing" || String(row?.trailingMode ?? row?.trailing_mode) === "signal_dynamic")
-  if (trailing && !policy.trailingEnabled) return false
+  const adjusted = family === "axis" || family === "block" || family === "dca" ||
+    family === "signal" && (row?.variant === "block" || row?.variant === "dca")
+  // Adjusted families retain their independent entry; dispatch strips a disabled trailing profile.
+  if (trailing && !policy.trailingEnabled && !adjusted) return false
   if (family === "signal") {
     if (row?.variant === "block") return policy.blockEnabled
     if (row?.variant === "dca") return policy.dcaEnabled

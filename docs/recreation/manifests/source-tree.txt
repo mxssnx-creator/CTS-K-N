@@ -1394,6 +1394,7 @@ docs/stress/offline-70-verify.json
 docs/stress/offline-70-verify.md
 docs/system-modules-map.md
 docs/verification/disjoint-lastn-volume-20261111.md
+docs/verification/micro-distances-x02-20261112.md
 docs/verification/older-change-integration-20260906.json
 docs/verification/redis-memory-recovery-20260905.md
 docs/verification/runtime-memory-20260906.md
