@@ -7,8 +7,8 @@ import {
   type CommonIndicatorSettings,
 } from "@/lib/common-indicator-config"
 
-// Every default Common parameter tuple: 1,899 for the 17 original types plus
-// 528 for the types ported from CTS-A-O (135 types).
+// All registered parameter tuples include disabled research sources.
+// The enabled default grid remains a distinct inventory.
 const defaultCommonTuples = COMMON_INDICATOR_DEFINITIONS.reduce((sum, definition) =>
   sum + commonIndicatorParameterConfigurations(
     definition,
@@ -29,7 +29,8 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 2 (then evaluate every integer through MAX_INDICATION_WINDOW).
-    expect(defaultCommonTuples).toBe(2_427)
+    expect(defaultCommonTuples).toBe(2_437)
+    expect(enabledCommonTuples).toBe(2_325)
     expect(result.totalPossibleSets).toBe(47_938)
     expect(result.totalEvaluationConfigurations).toBe(16_249)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])

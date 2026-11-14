@@ -1,3 +1,9 @@
+## Current continuation — 2026-11-14 — complete DCA lifecycle verification
+
+Canonical `/workspace/CTS-K-N`; branch `codex/complete-dca-lifecycle-verification-20261114`; main source base `f62db0d89a8bca549c003ca5a9d6effd91f1b9f9`. Production code is unchanged. The DCA fill/terminal integration fixtures explicitly opt their connection into DCA, instead of relying on a disabled factory policy. The registered inventory is 137 types / 2,437 tuples; the enabled 129 types / 2,325 tuples are unchanged. Full isolated Jest passes 566 suites / 3,796 tests, with disposable loopback Redis and no external network transport. TypeScript, focused lint, features, Last-N blocks, syntax, secret scan and a production build with 356 complete traces pass. A prior concurrent build exited 137; the successful repeat uses a 2,048 MiB build heap and pnpm 10.28.1. Required manifests and hosted CI are recorded with the containing PR.
+
+Official recovery/pre-edit/handoff checkpoints are listed in `.kilocode/rules/memory-bank/context.md`. No production state, service, deployment or exchange write changed. Managed remote activation is unavailable; remote state remains unknown. Fresh read-only x02 inventory is 3 positions / 6 orders, without proven ownership/writer status. Preserve those objects and the original losses. New complete 12-symbol native lifecycle and after-cost forward PF remain unverified. See `docs/verification/complete-dca-fixtures-20261114.md`.
+
 ## Current continuation — 2026-11-12 — independent Micro protection and strategy dispatch
 
 Canonical checkout `/workspace/CTS-K-N`, branch `codex/micro-distances-x02-20261112`. Preserves the independent signed Last-N and relational-volume work. Added separately persisted Micro/Low-Range absolute price floors: stop 0.10%, trailing gap 0.05%; other ranges retain their global policy. Newly opened Live positions capture their Micro distances so later setting changes do not alter held contracts.
