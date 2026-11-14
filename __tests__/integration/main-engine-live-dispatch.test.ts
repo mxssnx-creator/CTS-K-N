@@ -567,6 +567,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     recordingConnector.getOpenOrders.mockImplementation(async () => venueOpenOrderSnapshot())
     recordingConnector.getLastOpenOrdersSnapshotStatus.mockImplementation(() => ({ ok: true }))
     recordingConnector.getCapabilities.mockImplementation(() => ["position_close_all_stop"])
+    delete connection.dcaEnabled
     connection.is_live_trade = "1"
     connection.live_trade_requested = "1"
     connection.is_preset_trade = "0"
@@ -2591,6 +2592,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
   })
 
   test.each(["long", "short"] as const)("retains a partial %s DCA order until the same step is completely filled", async (direction) => {
+    connection.dcaEnabled = true
     const { executeLivePosition, __liveStageTest } = await import("@/lib/trade-engine/stages/live-stage")
     let venueQuantity = 0
     let releaseRemainder = false
@@ -2639,6 +2641,7 @@ describe("Main Trade Engine Real → Live dispatch", () => {
   })
 
   test.each(["long", "short"] as const)("retries only the unfilled quantity of a terminal %s DCA step", async (direction) => {
+    connection.dcaEnabled = true
     const { executeLivePosition, __liveStageTest } = await import("@/lib/trade-engine/stages/live-stage")
     let venueQuantity = 0
     let attempt = 0
