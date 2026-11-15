@@ -107,7 +107,3 @@ After completing the user's request, update the relevant memory bank files:
 - Keine Produktionsreife behaupten, solange erforderliche Gates, Remote-Stabilität oder Order-/Statistikabgleich offen sind. Exakte Fortsetzung in `docs/PROJECT-CONTINUATION.md` und `.kilocode/rules/memory-bank/context.md` pflegen.
 
 - Zusätzliche Nutzerpriorität: DCA zuerst für ein Symbol (aktuell BCH), danach XRP/SOL über jeweils 14 vollständige Tage rechnen. Alle ausführbaren Stufen 1–4 und mehrere letzte SL-Abstände/Mulitplikatoren vergleichen. Geringen Drawdown vor höherem Gewinn priorisieren, positive Ergebnisse nach Kosten und Kostenstress getrennt ausweisen. Bereits betrachtete Daten nicht erneut als unabhängigen Holdout bezeichnen. Vollständige Ergebnisse mit Diagrammen als interaktives HTML liefern.
-
-## How to read PF (owner, 2026-11-15)
-
-Pool PF (every configuration, every signal, before validation) is normally under 1 and is not a defect; what decides is the post-Base PF and above all the executed PF, on the development AND the sealed window. See `docs/pf-reading-20261115.md`.
