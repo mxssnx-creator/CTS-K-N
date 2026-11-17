@@ -12,6 +12,8 @@ integration	__tests__/integration/progression-api.test.ts
 operator-tool	__tests__/diagnostic-cleanup.ts
 operator-tool	__tests__/fixtures/legacy-technical-indicators.ts
 operator-tool	__tests__/support/esm-jest-transform.cjs
+operator-tool	__tests__/support/per-file-redis-reset.ts
+operator-tool	__tests__/support/per-worker-redis.cjs
 operator-tool	components/test-dashboard.tsx
 operator-tool	components/test-live-orders.tsx
 operator-tool	scripts/autotest-drift.mjs
