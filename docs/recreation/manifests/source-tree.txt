@@ -13,6 +13,7 @@
 .kilocode/rules/memory-bank/tech.md
 .node-version
 AGENTS.md
+CLAUDE.md
 COMPREHENSIVE_PRODUCTION_FIXES.md
 CONFIGURATION_UPDATED.md
 CRASH_FIXES_SUMMARY.md
@@ -1291,6 +1292,7 @@ docs/baseline/STABLE-BASELINE-2026-09-19.md
 docs/baseline/candles-2026-09-19-1m.json.gz
 docs/chisel-client.service.example
 docs/common-indicators.md
+docs/config-wide-windows.md
 docs/dca-optimization-7d-2026-08-11.md
 docs/direct-trade-async-scale-48h.json
 docs/direct-trade-block-48h.json

@@ -26,9 +26,17 @@ describe("Direct-Trade continuity cron", () => {
     resetInlineRedisGlobals()
     process.env.NODE_ENV = "test"
     delete process.env.CRON_SECRET
+    // These tests verify the continuity decision, not the response time box
+    // (covered by its own tests). A first call against a real Redis includes
+    // connection setup and can exceed the 600 ms default, which answered
+    // "pending" instead of the decision.
+    process.env.CTS_CRON_TIME_BUDGET_MS = "15000"
   })
 
-  afterEach(() => resetInlineRedisGlobals())
+  afterEach(() => {
+    resetInlineRedisGlobals()
+    delete process.env.CTS_CRON_TIME_BUDGET_MS
+  })
 
   test("deduplicates the minute and requests host recovery only for stale required workers", async () => {
     const [{ GET }, { getRedisClient }] = await Promise.all([

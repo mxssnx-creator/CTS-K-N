@@ -160,8 +160,10 @@ describe("live bot runner", () => {
     expect(v.cancels).toContain(entry.id)
     expect(v.stops).toHaveLength(1)
     expect(v.stops[0].qty).toBeCloseTo(entry.qty / 2, 10)
-    const [p] = await runner.readLivePositions("x02", "sandwich")
-    expect(p.state).toBe("open")
+    // The same tick may open a new entry on another symbol, and a Redis hash
+    // with large values has no field order: select the position of this entry.
+    const p = (await runner.readLivePositions("x02", "sandwich")).find((x: any) => x.entryOrderId === entry.id)
+    expect(p?.state).toBe("open")
   })
 
   test("an expired entry that filled partially before the cancel still gets its stop", async () => {
@@ -181,11 +183,13 @@ describe("live bot runner", () => {
     await store.writeBotSettings("x02", "sandwich", { running: true })
     const v = venue()
     await runner.runBotTick("x02", "sandwich", v, demo)
-    v.fill(v.placed[0].id, 99.5)
+    const entry = v.placed[0]
+    v.fill(entry.id, 99.5)
     ;(globalThis as any).__botSignal = null
     await runner.runBotTick("x02", "sandwich", v, demo)
-    const [p] = await runner.readLivePositions("x02", "sandwich")
-    expect(p.entryPrice).toBe(99.5)
+    // Select by entry order: a Redis hash with large values has no field order.
+    const p = (await runner.readLivePositions("x02", "sandwich")).find((x: any) => x.entryOrderId === entry.id)
+    expect(p?.entryPrice).toBe(99.5)
   })
 
   test("a symbol already claimed by an overlapping tick is not entered twice", async () => {
