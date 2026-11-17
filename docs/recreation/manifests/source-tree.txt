@@ -332,6 +332,7 @@ __tests__/unit/live-volume-vst-floor.test.ts
 __tests__/unit/log-payload.test.ts
 __tests__/unit/log-retention-contract.test.ts
 __tests__/unit/logistics-workflow.test.ts
+__tests__/unit/low-range-extra-parity.test.ts
 __tests__/unit/main-indication-settings.test.ts
 __tests__/unit/main-indications-stats-route.test.ts
 __tests__/unit/main-live-trade-readiness.test.ts
@@ -1403,6 +1404,7 @@ docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-features-20261111.md
 docs/verification/strategy-features-20261111/report.html
 docs/verification/strategy-features-20261111/results.json
+docs/verification/ui-quickstart-indications-20261117.md
 docs/verification/x02-twelve-symbol-interrupted-recovery-20261112.md
 drizzle.config.ts
 eslint.config.mjs
@@ -1485,6 +1487,7 @@ lib/closeable-row-statuses.ts
 lib/common-indicator-config.ts
 lib/common-indicators/ao/classic.ts
 lib/common-indicators/ao/define.ts
+lib/common-indicators/ao/low-range-extra.ts
 lib/common-indicators/ao/low-range.ts
 lib/common-indicators/ao/math.ts
 lib/common-indicators/ao/micro-rules.ts
@@ -2194,6 +2197,7 @@ shared/cts-indications/origin/indications/cache.ts
 shared/cts-indications/origin/indications/dca-tactic.ts
 shared/cts-indications/origin/indications/inverse-config.ts
 shared/cts-indications/origin/indications/inverse.ts
+shared/cts-indications/origin/indications/low-range-extra.ts
 shared/cts-indications/origin/indications/low-range-research.ts
 shared/cts-indications/origin/indications/low-range.ts
 shared/cts-indications/origin/indications/market.ts

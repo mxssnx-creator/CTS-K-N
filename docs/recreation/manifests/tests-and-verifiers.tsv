@@ -319,6 +319,7 @@ unit	__tests__/unit/live-volume-vst-floor.test.ts
 unit	__tests__/unit/log-payload.test.ts
 unit	__tests__/unit/log-retention-contract.test.ts
 unit	__tests__/unit/logistics-workflow.test.ts
+unit	__tests__/unit/low-range-extra-parity.test.ts
 unit	__tests__/unit/main-indication-settings.test.ts
 unit	__tests__/unit/main-indications-stats-route.test.ts
 unit	__tests__/unit/main-live-trade-readiness.test.ts

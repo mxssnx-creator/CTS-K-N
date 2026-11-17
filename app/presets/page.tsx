@@ -523,6 +523,8 @@ export default function PresetsPage() {
     )
   }
 
+  // Averages over zero presets are "no data", not a measured 0.00 PF / 0 % win rate.
+  const hasPresetMetrics = (overview?.summary.total || 0) > 0
   return (
     <div className="space-y-4 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -699,9 +701,9 @@ export default function PresetsPage() {
         <StatCard icon={Database} label="Presets" value={String(overview?.summary.total || 0)} detail={`${overview?.summary.symbols || 0} symbols · ${overview?.summary.indicatorTypes || 0} types`} />
         <StatCard icon={ShieldCheck} label="Eligible" value={String(overview?.summary.eligible || 0)} detail={`PF ≥ ${formatNumber(overview?.settings.minProfitFactor ?? REALIZED_PROFIT_FACTOR_MIN_DEFAULT, 1)}`} tone="text-emerald-500" />
         <StatCard icon={Check} label="Selected" value={String(overview?.summary.selected || 0)} detail="Best per symbol and indication" tone="text-blue-500" />
-        <StatCard icon={TrendingUp} label="Average PF" value={formatProfitFactor(overview?.summary.averageProfitFactor || 0)} detail="Position-cost normalized" tone="text-emerald-500" />
-        <StatCard icon={Target} label="Win rate" value={`${formatNumber(overview?.summary.averageWinRate || 0, 1)}%`} detail={`Net ${formatNumber(overview?.summary.netR || 0)}R`} />
-        <StatCard icon={Clock3} label="Drawdown time" value={`${formatNumber(overview?.summary.averageDrawdownHours || 0, 1)}h`} detail={`Max configured ${formatNumber(overview?.settings.maxDrawdownHours || 5, 1)}h`} tone="text-amber-500" />
+        <StatCard icon={TrendingUp} label="Average PF" value={hasPresetMetrics ? formatProfitFactor(overview?.summary.averageProfitFactor || 0) : "—"} detail="Position-cost normalized" tone="text-emerald-500" />
+        <StatCard icon={Target} label="Win rate" value={hasPresetMetrics ? `${formatNumber(overview?.summary.averageWinRate || 0, 1)}%` : "—"} detail={`Net ${formatNumber(overview?.summary.netR || 0)}R`} />
+        <StatCard icon={Clock3} label="Drawdown time" value={hasPresetMetrics ? `${formatNumber(overview?.summary.averageDrawdownHours || 0, 1)}h` : "—"} detail={`Max configured ${formatNumber(overview?.settings.maxDrawdownHours || 5, 1)}h`} tone="text-amber-500" />
       </div>
 
       <Card>

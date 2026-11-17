@@ -87,7 +87,7 @@ describe("Common catalogue and registry", () => {
   })
 
   test("every ported type maps to a registered CTS-A-O rule and its parameters", () => {
-    expect(COMMON_CATALOG.length).toBe(120)
+    expect(COMMON_CATALOG.length).toBe(123)
     for (const entry of COMMON_CATALOG) {
       const mapping = NEW_RULE_MAPPINGS[entry.type]
       expect(mapping).toBeDefined()

@@ -8,7 +8,12 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { StrategyRowCompact } from "@/components/strategies/strategy-row-compact"
-import { StrategyFiltersAdvanced } from "@/components/strategies/strategy-filters-advanced"
+import {
+  INITIAL_ADVANCED_FILTERS,
+  StrategyFiltersAdvanced,
+  symbolKey,
+  type AdvancedFilters,
+} from "@/components/strategies/strategy-filters-advanced"
 import type { StrategyResult } from "@/lib/strategies"
 import { Activity, TrendingUp, BarChart3, Settings, RefreshCw, Target, Download, DatabaseZap } from "lucide-react"
 import { useExchange } from "@/lib/exchange-context"
@@ -16,46 +21,11 @@ import { PageHeader } from "@/components/page-header"
 import { useStrategyUpdates } from "@/lib/use-websocket"
 import { MAIN_TRADE_BASE_PF_RATIO_DEFAULT } from "@/lib/main-trade-profit-factor"
 
-// Define advanced filter type
-interface AdvancedFilters {
-  dateFrom: string
-  dateTo: string
-  symbols: string[]
-  symbolInput: string
-  indicationTypes: string[]
-  strategyTypes: string[]
-  tpRange: [number, number]
-  slRange: [number, number]
-  volRange: [number, number]
-  profitFactorMin: number
-  winRateMin: number
-  trailingOnly: boolean
-  activeOnly: boolean
-  validOnly: boolean
-}
-
-const initialAdvancedFilters: AdvancedFilters = {
-  dateFrom: "",
-  dateTo: "",
-  symbols: [],
-  symbolInput: "",
-  indicationTypes: [],
-  strategyTypes: [],
-  tpRange: [0, 20],
-  slRange: [0, 5],
-  volRange: [0.5, 5],
-  profitFactorMin: 0,
-  winRateMin: 0,
-  trailingOnly: false,
-  activeOnly: false,
-  validOnly: false,
-}
-
 export default function StrategiesPage() {
   const { selectedConnectionId } = useExchange()
   const [strategies, setStrategies] = useState<StrategyResult[]>([])
   const [isDemo, setIsDemo] = useState(false)
-  const [filters, setFilters] = useState<AdvancedFilters>(initialAdvancedFilters)
+  const [filters, setFilters] = useState<AdvancedFilters>(INITIAL_ADVANCED_FILTERS)
   const [sortBy, setSortBy] = useState<"profit" | "trades" | "active">("profit")
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState("")
@@ -151,43 +121,26 @@ export default function StrategiesPage() {
   const filteredAndSortedStrategies = useMemo(() => {
     let result = [...strategies]
 
-    // Apply filters
+    // Apply filters (only dimensions the stage-summary rows actually carry)
+    const fromMs = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`).getTime() : null
+    const toMs = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59.999`).getTime() : null
+    const wantedSymbols = filters.symbols.map(symbolKey).filter(Boolean)
     result = result.filter((strategy) => {
-      // Profit factor filter
-      if (strategy.avg_profit_factor < filters.profitFactorMin) return false
-      const symbol = String((strategy as StrategyResult & { symbol?: string }).symbol || strategy.name)
-        .toUpperCase()
-        .replace(/[^A-Z0-9]+/g, "")
-      if (
-        filters.symbols.length > 0 &&
-        !filters.symbols.some((candidate) => symbol.includes(candidate.replace(/[^A-Z0-9]+/g, "")))
-      ) return false
-
-      // TP/SL coordinate range filters
-      if (strategy.config.takeprofit_factor < filters.tpRange[0] || strategy.config.takeprofit_factor > filters.tpRange[1]) return false
-      if (strategy.config.stoploss_ratio < filters.slRange[0] || strategy.config.stoploss_ratio > filters.slRange[1]) return false
-
-      // Volume range filter
-      if (strategy.volume_factor < filters.volRange[0] || strategy.volume_factor > filters.volRange[1]) return false
-
-      const measuredWinRate = strategy.stats.win_rate <= 1
-        ? strategy.stats.win_rate * 100
-        : strategy.stats.win_rate
-      if (measuredWinRate < filters.winRateMin) return false
-
-      // Toggle filters
-      if (filters.trailingOnly && !strategy.config.trailing_enabled) return false
+      const row = strategy as StrategyResult & { symbol?: string; effectiveStage?: string; updatedAt?: number }
+      if (filters.profitFactorMin > 0 && !(strategy.avg_profit_factor >= filters.profitFactorMin)) return false
+      if (wantedSymbols.length > 0) {
+        const symbol = symbolKey(String(row.symbol || strategy.name))
+        if (!wantedSymbols.some((candidate) => symbol === candidate || symbol.startsWith(candidate))) return false
+      }
+      const updatedAt = Number(row.updatedAt) || 0
+      if (fromMs !== null && !(updatedAt >= fromMs)) return false
+      if (toMs !== null && !(updatedAt > 0 && updatedAt <= toMs)) return false
       if (filters.activeOnly && !strategy.isActive) return false
       if (filters.validOnly && strategy.validation_state !== "valid") return false
-
-      // Strategy type filter
-      if (filters.strategyTypes.length > 0) {
-        const strategyTypeName = String(
-          (strategy as StrategyResult & { effectiveStage?: string }).effectiveStage || strategy.mainType,
-        ).toLowerCase()
-        if (!filters.strategyTypes.some((type) => strategyTypeName === type.toLowerCase())) return false
+      if (filters.stages.length > 0) {
+        const stage = String(row.effectiveStage || strategy.mainType).toLowerCase()
+        if (!filters.stages.includes(stage)) return false
       }
-
       return true
     })
 
@@ -197,7 +150,7 @@ export default function StrategiesPage() {
         result.sort((a, b) => b.avg_profit_factor - a.avg_profit_factor)
         break
       case "trades":
-        result.sort((a, b) => b.stats.positions_per_day - a.stats.positions_per_day)
+        result.sort((a, b) => (b.stats.total_trades || 0) - (a.stats.total_trades || 0))
         break
       case "active":
         result.sort((a, b) => (b.isActive ? 1 : 0) - (a.isActive ? 1 : 0))
@@ -217,10 +170,19 @@ export default function StrategiesPage() {
         Number(s.config.min_profit_factor) || MAIN_TRADE_BASE_PF_RATIO_DEFAULT
       ),
     ).length
-    const avgProfitFactor = total > 0 ? strategies.reduce((sum, s) => sum + s.avg_profit_factor, 0) / total : 0
+    // Unmeasured rows report PF 0; averaging them in would understate the measured ratio.
+    const measured = strategies.filter((s) => Number.isFinite(s.avg_profit_factor) && s.avg_profit_factor > 0)
+    const avgProfitFactor = measured.length > 0
+      ? measured.reduce((sum, s) => sum + s.avg_profit_factor, 0) / measured.length
+      : null
 
     return { total, active, valid, profitable, avgProfitFactor }
   }, [strategies])
+
+  const availableSymbols = useMemo(
+    () => Array.from(new Set(strategies.map((s) => String((s as StrategyResult & { symbol?: string }).symbol || "").toUpperCase()).filter(Boolean))).sort(),
+    [strategies],
+  )
 
   const exportStrategies = useCallback(() => {
     if (filteredAndSortedStrategies.length === 0) return
@@ -340,7 +302,7 @@ export default function StrategiesPage() {
           { icon: Activity,   label: "Active",     value: stats.active, tint: "text-green-500" },
           { icon: Target,     label: "Valid",      value: stats.valid, tint: "text-indigo-500" },
           { icon: TrendingUp, label: "Profitable", value: stats.profitable, tint: "text-amber-500" },
-          { icon: Settings,   label: "Avg PF ratio", value: stats.avgProfitFactor.toFixed(2), tint: "text-primary" },
+          { icon: Settings,   label: "Avg PF ratio", value: stats.avgProfitFactor === null ? "—" : stats.avgProfitFactor.toFixed(2), tint: "text-primary" },
         ].map((stat) => (
           <Card key={stat.label} className="border-border bg-card">
             <CardContent className="p-2 flex items-center gap-2">
@@ -356,12 +318,12 @@ export default function StrategiesPage() {
         ))}
       </div>}
 
-      {selectedConnectionId && <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <div className="lg:col-span-1">
-          <StrategyFiltersAdvanced filters={filters} onFiltersChange={setFilters} />
+      {selectedConnectionId && <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(240px,280px)_minmax(0,1fr)]">
+        <div className="min-w-0">
+          <StrategyFiltersAdvanced filters={filters} onFiltersChange={setFilters} availableSymbols={availableSymbols} />
         </div>
 
-        <div className="lg:col-span-4 space-y-3">
+        <div className="min-w-0 space-y-3">
           <div className="flex items-center justify-between gap-2 flex-wrap text-xs px-3 py-2 bg-muted/40 rounded-md border border-border">
             <div className="text-muted-foreground">
               Showing{" "}
@@ -373,7 +335,7 @@ export default function StrategiesPage() {
             <div className="flex gap-1">
               {([
                 { k: "profit", label: "Profit" },
-                { k: "trades", label: "Trades/Day" },
+                { k: "trades", label: "Entries" },
                 { k: "active", label: "Active" },
               ] as const).map(({ k, label }) => (
                 <Button
@@ -403,17 +365,23 @@ export default function StrategiesPage() {
                 />
               ))
             ) : (
+              strategies.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">
+                  No stage results recorded for this connection yet. Rows appear once the engine evaluates Base Sets.
+                </div>
+              ) : (
               <div className="text-center py-12 text-muted-foreground">
                 <div className="text-sm mb-2">No strategies match your filters</div>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setFilters(initialAdvancedFilters)}
+                  onClick={() => setFilters(INITIAL_ADVANCED_FILTERS)}
                   className="text-xs h-7"
                 >
                   Reset Filters
                 </Button>
               </div>
+              )
             )}
           </div>
         </div>

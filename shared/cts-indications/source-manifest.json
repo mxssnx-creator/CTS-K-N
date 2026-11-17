@@ -11,6 +11,7 @@
     "indications/dca-tactic.ts": "e0ed37b80458b2d5a835c4dd1eaf9474a1372355dfa828fc50cd294a99d7d9bf",
     "indications/inverse-config.ts": "9040992177fcc3f47e976f6a0f967792d75aef5426a932bc37a8f9a4006ad720",
     "indications/inverse.ts": "eb4199bdd78c210f895f27ada4a2cd25f8a09ddce3849ca25be8f972a35c8f6c",
+    "indications/low-range-extra.ts": "e83e0c68ca165061217a59777c57f88b27dc757652138bda7fbe45603b8b2f87",
     "indications/low-range-research.ts": "c6de8e5b0f3d5b5a62de484f6a6a12fda60cee928ddf7182718bc2b232a4fccb",
     "indications/low-range.ts": "79763dfe766934a47f3a6c13039bf3e2a06350bb25b4cc4bf2ff13d1b833723a",
     "indications/market.ts": "62ff4c0ad4f6f9d2778d76a2be00cce51f011d304f1abde2c2e3631d4f55a3dd",

@@ -139,6 +139,12 @@ describe("QuickStart route ordering", () => {
     }))
 
     expect(response.status).toBe(200)
+    // The response reports the basket the engine will actually run: the
+    // mandatory BTC/SOL/BCH/XRP quartet first, never only the raw request.
+    const payload = await response.clone().json()
+    expect(payload.connection.symbols).toEqual(["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"])
+    expect(payload.connection.requestedSymbols).toEqual(["DRIFTUSDT"])
+    expect(payload.connection.symbolsAdjustedByPolicy).toBe(true)
     await new Promise<void>((resolve) => setImmediate(resolve))
 
     const redisDb = await import("@/lib/redis-db")
@@ -149,7 +155,15 @@ describe("QuickStart route ordering", () => {
       // The live engine factor defaults to 0.1 since b4797115 (more
       // concurrent minimum-size orders); Paper mode commits that default.
       connectionPatch: expect.objectContaining({ live_volume_factor: "0.1" }),
-      settingsPatch: expect.objectContaining({ live_volume_factor: "0.1", volume_factor_live: "0.1" }),
+      settingsPatch: expect.objectContaining({
+        live_volume_factor: "0.1",
+        volume_factor_live: "0.1",
+        force_symbols: JSON.stringify(["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"]),
+      }),
+      tradeEngineStatePatch: expect.objectContaining({
+        force_symbols: JSON.stringify(["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"]),
+        quickstart_symbol_count: "4",
+      }),
       changedFieldsOverride: expect.arrayContaining(["live_volume_factor", "connection_settings.live_volume_factor"]),
       // The persistence/recoordination phase must not race the explicit
       // targeted start below.

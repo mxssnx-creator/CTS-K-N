@@ -421,6 +421,19 @@ textarea {
   display: none;
 }
 
+/* Header controls sit above the decorative top-info art; a translucent plate
+   keeps status text and buttons legible over the busiest part of the image. */
+.page-header-actions > div:not(:empty) {
+  position: relative;
+  z-index: 1;
+  border-radius: calc(var(--radius) - 2px);
+  padding: 0.25rem 0.375rem;
+  background: hsl(var(--background) / 0.72);
+  box-shadow: 0 0 0 1px hsl(var(--border) / 0.55);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
 .page-header-compact .page-header-inner {
   min-height: 3.5rem;
   padding-block: 0.55rem;

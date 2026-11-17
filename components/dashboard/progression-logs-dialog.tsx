@@ -22,6 +22,8 @@ interface ProgressionLogsDialogProps {
   connectionId: string
   connectionName: string
   progression?: any
+  /** tab shown each time the dialog opens (default: the event log) */
+  initialTab?: "log" | "info" | "breakdown" | "indications" | "strategies"
 }
 
 interface ProgressionLog {
@@ -102,12 +104,17 @@ export function ProgressionLogsDialog({
   onOpenChange,
   connectionId,
   connectionName,
+  initialTab,
 }: ProgressionLogsDialogProps) {
   const [logs, setLogs] = useState<ProgressionLog[]>([])
   const [stats, setStats] = useState<StatsShape | null>(null)
   const [tradingState, setTradingState] = useState<StatsShape["progressionState"] | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<"log" | "info" | "breakdown" | "indications" | "strategies">("log")
+  // Re-apply the requested tab each time the dialog opens from a specific launcher.
+  useEffect(() => {
+    if (open && initialTab) setActiveTab(initialTab)
+  }, [open, initialTab])
   // Category filter for the log list — "all" by default, otherwise by level
   const [logFilter, setLogFilter] = useState<"all" | "info" | "warning" | "error" | "debug">("all")
 
