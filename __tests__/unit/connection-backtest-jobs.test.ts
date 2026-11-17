@@ -65,6 +65,9 @@ describe("connection backtest jobs", () => {
   test("uses the connection's basket when the request names none", async () => {
     const response = await (await post("bt-bingx", {})).json()
     expect(response.job.request.symbols).toEqual(["BTCUSDT", "ETHUSDT"])
+    // Release only once the job has reached its gate; releasing earlier hit the
+    // previous job's resolver and left this one waiting forever on real Redis.
+    await until(async () => (await state("bt-bingx")).job?.done === 1)
     release()
     await until(async () => (await state("bt-bingx")).job?.status === "completed")
   })

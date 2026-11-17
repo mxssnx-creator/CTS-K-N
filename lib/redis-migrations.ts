@@ -7947,6 +7947,11 @@ const migrations: Migration[] = [
       let legacyPfValuesMigrated = 0
       let directStatesUpdated = 0
       for (const key of primarySettingKeys) {
+        // Legacy deployments keep some of these names as plain strings (e.g. an
+        // old serialized settings:all_settings). HSET on them raises WRONGTYPE on
+        // real Redis and aborted the whole batch; preserve them untouched.
+        const keyType = String(await client.type(key).catch(() => "none"))
+        if (keyType !== "none" && keyType !== "hash") continue
         const current = ((await client.hgetall(key).catch(() => ({}))) || {}) as Record<string, string>
         const patch: Record<string, string> = {
           blockProfitFactorRatio: normalizeLegacyPf(current.blockProfitFactorRatio),

@@ -236,7 +236,16 @@ describe("Direct-Trade chunked configuration store", () => {
     const chunk = directTradeConfigChunkKey(old, 0, "audit")
     await redis.set(chunk, "old")
     expect((await cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit" })).candidates).toBe(1)
-    await expect(cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit", apply: true })).rejects.toThrow("atomic")
+    if (typeof (redis as any).eval === "function") {
+      // Shared Redis: the cleanup runs atomically and removes the orphan.
+      await expect(cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit", apply: true }))
+        .resolves.toMatchObject({ candidates: 1, removed: 1 })
+      expect(await redis.get(chunk)).toBeNull()
+      await redis.set(chunk, "old")
+    } else {
+      // Without EVAL there is no atomic path, so applying must refuse.
+      await expect(cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit", apply: true })).rejects.toThrow("atomic")
+    }
     await redis.set(keys.calculationLease, "owner")
     expect((await cleanupDirectTradeOrphanChunks(redis, { connectionId: "audit" })).skippedActiveLease).toBe(true)
     expect(await redis.get(chunk)).toBe("old")

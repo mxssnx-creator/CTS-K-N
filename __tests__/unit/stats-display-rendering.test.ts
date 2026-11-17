@@ -7,9 +7,16 @@ beforeAll(() => {
   const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
     import React from 'react';
     import {renderToStaticMarkup} from 'react-dom/server';
-    import {LiveOverviewCompact} from './components/live-trading/live-overview-compact.tsx';
-    import {SimulatedBookCard} from './components/stats/simulated-book-panel.tsx';
-    import {computePositionBookStats, simulatedBookForDisplay} from './lib/position-book-stats.ts';
+    // Without "type":"module" tsx loads these as CommonJS; depending on the Node
+    // release, named exports are either detected or only reachable via default.
+    import * as liveModule from './components/live-trading/live-overview-compact.tsx';
+    import * as simulatedModule from './components/stats/simulated-book-panel.tsx';
+    import * as bookModule from './lib/position-book-stats.ts';
+    const pick = (mod, name) => mod[name] ?? mod.default?.[name];
+    const LiveOverviewCompact = pick(liveModule, 'LiveOverviewCompact');
+    const SimulatedBookCard = pick(simulatedModule, 'SimulatedBookCard');
+    const computePositionBookStats = pick(bookModule, 'computePositionBookStats');
+    const simulatedBookForDisplay = pick(bookModule, 'simulatedBookForDisplay');
     globalThis.React = React;
     const render = (type, props) => renderToStaticMarkup(React.createElement(type, props));
     const book = computePositionBookStats([
