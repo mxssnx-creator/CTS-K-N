@@ -13,13 +13,17 @@ import { randomUUID } from "node:crypto"
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-const CANDIDATE_PORTS = [process.env.REDIS_TEST_PORT, "6399", "6379"].filter(Boolean) as string[]
+// Prefer the suite's REDIS_URL (per-worker database); fall back to local ports.
+const CANDIDATES: string[][] = [
+  ...(process.env.REDIS_URL ? [["-u", process.env.REDIS_URL]] : []),
+  ...[process.env.REDIS_TEST_PORT, "6399", "6379"].filter(Boolean).map((p) => ["-p", String(p)]),
+]
 const SCRIPT_PATH = `/tmp/outcome-ceiling-${process.pid}.lua`
 const RUN = `cts-test:${randomUUID().slice(0, 8)}`
 
-let port = ""
+let target: string[] = []
 function cli(...args: string[]): string {
-  return execFileSync("redis-cli", ["-p", port, ...args], { encoding: "utf8" }).trim()
+  return execFileSync("redis-cli", [...target, ...args], { encoding: "utf8" }).trim()
 }
 
 /** Every key this suite creates, so teardown removes exactly what it made. */
@@ -55,20 +59,20 @@ describe("per-connection outcome-set ceiling (real Redis, real Lua)", () => {
   beforeAll(() => {
     expect(match).toBeTruthy()
     writeFileSync(SCRIPT_PATH, match![1])
-    for (const candidate of CANDIDATE_PORTS) {
+    for (const candidate of CANDIDATES) {
       try {
-        if (execFileSync("redis-cli", ["-p", candidate, "ping"], { encoding: "utf8" }).trim() === "PONG") {
-          port = candidate
+        if (execFileSync("redis-cli", [...candidate, "ping"], { encoding: "utf8" }).trim() === "PONG") {
+          target = candidate
           break
         }
       } catch { /* try the next candidate */ }
     }
-    expect(port).not.toBe("")
+    expect(target).not.toEqual([])
   })
 
   afterAll(() => {
     // Delete only what this run created, by exact key. Never a pattern scan.
-    if (!port) return
+    if (target.length === 0) return
     const keys = [...created]
     for (let i = 0; i < keys.length; i += 100) {
       try { cli("del", ...keys.slice(i, i + 100)) } catch { /* best effort */ }

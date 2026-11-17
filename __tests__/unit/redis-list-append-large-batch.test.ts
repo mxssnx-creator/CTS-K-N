@@ -7,7 +7,8 @@ import { appendUniqueListEntries } from "@/lib/redis-idempotent-list"
  * it ("too many results to unpack"). Large batches are pushed in chunks.
  */
 // The real server's Lua (the test client of lib/redis-db takes a non-Lua path).
-const client = createClient({ url: `redis://127.0.0.1:${process.env.REDIS_TEST_PORT || 6399}` })
+// Prefer the suite's REDIS_URL (per-worker database, see __tests__/support/per-worker-redis.cjs).
+const client = createClient({ url: process.env.REDIS_URL || `redis://127.0.0.1:${process.env.REDIS_TEST_PORT || 6399}` })
 
 describe("appendUniqueListEntries with a large batch (real Redis Lua)", () => {
   beforeAll(async () => { await client.connect() })
