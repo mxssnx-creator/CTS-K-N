@@ -137,7 +137,7 @@ export default function ConnectionTestingPage() {
         description="Test exchange API connectivity and functionality"
       />
       <div className="flex-1 overflow-auto">
-        <div className="p-6 space-y-6">
+        <div className="min-w-0 space-y-6 p-3 sm:p-6">
       <Tabs defaultValue="config" className="space-y-6">
         <TabsList>
           <TabsTrigger value="config">Configuration</TabsTrigger>
@@ -151,7 +151,7 @@ export default function ConnectionTestingPage() {
               <CardDescription>Configure connection settings for testing</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Exchange</Label>
                   <Select value={selectedExchange} onValueChange={setSelectedExchange}>
@@ -290,7 +290,7 @@ export default function ConnectionTestingPage() {
               {testSummary && (
                 <div className="mt-6 p-4 bg-muted rounded-lg">
                   <h3 className="font-semibold mb-3">Test Summary</h3>
-                  <div className="grid grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
                     <div>
                       <p className="text-sm text-muted-foreground">Total Tests</p>
                       <p className="text-2xl font-bold">{testSummary.totalTests}</p>

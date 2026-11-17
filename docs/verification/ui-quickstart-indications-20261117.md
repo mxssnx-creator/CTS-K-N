@@ -59,6 +59,18 @@ effective basket once via `normalizeSymbolAliasesInPatch` before persisting or r
 - Header actions get a legible plate over the decorative art; Preset Optimizer shows "—" instead of
   0.00 PF / 0 % with no presets; German status line translated.
 
+## Follow-up fixes found with live engine data
+
+- Overview Statistics panel crashed (`null.toFixed`) once the engine produced data: the Live
+  execution tier can arrive with a null win rate. `performance-tiers.tsx` now normalizes every
+  numeric tier field and shows "—" for an unmeasured win rate.
+- Indication and Strategy row lists overflowed sideways at phone width; rows now wrap below `sm`.
+  Testing › Connection grids/padding are responsive.
+- CI smoke (`scripts/run-dev-preview-check.mjs`) asserted the old misreport (echo of the raw
+  1-symbol request while the engine ran the quartet). It now asserts the request is preserved in
+  `requestedSymbols` and that `symbols` equals the effective basket. The opt-in prod verifiers
+  compare `requestedSymbols` (falling back to `symbols` for older servers).
+
 ## Validation
 
 - TypeScript and ESLint on all changed files: pass. Production build: pass, 356 complete traces.

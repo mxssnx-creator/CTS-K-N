@@ -510,8 +510,10 @@ async function main() {
       },
       timeoutMs: QUICKSTART_UI_TIMEOUT_MS,
     })
-    const configuredSymbols = Array.isArray(enabled.data?.connection?.symbols)
-      ? enabled.data.connection.symbols.map(String)
+    // Compare the preserved request; `symbols` is the effective basket after
+    // the mandatory BTC/SOL/BCH/XRP policy (older servers only return `symbols`).
+    const configuredSymbols = Array.isArray(enabled.data?.connection?.requestedSymbols ?? enabled.data?.connection?.symbols)
+      ? (enabled.data.connection.requestedSymbols ?? enabled.data.connection.symbols).map(String)
       : []
     if (configuredSymbols.length !== UI_MAX_SYMBOLS || configuredSymbols.some((symbol, index) => symbol !== symbols[index])) {
       throw new Error(`QuickStart did not preserve the exact ${UI_MAX_SYMBOLS}-symbol UI selection`)

@@ -767,8 +767,10 @@ async function main() {
       timeoutMs: 120_000,
     })).json
     connectionId = String(quickStart?.connection?.id || connectionId)
-    const configuredSymbols = Array.isArray(quickStart?.connection?.symbols)
-      ? quickStart.connection.symbols.map(String)
+    // Compare the preserved request; `symbols` is the effective basket after
+    // the mandatory BTC/SOL/BCH/XRP policy (older servers only return `symbols`).
+    const configuredSymbols = Array.isArray(quickStart?.connection?.requestedSymbols ?? quickStart?.connection?.symbols)
+      ? (quickStart.connection.requestedSymbols ?? quickStart.connection.symbols).map(String)
       : []
     if (configuredSymbols.length !== SYMBOLS.length || configuredSymbols.some((symbol, index) => symbol !== SYMBOLS[index])) {
       throw new Error(`QuickStart did not preserve the requested ${SYMBOLS.length}-symbol set`)
