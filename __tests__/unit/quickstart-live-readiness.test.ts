@@ -11,7 +11,7 @@ describe("QuickStart live admission presentation", () => {
     expect(source).toContain("const id = connectionId || activeConnectionId")
     expect(source).not.toContain("const id = activeConnectionId || connectionId")
     expect(source).toContain("liveReadiness?.executionMode === \"blocked\"")
-    expect(source).toContain("Live angefordert; neue Entries pausiert")
+    expect(source).toContain("Live requested; new entries paused")
     expect(source).not.toContain('label:  stats.liveDispatchBlocked > 0 && stats.liveOrdersFilled === 0 ? "Live blocked"')
   })
 

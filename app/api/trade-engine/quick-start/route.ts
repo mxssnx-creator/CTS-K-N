@@ -15,6 +15,7 @@ import { isSupportedConnectorExchange } from "@/lib/supported-exchanges"
 import { getGlobalTradeEngineCoordinator } from "@/lib/trade-engine"
 import { loadSettingsAsync } from "@/lib/settings-storage"
 import { fetchTopSymbols, normaliseSort } from "@/lib/top-symbols"
+import { normalizeSymbolAliasesInPatch } from "@/lib/connection-symbol-aliases"
 import { emitEngineStageAck } from "@/lib/engine-stage-ack"
 import { checkProductionReadiness, productionReadinessJson } from "@/lib/production-readiness"
 import { applyMainConnectionSettingsChange } from "@/lib/connection-recoordinator"
@@ -711,6 +712,27 @@ async function handlePost(request: Request) {
       symbols = [...DEFAULT_SYMBOLS]
       console.log(`${LOG_PREFIX}: [2/4] Using default symbol: ${symbols.join(", ")}`)
     }
+
+    // Resolve the effective runtime basket exactly as the settings commit will
+    // persist it (mandatory BTC/SOL/BCH/XRP quartet first, requested count as
+    // the total ceiling, canonical symbol form). Reporting or storing the raw
+    // request made the response, progression and trade_engine_state describe
+    // a basket the engine never ran.
+    const requestedSymbols = [...symbols]
+    const effectiveBasket = normalizeSymbolAliasesInPatch(
+      { force_symbols: JSON.stringify(symbols), symbol_count: String(symbols.length) },
+      { marketType: connection.market_type ?? connection.asset_class, exchange: exchangeName },
+    ).force_symbols
+    try {
+      const parsed = JSON.parse(String(effectiveBasket || "[]"))
+      if (Array.isArray(parsed) && parsed.length > 0) symbols = parsed.map(String)
+    } catch {
+      // keep the requested basket; the commit path normalizes it again
+    }
+    const symbolsAdjustedByPolicy = !sameOrderedSymbols(
+      requestedSymbols.map((symbol) => symbol.toUpperCase().replace(/[\s/_-]/g, "")),
+      symbols,
+    )
 
     console.log(`${LOG_PREFIX}: [2/4] Final symbol: ${symbols.join(", ")}`)
 
@@ -1844,6 +1866,9 @@ async function handlePost(request: Request) {
         name: connection.name, 
         exchange: exchangeName,
         symbols,
+        // what the caller asked for, and whether the mandatory-basket policy changed it
+        requestedSymbols,
+        symbolsAdjustedByPolicy,
         testPassed,
         testSkipped,
         testError: testError || undefined,

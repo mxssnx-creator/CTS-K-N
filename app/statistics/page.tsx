@@ -1085,6 +1085,11 @@ export default function StatisticsPage() {
   }
 
   return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <PageHeader
+        title="Advanced Statistics & Analytics"
+        description="Measured exchange performance, classic realised PF, PositionCost coordinates and runtime diagnostics"
+      />
     <div className="min-w-0 space-y-4 p-3 sm:p-4">
       <StatisticsSectionNav />
       {!hasRealConnections && (
@@ -1114,12 +1119,8 @@ export default function StatisticsPage() {
         </div>
       )}
 
-      <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-        <PageHeader
-          title="Advanced Statistics & Analytics"
-          description="Measured exchange performance, classic realised PF, PositionCost coordinates and runtime diagnostics"
-        />
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
           <Select value={selectedTopTimeRange} onValueChange={applyTopTimeRange}>
             <SelectTrigger size="sm" className="h-8 min-w-44 bg-background" aria-label="Statistics time range">
               <SelectValue placeholder="Select time range" />
@@ -2235,6 +2236,7 @@ export default function StatisticsPage() {
           </Tabs>
         </div>
       </div>
+    </div>
     </div>
   )
 }

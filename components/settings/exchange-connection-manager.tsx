@@ -23,6 +23,12 @@ export default function ExchangeConnectionManager() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showAddDialog, setShowAddDialog] = useState(false)
+  // External "Add New Connection" launchers (e.g. the Settings overview card) open this dialog.
+  useEffect(() => {
+    const open = () => setShowAddDialog(true)
+    document.addEventListener("open-add-connection", open)
+    return () => document.removeEventListener("open-add-connection", open)
+  }, [])
   const [testingId, setTestingId] = useState<string | null>(null)
   const [recentlyInsertedBase, setRecentlyInsertedBase] = useState<Set<string>>(new Set())
   const [showBingXCredentialsDialog, setShowBingXCredentialsDialog] = useState(false)

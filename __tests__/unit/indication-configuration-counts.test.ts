@@ -29,7 +29,7 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 2 (then evaluate every integer through MAX_INDICATION_WINDOW).
-    expect(defaultCommonTuples).toBe(2_437)
+    expect(defaultCommonTuples).toBe(2_509)
     expect(enabledCommonTuples).toBe(2_325)
     expect(result.totalPossibleSets).toBe(47_938)
     expect(result.totalEvaluationConfigurations).toBe(16_249)

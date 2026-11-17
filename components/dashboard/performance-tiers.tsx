@@ -104,12 +104,37 @@ const STAGE_META: Record<string, { label: string; Icon: typeof PlayCircle; badge
   live: { label: "Live / Exch", Icon: Zap,         badgeVariant: "destructive", border: "border-l-4 border-l-red-400"    },
 }
 
-function TierCard({ keyName, tier }: { keyName: string; tier: PerformanceTier }) {
+const finiteOr = (value: unknown, fallback = 0): number => {
+  const n = typeof value === "number" ? value : Number(value)
+  return value !== null && value !== undefined && Number.isFinite(n) ? n : fallback
+}
+
+/** Unmeasured stages arrive with null metrics; render them as "—", never crash the panel. */
+function normalizeTier(tier: PerformanceTier): PerformanceTier {
+  return {
+    ...tier,
+    symbolCount: finiteOr(tier.symbolCount),
+    totalCreated: finiteOr(tier.totalCreated),
+    totalRunning: finiteOr(tier.totalRunning),
+    totalEntries: finiteOr(tier.totalEntries),
+    avgProfitFactor: finiteOr(tier.avgProfitFactor),
+    avgDrawdownMin: finiteOr(tier.avgDrawdownMin),
+    avgPosPerSet: finiteOr(tier.avgPosPerSet),
+    totalPnl: finiteOr(tier.totalPnl),
+    sharpe: finiteOr(tier.sharpe),
+    winRate: finiteOr(tier.winRate, Number.NaN),
+  }
+}
+
+function TierCard({ keyName, tier: rawTier }: { keyName: string; tier: PerformanceTier }) {
   const meta = STAGE_META[keyName]
   if (!meta) return null
 
+  const tier = normalizeTier(rawTier)
   const pf = tier.avgProfitFactor
-  const wrLabel = tier.isExecution ? `${tier.winRate.toFixed(1)}%` : `${tier.totalRunning}/${tier.totalCreated}`
+  const wrLabel = tier.isExecution
+    ? (Number.isFinite(tier.winRate) ? `${tier.winRate.toFixed(1)}%` : "—")
+    : `${tier.totalRunning}/${tier.totalCreated}`
 
   return (
     <Card className={`${meta.border} bg-muted/20`}>

@@ -13,6 +13,7 @@ import {
   Network, LineChart, Cpu, Shield, BarChart3,
 } from "lucide-react"
 import { AuthGuard } from "@/components/auth-guard"
+import { COMMON_INDICATOR_TYPES } from "@/lib/common-indicator-config"
 import { useExchange } from "@/lib/exchange-context"
 import {
   MAIN_TRADE_BASE_PF_RATIO_DEFAULT,
@@ -308,13 +309,16 @@ function SectionHeader({ num, label, sub, color }: { num: number; label: string;
 
 function Funnel({ stats, rows }: { stats: EngineStats | null; rows: StrategyRows | null }) {
   const stages = [
-    { label: "Base Total", value: rows?.base.total ?? stats?.baseStrategyCount ?? 0, color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
+    // Stage-funnel contract: Main receives exactly the Base-valid Sets, so the
+    // flow is emitted → valid → Main, never "Base total → Main".
+    { label: "Base Emitted", value: rows?.base.total ?? stats?.baseStrategyCount ?? 0, color: "bg-purple-500/10 text-purple-400/80 border-purple-500/20" },
+    { label: "Base Valid", value: rows?.base.valid ?? 0, color: "bg-purple-500/20 text-purple-400 border-purple-500/30" },
     { label: "Main Overall", value: rows?.main.overall ?? stats?.mainStrategyCount ?? 0, color: "bg-purple-500/30 text-purple-300 border-purple-500/40" },
     { label: "Real Active", value: rows?.real.active ?? stats?.realStrategyCount ?? 0, color: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" },
     { label: "Live Mirrored", value: rows?.live.mirrored ?? stats?.liveStrategyCount ?? 0, color: "bg-emerald-500/30 text-emerald-300 border-emerald-500/40" },
   ]
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center justify-end gap-1">
       {stages.map((s, i) => (
         <div key={s.label} className="flex items-center gap-1">
           <div className={cn("flex flex-col items-center rounded border px-2.5 py-1 text-center", s.color)}>
@@ -400,7 +404,7 @@ function MainSystemTab({
     { k: "trend", label: "Trend", desc: "Additional · independent 1/5/15/30-minute situations" },
     { k: "optimal", label: "Optimal", desc: "Additional · exhaustive multi-filter configurations" },
     { k: "auto", label: "Auto", desc: "Additional · adaptive runtime coordination" },
-    { k: "common", label: "Common", desc: "17 official indicators · exact config lanes" },
+    { k: "common", label: "Common", desc: `${COMMON_INDICATOR_TYPES.length} registered types (research types opt-in) · exact config lanes` },
     { k: "signal", label: "Signal", desc: "Independent public-source and consensus lanes" },
   ]
 
@@ -418,7 +422,7 @@ function MainSystemTab({
       </div>
 
       {/* Funnel */}
-      <div className="flex items-center justify-between rounded-md border bg-muted/5 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/5 px-3 py-2">
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Strategy Funnel</span>
         <Funnel stats={s} rows={rows} />
       </div>
@@ -469,17 +473,17 @@ function MainSystemTab({
 
           <Block icon={Zap} title="Indication Processing" sub="Default + Additional + Common/Signal · exact lanes" accent="blue" open>
             {/* per-type mini bars */}
-            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 py-1">
+            <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 py-1 sm:grid-cols-2">
               {indicationFamilies.map(t => {
                 const cnt = byType[t.k] || 0
                 return (
-                  <div key={t.k}>
-                    <div className="flex items-center justify-between mb-0.5">
+                  <div key={t.k} className="min-w-0 rounded-sm px-1 py-1">
+                    <div className="flex items-baseline justify-between gap-2">
                       <span className="text-[10px] font-medium text-blue-400">{t.label}</span>
-                      <span className="text-[10px] font-mono text-muted-foreground">{fmt(cnt)}</span>
+                      <span className="text-[10px] font-mono tabular-nums text-muted-foreground">{fmt(cnt)}</span>
                     </div>
+                    <span className="mb-1 block truncate text-[9px] text-muted-foreground/70" title={t.desc}>{t.desc}</span>
                     <Progress value={(cnt / maxIndicationCount) * 100} className="h-0.5 rounded-none [&>div]:bg-blue-500" />
-                    <span className="text-[9px] text-muted-foreground/60">{t.desc}</span>
                   </div>
                 )
               })}
@@ -634,7 +638,7 @@ function PresetModeTab() {
           <SectionHeader num={1} label="Indicators" sub="computed on each candle close per symbol" color="blue" />
         </div>
         <div className="px-3 py-1.5">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 py-1">
+          <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 py-1 sm:grid-cols-2">
             {indicators.map(ind => (
               <div key={ind.name} className="flex items-center justify-between py-[3px]">
                 <span className="text-[10px] font-medium text-blue-400">{ind.name}</span>
@@ -886,12 +890,12 @@ function QueueSection({ queueData }: { queueData: QueueData | null }) {
         {q.workflow?.length > 0 && (
           <div className="space-y-1 pt-1">
             <span className="text-[9px] uppercase tracking-wider text-muted-foreground">Workflow Phases</span>
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-3">
               {q.workflow.map(p => (
                 <div key={p.id} className="flex items-center justify-between rounded border px-2 py-1 gap-2">
                   <div className="min-w-0">
-                    <div className="text-[10px] font-medium truncate">{p.label}</div>
-                    <div className="text-[9px] text-muted-foreground truncate">{p.detail}</div>
+                    <div className="text-[10px] font-medium truncate" title={p.label}>{p.label}</div>
+                    <div className="text-[9px] text-muted-foreground line-clamp-2" title={p.detail}>{p.detail}</div>
                   </div>
                   <Tag color={p.status === "complete" ? "green" : p.status === "warning" ? "orange" : "default"}>
                     {p.status}
@@ -902,7 +906,7 @@ function QueueSection({ queueData }: { queueData: QueueData | null }) {
           </div>
         )}
         {queueData.focusConnection && (
-          <div className="flex items-center gap-2 border-t pt-2 mt-1 text-[10px] text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2 border-t pt-2 mt-1 text-[10px] text-muted-foreground">
             <Shield className="h-2.5 w-2.5 shrink-0" />
             <span>Focus:</span>
             <span className="font-medium text-foreground">{queueData.focusConnection.name}</span>

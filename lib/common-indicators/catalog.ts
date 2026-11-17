@@ -68,6 +68,13 @@ const lowRangeParameters = () => ({
   keep: keep(1),
 })
 
+const lowRangeExtraParameters = () => ({
+  window: range("Band window (bars)", 6, 24, 6, 2, 48),
+  filter: range("Filter (0 standalone, 1 trend, 2 activity)", 0, 2, 1, 0, 2),
+  inverse: range("Inverse (0 follow, 1 inverse)", 0, 1, 1, 0, 1),
+  keep: keep(1),
+})
+
 const entry = <T extends string>(
   type: T,
   category: CommonIndicatorCategory,
@@ -111,6 +118,12 @@ export const COMMON_CATALOG = [
     "Cross the midpoint of the prior narrow channel, filtered by the selected relation. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
   entry("lowRangeCompressionBreak", "volatility", "event", ["low-range-compression-break"], "Low-Range compression break",
     "Break from a narrow channel compressed to at most 65% of its older context. Research: opt-in.", lowRangeParameters(), { defaultEnabled: false }),
+  entry("lowRangeBandReclaim", "structure", "event", ["low-range-research-band-reclaim"], "Low-Range band reclaim",
+    "Close back inside a narrow 2σ band after the previous close left it, filtered standalone, by trend or by activity; optional inverse. Research: opt-in.", lowRangeExtraParameters(), { defaultEnabled: false }),
+  entry("lowRangeSqueezeBreak", "volatility", "event", ["low-range-research-squeeze-break"], "Low-Range squeeze break",
+    "Active close beyond a narrow 2σ band squeezed to at most 65% of its older width, with trend/activity filters; optional inverse. Research: opt-in.", lowRangeExtraParameters(), { defaultEnabled: false }),
+  entry("lowRangeRsi2Reclaim", "oscillator", "event", ["low-range-research-rsi2-reclaim"], "Low-Range RSI(2) reclaim",
+    "RSI(2) recovers from 20/80 inside a narrow band with a confirming close, with trend/activity filters; optional inverse. Research: opt-in.", lowRangeExtraParameters(), { defaultEnabled: false }),
   // ── trend ─────────────────────────────────────────────────────────────────────────
   entry("emaTrend", "trend", "state", ["trend-ema"], "EMA trend",
     "Fast EMA above the slow EMA with the close above the slow EMA (long), the mirror (short).", {

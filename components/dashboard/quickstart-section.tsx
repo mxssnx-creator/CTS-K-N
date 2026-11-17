@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { QuickstartComprehensiveLogDialog } from "./quickstart-comprehensive-log-dialog"
+import { ProgressionLogsDialog } from "./progression-logs-dialog"
 import { QuickstartOverviewDialog } from "./quickstart-overview-dialog"
 // Top-of-card controls strip — connection picker (add base connection
 // to Active panel) + Reset DB button. Lives in its own file because
@@ -436,7 +437,9 @@ function MiniStat({ label, value, sub }: { label: string; value: string; sub?: s
 // ─── main component ─�����─────────────────────────────────────────────────────────
 
 export function QuickstartSection() {
-  const { selectedConnectionId, selectedExchange } = useExchange()
+  const { selectedConnectionId, selectedExchange, selectedConnection } = useExchange()
+  // Progression / Indications / Strategies launchers open one dialog on their own tab.
+  const [progressionDialogTab, setProgressionDialogTab] = useState<"log" | "indications" | "strategies" | null>(null)
   // Use the exchange-selected connection only. An explicit null means no
   // selection yet; the polling effects guard it rather than borrowing another
   // connection's stats or processing state.
@@ -1030,7 +1033,14 @@ export function QuickstartSection() {
       if (startRes.ok) {
         addLog("Trade engine started successfully", "success")
         setIsRunning(true)
-        addLog(`Processing live data for: ${chosen.join(", ")}`, "info")
+        // The server applies the mandatory basket policy (BTC/SOL/BCH/XRP first,
+        // requested count as ceiling); report the basket the engine actually runs.
+        const started = await startRes.json().catch(() => null)
+        const effective: string[] = Array.isArray(started?.connection?.symbols) ? started.connection.symbols : chosen
+        if (started?.connection?.symbolsAdjustedByPolicy) {
+          addLog(`Mandatory basket policy applied: requested ${chosen.join(", ")}`, "warning")
+        }
+        addLog(`Processing live data for: ${effective.join(", ")}`, "info")
       } else {
         const body = await startRes.json().catch(() => ({}))
         // An HTTP failure is not a running engine. Previously this branch
@@ -1625,17 +1635,27 @@ export function QuickstartSection() {
           {/* dialog launchers */}
           <QuickstartOverviewDialog />
           <QuickstartComprehensiveLogDialog />
+          {connectionId && (
+            <ProgressionLogsDialog
+              open={progressionDialogTab !== null}
+              onOpenChange={(open) => { if (!open) setProgressionDialogTab(null) }}
+              connectionId={connectionId}
+              connectionName={selectedConnection?.name || selectedExchange || connectionId}
+              initialTab={progressionDialogTab ?? undefined}
+            />
+          )}
 
-          {/* legacy event buttons */}
-          {[
-            { label: "Progression", event: "open-progression-logs" },
-            { label: "Indications", event: "open-indications-logs" },
-            { label: "Strategies",  event: "open-strategies-logs"  },
-          ].map(({ label, event }) => (
+          {/* progression dialog launchers (previously dispatched events nothing listened to) */}
+          {([
+            { label: "Progression", tab: "log" },
+            { label: "Indications", tab: "indications" },
+            { label: "Strategies",  tab: "strategies"  },
+          ] as const).map(({ label, tab }) => (
             <Button
-              key={event}
+              key={tab}
               size="sm" variant="ghost"
-              onClick={() => window.dispatchEvent(new CustomEvent(event))}
+              disabled={!connectionId}
+              onClick={() => setProgressionDialogTab(tab)}
               className="h-7 text-[11px] px-2 gap-1"
             >
               <FileText className="w-2.5 h-2.5" />
@@ -1738,7 +1758,7 @@ export function QuickstartSection() {
               role="status"
               className="text-[10px] text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/20 rounded px-2 py-1"
             >
-              Live angefordert; neue Entries pausiert: {liveReadiness.blockReason || "aktueller Entry-Schutz"}
+              Live requested; new entries paused: {liveReadiness.blockReason || "current entry protection"}
             </div>
           )}
         </div>

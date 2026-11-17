@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { useExchange } from "@/lib/exchange-context"
+import { PageHeader } from "@/components/page-header"
 
 type Strategy = "normal" | "trailing" | "axis" | "block" | "dca"
 interface HourStat { hour: number; closed: number; orders: number; wins: number; losses: number; pf: number; pnl: number; balance: number; drawdownPct: number }
@@ -128,18 +129,16 @@ export default function BotsPage() {
   const set = (patch: any) => bot && setBots((all) => all.map((b) => (b.type === bot.type ? { ...b, settings: { ...b.settings, ...patch } } : b)))
 
   return (
-    <div className="mx-auto max-w-[1400px] space-y-4 p-4">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-semibold">Bots</h1>
-          <p className="text-sm text-muted-foreground">
-            {selectedConnection?.name || selectedConnectionId || "No connection"} — each bot keeps its own settings, results and run state.
-          </p>
-        </div>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <PageHeader
+        title="Bots"
+        description={`${selectedConnection?.name || selectedConnectionId || "No connection"} — each bot keeps its own settings, results and run state.`}
+      >
         <Button variant="outline" size="sm" onClick={() => bots.forEach((b) => void backtest(b.type))} disabled={!bots.length}>
           Backtest all
         </Button>
-      </div>
+      </PageHeader>
+    <div className="mx-auto w-full max-w-[1400px] min-w-0 space-y-4 p-3 sm:p-4">
       {error && <div className="rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2 text-sm text-rose-600">{error}</div>}
 
       {/* All bots together */}
@@ -370,6 +369,7 @@ export default function BotsPage() {
           </Card>
         </div>
       )}
+    </div>
     </div>
   )
 }

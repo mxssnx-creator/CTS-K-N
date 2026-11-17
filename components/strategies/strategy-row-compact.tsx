@@ -79,7 +79,7 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
   return (
     <div className="group border border-slate-700/50 hover:border-slate-600 rounded bg-slate-900/30 hover:bg-slate-900/50 transition-all">
       {/* Main row - always visible, compact */}
-      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-xs sm:flex-nowrap">
         {/* Expand toggle */}
         <Button
           variant="ghost"
@@ -101,7 +101,7 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
         />
 
         {/* Index */}
-        <span className="text-slate-500 font-mono w-5">{(index + 1).toString().padStart(3, '0')}</span>
+        <span className="w-7 shrink-0 font-mono text-slate-500">{(index + 1).toString().padStart(3, '0')}</span>
 
         {/* Type badge */}
         <Badge className={`${getTypeColor(strategy.name)} border text-xs px-1.5 py-0 h-5 flex items-center gap-0.5`}>
@@ -115,7 +115,7 @@ export function StrategyRowCompact({ strategy, onToggle, minimalProfitFactor, in
         </Badge>
 
         {/* Strategy name */}
-        <div className="text-slate-300 truncate max-w-[180px] flex-1">{strategy.name}</div>
+        <div className="min-w-0 max-w-[180px] flex-1 truncate text-slate-300">{strategy.name}</div>
 
         {/* Profit factor with bar */}
         <MiniBarChart factor={strategy.avg_profit_factor} />

@@ -379,11 +379,29 @@ async function runSmokeVerifier() {
   const configuredSymbols = Array.isArray(quickStart?.connection?.symbols)
     ? quickStart.connection.symbols.map(String)
     : []
+  const requestedEcho = Array.isArray(quickStart?.connection?.requestedSymbols)
+    ? quickStart.connection.requestedSymbols.map(String)
+    : []
+  // The explicit request must be preserved (never replaced by an auto-pick)...
   if (
-    configuredSymbols.length !== symbols.length ||
-    configuredSymbols.some((symbol, index) => symbol !== symbols[index])
+    requestedEcho.length !== symbols.length ||
+    requestedEcho.some((symbol, index) => symbol !== symbols[index])
   ) {
     throw new Error(`QuickStart did not preserve the requested ${symbols.length}-symbol set`)
+  }
+  // ...and the reported basket is the one the engine runs: the mandatory
+  // BTC/SOL/BCH/XRP quartet first (lib/forced-symbols.ts), the requested count
+  // as the total ceiling (never below the quartet).
+  const mandatory = ["BTCUSDT", "SOLUSDT", "BCHUSDT", "XRPUSDT"]
+  const effectiveSymbols = Array.from(new Set([...mandatory, ...symbols]))
+    .slice(0, Math.max(mandatory.length, symbols.length))
+  if (
+    configuredSymbols.length !== effectiveSymbols.length ||
+    configuredSymbols.some((symbol, index) => symbol !== effectiveSymbols[index])
+  ) {
+    throw new Error(
+      `QuickStart reported ${configuredSymbols.join(",") || "no symbols"}; the effective basket is ${effectiveSymbols.join(",")}`,
+    )
   }
   if (quickStart?.connection?.liveTradeRequested !== false || quickStart?.connection?.liveTradeEnabled !== false) {
     throw new Error("Safe smoke unexpectedly enabled live exchange trading")

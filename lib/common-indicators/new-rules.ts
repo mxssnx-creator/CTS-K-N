@@ -17,6 +17,7 @@ import { registerResearch2 } from "./ao/research2"
 import { registerResearch3 } from "./ao/research3"
 import { registerResearch4 } from "./ao/research4"
 import { registerLowRange } from "./ao/low-range"
+import { registerLowRangeExtra } from "./ao/low-range-extra"
 import type { CommonSeriesContext } from "./context"
 import type { CommonRule, RuleParams } from "./legacy-rules"
 import { clamp, finite } from "./kn-math"
@@ -28,6 +29,7 @@ export const AO_RULES: ReadonlyMap<string, AoRuleSource> = collectAoRules((both)
   registerResearch3(both)
   registerResearch4(both)
   registerLowRange(both)
+  registerLowRangeExtra(both)
   registerMicro(both)
 })
 
@@ -54,6 +56,9 @@ export const NEW_RULE_MAPPINGS: Record<CommonCatalogType, Mapping> = {
   lowRangeBreakout: { source: "r-low-range-breakout", warmup: (p) => at(p.window + 2) },
   lowRangeMidReclaim: { source: "r-low-range-mid-reclaim", warmup: (p) => at(p.window + 2) },
   lowRangeCompressionBreak: { source: "r-low-range-compression-break", warmup: (p) => at(2 * p.window) },
+  lowRangeBandReclaim: { source: "r-low-range-extra-band-reclaim", warmup: (p) => at(2 * p.window + 1) },
+  lowRangeSqueezeBreak: { source: "r-low-range-extra-squeeze-break", warmup: (p) => at(2 * p.window + 1) },
+  lowRangeRsi2Reclaim: { source: "r-low-range-extra-rsi2-reclaim", warmup: (p) => at(2 * p.window + 1) },
   // trend
   emaTrend: { source: "trend-ema", warmup: (p) => at(p.slow) },
   supertrend: { source: "trend-st", warmup: (p) => at(p.period) },

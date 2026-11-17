@@ -88,7 +88,7 @@ export function IndicationRowCompact({ indication, onToggle, index }: Indication
   return (
     <div className="group border border-slate-700/50 hover:border-slate-600 rounded bg-slate-900/30 hover:bg-slate-900/50 transition-all">
       {/* Main row */}
-      <div className="flex items-center gap-2 px-3 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-xs sm:flex-nowrap">
         {/* Expand toggle */}
         <Button
           variant="ghost"
@@ -109,7 +109,7 @@ export function IndicationRowCompact({ indication, onToggle, index }: Indication
         />
 
         {/* Index */}
-        <span className="text-slate-500 font-mono w-5">{(index + 1).toString().padStart(3, '0')}</span>
+        <span className="w-7 shrink-0 font-mono text-slate-500">{(index + 1).toString().padStart(3, '0')}</span>
 
         {/* Symbol badge */}
         <Badge className="bg-blue-500/20 text-blue-300 border border-blue-500/30 text-xs px-1.5 py-0 h-5 font-mono">
@@ -128,7 +128,7 @@ export function IndicationRowCompact({ indication, onToggle, index }: Indication
         </Badge>
 
         {/* Confidence bar */}
-        <div className="flex items-center gap-1 text-slate-400 flex-1 min-w-[120px]">
+        <div className="flex min-w-0 flex-1 basis-full items-center gap-1 text-slate-400 sm:basis-auto sm:min-w-[120px]">
           <span className="text-xs">Conf:</span>
           <MiniSignalBar value={indication.confidence} min={0} max={100} />
         </div>

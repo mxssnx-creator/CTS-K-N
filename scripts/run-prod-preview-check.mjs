@@ -535,8 +535,10 @@ async function main() {
         realEvalPosCount: 1,
       }),
     })
-    const persistedSymbols = Array.isArray(preconfigured?.connection?.symbols)
-      ? preconfigured.connection.symbols.map(String)
+    // Compare the preserved request; `symbols` is the effective basket after
+    // the mandatory BTC/SOL/BCH/XRP policy (older servers only return `symbols`).
+    const persistedSymbols = Array.isArray(preconfigured?.connection?.requestedSymbols ?? preconfigured?.connection?.symbols)
+      ? (preconfigured.connection.requestedSymbols ?? preconfigured.connection.symbols).map(String)
       : []
     if (
       persistedSymbols.length !== soakSymbols.length ||

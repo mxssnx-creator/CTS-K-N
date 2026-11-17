@@ -8,141 +8,157 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Filter, RotateCcw, ChevronDown, ChevronUp } from "lucide-react"
+import { Filter, RotateCcw, ChevronDown, ChevronUp, X } from "lucide-react"
 
-interface AdvancedFilters {
-  // Date range
+/**
+ * Filters for the per-symbol stage summaries returned by /api/data/strategies.
+ * Only dimensions those rows actually carry are offered: symbol, stage
+ * (Base → Main → Real → Live), last-update time, measured PF ratio and the
+ * active / valid state. TP/SL/volume coordinates, trailing and win rate are
+ * not part of the summary rows, so filtering on them would silently act on
+ * placeholders.
+ */
+export interface AdvancedFilters {
+  /** inclusive local dates (yyyy-mm-dd) bounding the row's last update */
   dateFrom: string
   dateTo: string
-  
-  // Symbols
   symbols: string[]
   symbolInput: string
-  
-  // Indication types
-  indicationTypes: string[]
-  
-  // Strategy types
-  strategyTypes: string[]
-  
-  // Coordinate selections (ranges)
-  tpRange: [number, number]
-  slRange: [number, number]
-  volRange: [number, number]
-  
-  // Performance
+  /** lower-case stage ids: base | main | real | live */
+  stages: string[]
   profitFactorMin: number
-  winRateMin: number
-  
-  // Toggles
-  trailingOnly: boolean
   activeOnly: boolean
   validOnly: boolean
+}
+
+export const INITIAL_ADVANCED_FILTERS: AdvancedFilters = {
+  dateFrom: "",
+  dateTo: "",
+  symbols: [],
+  symbolInput: "",
+  stages: [],
+  profitFactorMin: 0,
+  activeOnly: false,
+  validOnly: false,
+}
+
+export const STAGE_OPTIONS = [
+  { id: "base", label: "Base" },
+  { id: "main", label: "Main" },
+  { id: "real", label: "Real" },
+  { id: "live", label: "Live" },
+] as const
+
+/** Normalised symbol key used by both the chips and the row filter (BTC-USDT → BTCUSDT). */
+export const symbolKey = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]+/g, "")
+
+export function activeFilterCount(filters: AdvancedFilters): number {
+  return (
+    (filters.dateFrom ? 1 : 0) +
+    (filters.dateTo ? 1 : 0) +
+    filters.symbols.length +
+    filters.stages.length +
+    (filters.profitFactorMin > 0 ? 1 : 0) +
+    (filters.activeOnly ? 1 : 0) +
+    (filters.validOnly ? 1 : 0)
+  )
 }
 
 interface StrategyFiltersAdvancedProps {
   filters: AdvancedFilters
   onFiltersChange: (filters: AdvancedFilters) => void
+  /** symbols present in the loaded rows, offered as one-click chips */
+  availableSymbols?: readonly string[]
 }
 
-const defaultSymbols = ["BTC", "ETH", "SOL", "AAPL", "EURUSD", "XAUUSD"]
-const indicationTypeOptions = ["Direction", "Magnitude", "Volatility", "Momentum", "Mean Reversion"]
-const strategyTypeOptions = ["Base", "Main", "Real", "Block", "DCA"]
+type Section = "date" | "symbols" | "stages" | "performance"
 
-export function StrategyFiltersAdvanced({ filters, onFiltersChange }: StrategyFiltersAdvancedProps) {
-  const [expandedSections, setExpandedSections] = useState({
+export function StrategyFiltersAdvanced({ filters, onFiltersChange, availableSymbols = [] }: StrategyFiltersAdvancedProps) {
+  const [expanded, setExpanded] = useState<Record<Section, boolean>>({
     date: true,
     symbols: true,
-    indications: true,
+    stages: true,
     performance: true,
-    coordinates: true,
   })
 
-  const toggleSection = (section: keyof typeof expandedSections) => {
-    setExpandedSections((prev) => ({
-      ...prev,
-      [section]: !prev[section],
-    }))
-  }
+  const toggleSection = (section: Section) => setExpanded((prev) => ({ ...prev, [section]: !prev[section] }))
+  const update = (patch: Partial<AdvancedFilters>) => onFiltersChange({ ...filters, ...patch })
 
-  const updateFilter = (key: keyof AdvancedFilters, value: any) => {
-    onFiltersChange({ ...filters, [key]: value })
-  }
-
-  const addSymbol = () => {
-    if (filters.symbolInput.trim() && !filters.symbols.includes(filters.symbolInput.toUpperCase())) {
-      updateFilter("symbols", [...filters.symbols, filters.symbolInput.toUpperCase()])
-      updateFilter("symbolInput", "")
-    }
-  }
-
-  const removeSymbol = (sym: string) => {
-    updateFilter("symbols", filters.symbols.filter((s) => s !== sym))
-  }
-
-  const resetAllFilters = () => {
-    onFiltersChange({
-      dateFrom: "",
-      dateTo: "",
-      symbols: [],
+  const addSymbol = (raw: string) => {
+    const symbol = raw.trim().toUpperCase()
+    if (!symbol) return
+    // one update: two sequential updates would each spread the stale filters
+    // and the second would drop the symbol the first one added
+    update({
+      symbols: filters.symbols.some((s) => symbolKey(s) === symbolKey(symbol)) ? filters.symbols : [...filters.symbols, symbol],
       symbolInput: "",
-      indicationTypes: [],
-      strategyTypes: [],
-      tpRange: [0, 20],
-      slRange: [0, 5],
-      volRange: [0.5, 5],
-      profitFactorMin: 0,
-      winRateMin: 0,
-      trailingOnly: false,
-      activeOnly: false,
-      validOnly: false,
     })
   }
 
+  const presets = availableSymbols.filter((sym) => !filters.symbols.some((s) => symbolKey(s) === symbolKey(sym)))
+  const count = activeFilterCount(filters)
+
+  const SectionHeader = ({ id, title }: { id: Section; title: string }) => (
+    <button
+      type="button"
+      onClick={() => toggleSection(id)}
+      aria-expanded={expanded[id]}
+      className="flex w-full items-center justify-between px-3 py-2 text-left transition-colors hover:bg-muted/50"
+    >
+      <span className="font-semibold">{title}</span>
+      {expanded[id] ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+    </button>
+  )
+
   return (
-    <Card className="border-slate-700/50 bg-slate-900/30">
+    <Card className="border-border bg-card/60">
       <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 whitespace-nowrap text-sm">
             <Filter className="h-4 w-4" />
-            Advanced Filters
+            Filters
+            {count > 0 && <Badge variant="secondary" className="h-4 px-1.5 text-[10px] tabular-nums">{count}</Badge>}
           </CardTitle>
-          <Button variant="outline" size="sm" onClick={resetAllFilters} className="h-7 text-xs">
-            <RotateCcw className="h-3 w-3 mr-1" />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onFiltersChange(INITIAL_ADVANCED_FILTERS)}
+            disabled={count === 0 && !filters.symbolInput}
+            className="h-7 text-xs"
+          >
+            <RotateCcw className="mr-1 h-3 w-3" />
             Reset
           </Button>
         </div>
       </CardHeader>
 
       <CardContent className="space-y-3 text-xs">
-        {/* Date Range Section */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50">
-          <button
-            onClick={() => toggleSection("date")}
-            className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition-colors"
-          >
-            <span className="font-semibold">Date Range</span>
-            {expandedSections.date ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          </button>
-          {expandedSections.date && (
-            <div className="px-3 py-2 space-y-2 border-t border-slate-700/50">
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="text-xs text-slate-400 mb-1 block">From</Label>
+        <div className="rounded border border-border bg-muted/20">
+          <SectionHeader id="date" title="Last update" />
+          {expanded.date && (
+            <div className="space-y-2 border-t border-border px-3 py-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
+                <div className="min-w-0">
+                  <Label htmlFor="strategy-filter-from" className="mb-1 block text-xs text-muted-foreground">From</Label>
                   <Input
+                    id="strategy-filter-from"
                     type="date"
                     value={filters.dateFrom}
-                    onChange={(e) => updateFilter("dateFrom", e.target.value)}
-                    className="h-7 text-xs"
+                    max={filters.dateTo || undefined}
+                    onChange={(e) => update({ dateFrom: e.target.value })}
+                    className="h-8 w-full min-w-0 text-xs"
                   />
                 </div>
-                <div>
-                  <Label className="text-xs text-slate-400 mb-1 block">To</Label>
+                <div className="min-w-0">
+                  <Label htmlFor="strategy-filter-to" className="mb-1 block text-xs text-muted-foreground">To</Label>
                   <Input
+                    id="strategy-filter-to"
                     type="date"
                     value={filters.dateTo}
-                    onChange={(e) => updateFilter("dateTo", e.target.value)}
-                    className="h-7 text-xs"
+                    min={filters.dateFrom || undefined}
+                    onChange={(e) => update({ dateTo: e.target.value })}
+                    className="h-8 w-full min-w-0 text-xs"
                   />
                 </div>
               </div>
@@ -150,241 +166,121 @@ export function StrategyFiltersAdvanced({ filters, onFiltersChange }: StrategyFi
           )}
         </div>
 
-        {/* Symbols Section */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50">
-          <button
-            onClick={() => toggleSection("symbols")}
-            className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition-colors"
-          >
-            <span className="font-semibold">Symbols ({filters.symbols.length})</span>
-            {expandedSections.symbols ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          </button>
-          {expandedSections.symbols && (
-            <div className="px-3 py-2 space-y-2 border-t border-slate-700/50">
-              <div className="flex gap-1">
+        <div className="rounded border border-border bg-muted/20">
+          <SectionHeader id="symbols" title={`Symbols (${filters.symbols.length})`} />
+          {expanded.symbols && (
+            <div className="space-y-2 border-t border-border px-3 py-2">
+              <form
+                className="flex gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  addSymbol(filters.symbolInput)
+                }}
+              >
                 <Input
                   type="text"
-                  placeholder="Add symbol..."
+                  aria-label="Add symbol"
+                  placeholder="e.g. BTC"
                   value={filters.symbolInput}
-                  onChange={(e) => updateFilter("symbolInput", e.target.value.toUpperCase())}
-                  onKeyDown={(e) => e.key === "Enter" && addSymbol()}
-                  className="h-7 text-xs flex-1"
+                  onChange={(e) => update({ symbolInput: e.target.value.toUpperCase() })}
+                  className="h-7 min-w-0 flex-1 text-xs"
                 />
-                <Button onClick={addSymbol} size="sm" className="h-7 px-2">
+                <Button type="submit" size="sm" className="h-7 px-2" disabled={!filters.symbolInput.trim()} aria-label="Add symbol filter">
                   +
                 </Button>
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {filters.symbols.map((sym) => (
-                  <Badge
-                    key={sym}
-                    variant="outline"
-                    className="cursor-pointer hover:bg-slate-700 text-xs py-0.5"
-                    onClick={() => removeSymbol(sym)}
-                  >
-                    {sym} ✕
-                  </Badge>
-                ))}
-              </div>
-              {filters.symbols.length === 0 && (
-                <div className="text-xs text-slate-500">Add symbols or select from presets:</div>
+              </form>
+              {filters.symbols.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {filters.symbols.map((sym) => (
+                    <Badge key={sym} variant="default" className="gap-1 py-0.5 text-xs">
+                      {sym}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${sym}`}
+                        className="rounded-sm opacity-70 hover:opacity-100"
+                        onClick={() => update({ symbols: filters.symbols.filter((s) => s !== sym) })}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
               )}
-              <div className="flex flex-wrap gap-1">
-                {defaultSymbols.map((sym) => (
-                  <Badge
-                    key={sym}
-                    variant="outline"
-                    className="cursor-pointer hover:bg-slate-600 text-xs py-0.5"
-                    onClick={() => {
-                      if (!filters.symbols.includes(sym)) {
-                        updateFilter("symbols", [...filters.symbols, sym])
-                      }
-                    }}
-                  >
-                    +{sym}
-                  </Badge>
-                ))}
-              </div>
+              {presets.length > 0 ? (
+                <div className="flex max-h-28 flex-wrap gap-1 overflow-y-auto">
+                  {presets.map((sym) => (
+                    <Badge
+                      key={sym}
+                      variant="outline"
+                      role="button"
+                      tabIndex={0}
+                      className="cursor-pointer py-0.5 text-xs hover:bg-muted"
+                      onClick={() => addSymbol(sym)}
+                      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && addSymbol(sym)}
+                    >
+                      +{sym}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                filters.symbols.length === 0 && <div className="text-muted-foreground">No symbols recorded yet.</div>
+              )}
             </div>
           )}
         </div>
 
-        {/* Indication Types Section */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50">
-          <button
-            onClick={() => toggleSection("indications")}
-            className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition-colors"
-          >
-            <span className="font-semibold">Indication Types ({filters.indicationTypes.length})</span>
-            {expandedSections.indications ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          </button>
-          {expandedSections.indications && (
-            <div className="px-3 py-2 space-y-2 border-t border-slate-700/50">
-              <div className="grid grid-cols-2 gap-1">
-                {indicationTypeOptions.map((type) => (
-                  <Badge
-                    key={type}
-                    variant={filters.indicationTypes.includes(type) ? "default" : "outline"}
-                    className="cursor-pointer text-xs py-0.5"
-                    onClick={() => {
-                      const newTypes = filters.indicationTypes.includes(type)
-                        ? filters.indicationTypes.filter((t) => t !== type)
-                        : [...filters.indicationTypes, type]
-                      updateFilter("indicationTypes", newTypes)
-                    }}
+        <div className="rounded border border-border bg-muted/20">
+          <SectionHeader id="stages" title={`Stage (${filters.stages.length})`} />
+          {expanded.stages && (
+            <div className="grid grid-cols-2 gap-1 border-t border-border px-3 py-2">
+              {STAGE_OPTIONS.map(({ id, label }) => {
+                const selected = filters.stages.includes(id)
+                return (
+                  <Button
+                    key={id}
+                    type="button"
+                    size="sm"
+                    variant={selected ? "default" : "outline"}
+                    aria-pressed={selected}
+                    className="h-7 text-xs"
+                    onClick={() => update({ stages: selected ? filters.stages.filter((s) => s !== id) : [...filters.stages, id] })}
                   >
-                    {type}
-                  </Badge>
-                ))}
-              </div>
+                    {label}
+                  </Button>
+                )
+              })}
             </div>
           )}
         </div>
 
-        {/* Strategy Types Section */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50">
-          <button
-            onClick={() => toggleSection("coordinates")}
-            className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-800/50 transition-colors"
-          >
-            <span className="font-semibold">Strategy Types ({filters.strategyTypes.length})</span>
-            {expandedSections.coordinates ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-          </button>
-          {expandedSections.coordinates && (
-            <div className="px-3 py-2 space-y-2 border-t border-slate-700/50">
-              <div className="grid grid-cols-2 gap-1">
-                {strategyTypeOptions.map((type) => (
-                  <Badge
-                    key={type}
-                    variant={filters.strategyTypes.includes(type) ? "default" : "outline"}
-                    className="cursor-pointer text-xs py-0.5"
-                    onClick={() => {
-                      const newTypes = filters.strategyTypes.includes(type)
-                        ? filters.strategyTypes.filter((t) => t !== type)
-                        : [...filters.strategyTypes, type]
-                      updateFilter("strategyTypes", newTypes)
-                    }}
-                  >
-                    {type}
-                  </Badge>
-                ))}
+        <div className="rounded border border-border bg-muted/20">
+          <SectionHeader id="performance" title="Performance" />
+          {expanded.performance && (
+            <div className="space-y-3 border-t border-border px-3 py-2">
+              <div>
+                <Label className="mb-2 block text-muted-foreground">
+                  Min PF ratio: <span className="tabular-nums text-foreground">{filters.profitFactorMin > 0 ? filters.profitFactorMin.toFixed(2) : "any"}</span>
+                </Label>
+                <Slider
+                  value={[filters.profitFactorMin]}
+                  onValueChange={(value) => update({ profitFactorMin: value[0] })}
+                  min={0}
+                  max={3}
+                  step={0.05}
+                  aria-label="Minimum PF ratio"
+                  className="w-full"
+                />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="strategy-filter-active" className="text-muted-foreground">Active only</Label>
+                <Switch id="strategy-filter-active" checked={filters.activeOnly} onCheckedChange={(checked) => update({ activeOnly: checked })} />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <Label htmlFor="strategy-filter-valid" className="text-muted-foreground">Valid only</Label>
+                <Switch id="strategy-filter-valid" checked={filters.validOnly} onCheckedChange={(checked) => update({ validOnly: checked })} />
               </div>
             </div>
           )}
-        </div>
-
-        {/* Coordinate Ranges */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50">
-          <div className="px-3 py-2 border-b border-slate-700/50">
-            <span className="font-semibold block mb-2">Coordinate Ranges</span>
-          </div>
-          <div className="px-3 py-2 space-y-3">
-            {/* TP Range */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-slate-400">Take Profit: {filters.tpRange[0].toFixed(1)} - {filters.tpRange[1].toFixed(1)}</Label>
-              </div>
-              <Slider
-                value={filters.tpRange}
-                onValueChange={(value) => updateFilter("tpRange", [value[0], value[1]])}
-                min={0}
-                max={20}
-                step={0.5}
-                className="w-full"
-              />
-            </div>
-
-            {/* SL Range */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-slate-400">Stop Loss: {filters.slRange[0].toFixed(1)} - {filters.slRange[1].toFixed(1)}</Label>
-              </div>
-              <Slider
-                value={filters.slRange}
-                onValueChange={(value) => updateFilter("slRange", [value[0], value[1]])}
-                min={0}
-                max={5}
-                step={0.1}
-                className="w-full"
-              />
-            </div>
-
-            {/* Volume Range */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-slate-400">Volume: {filters.volRange[0].toFixed(1)}x - {filters.volRange[1].toFixed(1)}x</Label>
-              </div>
-              <Slider
-                value={filters.volRange}
-                onValueChange={(value) => updateFilter("volRange", [value[0], value[1]])}
-                min={0.5}
-                max={5}
-                step={0.1}
-                className="w-full"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Performance Metrics */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50">
-          <div className="px-3 py-2 border-b border-slate-700/50">
-            <span className="font-semibold block mb-2">Performance</span>
-          </div>
-          <div className="px-3 py-2 space-y-3">
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-slate-400">Min Profit Factor: {filters.profitFactorMin.toFixed(2)}</Label>
-              </div>
-              <Slider
-                value={[filters.profitFactorMin]}
-                onValueChange={(value) => updateFilter("profitFactorMin", value[0])}
-                min={-2}
-                max={3}
-                step={0.1}
-                className="w-full"
-              />
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <Label className="text-slate-400">Min Win Rate: {filters.winRateMin.toFixed(0)}%</Label>
-              </div>
-              <Slider
-                value={[filters.winRateMin]}
-                onValueChange={(value) => updateFilter("winRateMin", value[0])}
-                min={0}
-                max={100}
-                step={5}
-                className="w-full"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Toggle Filters */}
-        <div className="border border-slate-700/50 rounded bg-slate-900/50 px-3 py-2 space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-slate-400">Trailing Only</Label>
-            <Switch
-              checked={filters.trailingOnly}
-              onCheckedChange={(checked) => updateFilter("trailingOnly", checked)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-slate-400">Active Only</Label>
-            <Switch
-              checked={filters.activeOnly}
-              onCheckedChange={(checked) => updateFilter("activeOnly", checked)}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <Label className="text-slate-400">Valid Only</Label>
-            <Switch
-              checked={filters.validOnly}
-              onCheckedChange={(checked) => updateFilter("validOnly", checked)}
-            />
-          </div>
         </div>
       </CardContent>
     </Card>
