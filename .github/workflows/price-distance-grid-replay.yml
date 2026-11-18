@@ -1,0 +1,48 @@
+name: Price-distance grid held-out replay
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=3072
+      CTS_GRID_SYMBOLS: '12'
+      CTS_GRID_SELECTION_HOURS: '12'
+      CTS_GRID_VALIDATION_HOURS: '12'
+      CTS_GRID_HOLD_MINUTES: '120'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: corepack enable
+      - run: corepack pnpm install --frozen-lockfile
+      - name: Prepare frozen candle fixture
+        run: |
+          mkdir -p /tmp/cts-grid-replay
+          gzip -dc docs/baseline/candles-2026-09-19-1m.json.gz > /tmp/cts-grid-replay/candles.json
+      - name: Run fixed-period held-out replay
+        env:
+          CTS_BASELINE_CANDLES: /tmp/cts-grid-replay/candles.json
+          CTS_GRID_OUT_DIR: /tmp/cts-grid-replay/evidence
+        run: pnpm exec tsx scripts/regression/price-distance-grid-replay.ts
+      - name: Archive replay evidence
+        if: always()
+        run: |
+          if [ -d /tmp/cts-grid-replay/evidence ]; then
+            tar -C /tmp/cts-grid-replay -czf /tmp/cts-grid-replay/cts-kn-price-grid-evidence.tar.gz evidence
+          fi
+      - name: Upload replay evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cts-kn-price-grid-heldout
+          path: |
+            /tmp/cts-grid-replay/evidence
+            /tmp/cts-grid-replay/cts-kn-price-grid-evidence.tar.gz
+          if-no-files-found: warn
+          retention-days: 30
