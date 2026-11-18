@@ -345,6 +345,8 @@ function getDefaultSettings(): Record<string, any> {
     posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
     strategyBaseTrailingEnabled: true,
     strategyBaseTrailingVariants: DEFAULT_TRAILING_VARIANTS,
+    // Exact 21 × 25 × fixed/dynamic catalog is validation-only until held-out PF passes.
+    strategyPriceDistanceGrid: false,
     normalEnabled: true,
     axisEnabled: true,
     blockAdjustment: true,
