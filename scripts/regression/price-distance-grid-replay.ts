@@ -49,6 +49,7 @@ const VALIDATION_HOURS = Math.max(1, Math.trunc(Number(process.env.CTS_GRID_VALI
 const HOLD_MINUTES = Math.max(1, Math.trunc(Number(process.env.CTS_GRID_HOLD_MINUTES || 120)))
 const MIN_SELECTION_SETTLEMENTS = 20
 const MODELED_NOTIONAL_USD = 1
+const MODELED_STARTING_BALANCE_USD = 10
 
 const sourceBytes = readFileSync(SOURCE)
 const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex")
@@ -226,7 +227,7 @@ function metrics(settlements: Settlement[], failures = 0): Metrics {
     left.symbol.localeCompare(right.symbol) ||
     left.side.localeCompare(right.side),
   )
-  let equity = 100
+  let equity = MODELED_STARTING_BALANCE_USD
   let peak = equity
   let maxDrawdownPct = 0
   let grossGainPct = 0
@@ -235,7 +236,7 @@ function metrics(settlements: Settlement[], failures = 0): Metrics {
   for (const settlement of ordered) {
     if (settlement.netReturnPct > 0) grossGainPct += settlement.netReturnPct
     if (settlement.netReturnPct < 0) grossLossPct += -settlement.netReturnPct
-    equity += settlement.netReturnPct
+    equity = Math.max(0, equity + settlement.netReturnPct / 100 * MODELED_NOTIONAL_USD)
     peak = Math.max(peak, equity)
     maxDrawdownPct = Math.max(maxDrawdownPct, peak > 0 ? ((peak - equity) / peak) * 100 : 0)
     reasonCounts[settlement.reason] = (reasonCounts[settlement.reason] || 0) + 1
@@ -366,6 +367,7 @@ const summary = {
   costModel: {
     roundTripCostPct: costPct,
     modeledNotionalUsdPerSettlement: MODELED_NOTIONAL_USD,
+    modeledStartingBalanceUsd: MODELED_STARTING_BALANCE_USD,
     partialFills: false,
     funding: false,
     orderBookSlippageBeyondRecordedCost: false,
