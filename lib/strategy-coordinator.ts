@@ -171,7 +171,7 @@ import {
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
-import { normalizeTrailingGapBasis, type TrailingGapBasis } from "@/lib/trailing-activation"
+import { buildTrailingProfiles } from "@/lib/trailing-settings"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
@@ -4462,7 +4462,7 @@ export class StrategyCoordinator {
    * createBaseSets calls in `executeStrategyFlowBatch` share one read.
    */
   private async getEnabledTrailingVariants(): Promise<
-    Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number; gapBasis?: TrailingGapBasis }>
+    ReturnType<typeof buildTrailingProfiles>
   > {
     if ((this as any)._trailingVariantsCache) return (this as any)._trailingVariantsCache
     try {
@@ -4476,7 +4476,7 @@ export class StrategyCoordinator {
       // Progress Sets view and live control-order SL anchoring on the exact
       // range matrix the operator just saved.
       const settings = { ...(appSettings as Record<string, unknown>), ...connSettings } as Record<string, unknown>
-      const { trailingMinStep } = resolveMinimumStepSettings(
+      const { minStep, trailingMinStep } = resolveMinimumStepSettings(
         mergeConnectionSettings(appSettings, connSettings),
       )
       // Redis hashes store booleans as strings: "false" must disable too.
@@ -4486,34 +4486,7 @@ export class StrategyCoordinator {
         return []
       }
 
-      const raw = settings.strategyBaseTrailingVariants
-      // Support both shapes: stringified JSON (Upstash KV) and array
-      let tokens: string[] = []
-      if (Array.isArray(raw)) tokens = raw
-      else if (typeof raw === "string" && raw.trim().startsWith("[")) {
-        try {
-          const parsed = JSON.parse(raw)
-          if (Array.isArray(parsed)) tokens = parsed
-        } catch { /* tolerate malformed */ }
-      } else if (typeof raw === "string") {
-        // Comma-or-whitespace-separated fallback
-        tokens = raw.split(/[\s,]+/).filter(Boolean)
-      }
-
-      const gapBasis = normalizeTrailingGapBasis(settings.strategyTrailingGapBasis)
-      const profiles: Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number; gapBasis?: TrailingGapBasis }> = []
-      for (const token of tokens) {
-        if (typeof token !== "string") continue
-        const [sStr, kStr] = token.split(":")
-        const start = parseFloat(sStr)
-        const stop = parseFloat(kStr)
-        if (!Number.isFinite(start) || !Number.isFinite(stop)) continue
-        if (start <= 0 || stop <= 0) continue
-        // tag is the canonical compact identifier used in setKey suffix
-        const tag = `t${Math.round(start * 100)}-${Math.round(stop * 100)}${gapBasis === "entry" ? "-entry" : ""}`
-        profiles.push({ startRatio: start, stopRatio: stop, stepRatio: stop / 2, tag, minStep: trailingMinStep,
-          ...(gapBasis === "entry" ? { gapBasis } : {}) })
-      }
+      const profiles = buildTrailingProfiles(settings.strategyBaseTrailingVariants, trailingMinStep, minStep, settings.strategyTrailingGapBasis)
       ;(this as any)._trailingVariantsCache = profiles
       return profiles
     } catch (err) {
@@ -4833,6 +4806,7 @@ export class StrategyCoordinator {
       tag: string
       minStep: number
       signalOnly?: boolean
+      exactPriceGap?: true
     }
     const signalConfigurationPass: BaseTrailingVariant = {
       startRatio: 0,
@@ -4863,6 +4837,8 @@ export class StrategyCoordinator {
     // this cycle. Type×direction history is retained only as an upgrade
     // fallback for old positions that predate exact Set lineage.
     const prospectiveSetKeys: string[] = []
+    const fitsPriceGap = (variant: BaseTrailingVariant | null, range: unknown) => !variant?.exactPriceGap ||
+      variant.stopRatio * 100 + 1e-10 >= protectionFloorsForRange(range).minTrailingStopDistancePct
     let prospectiveRows = 0
     for (let variantIndex = 0; variantIndex < variantPasses.length; variantIndex++) {
       const variant = variantPasses[variantIndex]
@@ -4877,6 +4853,7 @@ export class StrategyCoordinator {
         } else if (signalPass) {
           continue
         }
+        if (!fitsPriceGap(variant, group.strategyRange)) continue
         if (
           variant &&
           !strategyIndicationVariantEnabled(
@@ -4929,6 +4906,7 @@ export class StrategyCoordinator {
           if (isSignalConfigurationPass) continue
           effectiveVariant = variant
         }
+        if (!fitsPriceGap(effectiveVariant, group.strategyRange)) continue
         if (
           effectiveVariant &&
           !strategyIndicationVariantEnabled(
@@ -5054,7 +5032,7 @@ export class StrategyCoordinator {
         // rejects them. When the bucket has insufficient data we leave the
         // raw indication-derived PF untouched (= bootstrap path).
         const exactStats = exactPositionWindows.get(setKey)
-        const legacyStats = posMap.get(`${group.indicationType}|${group.direction}`)
+        const legacyStats = effectiveVariant?.exactPriceGap ? undefined : posMap.get(`${group.indicationType}|${group.direction}`)
         const posStats = selectBaseHistoryWindow(exactStats, legacyStats, prevPosMinCount)
         const blendActive =
           !!posStats &&

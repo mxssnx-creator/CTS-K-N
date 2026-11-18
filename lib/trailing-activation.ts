@@ -23,9 +23,14 @@ export const TRAILING_ACTIVATION_TP_SHARE = "tp_share"
 export const TRAILING_ACTIVATION_ABSOLUTE = "absolute"
 export type TrailingActivationMode = typeof TRAILING_ACTIVATION_TP_SHARE | typeof TRAILING_ACTIVATION_ABSOLUTE
 export type TrailingGapBasis = "entry" | "peak"
+export type TrailingGapSelection = TrailingGapBasis | "both"
 
 export function normalizeTrailingGapBasis(input: unknown): TrailingGapBasis {
   return input === "entry" ? "entry" : "peak"
+}
+
+export function normalizeTrailingGapSelection(input: unknown): TrailingGapSelection {
+  return input === "both" ? "both" : normalizeTrailingGapBasis(input)
 }
 
 export function generalTrailingStopPrice(direction: "long" | "short", entry: number,

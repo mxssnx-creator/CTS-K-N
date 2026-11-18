@@ -1,7 +1,7 @@
 "use client"
 import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, type StrategyProcessingByRange } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings, type RelateSettings } from "@/lib/relate-allocation"
-import { normalizeTrailingGapBasis, type TrailingGapBasis } from "@/lib/trailing-activation"
+import { normalizeTrailingGapSelection, trailingStartTpShare, type TrailingGapSelection } from "@/lib/trailing-activation"
 
 /**
  * Strategy Coordination Settings Section
@@ -48,9 +48,12 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import {
   ALL_TRAILING_VARIANTS,
+  ALL_PRICE_TRAILING_VARIANTS,
   DEFAULT_TRAILING_VARIANTS,
+  PRICE_TRAILING_STOP_RATIOS,
   TRAILING_START_RATIOS,
   TRAILING_STOP_RATIOS,
+  normalizeTrailingVariants,
   trailingVariantKey,
 } from "@/lib/trailing-settings"
 import {
@@ -123,7 +126,7 @@ export interface CoordinationSettings {
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
   trailingVariants: string[]
-  trailingGapBasis?: TrailingGapBasis
+  trailingGapBasis?: TrailingGapSelection
 
   /**
    * ── Position-Count (Pos) Sets volume ratio ───────────────────────
@@ -403,7 +406,7 @@ export function StrategyCoordinationSection({
   const setTrailingVariants = (next: Set<string>) => {
     onChange({
       ...value,
-      trailingVariants: ALL_TRAILING_VARIANTS.filter((key) => next.has(key)),
+      trailingVariants: normalizeTrailingVariants([...next]),
     })
   }
   const toggleTrailingVariant = (start: number, stop: number) => {
@@ -501,14 +504,12 @@ export function StrategyCoordinationSection({
             <div>
               <CardTitle className="text-sm">Trailing — Independent Start × Stop Profiles</CardTitle>
               <CardDescription className="text-xs">
-                Each selected pair creates one independent Base Set. Start is
-                the favourable activation gain; stop is the trailing distance;
-                the ratchet step is always half the stop distance. The engine
-                deduplicates and caps this matrix at 25 profiles.
+                Each selected activation, gap and basis creates an independent Base Set.
+                The activation band is a share of the target distance. Range protection floors apply.
               </CardDescription>
             </div>
             <Badge variant={value.variants.trailing ? "default" : "outline"} className="text-[10px]">
-              {value.variants.trailing ? `${enabledTrailingVariants.size}/25 active` : "Disabled"}
+              {value.variants.trailing ? `${enabledTrailingVariants.size} selected` : "Disabled"}
             </Badge>
           </div>
         </CardHeader>
@@ -517,12 +518,13 @@ export function StrategyCoordinationSection({
             Trailing distance
             <select
               className="rounded-md border bg-background px-2 py-1 text-sm"
-              value={normalizeTrailingGapBasis(value.trailingGapBasis)}
+              value={normalizeTrailingGapSelection(value.trailingGapBasis)}
               disabled={!value.variants.trailing}
-              onChange={(event) => onChange({ ...value, trailingGapBasis: normalizeTrailingGapBasis(event.target.value) })}
+              onChange={(event) => onChange({ ...value, trailingGapBasis: normalizeTrailingGapSelection(event.target.value) })}
             >
               <option value="peak">Dynamic (% of peak)</option>
               <option value="entry">Fixed (% of entry)</option>
+              <option value="both">Both in separate Sets</option>
             </select>
           </label>
           <div className="flex flex-wrap justify-end gap-2">
@@ -530,10 +532,10 @@ export function StrategyCoordinationSection({
               type="button"
               size="sm"
               variant="outline"
-              disabled={!value.variants.trailing || enabledTrailingVariants.size === 25}
-              onClick={() => setTrailingVariants(new Set(ALL_TRAILING_VARIANTS))}
+              disabled={!value.variants.trailing || ALL_TRAILING_VARIANTS.every(key => enabledTrailingVariants.has(key))}
+              onClick={() => setTrailingVariants(new Set([...enabledTrailingVariants, ...ALL_TRAILING_VARIANTS]))}
             >
-              Enable all
+              Select all 10–50% gaps
             </Button>
             <Button
               type="button"
@@ -550,7 +552,7 @@ export function StrategyCoordinationSection({
               <div key={start} className="rounded-lg border border-border/60 p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <Label className="text-xs font-semibold tabular-nums">
-                    Start {(start * 100).toFixed(0)}%
+                    Start {(trailingStartTpShare(start) * 100).toFixed(0)}% of target
                   </Label>
                   <span className="text-[10px] text-muted-foreground">Stop distance · step = stop / 2</span>
                 </div>
@@ -575,6 +577,30 @@ export function StrategyCoordinationSection({
               </div>
             ))}
           </div>
+          <details className="space-y-3">
+            <summary className="cursor-pointer text-sm font-medium">Price gaps from 0.2% to 2.6%</summary>
+            <Button type="button" size="sm" variant="outline"
+              disabled={!value.variants.trailing || ALL_PRICE_TRAILING_VARIANTS.every(key => enabledTrailingVariants.has(key))}
+              onClick={() => setTrailingVariants(new Set([...enabledTrailingVariants, ...ALL_PRICE_TRAILING_VARIANTS]))}>
+              Select all price gaps
+            </Button>
+            <div className={value.variants.trailing ? "space-y-2" : "pointer-events-none space-y-2 opacity-50"}>
+              {TRAILING_START_RATIOS.map(start => (
+                <fieldset key={start} className="rounded-lg border border-border/60 p-3">
+                  <legend className="px-1 text-xs">Start {(trailingStartTpShare(start) * 100).toFixed(0)}% of target</legend>
+                  <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                    {PRICE_TRAILING_STOP_RATIOS.map(stop => (
+                      <label key={stop} className="flex items-center gap-2 text-xs">
+                        <Checkbox checked={enabledTrailingVariants.has(trailingVariantKey(start, stop))}
+                          onCheckedChange={() => toggleTrailingVariant(start, stop)} />
+                        {(stop * 100).toFixed(1)}%
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ))}
+            </div>
+          </details>
         </CardContent>
       </Card>
 
