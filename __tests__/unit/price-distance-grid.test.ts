@@ -3,13 +3,13 @@ import {
   PRICE_TRAILING_STOP_RATIOS,
   buildPriceDistanceProfileBatch,
   buildTrailingProfiles,
-  trailingVariantKey,
 } from "@/lib/trailing-settings"
 
 describe("opt-in absolute price protection grid", () => {
   test("one activation parent owns all 21 stop × 25 gap × fixed/dynamic children", () => {
-    const selected = PRICE_TRAILING_STOP_RATIOS.map((gap) => trailingVariantKey(0.3, gap))
-    const profiles = buildTrailingProfiles(selected, 2, 2, "both", {
+    // Runtime settings still carry the legacy profiles and usually omit a basis.
+    // One opt-in must therefore own the complete exact catalog by itself.
+    const profiles = buildTrailingProfiles(undefined, 2, 2, undefined, {
       priceDistanceGrid: true,
     })
 
