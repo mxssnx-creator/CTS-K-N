@@ -46,6 +46,8 @@ const STRATEGY_AFFECTING_SETTING_FIELDS = new Set([
   "variantDcaEnabled",
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",
+  "strategyTrailingGapBasis",
+  "strategyRelate",
   "axisPrevEnabled",
   "axisLastEnabled",
   "axisContEnabled",

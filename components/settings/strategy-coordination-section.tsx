@@ -1,5 +1,7 @@
 "use client"
 import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, type StrategyProcessingByRange } from "@/lib/strategy-execution-policy"
+import { normalizeRelateSettings, type RelateSettings } from "@/lib/relate-allocation"
+import { normalizeTrailingGapBasis, type TrailingGapBasis } from "@/lib/trailing-activation"
 
 /**
  * Strategy Coordination Settings Section
@@ -113,6 +115,7 @@ export interface CoordinationSettings {
   blockRowLivePauseCountRatio: number
   /** Normal/default strategy family; all evaluation remains available when off. */
   processingByRange?: StrategyProcessingByRange
+  relate?: RelateSettings
   normalEnabled: boolean
   /** Execute Main positions through Block adjustment rows only. */
   axisEnabled: boolean
@@ -120,6 +123,7 @@ export interface CoordinationSettings {
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
   trailingVariants: string[]
+  trailingGapBasis?: TrailingGapBasis
 
   /**
    * ── Position-Count (Pos) Sets volume ratio ───────────────────────
@@ -251,6 +255,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   processingByRange: {},
   axisEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
+  trailingGapBasis: "peak",
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
   dcaStepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
@@ -365,6 +370,8 @@ export function StrategyCoordinationSection({
   value,
   onChange,
 }: StrategyCoordinationSectionProps) {
+  const relate = normalizeRelateSettings(value.relate)
+  const setRelate = (patch: Partial<RelateSettings>) => onChange({ ...value, relate: normalizeRelateSettings({ ...relate, ...patch }) })
   // ── Helpers ─ partial setters for axes & variants. Keeping the
   // mutator surface inline (rather than reducer / context) keeps the
   // component drop-in for the existing dialog's controlled-state
@@ -506,6 +513,18 @@ export function StrategyCoordinationSection({
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
+          <label className="flex flex-wrap items-center gap-2 text-xs">
+            Trailing distance
+            <select
+              className="rounded-md border bg-background px-2 py-1 text-sm"
+              value={normalizeTrailingGapBasis(value.trailingGapBasis)}
+              disabled={!value.variants.trailing}
+              onChange={(event) => onChange({ ...value, trailingGapBasis: normalizeTrailingGapBasis(event.target.value) })}
+            >
+              <option value="peak">Dynamic (% of peak)</option>
+              <option value="entry">Fixed (% of entry)</option>
+            </select>
+          </label>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               type="button"
@@ -827,6 +846,29 @@ export function StrategyCoordinationSection({
           <div className="space-y-2" aria-label="Strategy processing by coordination">
             {STRATEGY_PROCESSING_RANGES.map(range=><div key={range} className="grid grid-cols-3 items-center gap-3"><span className="text-xs capitalize">{range}</span>{(["normal","trailing"] as const).map(key=><label key={key} className="flex items-center gap-2 text-xs"><Switch aria-label={`${range} ${key} processing`} checked={value.processingByRange?.[range]?.[key] !== false} onCheckedChange={checked=>onChange({...value,processingByRange:{...value.processingByRange,[range]:{...value.processingByRange?.[range],[key]:checked}}})} />{key}</label>)}</div>)}
           </div>
+          <section className="space-y-2 rounded-lg border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="relate-allocation">Relate allocation</Label>
+              <Switch id="relate-allocation" checked={relate.enabled} onCheckedChange={enabled => setRelate({ enabled })} />
+            </div>
+            {relate.enabled && <>
+              <p className="text-xs text-muted-foreground">Allocate from the Set's own signed closes after qualification. Venue entries use settled exchange results.</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {([
+                  ["steps", "Winning steps", 2, 15, 1],
+                  ["ratio", "Increase per step", .2, 6, .2],
+                  ["lastN", "Recent closes", 60, 250, 1],
+                  ["minTrades", "Minimum closes", 60, relate.lastN, 1],
+                  ["minPF", "Minimum return PF", 1.01, 10, .01],
+                  ["maxMultiplier", "Maximum allocation multiple", 1, 8, .1],
+                ] as const).map(([key, label, min, max, step]) => <label key={key} className="grid gap-1 text-xs">
+                  {label}<input className="w-full rounded border bg-background p-1.5" type="number" min={min} max={max} step={step}
+                    defaultValue={relate[key]} key={String(relate[key])}
+                    onBlur={event => { if (Number.isFinite(event.target.valueAsNumber)) setRelate({ [key]: event.target.valueAsNumber }) }} />
+                </label>)}
+              </div>
+            </>}
+          </section>
           <div className="flex items-start justify-between gap-3 rounded-lg border border-primary/25 bg-primary/5 p-3">
             <div className="flex-1 min-w-0">
               <Label className="text-sm font-semibold">Normal strategy</Label>

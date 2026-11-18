@@ -167,8 +167,11 @@ import {
   isMainTrailingAllowed,
   isStrategyExecutionFamilyEnabled,
   resolveTrailingSwitch,
+  strategyProcessingRange,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
+import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
+import { normalizeTrailingGapBasis, type TrailingGapBasis } from "@/lib/trailing-activation"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
@@ -201,7 +204,7 @@ type RuntimeStageSnapshotRow = {
   avgConfidence: number
   entryCount: number
   axisWindows?: StrategySet["axisWindows"]
-  trailing?: Pick<TrailingProfile, "mode" | "startRatio" | "stopRatio" | "stepRatio">
+  trailing?: Pick<TrailingProfile, "mode" | "startRatio" | "stopRatio" | "stepRatio" | "gapBasis">
   previous?: { count: number; profitFactor: number; avgDDT: number }
 }
 
@@ -283,6 +286,7 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
           startRatio: set.trailingProfile.startRatio,
           stopRatio: set.trailingProfile.stopRatio,
           stepRatio: set.trailingProfile.stepRatio,
+          ...(set.trailingProfile.gapBasis && { gapBasis: set.trailingProfile.gapBasis }),
         },
       } : {}),
       ...(set.prevPos ? {
@@ -3077,6 +3081,7 @@ export class StrategyCoordinator {
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
     processingByRange: import("@/lib/strategy-execution-policy").StrategyProcessingByRange
+    relate: RelateSettings
     /** Execute Main-family exchange rows only through Block adjustment rows. */
     axisEnabled: boolean
     /**
@@ -3107,6 +3112,7 @@ export class StrategyCoordinator {
       dca:      false, // ← OFF by default (per spec); parser also defaults false
     },
     indicationVariants: defaultStrategyIndicationVariantPolicy(),
+    relate: normalizeRelateSettings(),
     blockVolumeRatio: BLOCK_VOLUME_RATIO_DEFAULT,
     blockSharedVolumeAdjustEnabled: false,
     blockSharedVolumeRatio: BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
@@ -3863,6 +3869,7 @@ export class StrategyCoordinator {
         true,
       )
       this._coordinationSettings.processingByRange = normalizeStrategyProcessingByRange(s.strategyProcessingByRange)
+      this._coordinationSettings.relate = normalizeRelateSettings(s.strategyRelate)
       this._coordinationSettings.axisEnabled = bool(
         s.axisEnabled ?? s.axis_enabled ?? s.strategyAxisEnabled ?? s.variantAxisEnabled,
         true,
@@ -4455,7 +4462,7 @@ export class StrategyCoordinator {
    * createBaseSets calls in `executeStrategyFlowBatch` share one read.
    */
   private async getEnabledTrailingVariants(): Promise<
-    Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number }>
+    Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number; gapBasis?: TrailingGapBasis }>
   > {
     if ((this as any)._trailingVariantsCache) return (this as any)._trailingVariantsCache
     try {
@@ -4493,7 +4500,8 @@ export class StrategyCoordinator {
         tokens = raw.split(/[\s,]+/).filter(Boolean)
       }
 
-      const profiles: Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number }> = []
+      const gapBasis = normalizeTrailingGapBasis(settings.strategyTrailingGapBasis)
+      const profiles: Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number; gapBasis?: TrailingGapBasis }> = []
       for (const token of tokens) {
         if (typeof token !== "string") continue
         const [sStr, kStr] = token.split(":")
@@ -4502,8 +4510,9 @@ export class StrategyCoordinator {
         if (!Number.isFinite(start) || !Number.isFinite(stop)) continue
         if (start <= 0 || stop <= 0) continue
         // tag is the canonical compact identifier used in setKey suffix
-        const tag = `t${Math.round(start * 100)}-${Math.round(stop * 100)}`
-        profiles.push({ startRatio: start, stopRatio: stop, stepRatio: stop / 2, tag, minStep: trailingMinStep })
+        const tag = `t${Math.round(start * 100)}-${Math.round(stop * 100)}${gapBasis === "entry" ? "-entry" : ""}`
+        profiles.push({ startRatio: start, stopRatio: stop, stepRatio: stop / 2, tag, minStep: trailingMinStep,
+          ...(gapBasis === "entry" ? { gapBasis } : {}) })
       }
       ;(this as any)._trailingVariantsCache = profiles
       return profiles
@@ -4688,7 +4697,7 @@ export class StrategyCoordinator {
     // Group by the complete persisted/evaluated identity. Grouping merely by
     // type × direction collapsed thousands of valid default/Common tuples into
     // one Base row and made the per-config open-position limit appear global.
-    const setMap = new Map<string, { indicationType: string; direction: "long" | "short"; indications: any[] }>()
+    const setMap = new Map<string, { indicationType: string; strategyRange: string; direction: "long" | "short"; indications: any[] }>()
 
     const blockRevision=Object.entries(this._coordinationSettings.lastNBlocks??{}).sort(([a],[b])=>a.localeCompare(b)).map(([stage,p])=>[stage,blockPolicyKey(p)])
     const blockSuffix=blockRevision.length?":lastn:"+encodeURIComponent(JSON.stringify(blockRevision)):""
@@ -4712,14 +4721,16 @@ export class StrategyCoordinator {
         continue
       }
       const configurationIdentity = strategyIndicationConfigurationIdentity(ind)
+      const strategyRange = strategyProcessingRange(ind)
+      const rangeSuffix = strategyRange === "low-range" ? ":range:low-range" : ""
       // Symbol-scoped identity prevents BTC and ETH Sets with the same config
       // from colliding. Direction is explicit even when the upstream Set key
       // already contains it, keeping legacy direct indications unambiguous.
       const key =
         `${symbol}:${indicationType}:${direction}:cfg:` +
-        encodeURIComponent(configurationIdentity || "default") + blockSuffix
+        encodeURIComponent(configurationIdentity || "default") + rangeSuffix + blockSuffix
       if (!setMap.has(key)) {
-        setMap.set(key, { indicationType, direction, indications: [] })
+        setMap.set(key, { indicationType, strategyRange, direction, indications: [] })
       }
       setMap.get(key)!.indications.push(ind)
       groupedIndications++
@@ -5083,8 +5094,7 @@ export class StrategyCoordinator {
             : undefined
 
         const set: StrategySet = {
-          strategyRange: String(group.indications[0]?.config?.strategyRange ?? group.indications[0]?.metadata?.strategyRange ??
-            (isSignal ? "signals" : group.indicationType.includes("preset") ? "preset" : "main")).toLowerCase(),
+          strategyRange: group.strategyRange,
           setKey,
           indicationType: group.indicationType,
           direction: group.direction,
@@ -5101,6 +5111,7 @@ export class StrategyCoordinator {
               stopRatio: effectiveVariant.stopRatio,
               stepRatio: effectiveVariant.stepRatio,
               ...(effectiveVariant.mode && { mode: effectiveVariant.mode }),
+              ...(effectiveVariant.gapBasis && { gapBasis: effectiveVariant.gapBasis }),
               ...(effectiveVariant.minStopRatio !== undefined && {
                 minStopRatio: effectiveVariant.minStopRatio,
               }),
@@ -10246,6 +10257,17 @@ export class StrategyCoordinator {
             const dispatchDetailKey = `strategy_detail:${this.connectionId}:live`
             const dispatchPlan = planLiveDispatchCandidatesFairly(policyEligibleDispatchSets)
             const dispatchSets = dispatchPlan.selected
+            const relatePolicy = this._coordinationSettings.relate
+            const relateKeys = relatePolicy.enabled && !dispatchHaltedForConnection
+              ? dispatchSets.filter(set => {
+                  const family = classifyStrategyExecutionFamily(set)
+                  return family === "normal" || family === "trailing"
+                }).map(set => set.setKey)
+              : []
+            const relateWindows = relateKeys.length === 0 ? undefined : isLiveTradeEnabled
+              ? await getLiveSetWindowBatch(this.connectionId, relateKeys, relatePolicy.lastN, relatePolicy.minTrades)
+              : await this.getStrategySetWindowBatch(relateKeys, relatePolicy.lastN, { prehistoric: true })
+            if (!isCurrent()) return cancelled()
             try {
               const selectedSummary = summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")
               const deferredSummary = summarizeLiveDispatchRows(dispatchPlan.deferred, "physical_budget_deferred")
@@ -10537,7 +10559,7 @@ export class StrategyCoordinator {
                     // Forward the resolved multiplier. Normal/DCA may include a
                     // bounded Real tuner delta; Block never does because Live
                     // books only the missing delta to its absolute target.
-                    sizeMultiplier: effectiveSizeMult,
+                    sizeMultiplier: effectiveSizeMult * relateAllocation(relatePolicy, relateWindows?.get(set.setKey), sl, tp, isLiveTradeEnabled),
                     blockBaseVolumeMultiplier: set.blockBaseVolumeMultiplier,
                     blockVolumeRatio: set.blockVolumeRatio,
                     blockIncrementSteps: set.blockIncrementSteps,
@@ -11019,7 +11041,7 @@ export class StrategyCoordinator {
                 // and direction but different PF-derived TP/SL occupy distinct
                 // slots and are not collapsed into one active position.
                 const trailingSuffix = profile
-                  ? `:t${Math.round(profile.startRatio * 100)}-${Math.round(profile.stopRatio * 100)}`
+                  ? `:t${Math.round(profile.startRatio * 100)}-${Math.round(profile.stopRatio * 100)}${profile.gapBasis === "entry" ? "-entry" : ""}`
                   : trailing ? `:tr1` : `:tr0`
                 // Include full axis identity (prev/last/cont/outcome) so different position-count
                 // variants of the same (ind, dir, pf...) get distinct pseudo positions.
@@ -11027,9 +11049,12 @@ export class StrategyCoordinator {
                 const axisSuffix = set.axisWindows
                   ? `|p${set.axisWindows.prev ?? 0}|l${set.axisWindows.last ?? 0}|c${set.axisWindows.cont ?? 0}|o${set.axisWindows.outcome ?? "pos"}`
                   : ""
+                // Different Low-Range sources can produce the same bracket.
+                // Their pseudo-position limits still belong to the individual Sets.
+                const rangeIdentity = set.strategyRange === "low-range" ? `:source:${encodeURIComponent(set.setKey)}` : ""
                 const configSetKey =
                   `${set.indicationType}:${set.direction}:${symbol}` +
-                  `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}`
+                  `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}${rangeIdentity}`
 
                 if (!isCurrent()) return
                 const posId = await posManager.createPosition({
