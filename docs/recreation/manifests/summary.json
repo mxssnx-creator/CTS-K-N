@@ -13,13 +13,13 @@
     "typescript": "^5.8.3"
   },
   "counts": {
-    "projectFilesExcludingGeneratedManifests": 2266,
+    "projectFilesExcludingGeneratedManifests": 2268,
     "apiRoutes": 309,
     "apiMethods": 398,
     "uiPages": 42,
     "environmentVariables": 575,
     "redisMigrations": 111,
-    "testsAndVerifiers": 616
+    "testsAndVerifiers": 617
   },
   "apiGroups": {
     "additional": {
