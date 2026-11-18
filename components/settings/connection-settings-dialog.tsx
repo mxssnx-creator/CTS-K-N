@@ -90,6 +90,7 @@ import { toast } from "@/lib/simple-toast"
 // render time ("StrategyCoordinationSection is not defined"). A
 // fresh import shape forces the bundler to emit a new module id.
 import { StrategyCoordinationSection, DEFAULT_COORDINATION_SETTINGS, type CoordinationSettings } from "@/components/settings/strategy-coordination-section"
+import { normalizeRelateSettings } from "@/lib/relate-allocation"
 import { DEFAULT_TRAILING_VARIANTS, normalizeTrailingVariants, parseStoredBoolean } from "@/lib/trailing-settings"
 import { normalizeDcaProfile } from "@/lib/dca-strategy"
 import {
@@ -683,6 +684,7 @@ export function ConnectionSettingsDialog({
                 ? Number((settings as Record<string, unknown>).blockRowRealEvalPosCount)
                 : DEFAULT_COORDINATION_SETTINGS.blockRowRealEvalPosCount,
             processingByRange: coord.processingByRange ?? (settings as any).strategyProcessingByRange ?? {},
+            relate: normalizeRelateSettings(coord.relate ?? (settings as Record<string, unknown>).strategyRelate),
             normalEnabled: typeof coord.normalEnabled === "boolean"
               ? coord.normalEnabled
               : typeof (settings as Record<string, unknown>).normalEnabled === "boolean"

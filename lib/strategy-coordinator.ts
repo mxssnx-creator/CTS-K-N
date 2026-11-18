@@ -170,6 +170,7 @@ import {
   strategyProcessingRange,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
+import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
@@ -3078,6 +3079,7 @@ export class StrategyCoordinator {
     /** Normal/default execution family; evaluation is always retained. */
     normalEnabled: boolean
     processingByRange: import("@/lib/strategy-execution-policy").StrategyProcessingByRange
+    relate: RelateSettings
     /** Execute Main-family exchange rows only through Block adjustment rows. */
     axisEnabled: boolean
     /**
@@ -3108,6 +3110,7 @@ export class StrategyCoordinator {
       dca:      false, // ← OFF by default (per spec); parser also defaults false
     },
     indicationVariants: defaultStrategyIndicationVariantPolicy(),
+    relate: normalizeRelateSettings(),
     blockVolumeRatio: BLOCK_VOLUME_RATIO_DEFAULT,
     blockSharedVolumeAdjustEnabled: false,
     blockSharedVolumeRatio: BLOCK_SHARED_VOLUME_RATIO_DEFAULT,
@@ -3864,6 +3867,7 @@ export class StrategyCoordinator {
         true,
       )
       this._coordinationSettings.processingByRange = normalizeStrategyProcessingByRange(s.strategyProcessingByRange)
+      this._coordinationSettings.relate = normalizeRelateSettings(s.strategyRelate)
       this._coordinationSettings.axisEnabled = bool(
         s.axisEnabled ?? s.axis_enabled ?? s.strategyAxisEnabled ?? s.variantAxisEnabled,
         true,
@@ -10248,6 +10252,17 @@ export class StrategyCoordinator {
             const dispatchDetailKey = `strategy_detail:${this.connectionId}:live`
             const dispatchPlan = planLiveDispatchCandidatesFairly(policyEligibleDispatchSets)
             const dispatchSets = dispatchPlan.selected
+            const relatePolicy = this._coordinationSettings.relate
+            const relateKeys = relatePolicy.enabled && !dispatchHaltedForConnection
+              ? dispatchSets.filter(set => {
+                  const family = classifyStrategyExecutionFamily(set)
+                  return family === "normal" || family === "trailing"
+                }).map(set => set.setKey)
+              : []
+            const relateWindows = relateKeys.length === 0 ? undefined : isLiveTradeEnabled
+              ? await getLiveSetWindowBatch(this.connectionId, relateKeys, relatePolicy.lastN, relatePolicy.minTrades)
+              : await this.getStrategySetWindowBatch(relateKeys, relatePolicy.lastN, { prehistoric: true })
+            if (!isCurrent()) return cancelled()
             try {
               const selectedSummary = summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")
               const deferredSummary = summarizeLiveDispatchRows(dispatchPlan.deferred, "physical_budget_deferred")
@@ -10539,7 +10554,7 @@ export class StrategyCoordinator {
                     // Forward the resolved multiplier. Normal/DCA may include a
                     // bounded Real tuner delta; Block never does because Live
                     // books only the missing delta to its absolute target.
-                    sizeMultiplier: effectiveSizeMult,
+                    sizeMultiplier: effectiveSizeMult * relateAllocation(relatePolicy, relateWindows?.get(set.setKey), sl, tp, isLiveTradeEnabled),
                     blockBaseVolumeMultiplier: set.blockBaseVolumeMultiplier,
                     blockVolumeRatio: set.blockVolumeRatio,
                     blockIncrementSteps: set.blockIncrementSteps,

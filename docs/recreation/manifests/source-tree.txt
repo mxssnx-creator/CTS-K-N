@@ -466,6 +466,7 @@ __tests__/unit/redis-persistence-cleanup.test.ts
 __tests__/unit/redis-runtime-root.test.ts
 __tests__/unit/redis-secondary-indexes.test.ts
 __tests__/unit/redis-stats.test.ts
+__tests__/unit/relate-allocation.test.ts
 __tests__/unit/relational-volume.test.ts
 __tests__/unit/release-entry-lock-on-early-exit.test.ts
 __tests__/unit/request-sequence.test.ts
@@ -1821,6 +1822,7 @@ lib/redis-runtime-bootstrap.ts
 lib/redis-runtime-root.ts
 lib/redis-scan.ts
 lib/redis-service.ts
+lib/relate-allocation.ts
 lib/request-sequence.ts
 lib/results/ledger.ts
 lib/results/response.ts

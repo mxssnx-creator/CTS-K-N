@@ -452,6 +452,7 @@ unit	__tests__/unit/redis-persistence-cleanup.test.ts
 unit	__tests__/unit/redis-runtime-root.test.ts
 unit	__tests__/unit/redis-secondary-indexes.test.ts
 unit	__tests__/unit/redis-stats.test.ts
+unit	__tests__/unit/relate-allocation.test.ts
 unit	__tests__/unit/relational-volume.test.ts
 unit	__tests__/unit/release-entry-lock-on-early-exit.test.ts
 unit	__tests__/unit/request-sequence.test.ts
