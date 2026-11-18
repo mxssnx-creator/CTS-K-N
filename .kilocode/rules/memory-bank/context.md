@@ -5,7 +5,8 @@ Connection settings can select entry and peak trailing in parallel. The Base
 coordinator keeps an independent key for each activation, price gap and basis.
 The price-gap options run from 0.2% to 2.6% at 0.1-point increments. A range's
 protection floor excludes an infeasible exact gap from its Set inventory. A
-new exact gap uses its own Base history. The legacy profile keys still load.
+new exact gap uses its own Base history and the Live modeled position key
+keeps the same price precision and owning Set. The legacy profile keys still load.
 
 Eighty-three focused settings, Base profile, Low-Range, Relate, trailing,
 ownership and DCA tests pass. TypeScript passes. The exact commit and hosted

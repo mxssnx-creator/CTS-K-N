@@ -4,6 +4,13 @@ export const TRAILING_START_RATIOS = [0.3, 0.6, 0.9, 1.2, 1.5] as const
 export const TRAILING_STOP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5] as const
 export const PRICE_TRAILING_STOP_RATIOS = Array.from({ length: 25 }, (_, i) => (i + 2) / 1000)
 
+export function trailingProfileTag(start: number, stop: number, basis?: TrailingGapBasis): string {
+  const stopTag = PRICE_TRAILING_STOP_RATIOS.includes(stop)
+    ? `p${Math.round(stop * 1000)}`
+    : String(Math.round(stop * 100))
+  return `t${Math.round(start * 100)}-${stopTag}${basis === "entry" ? "-entry" : ""}`
+}
+
 export function trailingVariantKey(start: number, stop: number): string {
   return `${Number(start).toFixed(1)}:${Number(stop).toFixed(PRICE_TRAILING_STOP_RATIOS.includes(stop) ? 3 : 1)}`
 }
@@ -79,12 +86,11 @@ export function buildTrailingProfiles(
   return normalizeTrailingVariants(raw).flatMap((token) => {
     const [startRatio, stopRatio] = token.split(":").map(Number)
     const exact = PRICE_TRAILING_STOP_RATIOS.includes(stopRatio)
-    const stopTag = exact ? `p${Math.round(stopRatio * 1000)}` : String(Math.round(stopRatio * 100))
     return bases.map(gapBasis => ({
       startRatio,
       stopRatio,
       stepRatio: stopRatio / 2,
-      tag: `t${Math.round(startRatio * 100)}-${stopTag}${gapBasis === "entry" ? "-entry" : ""}`,
+      tag: trailingProfileTag(startRatio, stopRatio, gapBasis),
       minStep,
       ...(gapBasis === "entry" ? { gapBasis } : {}),
       ...(exact ? { exactPriceGap: true as const } : {}),

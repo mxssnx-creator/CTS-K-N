@@ -1,7 +1,7 @@
 import * as redis from "@/lib/redis-db"
 import * as overlay from "@/lib/connection-settings-overlay"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
-import { buildTrailingProfiles, PRICE_TRAILING_STOP_RATIOS, trailingVariantKey } from "@/lib/trailing-settings"
+import { buildTrailingProfiles, PRICE_TRAILING_STOP_RATIOS, trailingProfileTag, trailingVariantKey } from "@/lib/trailing-settings"
 
 describe("production coordinator and replay minimum-step parity", () => {
   afterEach(() => jest.restoreAllMocks())
@@ -39,5 +39,8 @@ describe("production coordinator and replay minimum-step parity", () => {
     expect(new Set(actual.map(profile => profile.stopRatio))).toEqual(new Set(PRICE_TRAILING_STOP_RATIOS))
     expect(actual.every(profile => profile.exactPriceGap)).toBe(true)
     expect(actual.filter(profile => profile.gapBasis === "entry")).toHaveLength(25)
+    expect(actual.map(profile => trailingProfileTag(profile.startRatio, profile.stopRatio, profile.gapBasis)))
+      .toEqual(actual.map(profile => profile.tag))
+    expect(trailingProfileTag(.6, .006, "entry")).not.toBe(trailingProfileTag(.6, .007, "entry"))
   })
 })

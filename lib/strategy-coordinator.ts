@@ -171,7 +171,7 @@ import {
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
-import { buildTrailingProfiles } from "@/lib/trailing-settings"
+import { buildTrailingProfiles, PRICE_TRAILING_STOP_RATIOS, trailingProfileTag } from "@/lib/trailing-settings"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
@@ -11019,7 +11019,7 @@ export class StrategyCoordinator {
                 // and direction but different PF-derived TP/SL occupy distinct
                 // slots and are not collapsed into one active position.
                 const trailingSuffix = profile
-                  ? `:t${Math.round(profile.startRatio * 100)}-${Math.round(profile.stopRatio * 100)}${profile.gapBasis === "entry" ? "-entry" : ""}`
+                  ? `:${trailingProfileTag(profile.startRatio, profile.stopRatio, profile.gapBasis)}`
                   : trailing ? `:tr1` : `:tr0`
                 // Include full axis identity (prev/last/cont/outcome) so different position-count
                 // variants of the same (ind, dir, pf...) get distinct pseudo positions.
@@ -11027,9 +11027,9 @@ export class StrategyCoordinator {
                 const axisSuffix = set.axisWindows
                   ? `|p${set.axisWindows.prev ?? 0}|l${set.axisWindows.last ?? 0}|c${set.axisWindows.cont ?? 0}|o${set.axisWindows.outcome ?? "pos"}`
                   : ""
-                // Different Low-Range sources can produce the same bracket.
-                // Their pseudo-position limits still belong to the individual Sets.
-                const rangeIdentity = set.strategyRange === "low-range" ? `:source:${encodeURIComponent(set.setKey)}` : ""
+                // Exact protection and Low-Range positions use their full validated Set identity.
+                const exactGap = profile && PRICE_TRAILING_STOP_RATIOS.includes(profile.stopRatio)
+                const rangeIdentity = set.strategyRange === "low-range" || exactGap ? `:source:${encodeURIComponent(set.setKey)}` : ""
                 const configSetKey =
                   `${set.indicationType}:${set.direction}:${symbol}` +
                   `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}${rangeIdentity}`
