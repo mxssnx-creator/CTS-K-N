@@ -4488,7 +4488,17 @@ export class StrategyCoordinator {
         return []
       }
 
-      const profiles = buildTrailingProfiles(settings.strategyBaseTrailingVariants, trailingMinStep, minStep, settings.strategyTrailingGapBasis)
+      const priceDistanceGrid = settings.strategyPriceDistanceGrid === true ||
+        settings.strategyPriceDistanceGrid === "true" ||
+        settings.strategyPriceDistanceGrid === 1 ||
+        settings.strategyPriceDistanceGrid === "1"
+      const profiles = buildTrailingProfiles(
+        settings.strategyBaseTrailingVariants,
+        trailingMinStep,
+        minStep,
+        settings.strategyTrailingGapBasis,
+        { priceDistanceGrid },
+      )
       ;(this as any)._trailingVariantsCache = profiles
       return profiles
     } catch (err) {
@@ -10423,7 +10433,10 @@ export class StrategyCoordinator {
                   // The live-stage `computeSetAwareSL` applies the same logic
                   // but we normalise here too so the RealPosition.stopLoss and
                   // the derived LivePosition.stopLoss are always in sync.
-                  sl = Math.max(minLiveStopLossPct(set.strategyRange), resolvedTrailingProfile.stopRatio * 100)
+                  sl = Math.max(
+                    minLiveStopLossPct(set.strategyRange),
+                    resolvedTrailingProfile.initialStopLossPct ?? resolvedTrailingProfile.stopRatio * 100,
+                  )
                 }
 
                 if (!isCurrent()) return cancelled()
@@ -10969,7 +10982,8 @@ export class StrategyCoordinator {
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
                 const sl = signalDynamicTrailing
                   ? Math.max(0.8, (profile.minStopRatio ?? profile.stopRatio) * 100)
-                  : specialProtection?.stopLossPct ??
+                  : profile?.initialStopLossPct ??
+                    specialProtection?.stopLossPct ??
                     activeProtection?.stopLossPct ??
                     signalProtection?.stopLossPct ??
                     positionCostProtection.stopLossPct

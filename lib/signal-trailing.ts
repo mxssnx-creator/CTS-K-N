@@ -18,6 +18,8 @@ export type TrailingProfile = {
   stepRatio: number
   mode?: "fixed" | "signal_dynamic"
   gapBasis?: TrailingGapBasis
+  /** Exact initial stop distance in percent of entry; independent from stopRatio, which remains the trailing gap. */
+  initialStopLossPct?: number
   minStopRatio?: number
   positiveMoveRatio?: number
   updateStopRangeRatio?: number

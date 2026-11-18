@@ -64,6 +64,8 @@ export interface Settings {
    */
   strategyBaseTrailingEnabled: boolean
   strategyBaseTrailingVariants: string[]
+  /** Opt-in absolute-price 21-stop × 25-gap × fixed/dynamic catalog. */
+  strategyPriceDistanceGrid: boolean
 
   // Main Strategy
   previousPositionsCount: number

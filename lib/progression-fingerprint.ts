@@ -13,7 +13,7 @@ export const progressionFingerprintFields = [
   "maxDrawdownRatio", "maxDrawdownRatioMain", "maxDrawdownRatioReal", "maxDrawdownRatioLive",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "normalEnabled", "blockOnlyEnabled", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
-  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
+  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "strategyPriceDistanceGrid", "trailingMinStep",
   "strategyTrailingGapBasis", "strategyRelate",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",

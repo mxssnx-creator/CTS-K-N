@@ -68,6 +68,7 @@ export const initialSettings: Settings = {
     "1.2:0.1", "1.2:0.2", "1.2:0.3", "1.2:0.4", "1.2:0.5",
     "1.5:0.1", "1.5:0.2", "1.5:0.3", "1.5:0.4", "1.5:0.5",
   ],
+  strategyPriceDistanceGrid: false,
 
   // Main Strategy
   previousPositionsCount: 5,
