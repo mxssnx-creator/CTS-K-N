@@ -91,6 +91,7 @@ import { toast } from "@/lib/simple-toast"
 // fresh import shape forces the bundler to emit a new module id.
 import { StrategyCoordinationSection, DEFAULT_COORDINATION_SETTINGS, type CoordinationSettings } from "@/components/settings/strategy-coordination-section"
 import { normalizeRelateSettings } from "@/lib/relate-allocation"
+import { normalizeTrailingGapBasis } from "@/lib/trailing-activation"
 import { DEFAULT_TRAILING_VARIANTS, normalizeTrailingVariants, parseStoredBoolean } from "@/lib/trailing-settings"
 import { normalizeDcaProfile } from "@/lib/dca-strategy"
 import {
@@ -513,6 +514,7 @@ export function ConnectionSettingsDialog({
             POS_COUNT_VOLUME_RATIO_DEFAULT,
           ),
           trailingVariants: normalizeTrailingVariants(rawTrailing ?? DEFAULT_TRAILING_VARIANTS),
+          trailingGapBasis: normalizeTrailingGapBasis(coord.trailingGapBasis ?? p.strategyTrailingGapBasis),
           dcaMaxSteps: dca.maxSteps,
           dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,
           dcaStepDistancesPct: dca.stepDistancesPct,
@@ -700,6 +702,7 @@ export function ConnectionSettingsDialog({
               DEFAULT_COORDINATION_SETTINGS.posCountsVolumeRatio,
             ),
             trailingVariants: normalizeTrailingVariants(rawTrailing ?? DEFAULT_TRAILING_VARIANTS),
+            trailingGapBasis: normalizeTrailingGapBasis(coord.trailingGapBasis ?? (settings as Record<string, unknown>).strategyTrailingGapBasis),
             dcaMaxSteps: dca.maxSteps,
             dcaStepVolumeMultipliers: dca.stepVolumeMultipliers,
             dcaStepDistancesPct: dca.stepDistancesPct,

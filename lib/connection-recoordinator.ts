@@ -164,6 +164,8 @@ const STRATEGY_COORDINATION_SETTING_FIELDS = new Set([
   "variantDcaEnabled",
   "strategyBaseTrailingEnabled",
   "strategyBaseTrailingVariants",
+  "strategyTrailingGapBasis",
+  "strategyRelate",
   "trailingMinStep",
   "blockVolumeRatio",
   "blockProfitFactorRatio",

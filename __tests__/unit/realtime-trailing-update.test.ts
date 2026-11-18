@@ -103,6 +103,29 @@ describe("Realtime fixed trailing updates", () => {
     expect(mockTrackTrailingStopMetrics).not.toHaveBeenCalled()
   })
 
+  test.each([
+    { side: "long", anchor: 110, next: 112.2, previousStop: 105, nextStop: 107.2 },
+    { side: "short", anchor: 90, next: 88.2, previousStop: 95, nextStop: 93.2 },
+  ])("restores the original gap for a $side after the average entry changes", async ({ side, anchor, next, previousStop, nextStop }) => {
+    const processor = new RealtimeProcessor("trailing-test") as any
+    const syncLive = jest.fn(async () => undefined)
+    processor.fireSyncLiveFromPseudo = syncLive
+    const position = fixedPosition({
+      side,
+      entry_price: "104",
+      trailing_gap_basis: "entry",
+      trailing_entry_reference: "100",
+      trailing_anchor: String(anchor),
+      trailing_stop_price: String(previousStop),
+    })
+
+    await processor.updateTrailingStop(position, next)
+
+    expect(Number(position.trailing_stop_price)).toBeCloseTo(nextStop, 12)
+    expect(mockHset).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ trailing_stop_price: String(nextStop) }))
+    expect(syncLive).toHaveBeenCalledWith(position)
+  })
+
   test("ratchets at the exact configured short step in the protective direction", async () => {
     const processor = new RealtimeProcessor("trailing-test") as any
     const syncLive = jest.fn(async () => undefined)

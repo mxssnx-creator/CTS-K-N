@@ -21,6 +21,7 @@ import { applyTrailingDistanceFloorRatio, protectionFloorsForRange } from "@/lib
 import {
   takeProfitRatio,
   trailingActivationThreshold,
+  generalTrailingStopPrice,
 } from "@/lib/trailing-activation"
 import { getRedisClient } from "@/lib/redis-db"
 import { PseudoPositionManager } from "./pseudo-position-manager"
@@ -997,6 +998,9 @@ export class RealtimeProcessor {
 
       // ── Multi-step path ────────────────────────────────────────────
       if (useMultiStep) {
+        const gapBasis = position.trailing_gap_basis === "entry" ? "entry" : "peak"
+        const originalEntry = Number(position.trailing_entry_reference)
+        const trailReference = originalEntry > 0 && Number.isFinite(originalEntry) ? originalEntry : entryPrice
         // Profit ratio in the trade's favourable direction.
         const gainRatio =
           side === "long"
@@ -1020,10 +1024,7 @@ export class RealtimeProcessor {
 
           // Phase 2 — ACTIVATION: cross the start threshold for the first time.
           const anchor = currentPrice
-          const newStop =
-            side === "long"
-              ? anchor * (1 - stopRatio)
-              : anchor * (1 + stopRatio)
+          const newStop = generalTrailingStopPrice(side, trailReference, anchor, stopRatio, gapBasis)
 
           await client.hset(hashKey, {
             trailing_active: "1",
@@ -1079,7 +1080,7 @@ export class RealtimeProcessor {
           // must ratchet immediately, not wait for a further market tick.
           if (currentPrice < anchorStored + stepDistance) return
           const newAnchor = currentPrice
-          const newStop = newAnchor * (1 - stopRatio)
+          const newStop = generalTrailingStopPrice(side, trailReference, newAnchor, stopRatio, gapBasis)
           // Ratchet — never relax the stop downward for longs
           if (currentTrailingStop > 0 && newStop <= currentTrailingStop) {
             // Anchor moved but stop didn't tighten meaningfully — write
@@ -1113,7 +1114,7 @@ export class RealtimeProcessor {
           // SHORT: ratchet when price drops below anchor - step distance
           if (currentPrice > anchorStored - stepDistance) return
           const newAnchor = currentPrice
-          const newStop = newAnchor * (1 + stopRatio)
+          const newStop = generalTrailingStopPrice(side, trailReference, newAnchor, stopRatio, gapBasis)
           if (currentTrailingStop > 0 && newStop >= currentTrailingStop) {
             await client.hset(hashKey, {
               trailing_anchor: String(newAnchor),

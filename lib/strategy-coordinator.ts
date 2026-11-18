@@ -171,6 +171,7 @@ import {
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
+import { normalizeTrailingGapBasis, type TrailingGapBasis } from "@/lib/trailing-activation"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
@@ -203,7 +204,7 @@ type RuntimeStageSnapshotRow = {
   avgConfidence: number
   entryCount: number
   axisWindows?: StrategySet["axisWindows"]
-  trailing?: Pick<TrailingProfile, "mode" | "startRatio" | "stopRatio" | "stepRatio">
+  trailing?: Pick<TrailingProfile, "mode" | "startRatio" | "stopRatio" | "stepRatio" | "gapBasis">
   previous?: { count: number; profitFactor: number; avgDDT: number }
 }
 
@@ -285,6 +286,7 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
           startRatio: set.trailingProfile.startRatio,
           stopRatio: set.trailingProfile.stopRatio,
           stepRatio: set.trailingProfile.stepRatio,
+          ...(set.trailingProfile.gapBasis && { gapBasis: set.trailingProfile.gapBasis }),
         },
       } : {}),
       ...(set.prevPos ? {
@@ -4460,7 +4462,7 @@ export class StrategyCoordinator {
    * createBaseSets calls in `executeStrategyFlowBatch` share one read.
    */
   private async getEnabledTrailingVariants(): Promise<
-    Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number }>
+    Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number; gapBasis?: TrailingGapBasis }>
   > {
     if ((this as any)._trailingVariantsCache) return (this as any)._trailingVariantsCache
     try {
@@ -4498,7 +4500,8 @@ export class StrategyCoordinator {
         tokens = raw.split(/[\s,]+/).filter(Boolean)
       }
 
-      const profiles: Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number }> = []
+      const gapBasis = normalizeTrailingGapBasis(settings.strategyTrailingGapBasis)
+      const profiles: Array<{ startRatio: number; stopRatio: number; stepRatio: number; tag: string; minStep: number; gapBasis?: TrailingGapBasis }> = []
       for (const token of tokens) {
         if (typeof token !== "string") continue
         const [sStr, kStr] = token.split(":")
@@ -4507,8 +4510,9 @@ export class StrategyCoordinator {
         if (!Number.isFinite(start) || !Number.isFinite(stop)) continue
         if (start <= 0 || stop <= 0) continue
         // tag is the canonical compact identifier used in setKey suffix
-        const tag = `t${Math.round(start * 100)}-${Math.round(stop * 100)}`
-        profiles.push({ startRatio: start, stopRatio: stop, stepRatio: stop / 2, tag, minStep: trailingMinStep })
+        const tag = `t${Math.round(start * 100)}-${Math.round(stop * 100)}${gapBasis === "entry" ? "-entry" : ""}`
+        profiles.push({ startRatio: start, stopRatio: stop, stepRatio: stop / 2, tag, minStep: trailingMinStep,
+          ...(gapBasis === "entry" ? { gapBasis } : {}) })
       }
       ;(this as any)._trailingVariantsCache = profiles
       return profiles
@@ -5107,6 +5111,7 @@ export class StrategyCoordinator {
               stopRatio: effectiveVariant.stopRatio,
               stepRatio: effectiveVariant.stepRatio,
               ...(effectiveVariant.mode && { mode: effectiveVariant.mode }),
+              ...(effectiveVariant.gapBasis && { gapBasis: effectiveVariant.gapBasis }),
               ...(effectiveVariant.minStopRatio !== undefined && {
                 minStopRatio: effectiveVariant.minStopRatio,
               }),
@@ -11036,7 +11041,7 @@ export class StrategyCoordinator {
                 // and direction but different PF-derived TP/SL occupy distinct
                 // slots and are not collapsed into one active position.
                 const trailingSuffix = profile
-                  ? `:t${Math.round(profile.startRatio * 100)}-${Math.round(profile.stopRatio * 100)}`
+                  ? `:t${Math.round(profile.startRatio * 100)}-${Math.round(profile.stopRatio * 100)}${profile.gapBasis === "entry" ? "-entry" : ""}`
                   : trailing ? `:tr1` : `:tr0`
                 // Include full axis identity (prev/last/cont/outcome) so different position-count
                 // variants of the same (ind, dir, pf...) get distinct pseudo positions.

@@ -473,6 +473,7 @@ export class PseudoPositionManager {
               `k${trailingProfile!.stopRatio.toFixed(4)}`,
               `u${trailingProfile!.stepRatio.toFixed(4)}`,
               `m${trailingProfile!.mode || "fixed"}`,
+              ...(trailingProfile!.gapBasis === "entry" ? ["gap-entry"] : []),
             ]
           : []),
       ].join(":")
@@ -684,6 +685,10 @@ export class PseudoPositionManager {
         trailing_mode: hasTrailingProfile
           ? String(trailingProfile!.mode || "fixed")
           : "",
+        ...(hasTrailingProfile && !signalDynamicTrailing && trailingProfile!.gapBasis === "entry" ? {
+          trailing_gap_basis: "entry",
+          trailing_entry_reference: String(params.entryPrice),
+        } : {}),
         trailing_min_stop_ratio: signalDynamicTrailing
           ? String(Math.max(0.008, trailingProfile!.minStopRatio || trailingProfile!.stopRatio))
           : "0",

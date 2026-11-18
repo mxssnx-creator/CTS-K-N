@@ -13,7 +13,7 @@
  * lib/trade-engine/realtime-processor.ts (updateTrailingStop and
  * shouldCloseStopLoss): take-profit is checked first; a long exits when price
  * reaches the higher of the static stop and the armed trailing stop; the
- * trailing stop is anchor × (1 − distance) and ratchets on each favourable
+ * trailing stop uses the configured entry or peak basis and ratchets on each favourable
  * step. It is used by the historic trailing family so simulation and live
  * share one definition.
  */
@@ -22,6 +22,17 @@ import { applyTrailingDistanceFloorRatio } from "@/lib/protection-floors"
 export const TRAILING_ACTIVATION_TP_SHARE = "tp_share"
 export const TRAILING_ACTIVATION_ABSOLUTE = "absolute"
 export type TrailingActivationMode = typeof TRAILING_ACTIVATION_TP_SHARE | typeof TRAILING_ACTIVATION_ABSOLUTE
+export type TrailingGapBasis = "entry" | "peak"
+
+export function normalizeTrailingGapBasis(input: unknown): TrailingGapBasis {
+  return input === "entry" ? "entry" : "peak"
+}
+
+export function generalTrailingStopPrice(direction: "long" | "short", entry: number,
+  anchor: number, distance: number, basis?: TrailingGapBasis): number {
+  const sign = direction === "long" ? 1 : -1
+  return basis === "entry" ? anchor - sign * entry * distance : anchor * (1 - sign * distance)
+}
 
 /** A share of the TP distance must stay below the take-profit so trailing can arm first. */
 export const MAX_TRAILING_TP_SHARE = 0.95
@@ -94,6 +105,7 @@ export interface GeneralTrailingInput {
   /** Step as a fraction of price; defaults to half the trailing distance, minimum 0.1 %. */
   stepRatio?: number
   activationMode: TrailingActivationMode
+  gapBasis?: TrailingGapBasis
 }
 
 export interface GeneralTrailingExit {
@@ -158,13 +170,13 @@ export function simulateGeneralTrailingExit(input: GeneralTrailingInput): Genera
       if (gain >= activation) {
         armed = true
         anchor = favourable
-        trailStop = long ? anchor * (1 - distance) : anchor * (1 + distance)
+        trailStop = generalTrailingStopPrice(input.direction, entry, anchor, distance, input.gapBasis)
       }
     } else {
       const moved = long ? favourable >= anchor * (1 + step) : favourable <= anchor * (1 - step)
       if (moved) {
         anchor = favourable
-        const candidate = long ? anchor * (1 - distance) : anchor * (1 + distance)
+        const candidate = generalTrailingStopPrice(input.direction, entry, anchor, distance, input.gapBasis)
         trailStop = long ? Math.max(trailStop, candidate) : Math.min(trailStop, candidate)
       }
     }

@@ -31,6 +31,7 @@ import {
 } from "@/lib/historic-test-runner"
 import { createHistoricCandleSimulator } from "@/lib/historic-test-replay"
 import { loadHistoricTestCandles } from "@/lib/historic-test-candles"
+import { normalizeTrailingGapBasis } from "@/lib/trailing-activation"
 
 /** Entry models the pass evaluates when the connection exposes no explicit set. */
 export const HISTORIC_TEST_DEFAULT_INDICATIONS = ["momentum", "mean_reversion", "breakout", "relative"] as const
@@ -182,6 +183,7 @@ export async function maybeRunHistoricTest(
     // 8 % (audit TRAIL-06).
     trailingRetracePct: numOrUndefined((raw as any)?.trailingRetracePct),
     trailingStartRatio: numOrUndefined((raw as any)?.trailingStartRatio),
+    trailingGapBasis: normalizeTrailingGapBasis((raw as Record<string, unknown>)?.strategyTrailingGapBasis),
     tpslPairs: tpslPairs.length > 0 ? tpslPairs : undefined,
     block: {
       volumeRatio: numOrUndefined((raw as any)?.blockVolumeRatio),

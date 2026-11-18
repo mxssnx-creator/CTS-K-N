@@ -39,6 +39,7 @@ import {
   type BlockDerivationParams,
 } from "@/lib/historic-test-family-derivations"
 import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
+import type { TrailingGapBasis } from "@/lib/trailing-activation"
 
 export class HistoricTestUnsupportedFamilyError extends Error {
   readonly family: string
@@ -79,6 +80,7 @@ export interface HistoricCandleSimulatorOptions {
   trailingRetracePct?: number
   /** Configured trailing start band; activation is its share of the take-profit distance. */
   trailingStartRatio?: number
+  trailingGapBasis?: TrailingGapBasis
   maxHoldMinutes?: number
   /** Round-trip cost in percent; also the PositionCost the result is expressed in. */
   positionCostPercent?: number
@@ -171,6 +173,7 @@ export function createHistoricCandleSimulator(
       return replayTrailing(candles, result.trades, {
         trailingRetracePct: options.trailingRetracePct,
         trailingStartRatio: options.trailingStartRatio,
+        trailingGapBasis: options.trailingGapBasis,
         takeProfitPct,
         stopLossPct,
         positionCostPercent,

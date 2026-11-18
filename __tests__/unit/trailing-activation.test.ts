@@ -122,6 +122,27 @@ describe("simulateGeneralTrailingExit follows the live rule", () => {
     expect(exit!.price).toBeCloseTo(99.384, 6)
   })
 
+  test.each([
+    { direction: "long" as const, peak: 102, retrace: 100.9, fixed: 101, dynamic: 100.98 },
+    { direction: "short" as const, peak: 98.4, retrace: 99.5, fixed: 99.4, dynamic: 99.384 },
+  ])("$direction fixed gaps retain their entry-sized offset in replay", ({ direction, peak, retrace, fixed, dynamic }) => {
+    const input = {
+      ...base,
+      direction,
+      takeProfitPct: 3,
+      startRatio: 0.3,
+      activationMode: TRAILING_ACTIVATION_TP_SHARE,
+      bars: [
+        bar(1, 100, Math.max(peak, 100), Math.min(peak, 100)),
+        bar(2, peak, Math.max(peak, retrace), Math.min(peak, retrace)),
+      ],
+    }
+    const fixedExit = simulateGeneralTrailingExit({ ...input, gapBasis: "entry" })
+    const dynamicExit = simulateGeneralTrailingExit({ ...input, gapBasis: "peak" })
+    expect(fixedExit).toMatchObject({ reason: "trailing_stop", index: 1, price: fixed })
+    expect(dynamicExit?.price).toBeCloseTo(dynamic, 10)
+  })
+
   test("no exit inside the bars returns null", () => {
     const exit = simulateGeneralTrailingExit({
       ...base,
@@ -134,6 +155,17 @@ describe("simulateGeneralTrailingExit follows the live rule", () => {
 })
 
 describe("replayTrailing (historic family) uses the same rule", () => {
+  test("replays the selected gap against the same recorded path and costs", () => {
+    const candles = [bar(1, 100, 100, 100), bar(2, 100, 102, 100), bar(3, 102, 102, 100.9)]
+      .map((candle) => ({ ...candle, volume: 1 }))
+    const entry = { entryTime: 1, exitTime: 1, direction: "long", initialEntryPrice: 100, pnlPctOfInitialNotional: 0 } as any
+    const options = { positionCostPercent: 0.1, roundTripCostPercent: 0.26, takeProfitPct: 3, stopLossPct: 2, trailingRetracePct: 1 }
+    const [fixed] = replayTrailing(candles, [entry], { ...options, trailingGapBasis: "entry" })
+    const [dynamic] = replayTrailing(candles, [entry], { ...options, trailingGapBasis: "peak" })
+    expect(fixed.signedResultR).toBeCloseTo(7.4, 10)
+    expect(dynamic.signedResultR).toBeCloseTo(7.2, 10)
+  })
+
   test("the walk starts after the entry bar, not on it (audit TRAIL-08)", () => {
     const candles = [
       { time: 1_000, open: 100, high: 105, low: 95, close: 100, volume: 1 }, // the entry bar prints 95 before the fill

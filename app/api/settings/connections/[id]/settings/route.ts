@@ -1,6 +1,7 @@
 import {relationalVolumeSettings} from "@/shared/cts-volume/ratios.ts";
 import { normalizeStrategyProcessingByRange } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings } from "@/lib/relate-allocation"
+import { normalizeTrailingGapBasis } from "@/lib/trailing-activation"
 import { clampStageProfitFactorPatch, MAIN_TRADE_PF_RATIO_MAX } from "@/lib/main-trade-profit-factor"
 import { overallControlOrdersOnly } from "@/lib/overall-control-orders"
 import { type NextRequest, NextResponse } from "next/server"
@@ -216,6 +217,7 @@ const PROGRESSION_VISIBLE_SETTING_KEYS = new Set([
   "relationalVolumeRatios",
   "strategyProcessingByRange",
   "strategyRelate",
+  "strategyTrailingGapBasis",
   "blockOnlyEnabled",
   "variantDcaEnabled",
   "axisPrevEnabled",
@@ -567,6 +569,7 @@ export async function GET(
       // values are not fallbacks and cannot control dispatch.
       processingByRange: normalizeStrategyProcessingByRange(settings.strategyProcessingByRange ?? storedCoord.processingByRange),
       relate: normalizeRelateSettings(settings.strategyRelate ?? storedCoord.relate),
+      trailingGapBasis: normalizeTrailingGapBasis(settings.strategyTrailingGapBasis ?? storedCoord.trailingGapBasis),
       normalEnabled: asBoolean(firstDefined(
         storedCoord.normalEnabled,
         storedCoord.normal_enabled,
@@ -1207,6 +1210,7 @@ export async function PATCH(
     if(settings.relationalVolumeRatios!==undefined)flatKnobs.relationalVolumeRatios=JSON.stringify(relationalVolumeSettings(settings.relationalVolumeRatios,true))
     if (settings.strategyProcessingByRange !== undefined) flatKnobs.strategyProcessingByRange = JSON.stringify(normalizeStrategyProcessingByRange(settings.strategyProcessingByRange))
     if (settings.strategyRelate !== undefined) flatKnobs.strategyRelate = JSON.stringify(normalizeRelateSettings(settings.strategyRelate))
+    if (settings.strategyTrailingGapBasis !== undefined) flatKnobs.strategyTrailingGapBasis = normalizeTrailingGapBasis(settings.strategyTrailingGapBasis)
     const knobKeys = [
       "prevPosMinCount", "prevPosWindow", "mainEvalPosCount", "realEvalPosCount", "blockRowRealEvalPosCount", "liveEvalPosCount",
       "minStep", "maxStopLossRatio", "minStopLossRatio", "portfolioRiskBudgetPercent", "trailingMinStep", "posCountsVolumeRatio",
@@ -1283,6 +1287,7 @@ export async function PATCH(
       if (typeof coord.blockRowLiveEnabled === "boolean") flatKnobs.blockRowLiveEnabled = String(coord.blockRowLiveEnabled)
       flatKnobs.strategyProcessingByRange = JSON.stringify(normalizeStrategyProcessingByRange(settings.strategyProcessingByRange ?? coord.processingByRange ?? merged.strategyProcessingByRange))
       if (coord.relate !== undefined) flatKnobs.strategyRelate = JSON.stringify(normalizeRelateSettings(settings.strategyRelate ?? coord.relate))
+      if (coord.trailingGapBasis !== undefined) flatKnobs.strategyTrailingGapBasis = normalizeTrailingGapBasis(settings.strategyTrailingGapBasis ?? coord.trailingGapBasis)
       if (typeof coord.normalEnabled === "boolean") flatKnobs.normalEnabled = String(coord.normalEnabled)
       if (typeof coord.blockOnlyEnabled === "boolean") flatKnobs.blockOnlyEnabled = String(coord.blockOnlyEnabled)
       const rowLiveVolume = Number(coord.blockRowLiveVolumeRatio)

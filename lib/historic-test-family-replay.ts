@@ -26,6 +26,7 @@ import type { HistoricTestTrade } from "@/lib/historic-test-scoring"
 import {
   simulateGeneralTrailingExit,
   TRAILING_ACTIVATION_TP_SHARE,
+  type TrailingGapBasis,
 } from "@/lib/trailing-activation"
 
 export interface FamilyReplayOptions {
@@ -42,6 +43,7 @@ export interface FamilyReplayOptions {
   takeProfitPct?: number
   /** Configured trailing start band (0.3 … 1.5 keys); activation is its share of the TP distance. */
   trailingStartRatio?: number
+  trailingGapBasis?: TrailingGapBasis
   /** Trailing retrace from the best price, in percent of entry. */
   trailingRetracePct?: number
   /** Stop loss in percent of entry, shared with the entry stream. */
@@ -116,6 +118,7 @@ export function replayTrailing(
       startRatio,
       stopRatio: distance,
       activationMode: TRAILING_ACTIVATION_TP_SHARE,
+      gapBasis: options.trailingGapBasis,
     })
     const exitTime = exit ? exit.time : candles[candles.length - 1].time
     const exitPrice = exit ? exit.price : candles[candles.length - 1].close

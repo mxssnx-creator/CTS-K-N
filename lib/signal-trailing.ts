@@ -4,6 +4,8 @@
  * Ratios use 1 = 100 %. Percent settings are converted exactly once when the
  * strategy Base Set is built.
  */
+import type { TrailingGapBasis } from "@/lib/trailing-activation"
+
 export const SIGNAL_TRAILING_MIN_STOP_PCT_FLOOR = 0.8
 export const SIGNAL_TRAILING_DEFAULT_START_PCT = 0
 export const SIGNAL_TRAILING_DEFAULT_MIN_STOP_PCT = 0.8
@@ -15,6 +17,7 @@ export type TrailingProfile = {
   stopRatio: number
   stepRatio: number
   mode?: "fixed" | "signal_dynamic"
+  gapBasis?: TrailingGapBasis
   minStopRatio?: number
   positiveMoveRatio?: number
   updateStopRangeRatio?: number

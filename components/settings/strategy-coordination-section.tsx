@@ -1,6 +1,7 @@
 "use client"
 import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, type StrategyProcessingByRange } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings, type RelateSettings } from "@/lib/relate-allocation"
+import { normalizeTrailingGapBasis, type TrailingGapBasis } from "@/lib/trailing-activation"
 
 /**
  * Strategy Coordination Settings Section
@@ -122,6 +123,7 @@ export interface CoordinationSettings {
   // Per-connection trailing matrix. Values use the canonical "start:stop"
   // encoding and are validated again by the engine before Base fan-out.
   trailingVariants: string[]
+  trailingGapBasis?: TrailingGapBasis
 
   /**
    * ── Position-Count (Pos) Sets volume ratio ───────────────────────
@@ -253,6 +255,7 @@ export const DEFAULT_COORDINATION_SETTINGS: CoordinationSettings = {
   processingByRange: {},
   axisEnabled: true,
   trailingVariants: [...DEFAULT_TRAILING_VARIANTS],
+  trailingGapBasis: "peak",
   posCountsVolumeRatio: POS_COUNT_VOLUME_RATIO_DEFAULT,
   dcaMaxSteps: DEFAULT_DCA_PROFILE.maxSteps,
   dcaStepVolumeMultipliers: [...DEFAULT_DCA_PROFILE.stepVolumeMultipliers],
@@ -510,6 +513,18 @@ export function StrategyCoordinationSection({
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
+          <label className="flex flex-wrap items-center gap-2 text-xs">
+            Trailing distance
+            <select
+              className="rounded-md border bg-background px-2 py-1 text-sm"
+              value={normalizeTrailingGapBasis(value.trailingGapBasis)}
+              disabled={!value.variants.trailing}
+              onChange={(event) => onChange({ ...value, trailingGapBasis: normalizeTrailingGapBasis(event.target.value) })}
+            >
+              <option value="peak">Dynamic (% of peak)</option>
+              <option value="entry">Fixed (% of entry)</option>
+            </select>
+          </label>
           <div className="flex flex-wrap justify-end gap-2">
             <Button
               type="button"
