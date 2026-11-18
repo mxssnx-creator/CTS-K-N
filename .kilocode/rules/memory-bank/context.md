@@ -1,3 +1,24 @@
+## 2026-11-18 — independent exact trailing gaps
+
+Canonical checkout `/workspace/CTS-K-N`, base `437b49537964758224e2260c83a3426552d315f6`.
+Connection settings can select entry and peak trailing in parallel. The Base
+coordinator keeps an independent key for each activation, price gap and basis.
+The price-gap options run from 0.2% to 2.6% at 0.1-point increments. A range's
+protection floor excludes an infeasible exact gap from its Set inventory. A
+new exact gap uses its own Base history and the Live modeled position key
+keeps the same price precision and owning Set. The legacy profile keys still load.
+
+Eighty-three focused settings, Base profile, Low-Range, Relate, trailing,
+ownership and DCA tests pass. TypeScript passes. The exact commit and hosted
+gates belong to the reviewed PR. The official pre-edit checkpoint is
+`/workspace/backups/CTS-K-N/20261118T100137Z-before-independent-trailing-bases-20261118`.
+
+The offline 12-symbol study covered 14 complete UTC days from October 2.
+It replayed 60 combinations using the native general trailing exit and fixed
+external indication onsets. No candidate met the base-cost and stressed PF
+criteria in both periods. This exit study does not measure managed Stage
+promotion or venue fills. No production service or account was changed.
+
 ## Current continuation — 2026-11-18 — canonical recovery and Low-Range coordination
 
 The canonical checkout is `/workspace/CTS-K-N`. It was restored at published main `dbfe9ac2beb4d3d72b361adb05ca5e11502b9677` from the verified bundle at `/workspace/backups/CTS-K-N/20261118T051315Z-published-main-recovery-20261118`. The bundle restores source history. Runtime and unpublished state were unavailable in this recovery.

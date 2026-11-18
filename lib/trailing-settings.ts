@@ -1,13 +1,27 @@
+import { normalizeTrailingGapSelection, type TrailingGapBasis } from "@/lib/trailing-activation"
+
 export const TRAILING_START_RATIOS = [0.3, 0.6, 0.9, 1.2, 1.5] as const
 export const TRAILING_STOP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5] as const
+export const PRICE_TRAILING_STOP_RATIOS = Array.from({ length: 25 }, (_, i) => (i + 2) / 1000)
+
+export function trailingProfileTag(start: number, stop: number, basis?: TrailingGapBasis): string {
+  const stopTag = PRICE_TRAILING_STOP_RATIOS.includes(stop)
+    ? `p${Math.round(stop * 1000)}`
+    : String(Math.round(stop * 100))
+  return `t${Math.round(start * 100)}-${stopTag}${basis === "entry" ? "-entry" : ""}`
+}
 
 export function trailingVariantKey(start: number, stop: number): string {
-  return `${Number(start).toFixed(1)}:${Number(stop).toFixed(1)}`
+  return `${Number(start).toFixed(1)}:${Number(stop).toFixed(PRICE_TRAILING_STOP_RATIOS.includes(stop) ? 3 : 1)}`
 }
 
 export const ALL_TRAILING_VARIANTS: string[] = TRAILING_START_RATIOS.flatMap(
   (start) => TRAILING_STOP_RATIOS.map((stop) => trailingVariantKey(start, stop)),
 )
+export const ALL_PRICE_TRAILING_VARIANTS: string[] = TRAILING_START_RATIOS.flatMap(
+  start => PRICE_TRAILING_STOP_RATIOS.map(stop => trailingVariantKey(start, stop)),
+)
+const VALID_TRAILING_VARIANTS = [...ALL_TRAILING_VARIANTS, ...ALL_PRICE_TRAILING_VARIANTS]
 
 // High-performance default: one representative profile at every supported
 // start/stop band. Operators can still enable any or all of the full 5×5
@@ -36,7 +50,7 @@ function parseTokens(raw: unknown): unknown[] {
 }
 
 export function normalizeTrailingVariants(raw: unknown): string[] {
-  const supported = new Set(ALL_TRAILING_VARIANTS)
+  const supported = new Set(VALID_TRAILING_VARIANTS)
   const selected = new Set<string>()
   for (const token of parseTokens(raw)) {
     if (typeof token !== "string") continue
@@ -47,7 +61,7 @@ export function normalizeTrailingVariants(raw: unknown): string[] {
     const key = trailingVariantKey(start, stop)
     if (supported.has(key)) selected.add(key)
   }
-  return ALL_TRAILING_VARIANTS.filter((key) => selected.has(key))
+  return VALID_TRAILING_VARIANTS.filter((key) => selected.has(key))
 }
 
 export interface TrailingProfile {
@@ -56,23 +70,31 @@ export interface TrailingProfile {
   stepRatio: number
   tag: string
   minStep: number
+  gapBasis?: TrailingGapBasis
+  exactPriceGap?: true
 }
 
 export function buildTrailingProfiles(
   raw: unknown,
   minimumStep = DEFAULT_TRAILING_MIN_STEP,
   baseMinimumStep = DEFAULT_BASE_MIN_STEP,
+  selection?: unknown,
 ): TrailingProfile[] {
   const minStep = normalizeTrailingMinStep(minimumStep, baseMinimumStep)
-  return normalizeTrailingVariants(raw).map((token) => {
+  const basis = normalizeTrailingGapSelection(selection)
+  const bases: TrailingGapBasis[] = basis === "both" ? ["peak", "entry"] : [basis]
+  return normalizeTrailingVariants(raw).flatMap((token) => {
     const [startRatio, stopRatio] = token.split(":").map(Number)
-    return {
+    const exact = PRICE_TRAILING_STOP_RATIOS.includes(stopRatio)
+    return bases.map(gapBasis => ({
       startRatio,
       stopRatio,
       stepRatio: stopRatio / 2,
-      tag: `t${Math.round(startRatio * 100)}-${Math.round(stopRatio * 100)}`,
+      tag: trailingProfileTag(startRatio, stopRatio, gapBasis),
       minStep,
-    }
+      ...(gapBasis === "entry" ? { gapBasis } : {}),
+      ...(exact ? { exactPriceGap: true as const } : {}),
+    }))
   })
 }
 import { DEFAULT_BASE_MIN_STEP, DEFAULT_TRAILING_MIN_STEP, normalizeTrailingMinStep } from "@/lib/constants"
