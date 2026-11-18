@@ -53,6 +53,7 @@ performance	scripts/test-direct-trade-dev-soak.mjs
 performance	scripts/verify-prod-soak.mjs
 regression	scripts/regression/direct-trade-cycle-serialization.test.mjs
 regression	scripts/regression/live-stage-simulated-protection.test.ts
+regression	scripts/regression/price-distance-grid-replay.ts
 unit	__tests__/unit/active-outbreak-indication.test.ts
 unit	__tests__/unit/active-outbreak-strategy-protection.test.ts
 unit	__tests__/unit/admin-auth.test.ts
