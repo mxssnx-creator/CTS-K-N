@@ -32,6 +32,8 @@ describe("opt-in absolute price protection grid", () => {
     let cursor = 0
     const keys = new Set<string>()
     let batches = 0
+    const heapBefore = process.memoryUsage().heapUsed
+    const startedAt = performance.now()
 
     while (true) {
       const page = buildPriceDistanceProfileBatch(parentSetKey, 0.3, cursor, 16)
@@ -46,7 +48,13 @@ describe("opt-in absolute price protection grid", () => {
       cursor = page.nextCursor
     }
 
+    const elapsedMs = performance.now() - startedAt
+    const heapDeltaBytes = process.memoryUsage().heapUsed - heapBefore
+    const payloadBytes = Buffer.byteLength(JSON.stringify([...keys]), "utf8")
+    console.info("price-distance-grid", { elapsedMs, heapDeltaBytes, payloadBytes, children: keys.size, batches })
+
     expect(keys.size).toBe(21 * 25 * 2)
     expect(batches).toBe(66)
+    expect(payloadBytes).toBeLessThan(256_000)
   })
 })
