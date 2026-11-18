@@ -1,6 +1,7 @@
 .dev.vars.example
 .env.example
 .github/workflows/dev-preview-smoke.yml
+.github/workflows/price-distance-grid-replay.yml
 .github/workflows/strategy-feature-verification.yml
 .gitignore
 .kilocode/recipes/add-database.md
@@ -2111,6 +2112,7 @@ scripts/redis-memory-governor.mjs
 scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/live-stage-simulated-protection.test.ts
+scripts/regression/price-distance-grid-replay.ts
 scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
