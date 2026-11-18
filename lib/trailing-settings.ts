@@ -101,8 +101,13 @@ export function buildTrailingProfiles(
 ): TrailingProfile[] {
   const minStep = normalizeTrailingMinStep(minimumStep, baseMinimumStep)
   const basis = normalizeTrailingGapSelection(selection)
-  const bases: TrailingGapBasis[] = basis === "both" ? ["peak", "entry"] : [basis]
-  return normalizeTrailingVariants(raw).flatMap((token) => {
+  const bases: TrailingGapBasis[] = gridOptions?.priceDistanceGrid
+    ? ["peak", "entry"]
+    : basis === "both" ? ["peak", "entry"] : [basis]
+  const variants = gridOptions?.priceDistanceGrid
+    ? PRICE_TRAILING_STOP_RATIOS.map((stop) => trailingVariantKey(TRAILING_START_RATIOS[0], stop))
+    : raw
+  return normalizeTrailingVariants(variants).flatMap((token) => {
     const [startRatio, stopRatio] = token.split(":").map(Number)
     const exact = PRICE_TRAILING_STOP_RATIOS.includes(stopRatio)
     const stops = gridOptions?.priceDistanceGrid && exact
