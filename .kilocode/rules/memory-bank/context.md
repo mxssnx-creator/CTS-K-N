@@ -8,16 +8,22 @@ protection floor excludes an infeasible exact gap from its Set inventory. A
 new exact gap uses its own Base history and the Live modeled position key
 keeps the same price precision and owning Set. The legacy profile keys still load.
 
+GitHub PR #579 merged release `3e7a9fd988268c97817ea324ecb288c8e8353250`.
+Its verified head was `15d7101ee48b6986e950eb2f53745a0cfeeb6c5e`.
 Eighty-three focused settings, Base profile, Low-Range, Relate, trailing,
-ownership and DCA tests pass. TypeScript passes. The exact commit and hosted
-gates belong to the reviewed PR. The official pre-edit checkpoint is
-`/workspace/backups/CTS-K-N/20261118T100137Z-before-independent-trailing-bases-20261118`.
+ownership and DCA tests passed locally, along with TypeScript, the installer
+preflight, and the recreation checksum verifier. Hosted Dev Preview Smoke
+(run `44288215034`) and Strategy feature verification (run `44288214998`)
+passed, including the production build. Rollback contents were verified and
+retained at `/workspace/backups/CTS-K-N/20261118T104449Z-before-verified-trailing-release-merge-20261118`.
 
 The offline 12-symbol study covered 14 complete UTC days from October 2.
 It replayed 60 combinations using the native general trailing exit and fixed
 external indication onsets. No candidate met the base-cost and stressed PF
 criteria in both periods. This exit study does not measure managed Stage
 promotion or venue fills. No production service or account was changed.
+Independent absolute SL Sets, full Last-N combination parity, and live
+readiness remain open.
 
 ## Current continuation — 2026-11-18 — canonical recovery and Low-Range coordination
 
