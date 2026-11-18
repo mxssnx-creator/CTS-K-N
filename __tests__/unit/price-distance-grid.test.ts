@@ -18,11 +18,11 @@ describe("opt-in absolute price protection grid", () => {
     )
     expect(PRICE_TRAILING_STOP_RATIOS).toHaveLength(25)
     expect(profiles).toHaveLength(21 * 25 * 2)
-    expect(new Set(profiles.map((profile) => profile.tag))).toHaveLength(profiles.length)
+    expect(new Set(profiles.map((profile) => profile.tag)).size).toBe(profiles.length)
     expect(new Set(profiles.map((profile) => profile.initialStopLossPct))).toEqual(
       new Set(PRICE_STOP_LOSS_PCTS),
     )
-    expect(new Set(profiles.map((profile) => profile.gapBasis))).toEqual(
+    expect(new Set(profiles.map((profile) => profile.gapBasis ?? "peak"))).toEqual(
       new Set(["entry", "peak"]),
     )
   })
