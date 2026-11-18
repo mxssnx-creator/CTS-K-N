@@ -44,7 +44,7 @@ const PROGRESSION_RESTART_FIELDS = [
   "maxDrawdownTimeMainHours", "maxDrawdownTimeRealHours", "maxDrawdownTimeLiveHours",
   "stageMinPosCountBase", "stageMinPosCountMain", "stageMinPosCountReal",
   "coordination_settings", "normalEnabled", "blockOnlyEnabled", "variantTrailingEnabled", "variantBlockEnabled", "variantDcaEnabled",
-  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "trailingMinStep",
+  "strategyBaseTrailingEnabled", "strategyBaseTrailingVariants", "strategyPriceDistanceGrid", "trailingMinStep",
   "strategyTrailingGapBasis", "strategyRelate",
   "axisPrevEnabled", "axisLastEnabled", "axisContEnabled", "axisPauseEnabled",
   "axisPrevMaxWindow", "axisLastMaxWindow", "axisContMaxWindow", "axisPauseMaxWindow",
