@@ -517,6 +517,26 @@ describe("strategy position-count axis coordination", () => {
     expect(sets.every((set) => [0, 1].includes(set.axisWindows?.cont))).toBe(true)
   })
 
+  test("each materialized Main variant owns all its Axis children", () => {
+    const coordinator = new StrategyCoordinator("axis-source-parent") as any
+    coordinator._coordinationSettings.axes = {
+      prev: { enabled: false, maxWindow: 0 }, last: { enabled: false, maxWindow: 0 },
+      cont: { enabled: true, maxWindow: 1 }, pause: { enabled: false, maxWindow: 0 },
+    }
+    const base = baseSet([])
+    const parents = (["default", "trailing", "dca"] as const).map(variant => ({
+      ...base, setKey: base.setKey + "#" + variant, parentSetKey: base.setKey, variant,
+    }))
+    const children: StrategySet[] = parents.flatMap(parent =>
+      coordinator.expandAxisSets(parent, 1.2, 1, { long: 1, short: 0 }, 0))
+    expect(new Set(children.map(set => set.setKey)).size).toBe(6)
+    for (const parent of parents) {
+      const own = children.filter(set => set.axisWindows?.sourceSetKey === parent.setKey)
+      expect(own.map(set => set.axisWindows?.cont)).toEqual([0, 1])
+      expect(own.every(set => set.parentSetKey === base.setKey && set.variant === parent.variant)).toBe(true)
+    }
+  })
+
   test("ignores the legacy output budget and emits every Continuous combination", () => {
     const coordinator = new StrategyCoordinator("axis-budget") as any
     coordinator._coordinationSettings.axes = {

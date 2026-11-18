@@ -1,3 +1,7 @@
+## 2026-11-18 — immediate Main ownership of Axis projections
+
+Each eligible Main variant now emits every configured Position Count Axis child. The child retains its immediate Main Set key and the Base registry anchor used for dispatch. Existing default Axis ledger keys are stable. Sibling Main variants have distinct Axis ledger and cache keys. The Main builder releases completed task batches while scanning the parent list. The focused regression exercises six Axis children across three parents and two windows. This change has no measured venue PF.
+
 ## 2026-11-18 — independent exact trailing gaps
 
 Canonical checkout `/workspace/CTS-K-N`, base `437b49537964758224e2260c83a3426552d315f6`.
