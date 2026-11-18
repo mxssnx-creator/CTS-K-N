@@ -167,6 +167,7 @@ import {
   isMainTrailingAllowed,
   isStrategyExecutionFamilyEnabled,
   resolveTrailingSwitch,
+  strategyProcessingRange,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
@@ -4688,7 +4689,7 @@ export class StrategyCoordinator {
     // Group by the complete persisted/evaluated identity. Grouping merely by
     // type × direction collapsed thousands of valid default/Common tuples into
     // one Base row and made the per-config open-position limit appear global.
-    const setMap = new Map<string, { indicationType: string; direction: "long" | "short"; indications: any[] }>()
+    const setMap = new Map<string, { indicationType: string; strategyRange: string; direction: "long" | "short"; indications: any[] }>()
 
     const blockRevision=Object.entries(this._coordinationSettings.lastNBlocks??{}).sort(([a],[b])=>a.localeCompare(b)).map(([stage,p])=>[stage,blockPolicyKey(p)])
     const blockSuffix=blockRevision.length?":lastn:"+encodeURIComponent(JSON.stringify(blockRevision)):""
@@ -4712,14 +4713,16 @@ export class StrategyCoordinator {
         continue
       }
       const configurationIdentity = strategyIndicationConfigurationIdentity(ind)
+      const strategyRange = strategyProcessingRange(ind)
+      const rangeSuffix = strategyRange === "low-range" ? ":range:low-range" : ""
       // Symbol-scoped identity prevents BTC and ETH Sets with the same config
       // from colliding. Direction is explicit even when the upstream Set key
       // already contains it, keeping legacy direct indications unambiguous.
       const key =
         `${symbol}:${indicationType}:${direction}:cfg:` +
-        encodeURIComponent(configurationIdentity || "default") + blockSuffix
+        encodeURIComponent(configurationIdentity || "default") + rangeSuffix + blockSuffix
       if (!setMap.has(key)) {
-        setMap.set(key, { indicationType, direction, indications: [] })
+        setMap.set(key, { indicationType, strategyRange, direction, indications: [] })
       }
       setMap.get(key)!.indications.push(ind)
       groupedIndications++
@@ -5083,8 +5086,7 @@ export class StrategyCoordinator {
             : undefined
 
         const set: StrategySet = {
-          strategyRange: String(group.indications[0]?.config?.strategyRange ?? group.indications[0]?.metadata?.strategyRange ??
-            (isSignal ? "signals" : group.indicationType.includes("preset") ? "preset" : "main")).toLowerCase(),
+          strategyRange: group.strategyRange,
           setKey,
           indicationType: group.indicationType,
           direction: group.direction,
@@ -11027,9 +11029,12 @@ export class StrategyCoordinator {
                 const axisSuffix = set.axisWindows
                   ? `|p${set.axisWindows.prev ?? 0}|l${set.axisWindows.last ?? 0}|c${set.axisWindows.cont ?? 0}|o${set.axisWindows.outcome ?? "pos"}`
                   : ""
+                // Different Low-Range sources can produce the same bracket.
+                // Their pseudo-position limits still belong to the individual Sets.
+                const rangeIdentity = set.strategyRange === "low-range" ? `:source:${encodeURIComponent(set.setKey)}` : ""
                 const configSetKey =
                   `${set.indicationType}:${set.direction}:${symbol}` +
-                  `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}`
+                  `:tp${tp.toFixed(2)}:sl${sl.toFixed(2)}${trailingSuffix}${axisSuffix}${rangeIdentity}`
 
                 if (!isCurrent()) return
                 const posId = await posManager.createPosition({

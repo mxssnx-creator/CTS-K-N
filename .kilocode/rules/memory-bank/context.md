@@ -1,3 +1,9 @@
+## Current continuation — 2026-11-18 — canonical recovery and Low-Range coordination
+
+The canonical checkout is `/workspace/CTS-K-N`. It was restored at published main `dbfe9ac2beb4d3d72b361adb05ca5e11502b9677` from the verified bundle at `/workspace/backups/CTS-K-N/20261118T051315Z-published-main-recovery-20261118`. The bundle restores source history. Runtime and unpublished state were unavailable in this recovery.
+
+Branch `codex/low-range-coordination-20261118` routes Common Low-Range indications into their own coordination and position identities. The Normal and Trailing switches use that range throughout the stage pipeline. The isolated run passed 40 checks covering range switches, source parity, existing trailing paths, Set identity and stage accounting. No exchange orders, Redis production changes or deployment were performed.
+
 ## Current continuation — 2026-11-17 (later) — parallel test suites and real-Redis test fixes
 
 Merged PR576 (`d1ff7e2`): migration 106 no longer aborts on legacy plain-string settings keys (WRONGTYPE on real Redis); five suites that only passed on the in-memory adapter now hold on real Redis. Follow-up branch makes the suites parallel: each Jest worker uses its own Redis logical database 1-15 (`__tests__/support/per-worker-redis.cjs`) and each test file starts from an empty one (`per-file-redis-reset.ts`, loopback-only, never database 0). ts-jest transpiles per file (`isolatedModules`); types stay enforced by `pnpm typecheck`. `test:unit`, `test:integration`, `test:all` and `test:all:isolated` are parallel; `*:serial` variants keep `--runInBand --detectOpenHandles`. Measured with a disposable loopback Redis and the cloud environment's BingX/FORCE_LIVE variables removed: `test:all:isolated` 567/567 suites, 3,798/3,798 tests in 127 s; `test:unit` 560/560 in 123 s (was 323-355 s in band with 2-9 failing suites). `redis-list-append-large-batch` needs a real Redis by design.

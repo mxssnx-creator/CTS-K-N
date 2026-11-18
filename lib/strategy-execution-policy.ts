@@ -10,7 +10,7 @@
 export type StrategyExecutionFamily = "normal" | "trailing" | "block" | "dca" | "axis" | "signal"
 
 export type StrategyProcessingByRange = Record<string, { normal?: boolean; trailing?: boolean }>
-export const STRATEGY_PROCESSING_RANGES = ["main", "preset", "signals", "direct"] as const
+export const STRATEGY_PROCESSING_RANGES = ["main", "low-range", "preset", "signals", "direct"] as const
 
 export function normalizeStrategyProcessingByRange(raw: unknown): StrategyProcessingByRange {
   if (typeof raw === "string") { try { raw = JSON.parse(raw) } catch { return {} } }
@@ -27,9 +27,13 @@ export function normalizeStrategyProcessingByRange(raw: unknown): StrategyProces
 
 export function strategyProcessingRange(row: any): string {
   const explicit = row?.strategyRange ?? row?.strategy_range ?? row?.coordinationRange ?? row?.coordination_range
+    ?? row?.config?.strategyRange ?? row?.metadata?.strategyRange
   if (typeof explicit === "string" && explicit.trim()) return explicit.toLowerCase()
   if (isSignalSet(row) || String(row?.trailingMode ?? row?.trailing_mode) === "signal_dynamic") return "signals"
-  const kind = String(row?.indicationType ?? row?.indication_type ?? "").toLowerCase()
+  const kind = String(row?.indicationType ?? row?.indication_type ?? row?.type ?? "").toLowerCase()
+  if (kind === "signal") return "signals"
+  const commonIndicator = String(row?.config?.indicatorType ?? row?.metadata?.commonIndicatorType ?? "").toLowerCase()
+  if (kind === "common" && /^(lowrange[a-z0-9]|low-range-)/.test(commonIndicator)) return "low-range"
   if (kind.includes("direct")) return "direct"
   if (kind.includes("preset") || String(row?.setKey ?? row?.strategy_set_key ?? "").startsWith("preset:")) return "preset"
   return "main"

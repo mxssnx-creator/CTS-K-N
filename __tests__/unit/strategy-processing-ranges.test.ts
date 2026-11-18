@@ -1,4 +1,4 @@
-import {DEFAULT_STRATEGY_EXECUTION_POLICY,STRATEGY_PROCESSING_RANGES,normalizeStrategyExecutionPolicy,isStrategySetExecutionEnabled,isMainTrailingAllowed,normalizeStrategyProcessingByRange} from "@/lib/strategy-execution-policy"
+import {DEFAULT_STRATEGY_EXECUTION_POLICY,STRATEGY_PROCESSING_RANGES,normalizeStrategyExecutionPolicy,isStrategySetExecutionEnabled,isMainTrailingAllowed,normalizeStrategyProcessingByRange,strategyProcessingRange} from "@/lib/strategy-execution-policy"
 
 describe("overall and exact coordination processing switches",()=>{
   test("both masters apply independently to every coordination and additional strategy",()=>{
@@ -20,5 +20,21 @@ describe("overall and exact coordination processing switches",()=>{
     expect(isStrategySetExecutionEnabled({strategyRange:'main'},policy)).toBe(false)
     expect(isStrategySetExecutionEnabled({strategyRange:'preset'},policy)).toBe(true)
     expect(normalizeStrategyProcessingByRange({main:{normal:'false',trailing:false}})).toEqual({main:{trailing:false}})
+  })
+  test("ported Common Low-Range sources enter their own control scope", () => {
+    const base = { type: "common", config: { indicatorType: "lowRangeFailedBreak", timeframeMinutes: 5 } }
+    const legacy = { indicationType: "common", metadata: { commonIndicatorType: "lowRangeBandReclaim" } }
+    const ordinary = { type: "common", config: { indicatorType: "rsi" } }
+    const policy = normalizeStrategyExecutionPolicy({
+      strategyProcessingByRange: { main: { normal: true }, "low-range": { normal: false, trailing: false } },
+    })
+    expect(strategyProcessingRange(base)).toBe("low-range")
+    expect(strategyProcessingRange(legacy)).toBe("low-range")
+    expect(strategyProcessingRange({ ...base, strategyRange: "main" })).toBe("main")
+    expect(strategyProcessingRange(ordinary)).toBe("main")
+    expect(isStrategySetExecutionEnabled(base, policy)).toBe(false)
+    expect(isStrategySetExecutionEnabled(ordinary, policy)).toBe(true)
+    expect(isStrategySetExecutionEnabled({ ...base, variant: "block" }, policy)).toBe(true)
+    expect(isMainTrailingAllowed(legacy, policy)).toBe(false)
   })
 })
