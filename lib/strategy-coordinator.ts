@@ -918,6 +918,8 @@ export interface StrategySet {
    * pos-count fan-out cannot multiply or retag DCA exposure.
    */
   axisWindows?: {
+    /** Immediate Main variant that emitted this Axis projection. */
+    sourceSetKey?: string
     prev:  number
     last:  number
     cont:  number
@@ -5523,12 +5525,6 @@ export class StrategyCoordinator {
     }
     const activeVariants = this.selectActiveVariants(symbolCtx)
 
-    // Track the freshly-built `default` Main Set per Base so we can fan it
-    // out into the operator-spec'd Position-Count Cartesian (prev × last ×
-    // cont × dir) AFTER the profile loop completes. Both cache-hit and
-    // cache-miss paths populate this map so reuses still trigger fan-out.
-    const defaultByBaseKey = new Map<string, StrategySet>()
-
     // ── 2. Base/variant async processing ─────────────────────────────────────
     // Preserve the complete Base × variant matrix while starting only a
     // bounded number of builders at once. Launching every Promise eagerly
@@ -5542,6 +5538,62 @@ export class StrategyCoordinator {
       cachedSet: StrategySet | null
     }
     const buildTasks: Array<() => Promise<VariantBuildResult>> = []
+
+    const configuredVariantConcurrency = Number(
+      process.env.STRATEGY_VARIANT_BUILD_CONCURRENCY ?? "",
+    )
+    // Variant builders are CPU-heavy JavaScript work. A large Promise.all
+    // batch does not use additional CPU cores in Node; it instead starts many
+    // synchronous builders before the event loop can serve health/control
+    // requests. Keep the default cooperative and serial. Hosts with measured
+    // external-I/O overlap can opt in explicitly, but the cap remains small.
+    const variantBuildConcurrency =
+      Number.isFinite(configuredVariantConcurrency) && configuredVariantConcurrency > 0
+        ? Math.max(1, Math.min(16, Math.floor(configuredVariantConcurrency)))
+        : 1
+    const publishVariant = (result: VariantBuildResult) => {
+      const { baseSet, profile, built, cachedSet } = result
+      const set = cachedSet || built
+      if (!set || !appendMainSet(set)) return
+      if (cachedSet) reused++
+
+      // ── Register SetCoordRecord for this variant (O(1) per set) ──�����───
+      // CoordIndex is the per-cycle performance index; registering here
+      // avoids a second full scan of mainSets downstream. Stores only
+      // scalars — quality fields are resolved from BaseRegistry on demand.
+      if (coordIndex) {
+        const rec: SetCoordRecord = {
+          coordKey:           set.setKey,
+          parentKey:          set.parentSetKey || baseSet.setKey,
+          variant:            (set.variant ?? profile.name) as SetCoordRecord["variant"],
+          axisWindows:        set.axisWindows ?? null,
+          status:             "valid_main",
+          overrideDirection:  set.axisWindows?.direction as "long" | "short" | undefined,
+          overrideEntryCount: set.entryCount !== baseSet.entryCount ? set.entryCount : undefined,
+          // ── Scalar value carrier (Base-Anchored) ──────────────────────
+          // Mirror the slim set scalars so Real/Live validate + switch states
+          // by iterating coord records directly, never a parallel set array.
+          avgProfitFactor:    set.avgProfitFactor,
+          avgDrawdownTime:    set.avgDrawdownTime,
+          avgConfidence:      set.avgConfidence,
+          entryCount:         set.entryCount,
+          indicationType:     set.indicationType,
+          direction:          (set.axisWindows?.direction as "long" | "short" | undefined) ?? set.direction,
+          prevPos:            set.prevPos,
+          trailingProfile:    set.trailingProfile,
+          signalRisk:         set.signalRisk,
+        }
+        registerCoordRecord(coordIndex, rec)
+      }
+    }
+    const flushVariants = async () => {
+      const batch = buildTasks.splice(0)
+      const results = await mapWithConcurrency(batch, variantBuildConcurrency, task => task(), {
+        yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL,
+        onProgress: () => assertStrategyGenerationCurrent(shouldContinue),
+      })
+      for (const result of results) publishVariant(result)
+    }
 
     let scannedBaseSets = 0
     // Sets validate on measured results. Both knobs are read once per pass:
@@ -5771,80 +5823,14 @@ export class StrategyCoordinator {
 
           return { baseSet, profile, built, fingerprint, cachedSet }
         })
-      }
-    }
-
-    const configuredVariantConcurrency = Number(
-      process.env.STRATEGY_VARIANT_BUILD_CONCURRENCY ?? "",
-    )
-    // Variant builders are CPU-heavy JavaScript work. A large Promise.all
-    // batch does not use additional CPU cores in Node; it instead starts many
-    // synchronous builders before the event loop can serve health/control
-    // requests. Keep the default cooperative and serial. Hosts with measured
-    // external-I/O overlap can opt in explicitly, but the cap remains small.
-    const variantBuildConcurrency =
-      Number.isFinite(configuredVariantConcurrency) && configuredVariantConcurrency > 0
-        ? Math.max(1, Math.min(16, Math.floor(configuredVariantConcurrency)))
-        : 1
-    // The old serial default wrapped every individual task in Promise.all and
-    // then yielded, creating one full event-loop turn per Set (18k+ turns on a
-    // normal exhaustive symbol). The shared cursor pool preserves input/result
-    // order and the configured concurrency while yielding once per scheduling
-    // quantum. No Set is sampled or truncated.
-    const results = await mapWithConcurrency(
-      buildTasks,
-      variantBuildConcurrency,
-      (task) => task(),
-      {
-        yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL,
-        onProgress: () => assertStrategyGenerationCurrent(shouldContinue),
-      },
-    )
-    
-    // ── Process results and populate mainSets ──���────────�����────────────────
-    let processedBuildResults = 0
-    for (const result of results) {
-      if (processedBuildResults > 0 && processedBuildResults % STRATEGY_COOPERATIVE_YIELD_INTERVAL === 0) {
-        await yieldStrategyScheduler(false, shouldContinue)
-      }
-      processedBuildResults++
-      const { baseSet, profile, built, cachedSet } = result
-      const set = cachedSet || built
-      if (!set) continue
-
-      if (!appendMainSet(set)) continue
-      if (profile.name === "default") defaultByBaseKey.set(baseSet.setKey, set)
-      if (cachedSet) reused++
-
-      // ── Register SetCoordRecord for this variant (O(1) per set) ──�����───
-      // CoordIndex is the per-cycle performance index; registering here
-      // avoids a second full scan of mainSets downstream. Stores only
-      // scalars — quality fields are resolved from BaseRegistry on demand.
-      if (coordIndex) {
-        const rec: SetCoordRecord = {
-          coordKey:           set.setKey,
-          parentKey:          set.parentSetKey || baseSet.setKey,
-          variant:            (set.variant ?? profile.name) as SetCoordRecord["variant"],
-          axisWindows:        set.axisWindows ?? null,
-          status:             "valid_main",
-          overrideDirection:  set.axisWindows?.direction as "long" | "short" | undefined,
-          overrideEntryCount: set.entryCount !== baseSet.entryCount ? set.entryCount : undefined,
-          // ── Scalar value carrier (Base-Anchored) ──────────────────────
-          // Mirror the slim set scalars so Real/Live validate + switch states
-          // by iterating coord records directly, never a parallel set array.
-          avgProfitFactor:    set.avgProfitFactor,
-          avgDrawdownTime:    set.avgDrawdownTime,
-          avgConfidence:      set.avgConfidence,
-          entryCount:         set.entryCount,
-          indicationType:     set.indicationType,
-          direction:          (set.axisWindows?.direction as "long" | "short" | undefined) ?? set.direction,
-          prevPos:            set.prevPos,
-          trailingProfile:    set.trailingProfile,
-          signalRisk:         set.signalRisk,
+        if (buildTasks.length >= STRATEGY_COOPERATIVE_YIELD_INTERVAL) {
+          await flushVariants()
+          await yieldStrategyScheduler(false, shouldContinue)
         }
-        registerCoordRecord(coordIndex, rec)
       }
     }
+
+    await flushVariants()
 
     // ── Log min-pos skip count (diagnostic) ──────────────────������───
     // Surface the number of Base Sets that didn't meet `mainEvalPosCount`
@@ -5860,24 +5846,10 @@ export class StrategyCoordinator {
       ).catch(() => {})
     }
 
-    // ── 3. Position-Count Cartesian fan-out (operator spec) ──────────
-    //
-    // For each Base that yielded a `default` Main variant, emit:
-    //
-    //   prev (PF-filtered) × last (outcome-tagged) × cont × dir
-    //
-    // Axis Sets are pure projections of the parent default — they
-    // inherit PF / DDT / conf / trailingProfile, carry a synthetic representative entry,
-    // and tag `axisWindows.{prev,last,cont,direction,outcome,axisKey}`
-    // so Real-stage hedge netting can bucket them by
-    // `(symbol × ind × triple × outcome)`.
-    //
-    // Per-cycle recompute is intentional ("No Lock, handle after
-    // situation"). The hedge-net delta + Live partial open/close path
-    // takes care of accumulating continuous-count positions and
-    // adjusting exchange exposure as new entries land.
+    // Freeze the end of the parent list. Children are appended to mainSets during this loop.
+    const parentCount = mainSets.length
     let axisSetsAdded = 0
-    if (defaultByBaseKey.size > 0) {
+    if (parentCount > 0) {
       // Previous/Last axes have one system-wide realised-result boundary
       // (0.30 = 3 × PositionCost). Stage promotion remains governed by its
       // independent Base/Main/Real/Live threshold later in the pipeline.
@@ -5887,20 +5859,16 @@ export class StrategyCoordinator {
       // independent liveCont per direction so long and short axis Sets get
       // different entryCount values when one direction is more accumulated.
       const liveContByDir = ctx.perSymbolOpenByDir?.[symbol] ?? { long: 0, short: 0 }
-      // Exhaustively materialize every configured Base × axis combination.
-      // Batching is a scheduling/memory policy only: it never truncates the
-      // configuration space, and every default Set is visited exactly once.
-      const defaultSets = Array.from(defaultByBaseKey.values())
       const baseBatchSize = Math.max(1, Math.min(
         32,
         Number(process.env.STRATEGY_AXIS_BASE_BATCH_SIZE) ||
           this.strategyMainAxisBatchSize,
       ))
-      for (let start = 0; start < defaultSets.length; start += baseBatchSize) {
-        const axisCandidates = defaultSets
-          .slice(start, start + baseBatchSize)
-          .flatMap((defaultSet) => this.expandAxisSets(
-            defaultSet,
+      for (let start = 0; start < parentCount; start += baseBatchSize) {
+        const axisCandidates = mainSets
+          .slice(start, Math.min(parentCount, start + baseBatchSize))
+          .flatMap((parent) => this.expandAxisSets(
+            parent,
             minPF,
             liveCont,
             liveContByDir,
@@ -5954,14 +5922,14 @@ export class StrategyCoordinator {
         await yieldStrategyScheduler(false, shouldContinue)
       }
       if (axisSetsAdded > 0) {
-        // Axis fan-out complete — each qualifying default Main variant
+        // Axis fan-out complete — each qualifying Main variant
         // has been projected into the operator-spec'd Cartesian product
         // (prev × last × cont × direction). This is the "additional Sets"
         // creation per the strategy flow spec.
         logProgressionEvent(this.connectionId, "main_stage", "debug", `Axis fan-out: +${axisSetsAdded} liveCont=${liveCont}`, {
           symbol,
           axisSets: axisSetsAdded,
-          defaults: defaultByBaseKey.size,
+          parents: parentCount,
           liveCont,
         }).catch(() => {}) // non-critical
       }
@@ -11685,9 +11653,11 @@ export class StrategyCoordinator {
       return axisSets
     }
 
-    // Parent baseKey (strip any prior `#variant` / `#axis:*` suffixes)
-    // so `parentSetKey` always points at the originating Base Set.
-    const parentKey = baseDefault.parentSetKey || baseDefault.setKey.split("#")[0]
+    // Base dispatch still resolves the registry anchor. Keep the immediate Main owner on the
+    // child as well. Existing default projections retain their persisted Axis ledger keys.
+    const sourceSetKey = baseDefault.setKey
+    const parentKey = baseDefault.parentSetKey || sourceSetKey.split("#")[0]
+    const axisOwnerKey = sourceSetKey === parentKey + "#default" ? parentKey : sourceSetKey
 
     // ── Inherited quality fields used for the synthetic representative entry ─
     // The Real-stage tuner walks `set.entries` to mutate sizeMultiplier /
@@ -11774,7 +11744,8 @@ export class StrategyCoordinator {
               // Key encodes every field that varies, while the verbose parent
               // config identity stays only on the StrategySet itself.
               const axisLruKey = [
-                strategySetStorageRef(parentKey),
+                strategySetStorageRef(sourceSetKey),
+                baseDefault.variantSizeMultiplier ?? "", baseDefault.variantLeverage ?? "",
                 axisKey,
                 `ec${ec}`,
                 `pf${inheritedPF.toFixed(4)}`,
@@ -11796,7 +11767,7 @@ export class StrategyCoordinator {
                 // createdAt omitted: it served no semantic purpose for axis Sets
                 // and changed every cycle, preventing cache hits.
                 const synthEntry: StrategySetEntry = {
-                  id: `${parentKey}#axis:${axisKey}#axis-synth`,
+                  id: `${axisOwnerKey}#axis:${axisKey}#axis-synth`,
                   // Pos-count Sets trade at the converted per-valid-Set
                   // multiplier (operator ratio 10 → 0.02 Base volume).
                   sizeMultiplier: posCountsVolumeRatio,
@@ -11807,12 +11778,11 @@ export class StrategyCoordinator {
                   confidence: inheritedConf,
                 }
                 const axisSet: StrategySet = {
-                  setKey:          `${parentKey}#axis:${axisKey}`,
+                  setKey:          `${axisOwnerKey}#axis:${axisKey}`,
                   parentSetKey:    parentKey,
-                  variant:
-                    baseDefault.trailingProfile && baseDefault.indicationType !== "special"
-                      ? "trailing"
-                      : "default",
+                  variant: baseDefault.variant ?? (baseDefault.trailingProfile && baseDefault.indicationType !== "special" ? "trailing" : "default"),
+                  ...(baseDefault.variantSizeMultiplier !== undefined && { variantSizeMultiplier: baseDefault.variantSizeMultiplier }),
+                  ...(baseDefault.variantLeverage !== undefined && { variantLeverage: baseDefault.variantLeverage }),
                   indicationType:  baseDefault.indicationType,
                   direction:       dir,
                   avgProfitFactor: inheritedPF,
@@ -11821,6 +11791,7 @@ export class StrategyCoordinator {
                   entryCount:      ec,
                   entries:         [synthEntry],
                   axisWindows: {
+                    sourceSetKey,
                     prev,
                     last,
                     cont,
