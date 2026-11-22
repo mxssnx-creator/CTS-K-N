@@ -14408,8 +14408,8 @@ export async function executeLivePosition(
     if (exactProfile?.initialStopLossPct !== undefined && (
       !trailingPriceDistancesFit(exactProfile, protectionFloorsForRange(realPosition.strategyRange), realPosition.takeProfit) ||
       realPosition.takeProfit < minimumViableTakeProfitPct() ||
-      Math.abs(livePosition.stopLoss - exactProfile.initialStopLossPct) > 1e-10 ||
-      Math.abs(livePosition.takeProfit - realPosition.takeProfit) > 1e-10
+      Math.abs(finitePositive(livePosition.stopLoss) - exactProfile.initialStopLossPct) > 1e-10 ||
+      Math.abs(finitePositive(livePosition.takeProfit) - realPosition.takeProfit) > 1e-10
     )) {
       livePosition.status = "rejected"
       livePosition.executionMode = "blocked"
