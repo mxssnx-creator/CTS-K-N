@@ -171,7 +171,7 @@ import {
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
 import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
-import { buildTrailingProfiles, PRICE_TRAILING_STOP_RATIOS, trailingProfileTag } from "@/lib/trailing-settings"
+import { buildTrailingProfiles, PRICE_TRAILING_STOP_RATIOS, trailingPriceDistancesFit, trailingProfileTag } from "@/lib/trailing-settings"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
 import { classifyLiveDispatchResult } from "@/lib/live-dispatch-outcome"
@@ -4849,8 +4849,16 @@ export class StrategyCoordinator {
     // this cycle. Type×direction history is retained only as an upgrade
     // fallback for old positions that predate exact Set lineage.
     const prospectiveSetKeys: string[] = []
-    const fitsPriceGap = (variant: BaseTrailingVariant | null, range: unknown) => !variant?.exactPriceGap ||
-      variant.stopRatio * 100 + 1e-10 >= protectionFloorsForRange(range).minTrailingStopDistancePct
+    const floorsByRange = new Map<unknown, ReturnType<typeof protectionFloorsForRange>>()
+    const fitsPriceDistances = (variant: BaseTrailingVariant | null, range: unknown) => {
+      if (!variant?.exactPriceGap) return true
+      let floors = floorsByRange.get(range)
+      if (!floors) {
+        floors = protectionFloorsForRange(range)
+        floorsByRange.set(range, floors)
+      }
+      return trailingPriceDistancesFit(variant, floors)
+    }
     let prospectiveRows = 0
     for (let variantIndex = 0; variantIndex < variantPasses.length; variantIndex++) {
       const variant = variantPasses[variantIndex]
@@ -4865,7 +4873,7 @@ export class StrategyCoordinator {
         } else if (signalPass) {
           continue
         }
-        if (!fitsPriceGap(variant, group.strategyRange)) continue
+        if (!fitsPriceDistances(variant, group.strategyRange)) continue
         if (
           variant &&
           !strategyIndicationVariantEnabled(
@@ -4918,7 +4926,7 @@ export class StrategyCoordinator {
           if (isSignalConfigurationPass) continue
           effectiveVariant = variant
         }
-        if (!fitsPriceGap(effectiveVariant, group.strategyRange)) continue
+        if (!fitsPriceDistances(effectiveVariant, group.strategyRange)) continue
         if (
           effectiveVariant &&
           !strategyIndicationVariantEnabled(
@@ -5102,6 +5110,9 @@ export class StrategyCoordinator {
               stepRatio: effectiveVariant.stepRatio,
               ...(effectiveVariant.mode && { mode: effectiveVariant.mode }),
               ...(effectiveVariant.gapBasis && { gapBasis: effectiveVariant.gapBasis }),
+              ...(effectiveVariant.initialStopLossPct !== undefined && {
+                initialStopLossPct: effectiveVariant.initialStopLossPct,
+              }),
               ...(effectiveVariant.minStopRatio !== undefined && {
                 minStopRatio: effectiveVariant.minStopRatio,
               }),
@@ -10422,11 +10433,12 @@ export class StrategyCoordinator {
                 // additive "slippage buffer" here broke that cap, was clamped
                 // back by the live stage's computeSetAwareSL whenever TP was
                 // below about 0.67 %, and skewed reward/risk above it.
-                let sl = protection.stopLossPct
+                let sl = resolvedTrailingProfile?.initialStopLossPct ?? protection.stopLossPct
                 if (
                   set.indicationType !== "special" &&
                   set.variant === "trailing" &&
                   resolvedTrailingProfile &&
+                  resolvedTrailingProfile.initialStopLossPct === undefined &&
                   resolvedTrailingProfile.stopRatio > 0
                 ) {
                   // Trailing-variant: initial SL = trailing stop distance.
@@ -10435,7 +10447,7 @@ export class StrategyCoordinator {
                   // the derived LivePosition.stopLoss are always in sync.
                   sl = Math.max(
                     minLiveStopLossPct(set.strategyRange),
-                    resolvedTrailingProfile.initialStopLossPct ?? resolvedTrailingProfile.stopRatio * 100,
+                    resolvedTrailingProfile.stopRatio * 100,
                   )
                 }
 
@@ -10980,6 +10992,8 @@ export class StrategyCoordinator {
                 const mainTrailingAllowed = isMainTrailingAllowed(set, executionPolicy)
                 const profile = mainTrailingAllowed ? set.trailingProfile : undefined
                 const signalDynamicTrailing = isSignalDynamicTrailingProfile(profile)
+                if (profile?.initialStopLossPct !== undefined &&
+                    !trailingPriceDistancesFit(profile, protectionFloorsForRange(set.strategyRange), tp)) return
                 const sl = signalDynamicTrailing
                   ? Math.max(0.8, (profile.minStopRatio ?? profile.stopRatio) * 100)
                   : profile?.initialStopLossPct ??

@@ -468,6 +468,25 @@ describe("Real-stage Block overlays", () => {
     expect(new Set(result.sets.map((set: StrategySet) => set.setKey)).size).toBe(3)
   })
 
+  test("keeps distinct initial stops for an exact gap and excludes geometry below the floor", async () => {
+    const coordinator = new StrategyCoordinator(`${connectionId}-price-distance`) as any
+    coordinator.getEnabledTrailingVariants = jest.fn(async () => [0.2, 0.8, 1.2].map((initialStopLossPct) => ({
+      startRatio: 0.3, stopRatio: 0.01, stepRatio: 0.005, gapBasis: "entry", minStep: 2,
+      tag: `t30-p10-entry-slp${initialStopLossPct * 10}`, initialStopLossPct, exactPriceGap: true,
+    })))
+    const result = await coordinator.createBaseSets("BTCUSDT", [{
+      id: "direction-exact-trailing",
+      setKey: "indications:test:BTCUSDT:direction:exact:long",
+      type: "direction", direction: "long", range: 8, profitFactor: 1.4, confidence: 0.8,
+      timestamp: Date.now(), config: { range: 8, drawdownRatio: 1, factor: 1 },
+      metadata: { direction: "long" },
+    }])
+    const exact = result.sets.filter((set: StrategySet) => set.trailingProfile)
+    expect(exact.map((set: StrategySet) => set.trailingProfile?.initialStopLossPct)).toEqual([0.8, 1.2])
+    expect(new Set(exact.map((set: StrategySet) => set.setKey)).size).toBe(2)
+    expect(exact.every((set: StrategySet) => set.trailingProfile?.gapBasis === "entry")).toBe(true)
+  })
+
   test("applies Signal trailing-only and disabled settings at Base creation", async () => {
     const client = getRedisClient()
     const indication = {

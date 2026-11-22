@@ -502,13 +502,22 @@ describe("executing Live-stage control barriers", () => {
       101.5,
     )).toBe(true)
     expect(__liveStageTest.isTrailingStopTightening(
-      livePosition({ direction: "short", trailingStopPrice: 99 }),
+      livePosition({ direction: "short", stopLossPrice: 99, trailingStopPrice: 99 }),
       99.5,
     )).toBe(false)
     expect(__liveStageTest.isTrailingStopTightening(
-      livePosition({ direction: "short", trailingStopPrice: 99 }),
+      livePosition({ direction: "short", stopLossPrice: 99, trailingStopPrice: 99 }),
       98.5,
     )).toBe(true)
+  })
+
+  test.each([
+    { direction: "long" as const, initial: 99.2, loose: 98.8, tighter: 99.5 },
+    { direction: "short" as const, initial: 100.8, loose: 101.2, tighter: 100.5 },
+  ])("$direction first ratchet must improve the initial native stop", ({ direction, initial, loose, tighter }) => {
+    const position = livePosition({ direction, averageExecutionPrice: 100, stopLoss: 0.8, stopLossPrice: initial })
+    expect(__liveStageTest.isTrailingStopTightening(position, loose)).toBe(false)
+    expect(__liveStageTest.isTrailingStopTightening(position, tighter)).toBe(true)
   })
 
   test("keeps a just-armed trailing stop in place until its re-arm cooldown expires", async () => {

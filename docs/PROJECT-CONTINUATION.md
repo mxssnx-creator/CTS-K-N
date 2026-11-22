@@ -1,3 +1,7 @@
+## 2026-11-22 — exact trailing recovery and verification
+
+Recovered canonical source from GitHub `main` at `794ddcd5d` using the verified source checkpoint recorded in the memory bank. The exact initial stop now survives Base propagation and passes through Live preflight independently from the trailing gap. The tested native ratchet cannot replace a tighter initial stop. The longer replay and X02 results are in `docs/verification/trailing-walkforward-20261122.md`. The replay did not qualify a default change. After retrying preflight, four X02 cycles finished flat with complete ratchet proof and exact settlement matches for all 12 market fills. The shared account baseline gate did not pass.
+
 ## Current continuation — 2026-11-18 — Low-Range, Relate and trailing
 
 GitHub PR #578 connects the Common Low-Range indications to an independent strategy range, adds opt-in Relate sizing from the exact Set's prior signed settlements, and adds a fixed entry-distance option to the general trailing matrix. The existing dynamic peak option remains the default. Settings changes reload the progression graph and preserve the trailing distance recorded on existing positions. The canonical source was restored from published main `dbfe9ac2beb4d3d72b361adb05ca5e11502b9677`, with recovery and test details in `.kilocode/rules/memory-bank/context.md`.

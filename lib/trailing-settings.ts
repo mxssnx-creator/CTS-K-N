@@ -1,4 +1,6 @@
 import { normalizeTrailingGapSelection, type TrailingGapBasis } from "@/lib/trailing-activation"
+import type { ProtectionFloors } from "@/lib/protection-floors"
+import { MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO } from "@/lib/trade-protection-contract"
 
 export const TRAILING_START_RATIOS = [0.3, 0.6, 0.9, 1.2, 1.5] as const
 export const TRAILING_STOP_RATIOS = [0.1, 0.2, 0.3, 0.4, 0.5] as const
@@ -80,6 +82,23 @@ export interface TrailingProfile {
 export interface PriceDistanceGridOptions {
   priceDistanceGrid?: boolean
   stopLossPcts?: readonly number[]
+}
+
+/** Exact distances must be executable as configured under the current protection rules. */
+export function trailingPriceDistancesFit(
+  profile: Pick<TrailingProfile, "stopRatio" | "initialStopLossPct">,
+  floors: Pick<ProtectionFloors, "minStopLossPct" | "minTrailingStopDistancePct">,
+  takeProfitPct?: number,
+): boolean {
+  const gapPct = profile.stopRatio * 100
+  if (!Number.isFinite(gapPct) || gapPct + 1e-10 < floors.minTrailingStopDistancePct) return false
+  const stopPct = profile.initialStopLossPct
+  if (stopPct === undefined) return true
+  if (!Number.isFinite(stopPct) || stopPct + 1e-10 < floors.minStopLossPct) return false
+  return takeProfitPct === undefined || (
+    Number.isFinite(takeProfitPct) && takeProfitPct > 0 &&
+    stopPct <= takeProfitPct * MAX_STOP_LOSS_TO_TAKE_PROFIT_RATIO + 1e-10
+  )
 }
 
 function selectedPriceStops(raw?: readonly number[]): number[] {

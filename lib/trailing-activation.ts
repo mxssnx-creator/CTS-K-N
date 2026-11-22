@@ -11,8 +11,8 @@
  *
  * The simulator below follows the live rule in
  * lib/trade-engine/realtime-processor.ts (updateTrailingStop and
- * shouldCloseStopLoss): take-profit is checked first; a long exits when price
- * reaches the higher of the static stop and the armed trailing stop; the
+ * shouldCloseStopLoss): a long exits when price reaches the higher of the
+ * static stop and the armed trailing stop; the
  * trailing stop uses the configured entry or peak basis and ratchets on each favourable
  * step. It is used by the historic trailing family so simulation and live
  * share one definition.
@@ -102,15 +102,21 @@ export interface GeneralTrailingInput {
   entryPrice: number
   /** Bars after the entry decision, in time order. The entry bar itself is not walked. */
   bars: readonly GeneralTrailingBar[]
+  /** Bounds into bars for the caller's actual fill time and hold limit. */
+  fromIndex?: number
+  toIndexExclusive?: number
   takeProfitPct: number
   stopLossPct: number
   startRatio: number
   /** Trailing distance as a fraction of price (0.1 = 10 %), floored like the engine. */
   stopRatio: number
+  /** The applicable range's floor in percent, when it differs from the default. */
+  minimumTrailingDistancePct?: number
   /** Step as a fraction of price; defaults to half the trailing distance, minimum 0.1 %. */
   stepRatio?: number
   activationMode: TrailingActivationMode
   gapBasis?: TrailingGapBasis
+  trailingEnabled?: boolean
 }
 
 export interface GeneralTrailingExit {
@@ -123,21 +129,23 @@ export interface GeneralTrailingExit {
 
 /**
  * First exit of one general trailing position, or null when no exit happens in
- * the given bars. Within a bar the exits are tested before the bar's favourable
- * extreme updates the state, which is the pessimistic order the live engine
- * sees at tick level when the stop is touched first.
+ * the given bars. The open is observed first. If both exits are touched after
+ * the open, settle the existing stop before the target. A newly ratcheted
+ * stop is eligible from the next bar because the OHLC extremes are unordered.
  */
 export function simulateGeneralTrailingExit(input: GeneralTrailingInput): GeneralTrailingExit | null {
   const entry = Number(input.entryPrice)
-  if (!(entry > 0)) return null
+  if (!Number.isFinite(entry) || entry <= 0) return null
   const long = input.direction === "long"
   const tpRatio = Math.max(0, Number(input.takeProfitPct) || 0) / 100
   const slRatio = Math.max(0, Number(input.stopLossPct) || 0) / 100
   const tpPrice = tpRatio > 0 ? (long ? entry * (1 + tpRatio) : entry * (1 - tpRatio)) : 0
   const slPrice = slRatio > 0 ? (long ? entry * (1 - slRatio) : entry * (1 + slRatio)) : 0
-  const distance = applyTrailingDistanceFloorRatio(Math.max(0, Number(input.stopRatio) || 0))
+  const distance = applyTrailingDistanceFloorRatio(
+    Math.max(0, Number(input.stopRatio) || 0), input.minimumTrailingDistancePct,
+  )
   const step = Math.max(Number(input.stepRatio) || distance / 2, 0.001)
-  const activation = trailingActivationThreshold({
+  const activation = input.trailingEnabled === false ? Infinity : trailingActivationThreshold({
     mode: input.activationMode,
     startRatio: input.startRatio,
     takeProfitRatio: tpRatio,
@@ -147,27 +155,32 @@ export function simulateGeneralTrailingExit(input: GeneralTrailingInput): Genera
   let anchor = entry
   let trailStop = 0
 
-  for (let index = 0; index < input.bars.length; index++) {
+  const fromIndex = Math.max(0, input.fromIndex ?? 0)
+  const toIndex = Math.min(input.bars.length, input.toIndexExclusive ?? input.bars.length)
+  for (let index = fromIndex; index < toIndex; index++) {
     const bar = input.bars[index]
-    // Take-profit first, as the live engine checks it before the stops.
-    if (tpPrice > 0 && (long ? bar.high >= tpPrice : bar.low <= tpPrice)) {
+    // A target already reached at the opening print precedes later extremes.
+    if (tpPrice > 0 && (long ? bar.open >= tpPrice : bar.open <= tpPrice)) {
       return { index, time: bar.time, price: tpPrice, reason: "take_profit", trailingArmed: armed }
     }
     // The binding stop is the tighter of the static stop and the armed trail.
-    const stopLevel = long
-      ? Math.max(slPrice, armed ? trailStop : 0)
-      : [slPrice, armed ? trailStop : 0].filter((value) => value > 0).reduce((min, value) => Math.min(min, value), Infinity)
-    if (Number.isFinite(stopLevel) && stopLevel > 0 && (long ? bar.low <= stopLevel : bar.high >= stopLevel)) {
+    const usesTrail = armed && trailStop > 0 && (slPrice <= 0 || (long ? trailStop >= slPrice : trailStop <= slPrice))
+    const stopLevel = usesTrail ? trailStop : slPrice
+    if (stopLevel > 0 && (long ? bar.low <= stopLevel : bar.high >= stopLevel)) {
       const gapped = long ? bar.open <= stopLevel : bar.open >= stopLevel
       const price = gapped ? bar.open : stopLevel
       return {
         index,
         time: bar.time,
         price,
-        reason: armed && trailStop === stopLevel ? "trailing_stop" : "stop_loss",
+        reason: usesTrail ? "trailing_stop" : "stop_loss",
         trailingArmed: armed,
       }
     }
+    if (tpPrice > 0 && (long ? bar.high >= tpPrice : bar.low <= tpPrice)) {
+      return { index, time: bar.time, price: tpPrice, reason: "take_profit", trailingArmed: armed }
+    }
+    if (input.trailingEnabled === false) continue
 
     const favourable = long ? bar.high : bar.low
     if (!armed) {
@@ -178,7 +191,8 @@ export function simulateGeneralTrailingExit(input: GeneralTrailingInput): Genera
         trailStop = generalTrailingStopPrice(input.direction, entry, anchor, distance, input.gapBasis)
       }
     } else {
-      const moved = long ? favourable >= anchor * (1 + step) : favourable <= anchor * (1 - step)
+      const stepDistance = anchor * step
+      const moved = long ? favourable >= anchor + stepDistance : favourable <= anchor - stepDistance
       if (moved) {
         anchor = favourable
         const candidate = generalTrailingStopPrice(input.direction, entry, anchor, distance, input.gapBasis)

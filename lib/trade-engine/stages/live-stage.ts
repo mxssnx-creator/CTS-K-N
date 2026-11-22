@@ -2,6 +2,7 @@ import {relationalVolumeFactor,type VolumeContext} from "../../../shared/cts-vol
 import { isStrategySetExecutionEnabled, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
 import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
+import { trailingPriceDistancesFit } from "@/lib/trailing-settings"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
 import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
@@ -1294,7 +1295,9 @@ function computeSetAwareSL(
   strategyRange?: string,
 ): number {
   let candidateSl: number
-  if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
+  if (trailingProfile?.initialStopLossPct !== undefined) {
+    candidateSl = trailingProfile.initialStopLossPct
+  } else if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
     // For trailing-variant positions the initial exchange SL is placed at the
     // trailing stop distance from entry. The trailing machine then ratchets this
     // upward (long) or downward (short) as price moves in our favour. Using the
@@ -9378,16 +9381,24 @@ function repairLiveEntryPriceDomain(
 }
 
 function isTrailingStopTightening(
-  pos: Pick<LivePosition, "direction" | "side" | "trailingStopPrice">,
+  pos: Pick<LivePosition, "direction" | "side" | "trailingStopPrice"> &
+    Partial<Pick<LivePosition, "averageExecutionPrice" | "entryPrice" | "stopLoss" | "stopLossPrice">>,
   candidateValue: unknown,
 ): boolean {
   const candidate = Number(candidateValue)
   if (!Number.isFinite(candidate) || candidate <= 0) return true
-  const existing = Number(pos.trailingStopPrice)
-  if (!Number.isFinite(existing) || existing <= 0) return true
   const direction = resolveLivePositionDirection(pos as LivePosition)
   if (!direction) return false
-  return direction === "long" ? candidate >= existing : candidate <= existing
+  const isLong = direction === "long"
+  const fill = finitePositive(pos.averageExecutionPrice) || finitePositive(pos.entryPrice)
+  const stopPct = finitePositive(pos.stopLoss)
+  const staticStop = fill && stopPct ? fill * (1 + (isLong ? -1 : 1) * stopPct / 100) : 0
+  // The first ratchet has no previous trailing price. It still must improve
+  // the initial bracket and any confirmed venue stop.
+  return [staticStop, pos.stopLossPrice, pos.trailingStopPrice].every((value) => {
+    const existing = Number(value)
+    return !Number.isFinite(existing) || existing <= 0 || (isLong ? candidate >= existing : candidate <= existing)
+  })
 }
 
 /**
@@ -14093,8 +14104,8 @@ export async function executeLivePosition(
     // ── Set-config-aware initial SL% ──────────────────────────────────────
     // Use `computeSetAwareSL` so the protection level is derived from the Set's
     // own configuration rather than a generic PF-derived percentage:
-    //   • trailing variant: SL = trailingProfile.stopRatio * 100 (trail distance
-    //     anchor; ratchets upward once the trailing machine activates)
+    //   • exact trailing: independent initial SL and trailing gap
+    //   • legacy trailing: initial SL follows the historical gap-based rule
     //   • block/dca/default: normalised PF-derived value (already variant-scaled
     //     by sizeMultiplier in deriveProtectionFromProfitFactor at dispatch)
     stopLoss: computeSetAwareSL(
@@ -14109,7 +14120,7 @@ export async function executeLivePosition(
     // progression panel and post-trade stats can always recover what the
     // upstream Set originally specified. Mirrors `stopLoss`/`takeProfit`
     // at creation; never mutated thereafter.
-    assignedStopLoss: realPosition.stopLoss,
+    assignedStopLoss: realPosition.trailingProfile?.initialStopLossPct ?? realPosition.stopLoss,
     assignedTakeProfit: realPosition.takeProfit,
     status: "pending",
     fills: [],
@@ -14182,7 +14193,7 @@ export async function executeLivePosition(
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
   normalizeLivePositionProtection(livePosition)
 
-  const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange)
+  const normalizedInitialSl = normalizeStopLossPercent(livePosition.assignedStopLoss, realPosition.strategyRange)
   if (normalizedInitialSl.adjusted) {
     pushStep(livePosition, "protection_sl_normalized", true, normalizedInitialSl.reason!)
     logProgressionEvent(
@@ -14207,6 +14218,7 @@ export async function executeLivePosition(
   if (
     realPosition.setVariant === "trailing" &&
     livePosition.trailingProfile &&
+    livePosition.trailingProfile.initialStopLossPct === undefined &&
     livePosition.trailingProfile.stopRatio > 0
   ) {
     const trailSl = Math.max(minExchangeStopLossPercent(livePosition.strategyRange), livePosition.trailingProfile.stopRatio * 100)
@@ -14389,6 +14401,22 @@ export async function executeLivePosition(
         symbol: realPosition.symbol,
         direction: realPosition.direction,
       })
+      return livePosition
+    }
+
+    const exactProfile = realPosition.trailingProfile
+    if (exactProfile?.initialStopLossPct !== undefined && (
+      !trailingPriceDistancesFit(exactProfile, protectionFloorsForRange(realPosition.strategyRange), realPosition.takeProfit) ||
+      realPosition.takeProfit < minimumViableTakeProfitPct() ||
+      Math.abs(livePosition.stopLoss - exactProfile.initialStopLossPct) > 1e-10 ||
+      Math.abs(livePosition.takeProfit - realPosition.takeProfit) > 1e-10
+    )) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "exact_trailing_protection_out_of_bounds"
+      livePosition.statusReason = "The exact trailing stop, gap or target conflicts with the current protection limits"
+      livePosition.executionBlockReason = livePosition.statusReason
+      pushStep(livePosition, "preflight", false, livePosition.statusReason)
       return livePosition
     }
 
@@ -23442,6 +23470,7 @@ export async function syncLiveFromPseudo(
           // updateProtectionOrders owns its absolute SL/TP and trailing ratchet
           // until the operator explicitly restores strategy defaults.
           if (livePos.manualProtectionOverride) continue
+          const exactProtection = livePos.trailingProfile?.initialStopLossPct !== undefined
           const localAuthoritativeEntry =
             finitePositive(livePos.initialEntryPrice) ||
             finitePositive(livePos.averageExecutionPrice) ||
@@ -23469,9 +23498,10 @@ export async function syncLiveFromPseudo(
             !!translatedTrailingStopPrice &&
             !isTrailingStopTightening(livePos, translatedTrailingStopPrice)
           ) continue
-          let effectiveSlPct = slPct
+          let effectiveSlPct = exactProtection ? livePos.stopLoss : slPct
+          const effectiveTpPct = exactProtection ? livePos.takeProfit : tpPct
           // CRITICAL: Guard trailing stop calculation against NaN and division errors
-          if (trailingActive && Number.isFinite(Number(translatedTrailingStopPrice)) && Number(translatedTrailingStopPrice) > 0) {
+          if (!exactProtection && trailingActive && Number.isFinite(Number(translatedTrailingStopPrice)) && Number(translatedTrailingStopPrice) > 0) {
             // Ensure fill price is valid and positive before using in division
             if (Number.isFinite(fill) && fill > 0) {
               const liveSide = resolveLivePositionDirection(livePos)
@@ -23554,11 +23584,11 @@ export async function syncLiveFromPseudo(
           })()
           
           const tpDeltaPct = (() => {
-            if (currentTpPct === undefined && tpPct === undefined) return 0 // both undefined → no change
-            if (currentTpPct === undefined || tpPct === undefined) return 1 // one newly defined → changed
-            if (!Number.isFinite(currentTpPct) || !Number.isFinite(tpPct)) return 1
+            if (currentTpPct === undefined && effectiveTpPct === undefined) return 0 // both undefined → no change
+            if (currentTpPct === undefined || effectiveTpPct === undefined) return 1 // one newly defined → changed
+            if (!Number.isFinite(currentTpPct) || !Number.isFinite(effectiveTpPct)) return 1
             if (currentTpPct <= 0) return 1 // undefined TP → treat as changed
-            const delta = Math.abs(tpPct - currentTpPct) / Math.abs(currentTpPct)
+            const delta = Math.abs(effectiveTpPct - currentTpPct) / Math.abs(currentTpPct)
             return Number.isFinite(delta) ? delta : 1
           })()
           // When trailing is active the ratchet can advance even when the
@@ -23573,8 +23603,7 @@ export async function syncLiveFromPseudo(
           if (nothingChanged) continue
 
           await recalculateAndApplySLTP(connectionId, livePos.id, exchangeConnector, {
-            stopLossPct: effectiveSlPct,
-            takeProfitPct: tpPct,
+            ...(exactProtection ? {} : { stopLossPct: effectiveSlPct, takeProfitPct: effectiveTpPct }),
             trailingActive,
             trailingStopPrice: nextTrailingStopPrice,
           })

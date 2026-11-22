@@ -890,6 +890,28 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(placeOrder).not.toHaveBeenCalled()
   })
 
+  test("keeps an exact initial stop independent of its gap and rejects an infeasible bracket", async () => {
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const source = {
+      id: "real-exact-trailing",
+      connectionId: connection.id, symbol: "BTCUSDT", direction: "long", quantity: 0,
+      entryPrice: 100, leverage: 2, stopLoss: 0.8, takeProfit: 1.2,
+      indicationType: "direction", setVariant: "trailing", status: "pending", timestamp: Date.now(),
+      setKey: "BTCUSDT:direction:long:t30-p14-entry-slp8",
+      trailingProfile: { mode: "fixed", gapBasis: "entry", startRatio: 0.3, stopRatio: 0.014, stepRatio: 0.007, initialStopLossPct: 0.8 },
+    } as const
+    const accepted = await executeLivePosition(connection.id, source as any, recordingConnector)
+    expect(accepted).toMatchObject({ status: "simulated", stopLoss: 0.8, assignedStopLoss: 0.8, takeProfit: 1.2 })
+    expect(accepted.stopLossPrice).toBeCloseTo(99.2, 8)
+    const rejected = await executeLivePosition(connection.id, { ...source, takeProfit: 0.4 } as any, recordingConnector)
+    expect(rejected).toMatchObject({
+      status: "rejected", executionMode: "blocked", executionBlockCode: "exact_trailing_protection_out_of_bounds",
+    })
+    expect(placeOrder).not.toHaveBeenCalled()
+  })
+
   test("opens every exact Signal source and TP/SL configuration in its own slot under the shared 120 cap", async () => {
     connection.is_live_trade = "0"
     connection.live_trade_requested = "0"
