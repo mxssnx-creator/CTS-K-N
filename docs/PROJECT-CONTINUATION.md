@@ -1,3 +1,9 @@
+## 2026-11-26 Relate recovery qualification
+
+Relate evaluates the exact Set and each enabled Overall relation separately. It records the proposed loss step and volume at entry. Each relation needs its own earlier and later groups of closed, after-cost trials at that step. Each group must clear the configured unit-return PF, size-weighted PF and drawdown limits. Missing evidence holds the increase at base size. The twelve-step default, independent volume factors and tighter-stop eligibility are retained.
+
+Paper and venue outcomes stay in separate bounded Redis windows. Older rows contribute their verified returns and cannot supply entry-time recovery trials. The targeted settlement and sizing suite passed 21 tests, including same-clock exclusion, duplicate close handling, exact Set proof and independent shares. No exchange results were collected for this revision. Positive venue Exec PF remains unverified. Source continuation is on `codex/relate-relations-20261126` in draft PR #585.
+
 ## 2026-11-26 — Relate loss progression
 
 The Relate branch continues PR #584. Settings expose the 12-step default, Active skip count, Exact Set or Overall scope and relation volume factors. Extra exposure requires the existing exact Set PF, sample and stop gates. Overall records earlier verified closes by relation and separates paper outcomes from venue settlements. The Settings switch continues to govern the sizing adjustment on existing qualifying Normal and Trailing Sets.

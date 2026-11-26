@@ -15,6 +15,7 @@ import { roundTripCostPercent, simulatedCloseCostPercent } from "@/lib/trading-r
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
 import { recordRelateOutcome } from "@/lib/relate-outcomes"
+import type { RelateTrialStamps } from "@/lib/relate-allocation"
 /**
  * Stage 5: Live Exchange Position Creation Progression
  *
@@ -1801,6 +1802,7 @@ export interface LivePosition {
   // protection coordination; Block order deltas use the immutable base.
   sizeMultiplier?: number
   relateRelationKeys?: string[]
+  relateTrials?: RelateTrialStamps
   /** Special-only lane plan; same-side logical legs are exchange-netted. */
   specialPositionPlan?: SpecialPositionPlan
   /** Immutable 1x quantity used to enforce Special's total <= 3x cap. */
@@ -2991,6 +2993,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     relateRelationKeys: Array.isArray(hash.relateRelationKeys)
       ? hash.relateRelationKeys
       : safeJsonParse<string[] | undefined>(hash.relateRelationKeys, undefined),
+    relateTrials: typeof hash.relateTrials === "string"
+      ? safeJsonParse<RelateTrialStamps | undefined>(hash.relateTrials, undefined)
+      : hash.relateTrials,
     pendingAccumulation: typeof hash.pendingAccumulation === "string"
       ? safeJsonParse<LivePosition["pendingAccumulation"]>(hash.pendingAccumulation, undefined)
       : hash.pendingAccumulation,
@@ -4174,7 +4179,7 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       if (position.relateRelationKeys?.length && position.status === "closed" && simulatedOutcome && verifiedOutcome &&
           notional > 0 && !position.combinedPosCounts && new Set(position.accumulatedSetKeys).size <= 1) {
         await recordRelateOutcome(position.connectionId, position.id, position.relateRelationKeys, closedAt,
-          netMovePctAfterPositionCost(grossPnlPct, simulatedCloseCostPercent(positionCostPct)), false).catch(() => undefined)
+          netMovePctAfterPositionCost(grossPnlPct, simulatedCloseCostPercent(positionCostPct)), false, position.relateTrials).catch(() => undefined)
       }
       // The exchange-only Set rings the coordinator judges live Sets by. A
       // paper/pseudo or still-unsettled row books nothing here; a late
@@ -14179,6 +14184,7 @@ export async function executeLivePosition(
     axisWindows:    realPosition.axisWindows,
     sizeMultiplier: realPosition.sizeMultiplier,
     relateRelationKeys: realPosition.relateRelationKeys,
+    relateTrials: realPosition.relateTrials,
     specialPositionPlan: specialPositionPlan || undefined,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,

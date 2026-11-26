@@ -232,7 +232,7 @@ export async function recordLiveSetOutcome(
   if (!outcome) return 0
   if (row.relateRelationKeys && !truthy(row.combinedPosCounts) && new Set(stringList(row.accumulatedSetKeys)).size <= 1)
     await recordRelateOutcome(connectionId, positionId, stringList(row.relateRelationKeys),
-    outcome.closedAt, outcome.pnlPct, true).catch(() => undefined)
+      outcome.closedAt, outcome.pnlPct, true, row.relateTrials).catch(() => undefined)
   const shares = liveOutcomeSetShares(row)
   if (shares.size === 0) return 0
   const legOutcomes = blockLegOutcomes(row)

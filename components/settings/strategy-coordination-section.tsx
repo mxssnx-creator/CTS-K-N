@@ -894,6 +894,8 @@ export function StrategyCoordinationSection({
                   ["lastN", "Recent closes", 60, 250, 1],
                   ["minTrades", "Minimum closes", 60, relate.lastN, 1],
                   ["minPF", "Minimum return PF", 1.01, 10, .01],
+                  ["recoveryMinTrades", "Minimum closes at the same loss step", 6, relate.lastN, 1],
+                  ["recoveryMaxDrawdown", "Maximum recovery drawdown fraction", 0, 1, .05],
                   ["maxMultiplier", "Maximum allocation multiple", 1, 8, .1],
                 ] as const).map(([key, label, min, max, step]) => <label key={key} className="grid gap-1 text-xs">
                   {label}<input className="w-full rounded border bg-background p-1.5" type="number" min={min} max={max} step={step}

@@ -1,3 +1,9 @@
+## 2026-11-26 Relate recovery qualification
+
+Work from the canonical checkout and continue on `codex/relate-relations-20261126` in draft PR #585. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T144533Z-relate-exec-rebuild-before`.
+
+Relate sizing now requires two chronological groups of same-step after-cost trials from the exact Set. Every contributing Overall relation supplies its own equivalent evidence. Each recorded position carries its entry-time trial receipts until an owned, unambiguous close. Paper and exchange histories remain separate. The focused settlement and sizing suite passed 21 tests. The change supplies no venue Exec PF evidence.
+
 ## 2026-11-26 — Relate loss progression and relation settings
 
 Canonical checkout `/workspace/CTS-K-N`, branch `codex/relate-relations-20261126`, based on PR #584 head `6ac7b285`. The pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T135027Z-relate-relations-before`. The containing GitHub review records the published revision.
