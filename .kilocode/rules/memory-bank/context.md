@@ -1,3 +1,7 @@
+## 2026-11-26 — Last-N stage validation
+
+The complete configured signed window supplies stage PF after costs. Each sign uses its own block, and settings support a Short/Last path without Long. Eligible exchange Sets retain exchange provenance when rows are unavailable. The focused stage and outcome suites passed 57 tests. Continue on `codex/relate-relations-20261126` in draft PR #585. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T152836Z-last-n-progression-before`. No venue or deployment state was measured.
+
 ## 2026-11-26 Relate recovery qualification
 
 Work from the canonical checkout and continue on `codex/relate-relations-20261126` in draft PR #585. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T144533Z-relate-exec-rebuild-before`.

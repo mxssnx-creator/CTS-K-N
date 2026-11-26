@@ -353,7 +353,12 @@ export async function getLiveSetWindowBatch(
 ): Promise<Map<string, PosWindowStats>> {
   const out = new Map<string, PosWindowStats>()
   const counts = knownCounts || await getLiveSetClosedCounts(connectionId, setKeys)
-  const eligible = [...counts.entries()].filter(([, count]) => count >= Math.max(1, minCloses))
+  const minimum = Math.max(1, minCloses)
+  const eligible: Array<[string, number]> = []
+  for (const setKey of new Set(setKeys)) {
+    const count = counts.get(setKey)
+    if (count !== undefined && count >= minimum) eligible.push([setKey, count])
+  }
   if (eligible.length === 0) return out
   const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks):window)))
   try {
@@ -371,7 +376,12 @@ export async function getLiveSetWindowBatch(
       })
     }
   } catch {
-    // Fall back to the general ring for this read.
+    // A transient read failure leaves this Set's venue evidence unavailable.
+  }
+  const empty = derivePosWindowStats([], winN, blocks)
+  for (const [setKey, count] of eligible) if (!out.has(setKey)) {
+    out.set(setKey, { ...empty, outcomeSource: "exchange", exchangeCloses: count,
+      ...(empty.blockDecision && { blockDecision: { ...empty.blockDecision, state: "unknown" } }) })
   }
   return out
 }

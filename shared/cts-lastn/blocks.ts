@@ -6,7 +6,8 @@ export type Polarity = 'positive' | 'negative';
 export interface BlockPolicy { long:number; short:number; minimal:number; shortPolarity:Polarity; minimalPolarity:Polarity }
 export const DEFAULT_BLOCK_POLICY: Readonly<BlockPolicy> = Object.freeze({long:20,short:10,minimal:3,shortPolarity:'positive',minimalPolarity:'positive'});
 export function checkBlockPolicy(p:BlockPolicy):void {
-  if(!p||![p.long,p.short,p.minimal].every(Number.isSafeInteger)||p.long<1||p.long>500||p.short<0||p.short>200||p.minimal<0||p.minimal>5||
+  if(!p||![p.long,p.short,p.minimal].every(Number.isSafeInteger)||p.long<0||p.long>500||p.short<0||p.short>200||p.minimal<0||p.minimal>5||
+    blockRequired(p)===0||
     !['positive','negative'].includes(p.shortPolarity)||!['positive','negative'].includes(p.minimalPolarity))throw new Error('Invalid disjoint Last-N policy');
 }
 export const blockRequired=(p:BlockPolicy)=>p.long+p.short+p.minimal;

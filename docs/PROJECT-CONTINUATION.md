@@ -1,3 +1,9 @@
+## 2026-11-26 — Independent Last-N stage validation
+
+Configured signed blocks now use the complete settled window for the stage's PF and drawdown. Long can be omitted when another block is configured. Short counts up to 30 are available in Settings. Each signed condition still uses its own nonoverlapping block. A Set that has reached the venue sample threshold keeps an unavailable exchange window if its rows cannot be read, so paper evidence cannot substitute for an eligible venue ledger.
+
+The focused stage, settlement, and coordinator reuse suites passed 57 checks before publication. This is source and offline verification. No exchange execution PF or live deployment was measured. The pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T152836Z-last-n-progression-before`. Continue on draft PR #585.
+
 ## 2026-11-26 Relate recovery qualification
 
 Relate evaluates the exact Set and each enabled Overall relation separately. It records the proposed loss step and volume at entry. Each relation needs its own earlier and later groups of closed, after-cost trials at that step. Each group must clear the configured unit-return PF, size-weighted PF and drawdown limits. Missing evidence holds the increase at base size. The twelve-step default, independent volume factors and tighter-stop eligibility are retained.

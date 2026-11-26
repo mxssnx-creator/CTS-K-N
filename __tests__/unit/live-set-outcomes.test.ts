@@ -48,6 +48,16 @@ function realRow(connectionId: string, id: string, pnl: number, overrides: Recor
 
 beforeEach(() => clearLiveSetOutcomeCache())
 
+test("an eligible Set with missing venue rows exposes unavailable exchange evidence", async () => {
+  const connectionId = uniqueConnection("missing-venue")
+  const key = "owned"
+  const blocks = {long: 0, short: 4, minimal: 1, shortPolarity: "positive" as const, minimalPolarity: "negative" as const}
+  const states = await getLiveSetWindowBatch(connectionId, [key], 5, 4, new Map([[key, 4]]), blocks)
+  expect(states.get(key)).toMatchObject({
+    count: 0, outcomeSource: "exchange", exchangeCloses: 4, blockDecision: {state: "unknown"},
+  })
+})
+
 test("Relate uses only earlier settled, unambiguous exchange outcomes from the requested relation", async () => {
   const connectionId = uniqueConnection("relate")
   const policy = normalizeRelateSettings({ enabled: true, minTrades: 60 })

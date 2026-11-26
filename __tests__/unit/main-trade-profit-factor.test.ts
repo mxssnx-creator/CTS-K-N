@@ -121,14 +121,23 @@ describe("Main Trade PositionCost-relative PF ratios", () => {
     expect(stats.positionCostRatioCount).toBe(2)
   })
 
-  test("disjoint signed blocks preserve long PF and require all 33 own settled closes", () => {
+  test("disjoint signed blocks require all 33 own settled closes and report their complete PF", () => {
     const blocks={long:20,short:10,minimal:3,shortPolarity:"negative" as const,minimalPolarity:"negative" as const}
     const records=[...Array(13).fill("-100|30|1|-1|0.1"),...Array(20).fill("200|40|1|2|0.1")]
     const stats=derivePosWindowStats(records,20,blocks)
-    expect(stats.count).toBe(33);expect(stats.profitFactor).toBe(99);expect(stats.averagePnlPct).toBe(2)
+    expect(stats.count).toBe(33);expect(stats.profitFactor).toBeCloseTo(40/13);expect(stats.averagePnlPct).toBeCloseTo(27/33)
     expect(stats.blockDecision?.state).toBe("qualified");expect(stats.hasSignal).toBe(true)
     expect(derivePosWindowStats(records.slice(1),20,blocks).blockDecision?.state).toBe("insufficient")
     expect(derivePosWindowStats(["-1|0|1||",...records.slice(1)],20,blocks).blockDecision?.state).toBe("unknown")
+  })
+
+  test("a Short and Last path can omit Long and still requires positive full return PF", () => {
+    const blocks={long:0,short:4,minimal:1,shortPolarity:"negative" as const,minimalPolarity:"positive" as const}
+    const rows=(last:number)=>[last,-.2,-.2,-.2,-.2].map(p=>`${p}|0|1|${p}|0.1`)
+    const losing=derivePosWindowStats(rows(.4),5,blocks)
+    expect(losing.profitFactor).toBeCloseTo(.5)
+    expect(losing.blockDecision?.state).toBe("failed")
+    expect(derivePosWindowStats(rows(1.2),5,blocks).blockDecision?.state).toBe("qualified")
   })
 
   test("fees already included in realised returns never enter the PF denominator again", () => {

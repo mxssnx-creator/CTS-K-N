@@ -662,8 +662,13 @@ export function derivePosWindowStats(records: string[], window: number, blocks?:
     const required=blockRequired(blocks),selected=(records??[]).slice(0,required);
     const values=selected.map(row=>{const parts=row.split("|");return parts.length>=5&&parts[3]!==""&&Number.isFinite(Number(parts[3]))?Number(parts[3]):null});
     const decision=evaluateBlocks(blockPrefix(values,required),blocks,1.000001);
-    const primary=derivePosWindowStats(selected.slice(blocks.minimal+blocks.short),blocks.long);
-    return {...primary,count:decision.count,hasSignal:decision.state==="qualified",blockDecision:{state:decision.state,key:decision.key,required,available:decision.count}};
+    const aggregate=derivePosWindowStats(selected,required);
+    let state=decision.state;
+    if(state==="qualified"){
+      if(aggregate.count!==required || !Number.isFinite(aggregate.profitFactor))state="unknown";
+      else if(aggregate.profitFactor<1.000001)state="failed";
+    }
+    return {...aggregate,count:decision.count,hasSignal:state==="qualified",blockDecision:{state,key:decision.key,required,available:decision.count}};
   }
   if (!records || records.length === 0) return EMPTY_WINDOW
   // records arrive newest-first (lpush head).
