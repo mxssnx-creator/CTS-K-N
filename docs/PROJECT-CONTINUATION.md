@@ -1,3 +1,23 @@
+## 2026-11-26 — bounded strategy-stage reads and reuse
+
+Continued draft PR #584 on `codex/trailing-replay-20261122` from `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Strategy passes skip the active-indication read when admission is already blocked. Exact Set counts use bounded Redis HMGETs and closed-position context reads a six-field projection. Concurrent symbols share a pending context refresh. A stage snapshot is reusable only when compact Live inputs were retained, and changes to settings, relevant indication fields or the exact strategy ledger invalidate reuse.
+
+The native Redis benchmark preserved all checked outputs and reduced median latency for Set counts, candidate history and position context. The 32-symbol trailing and three-symbol DCA replays replicated the previous configuration results. No candidate met its promotion gates. The 70-symbol paper fixture reconciled all 140 positions. See [strategy stage verification](verification/strategy-stage-performance-20261126.md) for benchmarks, production-build paper soak results and remaining gates.
+
+The x02 venue connection timed out before authenticated preflight. The earlier eight-cycle virtual-funds run belongs to the preceding revision. The containing PR records the published revision and checks. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T120458Z-before-strategy-stage-performance`.
+
+## 2026-11-26 — exact trailing update isolation and 32-symbol replay
+
+Continued PR #584 at `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. Exact trailing sync rejects missing, stale and unowned updates under the same lock used for applying venue protection. The x02 harness checks for account changes before authenticated writes and retains read-only owned settlement evidence when the strict final account gate fails.
+
+The 32-symbol replay found no trailing configuration that met its after-cost qualification requirements. A separate 15,552-configuration BCH, XRP and SOL DCA matrix found no setting that cleared both the PF and drawdown gates. See `docs/verification/trailing-continuation-20261126.md` for the dates, prior-settings comparison, full regression counts and reproduction commands.
+
+Eight x02 virtual-funds cycles restored the account's position and open-order baseline. The final read-only audit reconciled all 24 fills and all 64 terminal order records after correcting the lookup-pressure failure. Raw account evidence stays out of the repository.
+
+## 2026-11-22 — exact trailing recovery and verification
+
+Recovered canonical source from GitHub `main` at `794ddcd5d` using the verified source checkpoint recorded in the memory bank. The exact initial stop now survives Base propagation and passes through Live preflight independently from the trailing gap. The tested native ratchet cannot replace a tighter initial stop. The longer replay and X02 results are in `docs/verification/trailing-walkforward-20261122.md`. The replay did not qualify a default change. After retrying preflight, four X02 cycles finished flat with complete ratchet proof and exact settlement matches for all 12 market fills. The shared account baseline gate did not pass.
+
 ## Current continuation — 2026-11-18 — Low-Range, Relate and trailing
 
 GitHub PR #578 connects the Common Low-Range indications to an independent strategy range, adds opt-in Relate sizing from the exact Set's prior signed settlements, and adds a fixed entry-distance option to the general trailing matrix. The existing dynamic peak option remains the default. Settings changes reload the progression graph and preserve the trailing distance recorded on existing positions. The canonical source was restored from published main `dbfe9ac2beb4d3d72b361adb05ca5e11502b9677`, with recovery and test details in `.kilocode/rules/memory-bank/context.md`.

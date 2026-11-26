@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { classifyVstSoakExternalProtectionOrder, normalizeVstSoakOrderId } from "@/lib/bingx-vst-soak-audit"
+import { classifyVstSoakExternalProtectionOrder, isVstSoakTerminalOrderStatus as terminalStatus, normalizeVstSoakOrderId } from "@/lib/bingx-vst-soak-audit"
 import { getRuntimeMaintenanceState } from "@/lib/runtime-maintenance"
 import { isLiveOrderConnectionAllowed } from "@/lib/real-trade-gates"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
@@ -40,9 +40,6 @@ const MONITOR_INTERVAL_MS = 15_000
 // prevents an explicit short smoke profile from generating valid work that is
 // guaranteed to overrun its requested duration.
 const MIN_LIVE_CYCLE_WINDOW_MS = 60_000
-// BingX documents a two-request-per-second IP limit for the exact order query.
-// Keep this below that cap even when the final audit has many completed cycles.
-const ORDER_DETAIL_AUDIT_SPACING_MS = 600
 const MAX_VST_SOAK_SPREAD_BPS = 75
 // The soak is a lifecycle/control-order proof, not a sizing experiment.
 // Keep the complete owned position (entry + one accumulation) below a
@@ -147,6 +144,8 @@ interface CycleReport {
       securityReplacementCancelled: boolean
       takeProfitRetained: boolean
       staleUpdateRejected: boolean
+      exactBracketRetained: boolean
+      incompleteUpdatesRejected: boolean
     }
   }
   close?: ManagedOrderResult
@@ -267,9 +266,9 @@ function accountStateDifference(
   }
 }
 
-function terminalStatus(status: unknown): boolean {
-  const normalized = String(status || "").toLowerCase().replace(/[^a-z]/g, "")
-  return normalized.includes("filled") || normalized.includes("cancel") || normalized.includes("reject")
+function accountStateChanged(difference: ReturnType<typeof accountStateDifference>): boolean {
+  return difference.positionDifferences.length > 0 ||
+    difference.missingBaselineOrderIds.length > 0 || difference.unexpectedOrderIds.length > 0
 }
 
 function safeClientId(prefix: string, runSuffix: string, index: number): string {
@@ -1050,11 +1049,9 @@ async function main(): Promise<void> {
       }
       if (initialAccount) {
         const baselineDifference = accountStateDifference(initialAccount, finalSnapshot, soakSymbols)
-        if (
-          baselineDifference.positionDifferences.length
-          || baselineDifference.missingBaselineOrderIds.length
-          || baselineDifference.unexpectedOrderIds.length
-        ) cleanupErrors.push(`pre-existing account baseline changed during cleanup: ${JSON.stringify(baselineDifference)}`)
+        if (accountStateChanged(baselineDifference)) {
+          cleanupErrors.push(`pre-existing account baseline changed during cleanup: ${JSON.stringify(baselineDifference)}`)
+        }
       }
     } catch (error) {
       cleanupErrors.push(`final cleanup snapshot: ${errorText(error)}`)
@@ -1538,6 +1535,12 @@ async function main(): Promise<void> {
     }
 
     assertSoakHostGuard()
+    const beforeWrites = await accountSnapshot()
+    const preWriteDifference = accountStateDifference(initialAccount, beforeWrites, [])
+    report.preflight.accountStableBeforeWrites = !accountStateChanged(preWriteDifference)
+    if (!report.preflight.accountStableBeforeWrites) {
+      throw new Error("The shared Prod-VST account changed during preflight")
+    }
     await assertSharedAccountOrderHeadroom("before_position_mode")
     const positionMode = await connector.setPositionMode(true)
     if (!positionMode.success) throw new Error(`Could not enable hedge mode: ${positionMode.error || "unknown"}`)
@@ -1787,7 +1790,7 @@ async function main(): Promise<void> {
      *   1. persists a live position,
      *   2. cancels the previously armed stop only after it is safe to replace,
      *   3. creates and observes the tighter replacement on BingX VST, and
-     *   4. refuses a late, less-protective (stale) trailing value.
+     *   4. refuses late, unarmed and unowned updates to an exact trailing row.
      *
      * No test position is retained: row SL/TP orders are observed and removed,
      * the aggregate security stop remains armed through the reduce-only close,
@@ -1870,6 +1873,14 @@ async function main(): Promise<void> {
         takeProfit: takeProfitPct,
         assignedStopLoss: stopLossPct,
         assignedTakeProfit: takeProfitPct,
+        trailingProfile: {
+          mode: direction === "long" ? "fixed" : "dynamic",
+          gapBasis: direction === "long" ? "entry" : "peak",
+          initialStopLossPct: stopLossPct,
+          startRatio: 0.3,
+          stopRatio: 0.01,
+          stepRatio: 0.005,
+        },
         protectionArmedQuantity: 0,
         exchangeData: {
           entryPrice: weightedEntry,
@@ -1951,18 +1962,19 @@ async function main(): Promise<void> {
         // honours BingX's one-second same-order mutation window; the bounded
         // reconciliation loop below observes that deferred replacement.
         await sleep(260)
-        await liveStageModule.syncLiveFromPseudo(connectionId, {
-          id: `pseudo-${positionId}`,
+        const pseudo = {
           system_tracking_id: trackingId,
           strategy_set_key: setKey,
           symbol,
           side: direction,
           direction,
+          entry_price: weightedEntry,
           stoploss_pct: stopLossPct,
           takeprofit_pct: takeProfitPct,
           trailing_active: "1",
           trailing_stop_price: String(ratchetedStopPrice),
-        }, connector)
+        }
+        await liveStageModule.syncLiveFromPseudo(connectionId, { ...pseudo, id: `pseudo-${positionId}` }, connector)
         let afterRatchet: any = null
         let stopReplaced = false
         let securityStopReplaced = false
@@ -2002,6 +2014,10 @@ async function main(): Promise<void> {
             `takeProfitRetained=${takeProfitRetained}, ratchetPersisted=${ratchetPersisted})`,
           )
         }
+        const exactBracketRetained = afterRatchet?.trailingProfile?.initialStopLossPct === stopLossPct &&
+          afterRatchet?.stopLoss === initiallyReconciled?.stopLoss &&
+          afterRatchet?.takeProfit === initiallyReconciled?.takeProfit
+        if (!exactBracketRetained) throw new Error("The ratchet changed the exact trailing bracket")
         trackControlOrder(replacementStopOrderId, symbol, "trailing-ratcheted-cancelled")
         trackControlOrder(replacementSecurityStopOrderId, symbol, "security-ratcheted-retained")
         const [
@@ -2044,26 +2060,30 @@ async function main(): Promise<void> {
         // durable monotonic guard; verify both externally by requiring the
         // existing order id and stored stop to remain unchanged.
         await liveStageModule.syncLiveFromPseudo(connectionId, {
+          ...pseudo,
           id: `pseudo-stale-${positionId}`,
-          system_tracking_id: trackingId,
-          strategy_set_key: setKey,
-          symbol,
-          side: direction,
-          direction,
-          stoploss_pct: stopLossPct,
-          takeprofit_pct: takeProfitPct,
-          trailing_active: "1",
           trailing_stop_price: String(staleStopPrice),
         }, connector)
-        const afterStaleUpdate = (await liveStageModule.getLivePositions(connectionId))
-          .find((position: any) => position.id === positionId)
-        const staleUpdateRejected =
-          String(afterStaleUpdate?.stopLossOrderId || "") === replacementStopOrderId &&
-          String(afterStaleUpdate?.securityStopOrderId || "") === replacementSecurityStopOrderId &&
-          Math.abs(Number(afterStaleUpdate?.trailingStopPrice || 0) - ratchetedStopPrice) <=
-            Math.max(1e-8, Math.abs(ratchetedStopPrice) * 1e-8)
+        const controlsRetained = async () => {
+          const row = (await liveStageModule.getLivePositions(connectionId)).find(({ id }) => id === positionId)
+          return row?.stopLossOrderId === replacementStopOrderId &&
+            row.securityStopOrderId === replacementSecurityStopOrderId &&
+            row.takeProfitOrderId === takeProfitOrderId && row.trailingActive === true &&
+            Math.abs(Number(row.trailingStopPrice || 0) - ratchetedStopPrice) <=
+              Math.max(1e-8, Math.abs(ratchetedStopPrice) * 1e-8)
+        }
+        const staleUpdateRejected = await controlsRetained()
         if (!staleUpdateRejected) {
           throw new Error("A stale pseudo trailing update loosened the live-stage stop")
+        }
+        const incompleteTicks = [
+          { ...pseudo, trailing_active: "0", trailing_stop_price: undefined },
+          { ...pseudo, trailing_stop_price: "invalid" },
+          { ...pseudo, strategy_set_key: undefined, trailing_stop_price: String(weightedEntry) },
+        ]
+        for (const tick of incompleteTicks) {
+          await liveStageModule.syncLiveFromPseudo(connectionId, tick, connector)
+          if (!await controlsRetained()) throw new Error("An incomplete pseudo tick changed the exact trailing stop")
         }
 
         const [replacementCancellation, takeProfitCancellation] = await Promise.all([
@@ -2118,6 +2138,8 @@ async function main(): Promise<void> {
             securityReplacementCancelled: false,
             takeProfitRetained,
             staleUpdateRejected,
+            exactBracketRetained,
+            incompleteUpdatesRejected: true,
           },
         }
       } finally {
@@ -2576,16 +2598,15 @@ async function main(): Promise<void> {
     const baselineDifference = accountStateDifference(initialAccount, finalAccount, soakSymbols)
     report.account.flatAfter = residualPositions.length === 0 && residualOrders.length === 0
     report.account.selectedSymbolsFlat = report.account.flatAfter
-    report.account.baselineRestored = baselineDifference.positionDifferences.length === 0
-      && baselineDifference.missingBaselineOrderIds.length === 0
-      && baselineDifference.unexpectedOrderIds.length === 0
+    report.account.baselineRestored = !accountStateChanged(baselineDifference)
     report.account.baselineDifference = baselineDifference
     report.account.finalPositions = finalAccount.positions.length
     report.account.finalOpenOrders = finalAccount.orders.length
     report.account.residualSoakPositions = residualPositions.map(sanitizedPosition)
     report.account.residualSoakOpenOrderIds = residualOrders.map(orderIdOf).filter(Boolean)
     if (!report.account.selectedSymbolsFlat || !report.account.baselineRestored) {
-      throw new Error(
+      // Record a failed account gate without losing the read-only audit of owned settlements.
+      report.errors.push(
         `Final soak state is not restored (positions=${residualPositions.length}, orders=${residualOrders.length}, ` +
         `baselineRestored=${report.account.baselineRestored})`,
       )
@@ -2643,7 +2664,9 @@ async function main(): Promise<void> {
         proof?.replacementCancelled === true &&
         proof?.securityReplacementCancelled === true &&
         proof?.takeProfitRetained === true &&
-        proof?.staleUpdateRejected === true,
+        proof?.staleUpdateRejected === true &&
+        proof?.exactBracketRetained === true &&
+        proof?.incompleteUpdatesRejected === true,
       )
       report.coverageMatrix.trailingUpdate = {
         enabled: true,
@@ -2657,62 +2680,21 @@ async function main(): Promise<void> {
 
     const trackedVenueEntries = [...trackedVenueOrderIds.entries()]
     const allVenueIds = trackedVenueEntries.map(([orderId]) => orderId)
-    report.venueHistory.uniqueOrderIds = new Set(allVenueIds).size === allVenueIds.length
-    const detailByOrderId = new Map<string, { verified: boolean; status: string; error?: string }>()
-    for (let index = 0; index < trackedVenueEntries.length; index++) {
-      const [orderId, metadata] = trackedVenueEntries[index]
-      const detail = await connector.getOrderDetails(metadata.symbol, orderId)
-      const order = detail?.order
-      const status = String(order?.status ?? order?.orderStatus ?? "")
-      const verified = detail?.success === true && orderIdOf(order) === orderId && terminalStatus(status)
-      detailByOrderId.set(orderId, {
-        verified,
-        status,
-        ...(verified ? {} : { error: detail?.error || "missing_or_nonterminal_order_detail" }),
-      })
-      if (index + 1 < trackedVenueEntries.length) await sleep(ORDER_DETAIL_AUDIT_SPACING_MS)
+    const bySymbol = new Map(soakSymbols.map((symbol) => [symbol, trackedVenueEntries
+      .filter(([, metadata]) => metadata.symbol === symbol)
+      .map(([orderId]) => orderId)]))
+    const history = await auditModule.auditVstSoakTerminalHistory(connector, bySymbol, sleep)
+    const { listMissingOrderIds, missingOrderIds: missingDetailIds } = history
+    report.venueHistory = {
+      ...history.bySymbol,
+      uniqueOrderIds: new Set(allVenueIds).size === allVenueIds.length,
+      listMissingOrderIds,
+      missingOrderIds: missingDetailIds,
+      exactLookupCount: history.lookupCount,
     }
-    const listMissingOrderIds: string[] = []
-    const missingDetailIds: string[] = []
-    for (const symbol of soakSymbols) {
-      // Read-only audit call: retry BingX's transient "109500 network issue"
-      // a few times before failing the run.
-      let snapshot = await connector.getOrderHistorySnapshot(symbol, 50)
-      for (let attempt = 1; !snapshot.ok && /109500|network issue/i.test(String(snapshot.error || "")) && attempt <= 3; attempt++) {
-        await sleep(2_000 * attempt)
-        snapshot = await connector.getOrderHistorySnapshot(symbol, 50)
-      }
-      if (!snapshot.ok) throw new Error(`Order history failed for ${symbol}: ${snapshot.error || "unknown"}`)
-      const historyIds = new Set(snapshot.rows.map((row: any) => orderIdOf(row)).filter(Boolean))
-      const expected = trackedVenueEntries
-        .filter(([, metadata]) => metadata.symbol === symbol)
-        .map(([orderId]) => orderId)
-      const listMissing = expected.filter((orderId) => !historyIds.has(orderId))
-      const detailVerified = expected.filter((orderId) => detailByOrderId.get(orderId)?.verified)
-      const detailMissing = expected.filter((orderId) => !detailByOrderId.get(orderId)?.verified)
-      listMissingOrderIds.push(...listMissing)
-      missingDetailIds.push(...detailMissing)
-      report.venueHistory[symbol] = {
-        expectedOrderIds: expected,
-        observedExpectedOrderIds: expected.filter((orderId) => historyIds.has(orderId)),
-        // A busy account can return an older limited history page. Preserve
-        // that observation, but rely on the exact per-ID endpoint for the
-        // correctness gate below.
-        listMissingOrderIds: listMissing,
-        detailVerifiedOrderIds: detailVerified,
-        detailMissingOrderIds: detailMissing,
-        detailStatuses: Object.fromEntries(expected.map((orderId) => [
-          orderId,
-          detailByOrderId.get(orderId)?.status || "",
-        ])),
-        returnedRows: snapshot.rows.length,
-      }
-    }
-    report.venueHistory.listMissingOrderIds = listMissingOrderIds
-    report.venueHistory.missingOrderIds = missingDetailIds
     if (!report.venueHistory.uniqueOrderIds) throw new Error("Duplicate venue order IDs were observed")
     if (missingDetailIds.length) {
-      throw new Error(`Authoritative order detail is missing created order IDs: ${missingDetailIds.join(", ")}`)
+      report.errors.push(`Authoritative terminal history is missing ${missingDetailIds.length} managed orders`)
     }
 
     // PnL is authoritative only when it comes from the venue's exact fill
@@ -2831,7 +2813,7 @@ async function main(): Promise<void> {
       missingHistoryIds: missingDetailIds,
       venueSettlement: settlementMismatches,
     }
-    report.cleanupComplete = true
+    report.cleanupComplete = report.account.selectedSymbolsFlat && report.account.baselineRestored
     report.success = network.every((row) => !row.blocked) && report.errors.length === 0
   } catch (error) {
     report.errors.push(errorText(error))

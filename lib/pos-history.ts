@@ -1627,12 +1627,19 @@ async function yieldLedgerBatch(): Promise<void> {
 export async function getStrategySetLedgerBatch(
   connectionId: string,
   setKeys: string[],
+  fields: readonly (keyof StrategySetLedgerSnapshot)[] = ["entries", "active", "closed"],
 ): Promise<StrategySetLedgerSnapshot> {
   const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
   if (unique.length === 0) return { entries: {}, active: {}, closed: {} }
   try {
     const client = getRedisClient()
     const snapshot: StrategySetLedgerSnapshot = { entries: {}, active: {}, closed: {} }
+    const hashKeys = {
+      entries: STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId),
+      active: STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId),
+      closed: STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId),
+    }
+    const packed = typeof client.hmget === "function"
     // Exhaustive callers may provide tens of thousands of exact Set keys.
     // Process every key, but keep each Redis MULTI bounded so completeness
     // never turns into an unbounded command buffer or response allocation.
@@ -1640,20 +1647,19 @@ export async function getStrategySetLedgerBatch(
     for (let start = 0; start < unique.length; start += batchSize) {
       const batch = unique.slice(start, start + batchSize)
       const pipeline = client.multi()
-      for (const setKey of batch) {
-        pipeline.hget(STRATEGY_SET_ENTRY_COUNTS_KEY(connectionId), setKey)
-        pipeline.hget(STRATEGY_SET_ACTIVE_ENTRY_COUNTS_KEY(connectionId), setKey)
-        pipeline.hget(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId), setKey)
+      for (const field of fields) {
+        const key = hashKeys[field]
+        if (packed) pipeline.hmget(key, ...batch)
+        else for (const setKey of batch) pipeline.hget(key, setKey)
       }
       const results = await pipeline.exec()
-      batch.forEach((setKey, index) => {
-        const offset = index * 3
-        const entries = Number(pipelineValue(results?.[offset])) || 0
-        const active = Number(pipelineValue(results?.[offset + 1])) || 0
-        const closed = Number(pipelineValue(results?.[offset + 2])) || 0
-        if (entries > 0) snapshot.entries[setKey] = entries
-        if (active > 0) snapshot.active[setKey] = active
-        if (closed > 0) snapshot.closed[setKey] = closed
+      fields.forEach((field, column) => {
+        const values = packed ? results?.[column] : undefined
+        for (let index = 0; index < batch.length; index++) {
+          const raw = packed ? values?.[index] : pipelineValue(results?.[column * batch.length + index])
+          const count = Number(raw) || 0
+          if (count > 0) snapshot[field][batch[index]] = count
+        }
       })
       if (start + batchSize < unique.length) await yieldLedgerBatch()
     }
@@ -1709,17 +1715,35 @@ export async function getActiveStrategySetKeys(connectionId: string): Promise<Se
  */
 export async function getStrategySetClosedResultKeys(
   connectionId: string,
+  candidates?: readonly string[],
 ): Promise<Set<string> | null> {
   try {
     const client = getRedisClient()
+    const indexKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
+    const countsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
+    if (candidates) {
+      const keys = new Set<string>()
+      const [indexedCount, countedFields] = await Promise.all([client.scard(indexKey), client.hlen(countsKey)])
+      if (indexedCount !== countedFields) return null
+      if (indexedCount === 0) return keys
+      for (let start = 0; start < candidates.length; start += 500) {
+        const batch = candidates.slice(start, start + 500)
+        const pipeline = client.multi()
+        for (const key of batch) pipeline.sismember(indexKey, key)
+        const results = await pipeline.exec()
+        for (let index = 0; index < batch.length; index++) {
+          const present = pipelineValue(results?.[index])
+          if (present === true || present === 1) keys.add(batch[index])
+          else if (present !== false && present !== 0) return null
+        }
+        if (start + batch.length < candidates.length) await yieldLedgerBatch()
+      }
+      return keys
+    }
     const [members, indexedCount, countedFields] = await Promise.all([
-      scanRedisSetMembers(
-        client,
-        STRATEGY_CLOSED_SET_KEYS_KEY(connectionId),
-        { count: 250 },
-      ),
-      client.scard(STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)),
-      client.hlen(STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)),
+      scanRedisSetMembers(client, indexKey, { count: 250 }),
+      client.scard(indexKey),
+      client.hlen(countsKey),
     ])
     const keys = new Set((members || []).map(String).filter(Boolean))
     // A mismatch can only be a concurrent/legacy/incomplete index. Failing

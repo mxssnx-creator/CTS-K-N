@@ -31,6 +31,7 @@ BINGX_STRESS_TICKER_ROUNDS	test-or-operator-tool	no	no	1	scripts/stress-bingx-pu
 BINGX_STRESS_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_VST_ORIGIN	application-runtime	no	yes	5	.env.example,__tests__/unit/bingx-vst-environment.test.ts,lib/bingx-environment.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_REAUDIT_REPORT	test-or-operator-tool	no	no	1	scripts/audit-bingx-vst-soak-settlements.ts
+BINGX_VST_REAUDIT_TERMINAL_HISTORY	test-or-operator-tool	no	no	1	scripts/audit-bingx-vst-soak-settlements.ts
 BINGX_VST_SOAK_ALLOW_SHORT	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CONFIRM	application-runtime	no	no	4	__tests__/integration/live-order-service.test.ts,__tests__/unit/runtime-maintenance.test.ts,lib/live-order-service.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CYCLES	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
@@ -87,7 +88,7 @@ CTS_ACCEPT_LEGACY_ORDER_PREFIX	application-runtime	no	no	3	__tests__/unit/foreig
 CTS_BACKUP_RETENTION_COUNT	test-or-operator-tool	no	yes	1	.env.example
 CTS_BACKUP_ROOT	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_BASE_REQUIRE_MEASURED_HISTORY	application-runtime	no	no	3	__tests__/unit/validate-only-measured-sets.test.ts,lib/strategy-coordinator.ts,scripts/simulate-last-6h.ts
-CTS_BASELINE_CANDLES	test-or-operator-tool	no	no	3	scripts/baseline/fetch-candles-1m.mjs,scripts/baseline/simulate-12h-hourly.ts,scripts/baseline/simulate-24h-portfolio.ts
+CTS_BASELINE_CANDLES	test-or-operator-tool	no	no	4	scripts/baseline/fetch-candles-1m.mjs,scripts/baseline/simulate-12h-hourly.ts,scripts/baseline/simulate-24h-portfolio.ts,scripts/regression/price-distance-grid-replay.ts
 CTS_BINGX_RATE_LIMIT_CONCURRENCY	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPM	test-or-operator-tool	no	yes	1	.env.example
 CTS_BINGX_RATE_LIMIT_RPS	test-or-operator-tool	no	yes	1	.env.example
@@ -109,6 +110,11 @@ CTS_DIRECT_TRADE_SUPERVISOR_POLL_MS	test-or-operator-tool	no	no	1	scripts/direct
 CTS_DIRECT_TRADE_WORKER_HEAP_MB	test-or-operator-tool	no	no	1	scripts/direct-trade-supervisor.mjs
 CTS_ENGINE_OWNER_WORKER	application-runtime	no	no	1	lib/trade-engine.ts
 CTS_EXCHANGE_RATE_LIMIT_SHARE	test-or-operator-tool	no	yes	1	.env.example
+CTS_GRID_HOLD_MINUTES	test-or-operator-tool	no	no	1	scripts/regression/price-distance-grid-replay.ts
+CTS_GRID_OUT_DIR	test-or-operator-tool	no	no	1	scripts/regression/price-distance-grid-replay.ts
+CTS_GRID_SELECTION_HOURS	test-or-operator-tool	no	no	1	scripts/regression/price-distance-grid-replay.ts
+CTS_GRID_SYMBOLS	test-or-operator-tool	no	no	1	scripts/regression/price-distance-grid-replay.ts
+CTS_GRID_VALIDATION_HOURS	test-or-operator-tool	no	no	1	scripts/regression/price-distance-grid-replay.ts
 CTS_INLINE_REDIS_PERSISTENT_VOLUME	application-runtime	no	yes	4	.env.example,lib/production-readiness.ts,lib/real-trade-gates.ts,scripts/kilo-deploy.mjs
 CTS_INSTALL_SEARCH_ROOT	test-or-operator-tool	no	no	1	__tests__/unit/install-deployment-contract.test.ts
 CTS_JOURNAL_MAX_USE	test-or-operator-tool	no	yes	1	.env.example

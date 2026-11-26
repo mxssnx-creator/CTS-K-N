@@ -1,6 +1,7 @@
 import { getRedisClient } from "@/lib/redis-db"
 import {
   getStrategySetClosedResultKeys,
+  getStrategySetLedgerBatch,
   getStrategySetLedgerSnapshot,
   getStrategySetWindowBatch,
   getStrategyVariantOutcomeStats,
@@ -110,6 +111,7 @@ describe("confirmed strategy-position entry ledger", () => {
       recentPnls: [2.5],
     })
     await expect(getStrategySetClosedResultKeys(connectionId)).resolves.toEqual(new Set([setKey]))
+    await expect(getStrategySetClosedResultKeys(connectionId, ["unclosed", setKey])).resolves.toEqual(new Set([setKey]))
     expect(await getRedisClient().hgetall(`strategy_ledger_totals:${connectionId}`)).toMatchObject({
       exact_entries: "1",
       axis_entries: "1",
@@ -150,7 +152,32 @@ describe("confirmed strategy-position entry ledger", () => {
     const client = getRedisClient()
     await client.hset(`strategy_set_closed_counts:${connectionId}`, "legacy-unindexed-set", "1")
     await expect(getStrategySetClosedResultKeys(connectionId)).resolves.toBeNull()
+    await expect(getStrategySetClosedResultKeys(connectionId, ["legacy-unindexed-set"])).resolves.toBeNull()
     await client.hdel(`strategy_set_closed_counts:${connectionId}`, "legacy-unindexed-set")
+  })
+
+  test("packed ledger counts preserve sparse and duplicate keys across batch boundaries", async () => {
+    const id = `${connectionId}-projected`
+    const client = getRedisClient()
+    const entries = `strategy_set_entry_counts:${id}`
+    const active = `strategy_set_active_entry_counts:${id}`
+    const closed = `strategy_set_closed_counts:${id}`
+    const rows = Array.from({ length: 502 }, (_, index) => `set-${index}`)
+    await Promise.all([
+      client.hset(entries, { "set-0": "4", "set-501": "9" }),
+      client.hset(active, "set-0", "2"),
+      client.hset(closed, { "set-500": "3", "set-501": "8" }),
+    ])
+    try {
+      await expect(getStrategySetLedgerBatch(id, [...rows, "set-0", ""])).resolves.toEqual({
+        entries: { "set-0": 4, "set-501": 9 }, active: { "set-0": 2 }, closed: { "set-500": 3, "set-501": 8 },
+      })
+      await expect(getStrategySetLedgerBatch(id, rows, ["closed"])).resolves.toEqual({
+        entries: {}, active: {}, closed: { "set-500": 3, "set-501": 8 },
+      })
+    } finally {
+      await client.del(entries, active, closed)
+    }
   })
 
   test("keeps Default and Trailing realised PF/DDT in independent outcome ledgers", async () => {

@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve, sep } from "node:path"
+import { auditVstSoakTerminalHistory } from "@/lib/bingx-vst-soak-audit"
 
 const VST_ORIGIN = "https://open-api-vst.bingx.com"
 
@@ -55,9 +56,10 @@ async function main(): Promise<void> {
   let networkRequests = 0
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? String(input) : input.url)
-    if (url.protocol !== "https:" || url.origin !== VST_ORIGIN) {
+    const method = String(init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase()
+    if (method !== "GET" || url.protocol !== "https:" || url.origin !== VST_ORIGIN) {
       blockedRequests++
-      throw new Error(`Settlement reaudit blocked non-VST origin ${url.origin}`)
+      throw new Error(`Settlement reaudit blocked ${method} ${url.origin}`)
     }
     networkRequests++
     return nativeFetch(input as any, init)
@@ -125,10 +127,24 @@ async function main(): Promise<void> {
       netRealizedPnl: pathRows.reduce((total, row) => total + row.netRealizedPnl, 0),
     }
   })
+  let terminalHistory: Awaited<ReturnType<typeof auditVstSoakTerminalHistory>> | undefined
+  if (process.env.BINGX_VST_REAUDIT_TERMINAL_HISTORY === "1") {
+    const symbols = new Set<string>(source.cycles.map((cycle: { symbol: string }) => cycle.symbol))
+    const expected = new Map<string, string[]>()
+    for (const symbol of symbols) {
+      const ids = source.venueHistory?.[symbol]?.expectedOrderIds
+      if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === "string" && id.length > 0)) {
+        throw new Error("The soak did not retain all expected order-history IDs for reaudit")
+      }
+      expected.set(symbol, ids)
+    }
+    terminalHistory = await auditVstSoakTerminalHistory(connector, expected, (ms) => new Promise(resolveDelay => setTimeout(resolveDelay, ms)))
+  }
   const success = blockedRequests === 0
     && missingOrderIds.length === 0
     && mismatches.length === 0
     && rows.length === executions.length
+    && !terminalHistory?.missingOrderIds.length
   const output = {
     schemaVersion: 1,
     success,
@@ -153,6 +169,7 @@ async function main(): Promise<void> {
     },
     paths,
     orders: rows,
+    terminalHistory,
     network: { exactOrigin: VST_ORIGIN, requests: networkRequests, blockedRequests },
     startedAt: new Date(startedAt).toISOString(),
     finishedAt: new Date().toISOString(),
@@ -166,7 +183,7 @@ async function main(): Promise<void> {
   }
   await writeFile(outputPath, serialized, { encoding: "utf8", mode: 0o600 })
   if (!success) {
-    throw new Error(`Settlement reaudit failed: missing=${missingOrderIds.length}, mismatches=${mismatches.length}`)
+    throw new Error(`Settlement reaudit failed: missing=${missingOrderIds.length}, mismatches=${mismatches.length}, terminalHistoryMissing=${terminalHistory?.missingOrderIds.length ?? 0}`)
   }
   console.log(JSON.stringify({
     success,
