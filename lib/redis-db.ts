@@ -325,6 +325,7 @@ export interface RedisClientLike {
   hgetall(key: string): Promise<Record<string, string>>
   hlen(key: string): Promise<number>
   hget(key: string, field: string): Promise<string | null>
+  hmget?(key: string, ...fields: string[]): Promise<Array<string | null>>
   hdel(key: string, ...fields: string[]): Promise<number>
   hincrby(key: string, field: string, increment: number): Promise<number>
   hincrbyfloat(key: string, field: string, increment: number): Promise<number>
@@ -2789,6 +2790,12 @@ export class InlineLocalRedis implements RedisClientLike {
     return hash?.[field] ?? null
   }
 
+  async hmget(key: string, ...fields: string[]): Promise<Array<string | null>> {
+    if (this.isExpired(key)) return fields.map(() => null)
+    const hash = this.data.hashes.get(key)
+    return fields.map((field) => hash?.[field] ?? null)
+  }
+
   async hdel(key: string, ...fields: string[]): Promise<number> {
     const hash = this.data.hashes.get(key)
     if (!hash) return 0
@@ -3614,6 +3621,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
   async hgetall(key: string) { return await (await this.c()).hGetAll(key) }
   async hlen(key: string) { return await (await this.c()).hLen(key) }
   async hget(key: string, field: string) { return await (await this.c()).hGet(key, field) }
+  async hmget(key: string, ...fields: string[]) { return await (await this.c()).hmGet(key, fields) }
   async hdel(key: string, ...fields: string[]) { return await (await this.c()).hDel(key, fields) }
   async hincrby(key: string, field: string, increment: number) { return await (await this.c()).hIncrBy(key, field, increment) }
   async hincrbyfloat(key: string, field: string, increment: number) { return await (await this.c()).hIncrByFloat(key, field, increment) }
@@ -3681,6 +3689,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
                 hset: "hSet",
                 hmset: "hSet",
                 hget: "hGet",
+                hmget: "hmGet",
                 hgetall: "hGetAll",
                 hlen: "hLen",
                 hdel: "hDel",
@@ -3722,7 +3731,7 @@ class NodeRedisClientAdapter implements RedisClientLike {
                 let nativeArgs = args
                 if (method === "mget" || method === "del") {
                   nativeArgs = [args]
-                } else if (["sadd", "srem", "lpush", "rpush", "hdel"].includes(method)) {
+                } else if (["sadd", "srem", "lpush", "rpush", "hdel", "hmget"].includes(method)) {
                   nativeArgs = [args[0], args.slice(1)]
                 } else if (method === "hset") {
                   nativeArgs = typeof args[1] === "string"
@@ -3848,6 +3857,7 @@ class UpstashRestRedisClient implements RedisClientLike {
   async hgetall(key: string) { const result = await this.command<any>(["HGETALL", key]); if (!Array.isArray(result)) return result || {}; const obj: Record<string, string> = {}; for (let i = 0; i < result.length; i += 2) obj[String(result[i])] = String(result[i + 1]); return obj }
   async hlen(key: string) { return await this.command<number>(["HLEN", key]) }
   async hget(key: string, field: string) { return await this.command<string | null>(["HGET", key, field]) }
+  async hmget(key: string, ...fields: string[]) { return await this.command<Array<string | null>>(["HMGET", key, ...fields]) }
   async hdel(key: string, ...fields: string[]) { return await this.command<number>(["HDEL", key, ...fields]) }
   async hincrby(key: string, field: string, increment: number) { return await this.command<number>(["HINCRBY", key, field, increment]) }
   async hincrbyfloat(key: string, field: string, increment: number) { return await this.command<number>(["HINCRBYFLOAT", key, field, increment]) }

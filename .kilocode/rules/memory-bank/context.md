@@ -1,3 +1,11 @@
+## 2026-11-26 — strategy stage reuse and Redis workload
+
+Canonical checkout `/workspace/CTS-K-N`, draft PR #584, branch `codex/trailing-replay-20261122`. Starting revision `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Pre-edit checkpoint `/workspace/backups/CTS-K-N/20261126T120458Z-before-strategy-stage-performance`. The containing PR records the published revision and hosted results.
+
+Base/Main/Real reuse now requires a compact Live snapshot. Relevant indication fields, exact ledger counters and settings invalidate reuse. Early scheduling checks avoid loading indication snapshots for blocked symbols. A shared position-context refresh reads six required close fields and keeps its most recent eight records. Main fingerprint hashes renew unchanged contents with expiry alone. Exact count and candidate history lookups remain bounded.
+
+Verification includes isolated native Redis and a 70-symbol paper fixture with 140 reconciled trades. Frozen 14-day, 32-symbol trailing and BCH, XRP and SOL DCA results match the preceding run. No replay candidate met the full promotion gates. The x02 reachability check timed out before authentication. Current remote runtime and venue execution parity remain unverified. See `docs/verification/strategy-stage-performance-20261126.md` for measured workloads, soak diagnostics and replay details.
+
 ## 2026-11-26 — exact trailing stale-update guard and forward replay
 
 Restored the canonical `/workspace/CTS-K-N` checkout from verified checkpoint `/workspace/backups/CTS-K-N/20261126T111550Z-github-pr584-recovery` at PR #584 head `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. GitHub main at recovery was `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. Pre-edit and pre-demo checkpoints were `20261126T111703Z-before-trailing-stage-continuation` and `20261126T112747Z-before-expanded-x02-exact-trailing`. The reviewed PR records the published tree and hosted checks.

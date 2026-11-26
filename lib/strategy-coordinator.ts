@@ -71,12 +71,13 @@ import {
   getStrategyLedgerTotals,
   getStrategySetWindowBatch as readStrategySetWindowBatch,
   baseMeasuredHistoryRejection,
+  type StrategyLedgerTotals,
   type StrategySetLedgerSnapshot,
   type PosWindowStats,
 } from "@/lib/pos-history"
 import { findDeactivatedLiveSetKeys } from "@/lib/live-config-performance"
 import { liveConfigLossPolicy } from "@/lib/live-config-loss-policy"
-import { getLiveSetClosedCounts, getLiveSetWindowBatch } from "@/lib/live-set-outcomes"
+import { getLiveSetClosedCounts, getLiveSetWindowBatch, liveSetCloseIdsKey } from "@/lib/live-set-outcomes"
 import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES, normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import { buildProgressionScope } from "@/lib/progression-scope"
@@ -1124,6 +1125,8 @@ export interface PositionContext {
   activeStrategySetKeysBySymbol: Record<string, string[]>
   /** When true, active counts/lineage come from exchange-backed Live positions. */
   liveTradingEnabled?: boolean
+  /** Exact Set ledger counters can change without changing the aggregate position book. */
+  strategyLedgerRevision?: string
 }
 
 /**
@@ -1718,6 +1721,8 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
   }
 
   for (const indication of indications) {
+    const metadata = indication?.metadata
+    const config = indication?.config
     const raw = indication?.timestamp ?? indication?.calculated_at ?? indication?.created_at
     // Exact indication-set snapshots are regenerated every cycle. Their
     // timestamp/id is transport metadata, not a semantic strategy change.
@@ -1734,24 +1739,50 @@ export function buildStrategyIndicationFingerprint(indications: any[]): string {
     // This catches same-length replacements anywhere in the array without
     // retaining or serialising the full indication objects.
     mix(stableKey ?? indication?.id)
-    if (!hasStableKey) mix(raw)
-    mix(indication?.type ?? indication?.indication_type)
+    if (!hasStableKey) {
+      mix(raw)
+      mix(strategyIndicationConfigurationIdentity(indication))
+    }
+    mix(indication?.type ?? indication?.indication_type ?? indication?.indicationType)
     mix(indication?.direction ?? indication?.signal)
+    if (metadata) {
+      mix(metadata.direction)
+      mix(metadata.secondDir)
+      mix(metadata.firstDir)
+      mix(metadata.movement)
+      mix(metadata.signedPriceChange)
+      mix(metadata.netMovement)
+    }
     mix(indication?.profitFactor ?? indication?.profit_factor)
-    mix(indication?.strength ?? indication?.confidence)
+    mix(indication?.confidence ?? indication?.strength)
     mix(indication?.price ?? indication?.value)
     mix(indication?.validated)
-    mix(indication?.metadata?.signal?.stopLossPct)
-    mix(indication?.metadata?.signal?.takeProfitPct)
-    mix(indication?.metadata?.signal?.sourceIds?.join?.(","))
-    mix(indication?.metadata?.activeProtection?.id)
-    mix(indication?.metadata?.activeProtection?.stopLossPct)
-    mix(indication?.metadata?.activeProtection?.takeProfitPct)
-    mix(indication?.metadata?.activeProtection?.marketExitSituation)
-    mix(indication?.metadata?.specialPositionPlan?.logicalPositionCount)
-    mix(indication?.metadata?.specialPositionPlan?.totalVolumeRatio)
-    mix(indication?.metadata?.specialProtection?.stopLossPct)
-    mix(indication?.metadata?.specialProtection?.takeProfitPct)
+    mix(indication?.strategyRange ?? indication?.strategy_range ?? indication?.coordinationRange ??
+      indication?.coordination_range ?? config?.strategyRange ?? metadata?.strategyRange)
+    mix(metadata?.stepWindow ?? metadata?.step ?? metadata?.windowSize ?? metadata?.period)
+    mix(config?.indicatorType ?? metadata?.commonIndicatorType)
+    mix(config?.parameters?.sourceIndex ?? metadata?.parameters?.sourceIndex)
+    mix(config?.tpFactors ?? config?.tpRange?.factors ?? metadata?.adaptiveTpRange?.factors)
+    const signal = metadata?.signal
+    if (signal) {
+      mix(signal.sourceId)
+      mix(signal.sourceIds)
+      mix(signal.stopLossPct)
+      mix(signal.takeProfitPct)
+      mix(signal.agreement)
+      mix(signal.confidence)
+      if (signal.trailingProfile) mix(stableIndicationConfig(signal.trailingProfile))
+    }
+    const protection = metadata?.activeProtection
+    if (protection) {
+      mix(protection.id)
+      mix(protection.stopLossPct)
+      mix(protection.takeProfitPct)
+      mix(protection.marketExitSituation)
+      mix(protection.orderExitType)
+    }
+    const specialPlan = metadata?.specialPositionPlan ?? metadata?.special?.positionPlan
+    if (specialPlan) mix(stableIndicationConfig(specialPlan))
   }
 
   return `${indications.length}|${latestTimestamp}|${(hash >>> 0).toString(36)}`
@@ -1795,6 +1826,7 @@ function computePositionContextFingerprint(ctx: PositionContext): string {
     ctx.prevLosses,
     ctx.liveTradingEnabled ? 1 : 0,
     ...symbolParts,
+    ...(ctx.strategyLedgerRevision === undefined ? [] : [`ledger:${ctx.strategyLedgerRevision}`]),
   ].join("|")
 }
 
@@ -2979,6 +3011,7 @@ export class StrategyCoordinator {
     this._liveTradingModeCache = null
     this._strategyLedgerTotalsCache = null
     this.positionContextCache = null
+    this.pendingPositionContext = null
 
     ;(this as any)._trailingVariantsCache = undefined
     ;(this as any)._lastPosFingerprint = {}
@@ -3181,14 +3214,14 @@ export class StrategyCoordinator {
   private _liveTradingModeCache: { enabled: boolean; at: number } | null = null
   private _liveConfigLossGateEnabled = true
   private _outcomeSourceNotes = new Map<OutcomeSourceStage, { startedAt: number; exchangeJudged: Set<string>; exchangePending: Set<string> }>()
-  private _strategyLedgerTotalsCache: { axisEntries: number; at: number } | null = null
+  private _strategyLedgerTotalsCache: { totals: StrategyLedgerTotals; at: number } | null = null
 
-  private async getCachedAxisEntryTotal(): Promise<number> {
+  private async getCachedStrategyLedgerTotals(): Promise<StrategyLedgerTotals> {
     const cached = this._strategyLedgerTotalsCache
-    if (cached && Date.now() - cached.at < 1_000) return cached.axisEntries
-    const axisEntries = (await getStrategyLedgerTotals(this.connectionId)).axisEntries
-    this._strategyLedgerTotalsCache = { axisEntries, at: Date.now() }
-    return axisEntries
+    if (cached && Date.now() - cached.at < 1_000) return cached.totals
+    const totals = await getStrategyLedgerTotals(this.connectionId)
+    this._strategyLedgerTotalsCache = { totals, at: Date.now() }
+    return totals
   }
 
   /**
@@ -3204,31 +3237,33 @@ export class StrategyCoordinator {
     window: number,
     options: { stage?: OutcomeSourceStage; prehistoric?: boolean } = {},
   ): Promise<Map<string, PosWindowStats>> {
+    if (setKeys.length === 0) return new Map()
     // Read only the candidate fields that this cycle can emit. The previous
     // closed-result index path loaded hundreds of thousands of members, and
     // the old getStrategySetClosedResultKeys helper consequently made every
     // high-symbol cycle allocate an avoidable full-set snapshot. Candidate
-    // HGETs are batched in pos-history and are authoritative for these exact
+    // HMGETs in pos-history are authoritative for these exact
     // keys, while the small legacy fallback preserves old snapshots. If that
     // fallback cannot prove completeness, callers retain the exhaustive behavior rather than changing PF/DDT calculations.
-    const candidateLedger = await getStrategySetLedgerBatch(this.connectionId, setKeys)
+    const candidateLedger = await getStrategySetLedgerBatch(this.connectionId, setKeys, ["closed"])
     let keysToRead = Object.keys(candidateLedger.closed)
     if (keysToRead.length === 0 && setKeys.length <= 500) {
-      const legacyClosedKeys = await getStrategySetClosedResultKeys(this.connectionId)
-      keysToRead = legacyClosedKeys === null
-        ? setKeys
-        : setKeys.filter((setKey) => legacyClosedKeys.has(setKey))
+      const legacyClosedKeys = await getStrategySetClosedResultKeys(this.connectionId, setKeys)
+      keysToRead = legacyClosedKeys === null ? setKeys : Array.from(legacyClosedKeys)
     }
     const blocks = options.stage ? this._coordinationSettings.lastNBlocks?.[options.stage] : undefined
     const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window,blocks)
-    if(blocks)for(const key of setKeys)if(!windows.has(key))windows.set(key,derivePosWindowStats([],window,blocks))
+    if (blocks && windows.size < setKeys.length) {
+      const emptyWindow = derivePosWindowStats([], window, blocks)
+      for (const key of setKeys) if (!windows.has(key)) windows.set(key, emptyWindow)
+    }
     // A connection that trades live judges its Sets on what the exchange
     // settled: from `liveOutcomeMinCloses` settled real closes on, a Set's
     // window is its exchange-only ring (lib/live-set-outcomes.ts) — no pseudo
     // or paper result in it. Below that the general ring still qualifies the
     // Set, otherwise no new Set could ever reach its first real trade. A
     // prehistoric replay stays on its own reproducible history.
-    if (options.prehistoric || setKeys.length === 0 || !(await this.isLiveTradingEnabledForConnection())) {
+    if (options.prehistoric || !(await this.isLiveTradingEnabledForConnection())) {
       return windows
     }
     const exchangeCounts = await getLiveSetClosedCounts(this.connectionId, setKeys)
@@ -4025,6 +4060,7 @@ export class StrategyCoordinator {
     // enabled state changes during an expensive flow, every downstream stage
     // fails closed before publishing or dispatching stale work.
     shouldContinue?: () => boolean,
+    inputFingerprint?: string,
   ): Promise<StrategyEvaluation[]> {
     const results: StrategyEvaluation[] = []
     const isCurrent = (): boolean => {
@@ -4091,28 +4127,26 @@ export class StrategyCoordinator {
       markPhase("position_context")
       if (!isCurrent()) return results
 
-      // ── OPTIMIZATION: Skip processing if position state unchanged ──
-      // Check fingerprint of position counts to skip redundant calculations when
-      // no new positions have opened/closed. Prevents recalculating P&F/DDT every
-      // cycle when the market hasn't generated new entries.
-      const posFingerprint = buildPositionContextFingerprint(posCtx)
-      const indicationFingerprint = buildStrategyIndicationFingerprint(indications)
+      // Prehistoric flows do not retain a Live snapshot. The processor can
+      // supply the fingerprint it already computed for these exact inputs.
+      const posFingerprint = isPrehistoric ? "" : buildPositionContextFingerprint(posCtx)
+      const indicationFingerprint = isPrehistoric ? "" : inputFingerprint ?? buildStrategyIndicationFingerprint(indications)
       const prevFingerprint = (this as any)._lastPosFingerprint?.[symbol]
       const prevIndicationFingerprint = (this as any)._lastIndicationFingerprint?.[symbol]
+      const cachedCoordIndex: CoordIndex | undefined = (this as any)._lastCoordIndex?.[symbol]
       if (!(this as any)._lastPosFingerprint) (this as any)._lastPosFingerprint = {}
       if (!(this as any)._lastIndicationFingerprint) (this as any)._lastIndicationFingerprint = {}
       if (!(this as any)._lastRealSets) (this as any)._lastRealSets = {}
       if (!(this as any)._lastRealSetCounts) (this as any)._lastRealSetCounts = {}
       if (!(this as any)._lastCoordIndex) (this as any)._lastCoordIndex = {}
 
-      if (prevFingerprint === posFingerprint && prevIndicationFingerprint === indicationFingerprint && !isPrehistoric) {
+      if (!isPrehistoric && cachedCoordIndex && prevFingerprint === posFingerprint && prevIndicationFingerprint === indicationFingerprint) {
         // Position state and indication identity are unchanged — skip Base/Main/Real
         // recalculation (expensive), but ALWAYS run the LIVE stage so SL/TP
         // protection reconciliation and armoring still happen every cycle.
         const cachedRealSets: any[] = (this as any)._lastRealSets?.[symbol] ?? []
         const cachedRealSetCount = Number((this as any)._lastRealSetCounts?.[symbol] ?? cachedRealSets.length)
-        const cachedCoordIndex: any = (this as any)._lastCoordIndex?.[symbol]
-        if (cachedRealSetCount > 0 && cachedCoordIndex && !skipLiveDispatch && isCurrent()) {
+        if (cachedRealSetCount > 0 && !skipLiveDispatch && isCurrent()) {
           // Re-run LIVE stage only. The cache contains the bounded Live-row
           // inputs plus the authoritative Real-row count, not the complete
           // heavyweight Real graph.
@@ -4287,17 +4321,16 @@ export class StrategyCoordinator {
           ;(this as any)._lastRealSets[symbol] = liveSets
           ;(this as any)._lastRealSetCounts[symbol] = realSets.length
           ;(this as any)._lastCoordIndex[symbol] = snapshotCoordIndexForLive(coordIndex, liveSets)
+          // A completed flow is reusable only when its Live inputs were retained.
+          ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
+          ;(this as any)._lastIndicationFingerprint[symbol] = indicationFingerprint
         } else {
           delete (this as any)._lastRealSets[symbol]
           delete (this as any)._lastRealSetCounts[symbol]
           delete (this as any)._lastCoordIndex[symbol]
+          delete (this as any)._lastPosFingerprint[symbol]
+          delete (this as any)._lastIndicationFingerprint[symbol]
         }
-
-        // Commit fingerprints only after the complete mandatory pipeline and
-        // its compact Live snapshot succeed. A failed Live stage must retry
-        // Base→Main→Real→Live on the next cycle.
-        ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
-        ;(this as any)._lastIndicationFingerprint[symbol] = indicationFingerprint
 
         // DEV/SIM bounded rolling lifecycle. The simulated connector marks a
         // constant price so live positions never hit TP/SL and pile up
@@ -5518,9 +5551,8 @@ export class StrategyCoordinator {
       await client.del(legacyFpCacheKey).catch(() => 0)
       StrategyCoordinator._clearedLegacyFingerprintCaches.add(legacyFpCacheKey)
     }
-    const fpCache = isPrehistoric
-      ? {} as Record<string, string>
-      : ((await client.hgetall(fpCacheKey).catch(() => null)) || {}) as Record<string, string>
+    const storedFpCache = isPrehistoric ? null : await client.hgetall(fpCacheKey).catch(() => undefined)
+    const fpCache = (storedFpCache ?? {}) as Record<string, string>
     const nextFpCache: Record<string, string> = {}
     let nextFpCacheCount = 0
     const retainFingerprint = (fingerprint: string, delta: string): boolean => {
@@ -6091,18 +6123,20 @@ export class StrategyCoordinator {
         created: new Date(),
       })
       try {
-        // Rewrite the bounded cache even when this cycle generated no rows so
-        // stale fingerprints never outlive the canonical Main projection.
-        await client.del(fpCacheKey).catch(() => {})
-        if (nextFpCacheCount > 0) {
+        const previousFields = Object.keys(fpCache)
+        const unchanged = storedFpCache !== undefined && previousFields.length === nextFpCacheCount &&
+          previousFields.every((field) => fpCache[field] === nextFpCache[field])
+        if (!unchanged) {
+          // Replace changed snapshots so retired fields do not accumulate.
+          await client.del(fpCacheKey).catch(() => {})
           await hsetStrategyRecordInBatches(
             client,
             fpCacheKey,
             nextFpCache,
             shouldContinue,
           )
-          await client.expire(fpCacheKey, STRATEGY_FINGERPRINT_CACHE_TTL_SECONDS)
         }
+        if (nextFpCacheCount > 0) await client.expire(fpCacheKey, STRATEGY_FINGERPRINT_CACHE_TTL_SECONDS)
       } catch { /* non-critical */ }
     }
 
@@ -8901,7 +8935,7 @@ export class StrategyCoordinator {
         // O(1) scalar maintained by the confirmed-entry ledger. The former
         // HGETALL(axis_pos_acc) ran once per symbol and became progressively
         // slower across long sessions as exact Set fields accumulated.
-        realAccumulatedSum = await this.getCachedAxisEntryTotal()
+        realAccumulatedSum = (await this.getCachedStrategyLedgerTotals()).axisEntries
       } catch { /* fallback: 0 */ }
 
       const writes: Promise<any>[] = [
@@ -11106,6 +11140,7 @@ export class StrategyCoordinator {
   // closed-position window are shared across all symbol invocations to
   // amortise Redis reads during a coordination cycle.
   private positionContextCache: { ctx: PositionContext; ts: number } | null = null
+  private pendingPositionContext: Promise<PositionContext> | null = null
   private readonly POSITION_CONTEXT_TTL_MS = 2000
 
   /**
@@ -11137,16 +11172,33 @@ export class StrategyCoordinator {
    * that snapshot with closed-only Previous/Last history. Results are cached
    * for POSITION_CONTEXT_TTL_MS so adjacent symbols share the reads.
    */
-  private async getPositionContext(): Promise<PositionContext> {
+  private getPositionContext(): Promise<PositionContext> {
     const now = Date.now()
     if (this.positionContextCache && now - this.positionContextCache.ts < this.POSITION_CONTEXT_TTL_MS) {
-      return this.positionContextCache.ctx
+      return Promise.resolve(this.positionContextCache.ctx)
     }
+    if (this.pendingPositionContext) return this.pendingPositionContext
+    const pending = this.readPositionContext(now).then((ctx) => {
+      if (this.pendingPositionContext === pending) this.positionContextCache = { ctx, ts: now }
+      return ctx
+    }).finally(() => {
+      if (this.pendingPositionContext === pending) this.pendingPositionContext = null
+    })
+    this.pendingPositionContext = pending
+    return pending
+  }
 
+  private async readPositionContext(now: number): Promise<PositionContext> {
     try {
       const posManager = new PseudoPositionManager(this.connectionId)
-      const active = await posManager.getActivePositions()
-      const liveTradingEnabled = await this.isLiveTradingEnabledForConnection()
+      const [active, liveTradingEnabled, ledgerTotals] = await Promise.all([
+        posManager.getActivePositions(),
+        this.isLiveTradingEnabledForConnection(),
+        this.getCachedStrategyLedgerTotals(),
+      ])
+      const exchangeCloses = liveTradingEnabled
+        ? await getRedisClient().scard(liveSetCloseIdsKey(this.connectionId)).catch(() => 0)
+        : 0
 
       // Build the pseudo simulation book by symbol/direction. All active
       // positions count here, including individual/combined Pos-Count rows.
@@ -11215,6 +11267,16 @@ export class StrategyCoordinator {
       let prevPosCount = 0
       let prevLosses = 0
       const lastN: Array<{ closedAt: number; pnl: number }> = []
+      const noteClose = (closedAt: number, pnl: number): void => {
+        prevPosCount++
+        if (pnl < 0) prevLosses++
+        // Keep ties in their original read order, as the previous stable sort did.
+        if (lastN.length === 8 && closedAt <= lastN[7].closedAt) return
+        const index = lastN.findIndex((row) => row.closedAt < closedAt)
+        if (index < 0) lastN.push({ closedAt, pnl })
+        else lastN.splice(index, 0, { closedAt, pnl })
+        if (lastN.length > 8) lastN.pop()
+      }
       if (liveTradingEnabled) {
         // Live trading: the recent wins/losses that gate the trailing, DCA and
         // Block variants are this connection's settled real closes (results
@@ -11225,12 +11287,8 @@ export class StrategyCoordinator {
           for (const entry of ledger?.entries || []) {
             if (entry.status !== "closed" || !entry.settled || entry.pnl === null) continue
             if (!(entry.closed >= cutoff)) continue
-            prevPosCount++
-            if (entry.pnl < 0) prevLosses++
-            lastN.push({ closedAt: entry.closed, pnl: entry.pnl })
+            noteClose(entry.closed, entry.pnl)
           }
-          lastN.sort((a, b) => b.closedAt - a.closedAt)
-          lastN.length = Math.min(lastN.length, 8)
         } catch { /* no readable ledger: neutral recent-result context */ }
       } else try {
         let closedIds: string[] = (
@@ -11245,59 +11303,36 @@ export class StrategyCoordinator {
         }
         closedIds = Array.from(new Set(closedIds.filter(Boolean)))
 
-        const hashes: Array<Record<string, any> | null> = []
+        const fields = ["status", "closed_at", "closedAt", "realized_pnl", "pnl", "profit"]
+        const packed = typeof client.hmget === "function"
         for (let offset = 0; offset < closedIds.length; offset += 250) {
           const batch = closedIds.slice(offset, offset + 250)
           const pipeline = client.multi()
           for (const id of batch) {
-            pipeline.hgetall(`pseudo_position:${this.connectionId}:${id}`)
+            const key = `pseudo_position:${this.connectionId}:${id}`
+            if (packed) pipeline.hmget(key, ...fields)
+            else pipeline.hgetall(key)
           }
           const results = await pipeline.exec().catch(() => null)
-          if (!results) continue
-          hashes.push(...results.map((result: any) => {
-            const data = Array.isArray(result) ? result[1] : result
-            return data && typeof data === "object" && Object.keys(data).length > 0
+          for (const result of results || []) {
+            const data = !packed && Array.isArray(result) ? result[1] : result
+            if (!data || typeof data !== "object" || (packed && !Array.isArray(data))) continue
+            const [status, snakeTime, camelTime, realized, legacyPnl, profit] = packed
               ? data
-              : null
-          }))
+              : fields.map((field) => data[field])
+            if (String(status || "").toLowerCase() !== "closed") continue
+            const closedAtRaw = snakeTime ?? camelTime
+            if (!closedAtRaw) continue
+            const numeric = Number(closedAtRaw)
+            const closedAt = Number.isFinite(numeric) && numeric > 1_000_000_000_000
+              ? numeric
+              : new Date(closedAtRaw).getTime()
+            if (!Number.isFinite(closedAt) || closedAt <= 0 || closedAt < cutoff) continue
+            const pnl = Number(realized ?? legacyPnl ?? profit ?? 0)
+            if (Number.isFinite(pnl)) noteClose(closedAt, pnl)
+          }
+          if (offset + batch.length < closedIds.length) await yieldStrategyScheduler(true)
         }
-
-        for (const h of hashes) {
-          if (!h) continue
-          // ── P2-1: Strict closed-only gate ───────────────────��──��───────
-          // Positions in the closed_index are always closed by construction
-          // (closePosition writes to the index). We still enforce the
-          // status check as a defence against stale/corrupted rows.
-          const status = String(h.status || "").toLowerCase()
-          if (status !== "closed") continue
-          const closedAtRaw = h.closed_at ?? h.closedAt ?? ""
-          // Parse ISO string ("2025-01-01T...") or numeric ms ("1735689600000").
-          const closedAtMs = (() => {
-            if (!closedAtRaw) return NaN
-            const n = Number(closedAtRaw)
-            if (Number.isFinite(n) && n > 1_000_000_000_000) return n  // already ms
-            const d = new Date(closedAtRaw as string).getTime()
-            return Number.isFinite(d) ? d : NaN
-          })()
-          if (!Number.isFinite(closedAtMs) || closedAtMs <= 0) continue
-          const closedAt = closedAtMs
-          if (closedAt < cutoff) continue
-          // Prefer `realized_pnl`; fall back to `pnl` only when the row
-          // is marked closed (the closePosition pipeline writes `pnl`
-          // to the realized value at close time).
-          const pnlRaw = h.realized_pnl ?? h.pnl ?? h.profit ?? 0
-          const pnl = Number(pnlRaw)
-          if (!Number.isFinite(pnl)) continue
-          prevPosCount++
-          if (pnl < 0) prevLosses++
-          lastN.push({ closedAt, pnl })
-        }
-        // Keep the 8 most recently closed for the "last-N" breakdown.
-        // The closed_index is already newest-first (LPUSH order), so
-        // sorting + truncating here normalises any edge-cases where TTL
-        // trimming or concurrent writes changed the ordering slightly.
-        lastN.sort((a, b) => b.closedAt - a.closedAt)
-        lastN.length = Math.min(lastN.length, 8)
       } catch { /* best-effort; fall through with zeros */ }
 
       let lastWins   = lastN.filter((r) => r.pnl > 0).length
@@ -11363,9 +11398,9 @@ export class StrategyCoordinator {
           Object.entries(activeStrategySetKeySets).map(([sym, keys]) => [sym, [...keys].sort()]),
         ),
         liveTradingEnabled,
+        strategyLedgerRevision: `${ledgerTotals.exactEntries}:${ledgerTotals.exactClosed}:${exchangeCloses}`,
       }
 
-      this.positionContextCache = { ctx, ts: now }
       return ctx
     } catch (err) {
       // Never fail the strategy flow on a context read error — fall back to
@@ -11374,9 +11409,7 @@ export class StrategyCoordinator {
         `[v0] [StrategyFlow] getPositionContext failed; using neutral context:`,
         err instanceof Error ? err.message : String(err),
       )
-      const neutral = this.neutralPositionContext()
-      this.positionContextCache = { ctx: neutral, ts: now }
-      return neutral
+      return this.neutralPositionContext()
     }
   }
 

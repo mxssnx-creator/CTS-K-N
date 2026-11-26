@@ -190,4 +190,23 @@ describe("bounded engine concurrency", () => {
     const after = buildStrategyIndicationFingerprint([{ id: "new", setKey: "exact:1", timestamp: 2, price: 10 }])
     expect(after).toBe(before)
   })
+
+  test.each([
+    [{ stepWindow: 2 }, { stepWindow: 3 }],
+    [{ secondDir: 0, firstDir: -1 }, { secondDir: 0, firstDir: 1 }],
+    [{ adaptiveTpRange: { factors: [1, 1.2] } }, { adaptiveTpRange: { factors: [1, 1.5] } }],
+    [{ activeProtection: { orderExitType: "LIMIT" } }, { activeProtection: { orderExitType: "TAKE_PROFIT_MARKET" } }],
+    [{ signal: { sourceId: "first", sourceIds: ["first", "second"] } }, { signal: { sourceId: "second", sourceIds: ["first", "second"] } }],
+  ])("stage-relevant metadata invalidates a stable indication key", (before, after) => {
+    const fingerprint = (metadata: object) => buildStrategyIndicationFingerprint([{ setKey: "exact:1", metadata }])
+    expect(fingerprint(before)).not.toBe(fingerprint(after))
+  })
+
+  test("Signal transport metadata does not invalidate stable risk inputs", () => {
+    const fingerprint = (generatedAt: number) => buildStrategyIndicationFingerprint([{
+      setKey: "signal:exact:1",
+      metadata: { signal: { generatedAt, sourceIds: ["lead"], stopLossPct: 1, takeProfitPct: 2 } },
+    }])
+    expect(fingerprint(1)).toBe(fingerprint(2))
+  })
 })

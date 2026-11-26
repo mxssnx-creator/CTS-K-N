@@ -578,6 +578,7 @@ __tests__/unit/strategy-sets-processor.test.ts
 __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts
 __tests__/unit/strategy-stage-relations.test.ts
+__tests__/unit/strategy-stage-reuse.test.ts
 __tests__/unit/strategy-tuple-coverage.test.ts
 __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/stuck-placement-sweeper.test.ts
@@ -1411,6 +1412,7 @@ docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-features-20261111.md
 docs/verification/strategy-features-20261111/report.html
 docs/verification/strategy-features-20261111/results.json
+docs/verification/strategy-stage-performance-20261126.md
 docs/verification/trailing-continuation-20261126.md
 docs/verification/trailing-walkforward-20261122.md
 docs/verification/ui-quickstart-indications-20261117.md

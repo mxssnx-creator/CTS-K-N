@@ -1,3 +1,11 @@
+## 2026-11-26 — bounded strategy-stage reads and reuse
+
+Continued draft PR #584 on `codex/trailing-replay-20261122` from `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Strategy passes skip the active-indication read when admission is already blocked. Exact Set counts use bounded Redis HMGETs and closed-position context reads a six-field projection. Concurrent symbols share a pending context refresh. A stage snapshot is reusable only when compact Live inputs were retained, and changes to settings, relevant indication fields or the exact strategy ledger invalidate reuse.
+
+The native Redis benchmark preserved all checked outputs and reduced median latency for Set counts, candidate history and position context. The 32-symbol trailing and three-symbol DCA replays replicated the previous configuration results. No candidate met its promotion gates. The 70-symbol paper fixture reconciled all 140 positions. See [strategy stage verification](verification/strategy-stage-performance-20261126.md) for benchmarks, production-build paper soak results and remaining gates.
+
+The x02 venue connection timed out before authenticated preflight. The earlier eight-cycle virtual-funds run belongs to the preceding revision. The containing PR records the published revision and checks. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T120458Z-before-strategy-stage-performance`.
+
 ## 2026-11-26 — exact trailing update isolation and 32-symbol replay
 
 Continued PR #584 at `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. Exact trailing sync rejects missing, stale and unowned updates under the same lock used for applying venue protection. The x02 harness checks for account changes before authenticated writes and retains read-only owned settlement evidence when the strict final account gate fails.

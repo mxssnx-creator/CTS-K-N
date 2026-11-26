@@ -314,9 +314,15 @@ export async function getLiveSetClosedCounts(
     }
     for (let start = 0; start < unique.length; start += 500) {
       const batch = unique.slice(start, start + 500)
-      const pipeline = client.multi()
-      for (const key of batch) pipeline.hget(liveSetClosedCountsKey(connectionId), key)
-      const results = await pipeline.exec()
+      const countsKey = liveSetClosedCountsKey(connectionId)
+      let results: unknown[]
+      if (typeof client.hmget === "function") {
+        results = await client.hmget(countsKey, ...batch)
+      } else {
+        const pipeline = client.multi()
+        for (const key of batch) pipeline.hget(countsKey, key)
+        results = await pipeline.exec()
+      }
       batch.forEach((key, index) => {
         const count = Number(pipelineValue(results?.[index])) || 0
         if (count > 0) out.set(key, count)
