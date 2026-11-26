@@ -1,3 +1,21 @@
+## 2026-11-26 — Last-N stage validation
+
+The complete configured signed window supplies stage PF after costs. Each sign uses its own block, and settings support a Short/Last path without Long. Eligible exchange Sets retain exchange provenance when rows are unavailable. The focused stage and outcome suites passed 57 tests. Continue on `codex/relate-relations-20261126` in draft PR #585. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T152836Z-last-n-progression-before`. No venue or deployment state was measured.
+
+## 2026-11-26 Relate recovery qualification
+
+Work from the canonical checkout and continue on `codex/relate-relations-20261126` in draft PR #585. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T144533Z-relate-exec-rebuild-before`.
+
+Relate sizing now requires two chronological groups of same-step after-cost trials from the exact Set. Every contributing Overall relation supplies its own equivalent evidence. Each recorded position carries its entry-time trial receipts until an owned, unambiguous close. Paper and exchange histories remain separate. The focused settlement and sizing suite passed 21 tests. The change supplies no venue Exec PF evidence.
+
+## 2026-11-26 — Relate loss progression and relation settings
+
+Canonical checkout `/workspace/CTS-K-N`, branch `codex/relate-relations-20261126`, based on PR #584 head `6ac7b285`. The pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T135027Z-relate-relations-before`. The containing GitHub review records the published revision.
+
+Relate sizes the next qualified Set from prior settled losses. The default depth is 12 and a non-loss resets the progression. Relate Active waits for a configured loss count while ordinary orders continue. Overall uses independently weighted relation windows. Paper and settled exchange closes use separate, bounded chronological indexes. Mixed-Set and combined Position Count closes are excluded from the broader Relate windows.
+
+The targeted allocation, exchange-settlement, stage reuse and settings suites passed 31 cases. The CTS-C historical replay is cross-project evidence and does not measure CTS-K-N profitability. CTS-K-N Relate remains opt-in. Production service state, full Relate market replay and venue execution stay unverified.
+
 ## 2026-11-26 — strategy stage reuse and Redis workload
 
 Canonical checkout `/workspace/CTS-K-N`, draft PR #584, branch `codex/trailing-replay-20261122`. Starting revision `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Pre-edit checkpoint `/workspace/backups/CTS-K-N/20261126T120458Z-before-strategy-stage-performance`. The containing PR records the published revision and hosted results.

@@ -1,3 +1,21 @@
+## 2026-11-26 — Independent Last-N stage validation
+
+Configured signed blocks now use the complete settled window for the stage's PF and drawdown. Long can be omitted when another block is configured. Short counts up to 30 are available in Settings. Each signed condition still uses its own nonoverlapping block. A Set that has reached the venue sample threshold keeps an unavailable exchange window if its rows cannot be read, so paper evidence cannot substitute for an eligible venue ledger.
+
+The focused stage, settlement, and coordinator reuse suites passed 57 checks before publication. This is source and offline verification. No exchange execution PF or live deployment was measured. The pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T152836Z-last-n-progression-before`. Continue on draft PR #585.
+
+## 2026-11-26 Relate recovery qualification
+
+Relate evaluates the exact Set and each enabled Overall relation separately. It records the proposed loss step and volume at entry. Each relation needs its own earlier and later groups of closed, after-cost trials at that step. Each group must clear the configured unit-return PF, size-weighted PF and drawdown limits. Missing evidence holds the increase at base size. The twelve-step default, independent volume factors and tighter-stop eligibility are retained.
+
+Paper and venue outcomes stay in separate bounded Redis windows. Older rows contribute their verified returns and cannot supply entry-time recovery trials. The targeted settlement and sizing suite passed 21 tests, including same-clock exclusion, duplicate close handling, exact Set proof and independent shares. No exchange results were collected for this revision. Positive venue Exec PF remains unverified. Source continuation is on `codex/relate-relations-20261126` in draft PR #585.
+
+## 2026-11-26 — Relate loss progression
+
+The Relate branch continues PR #584. Settings expose the 12-step default, Active skip count, Exact Set or Overall scope and relation volume factors. Extra exposure requires the existing exact Set PF, sample and stop gates. Overall records earlier verified closes by relation and separates paper outcomes from venue settlements. The Settings switch continues to govern the sizing adjustment on existing qualifying Normal and Trailing Sets.
+
+Thirty-one focused cases passed, including same-clock exclusion, close deduplication and the separation of paper, venue and mixed-Set outcomes. No CTS-K-N Relate market or venue PF is available for this revision. The checkpoint and test scope are recorded in the memory bank.
+
 ## 2026-11-26 — bounded strategy-stage reads and reuse
 
 Continued draft PR #584 on `codex/trailing-replay-20261122` from `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Strategy passes skip the active-indication read when admission is already blocked. Exact Set counts use bounded Redis HMGETs and closed-position context reads a six-field projection. Concurrent symbols share a pending context refresh. A stage snapshot is reusable only when compact Live inputs were retained, and changes to settings, relevant indication fields or the exact strategy ledger invalidate reuse.

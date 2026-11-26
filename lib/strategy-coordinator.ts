@@ -171,7 +171,9 @@ import {
   strategyProcessingRange,
   type StrategyExecutionPolicy,
 } from "@/lib/strategy-execution-policy"
-import { normalizeRelateSettings, relateAllocation, type RelateSettings } from "@/lib/relate-allocation"
+import { normalizeRelateSettings, planRelate, type RelateSettings } from "@/lib/relate-allocation"
+import { RELATE_SOURCES, relateKeys as makeRelateKeys } from "@/shared/cts-relate/policy"
+import { getRelateCloseWindows } from "@/lib/relate-outcomes"
 import { buildTrailingProfiles, PRICE_TRAILING_STOP_RATIOS, trailingPriceDistancesFit, trailingProfileTag } from "@/lib/trailing-settings"
 import { DEFAULT_FOREX_POSITIONS_AVERAGE } from "@/lib/forex-market"
 import { normalizeMarketType } from "@/lib/market-types"
@@ -10259,15 +10261,21 @@ export class StrategyCoordinator {
             const dispatchPlan = planLiveDispatchCandidatesFairly(policyEligibleDispatchSets)
             const dispatchSets = dispatchPlan.selected
             const relatePolicy = this._coordinationSettings.relate
-            const relateKeys = relatePolicy.enabled && !dispatchHaltedForConnection
+            const relateSets = relatePolicy.enabled && !dispatchHaltedForConnection
               ? dispatchSets.filter(set => {
                   const family = classifyStrategyExecutionFamily(set)
                   return family === "normal" || family === "trailing"
-                }).map(set => set.setKey)
+                })
               : []
-            const relateWindows = relateKeys.length === 0 ? undefined : isLiveTradeEnabled
-              ? await getLiveSetWindowBatch(this.connectionId, relateKeys, relatePolicy.lastN, relatePolicy.minTrades)
-              : await this.getStrategySetWindowBatch(relateKeys, relatePolicy.lastN, { prehistoric: true })
+            const relateSources = relatePolicy.scope === "overall" ? RELATE_SOURCES.filter(source =>
+              source === "config" || (relatePolicy.volumeFactors[source] ?? 1) > 0) : ["config"] as const
+            const relationBySet = new Map(relateSets.map(set => [set.setKey,
+              makeRelateKeys("live", set.setKey, symbol, set.direction, set.indicationType, set.variant ?? "default",
+                set.rowStage ?? "live", set.strategyRange ?? "normal")] as const))
+            const relationKeys = [...new Set([...relationBySet.values()].flatMap(keys => relateSources.map(source => keys[source])))]
+            const relateAt = Date.now()
+            const relateWindows = await getRelateCloseWindows(this.connectionId, relationKeys, relatePolicy.lastN,
+              relateAt, isLiveTradeEnabled).catch(() => undefined)
             if (!isCurrent()) return cancelled()
             try {
               const selectedSummary = summarizeLiveDispatchRows(dispatchSets, "qualified_policy_enabled")
@@ -10486,6 +10494,8 @@ export class StrategyCoordinator {
                 }
 
                 if (!isCurrent()) return cancelled()
+                const relationKeysForSet = relationBySet.get(set.setKey)
+                const relate = planRelate(relatePolicy, relationKeysForSet, relateWindows, relateAt, sl, tp)
                 attempted++
                 const liveResult = await executeLivePosition(
                   this.connectionId,
@@ -10564,7 +10574,9 @@ export class StrategyCoordinator {
                     // Forward the resolved multiplier. Normal/DCA may include a
                     // bounded Real tuner delta; Block never does because Live
                     // books only the missing delta to its absolute target.
-                    sizeMultiplier: effectiveSizeMult * relateAllocation(relatePolicy, relateWindows?.get(set.setKey), sl, tp, isLiveTradeEnabled),
+                    sizeMultiplier: effectiveSizeMult * relate.multiplier,
+                    relateRelationKeys: relationKeysForSet ? relateSources.map(source => relationKeysForSet[source]) : undefined,
+                    relateTrials: relate.trials,
                     blockBaseVolumeMultiplier: set.blockBaseVolumeMultiplier,
                     blockVolumeRatio: set.blockVolumeRatio,
                     blockIncrementSteps: set.blockIncrementSteps,

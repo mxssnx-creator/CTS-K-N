@@ -9,6 +9,9 @@ import {
 import { normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
 import { markStrategyPositionInactive, recordStrategyPositionEntry } from "@/lib/pos-history"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
+import { normalizeRelateSettings, planRelate } from "@/lib/relate-allocation"
+import { getRelateCloseWindows, getRelateLevels } from "@/lib/relate-outcomes"
+import { RELATE_SOURCES, relateKeys } from "@/shared/cts-relate/policy"
 
 let sequence = 0
 const uniqueConnection = (name: string) => `live-outcomes-${name}-${Date.now()}-${sequence++}`
@@ -44,6 +47,63 @@ function realRow(connectionId: string, id: string, pnl: number, overrides: Recor
 }
 
 beforeEach(() => clearLiveSetOutcomeCache())
+
+test("an eligible Set with missing venue rows exposes unavailable exchange evidence", async () => {
+  const connectionId = uniqueConnection("missing-venue")
+  const key = "owned"
+  const blocks = {long: 0, short: 4, minimal: 1, shortPolarity: "positive" as const, minimalPolarity: "negative" as const}
+  const states = await getLiveSetWindowBatch(connectionId, [key], 5, 4, new Map([[key, 4]]), blocks)
+  expect(states.get(key)).toMatchObject({
+    count: 0, outcomeSource: "exchange", exchangeCloses: 4, blockDecision: {state: "unknown"},
+  })
+})
+
+test("Relate uses only earlier settled, unambiguous exchange outcomes from the requested relation", async () => {
+  const connectionId = uniqueConnection("relate")
+  const policy = normalizeRelateSettings({ enabled: true, minTrades: 60 })
+  const at = 4_000_000
+  for (let index = 0; index < 59; index++) {
+    await recordLiveSetOutcome(realRow(connectionId, `r${index}`, .01, {
+      closedAt: at - 59 + index, relateRelationKeys: ["all", "btc"],
+    }))
+  }
+  const loss = realRow(connectionId, "loss", -.001, { closedAt: at, relateRelationKeys: ["all", "btc"] })
+  await recordLiveSetOutcome(loss)
+  await recordLiveSetOutcome(loss)
+  await recordLiveSetOutcome(realRow(connectionId, "mixed", -.5, {
+    closedAt: at + 1, relateRelationKeys: ["all", "btc"], accumulatedSetKeys: ["a", "b"],
+  }))
+  expect(await getRelateLevels(connectionId, ["all"], policy, at, true)).toEqual(new Map())
+  expect(await getRelateLevels(connectionId, ["all", "btc", "eth"], policy, at + 2, true))
+    .toEqual(new Map([["all", 1], ["btc", 1]]))
+  expect(await getRelateLevels(connectionId, ["all"], policy, at + 2, false)).toEqual(new Map())
+})
+
+test("Relate requires the exchange's own same-step net closes before allocating Overall shares", async () => {
+  const connectionId = uniqueConnection("relate-recovery")
+  const keys = relateKeys("live", "exact", "BTCUSDT", "long", "trend", "default", "live", "normal")
+  const volumeFactors = Object.fromEntries(RELATE_SOURCES.map(source => [source, source === "config" || source === "symbol" ? 1 : 0]))
+  const policy = normalizeRelateSettings({enabled: true, scope: "overall", volumeFactors})
+  const at = 5_000_000
+  const relations = [keys.config, keys.symbol]
+  for (let index = 0; index < 60; index++) {
+    const isLoss = index === 59 || index >= 23 && index < 47 && index % 2 === 1
+    const isRecovery = index >= 24 && index <= 46 && index % 2 === 0
+    const receipts = isRecovery ? { [keys.config]: {step: 1, size: 1.1} } : undefined
+    await recordLiveSetOutcome(realRow(connectionId, `recovery-${index}`, isLoss ? -.001 : .01, {
+      closedAt: at + index, relateRelationKeys: relations, relateTrials: receipts,
+    }))
+  }
+  const read = (before: number, venue = true) =>
+    getRelateCloseWindows(connectionId, relations, policy.lastN, before, venue)
+  const first = await read(at + 59)
+  expect(planRelate(policy, keys, first, at + 59, .4, 1).multiplier).toBe(1)
+  const measured = await read(at + 60)
+  expect(measured.get(keys.config)?.trials).toHaveLength(12)
+  expect(measured.get(keys.symbol)?.trials).toHaveLength(0)
+  expect(planRelate(policy, keys, measured, at + 60, .4, 1).multiplier).toBeCloseTo(1.1, 10)
+  expect(planRelate(policy, keys, await read(at + 60, false), at + 60, .4, 1).multiplier).toBe(1)
+})
 
 describe("settled real results only", () => {
   const connectionId = "outcome-classification"

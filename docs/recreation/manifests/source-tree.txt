@@ -1829,6 +1829,7 @@ lib/redis-runtime-root.ts
 lib/redis-scan.ts
 lib/redis-service.ts
 lib/relate-allocation.ts
+lib/relate-outcomes.ts
 lib/request-sequence.ts
 lib/results/ledger.ts
 lib/results/response.ts
@@ -2246,6 +2247,8 @@ shared/cts-lastn/blocks.test.ts
 shared/cts-lastn/blocks.ts
 shared/cts-lastn/fields.tsx
 shared/cts-lastn/package.json
+shared/cts-relate/policy.ts
+shared/cts-relate/recovery.ts
 shared/cts-volume/README.md
 shared/cts-volume/package.json
 shared/cts-volume/ratios.test.ts

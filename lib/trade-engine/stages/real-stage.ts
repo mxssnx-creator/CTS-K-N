@@ -21,6 +21,7 @@ import {
 } from "@/lib/block-count-state"
 import type { SpecialPositionPlan } from "@/lib/special-strategy"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
+import type { RelateTrialStamps } from "@/lib/relate-allocation"
 
 const LOG_PREFIX = "[v0] [RealPositionStage]"
 
@@ -83,6 +84,8 @@ export interface RealPosition {
   // Variant size multiplier carried to the live executor for volume scaling.
   // block=1.5-2.0, dca=0.5, default/trailing=1.0 (absent → 1.0).
   sizeMultiplier?: number
+  relateRelationKeys?: string[]
+  relateTrials?: RelateTrialStamps
   /** Immutable Block sizing inputs used by Live adjustment execution. */
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number
