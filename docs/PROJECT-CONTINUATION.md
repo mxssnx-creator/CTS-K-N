@@ -1,3 +1,11 @@
+## 2026-11-26 — exact trailing update isolation and 32-symbol replay
+
+Continued PR #584 at `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. Exact trailing sync rejects missing, stale and unowned updates under the same lock used for applying venue protection. The x02 harness checks for account changes before authenticated writes and retains read-only owned settlement evidence when the strict final account gate fails.
+
+The 32-symbol replay found no trailing configuration that met its after-cost qualification requirements. A separate 15,552-configuration BCH, XRP and SOL DCA matrix found no setting that cleared both the PF and drawdown gates. See `docs/verification/trailing-continuation-20261126.md` for the dates, prior-settings comparison, full regression counts and reproduction commands.
+
+Eight x02 virtual-funds cycles restored the account's position and open-order baseline. The final read-only audit reconciled all 24 fills and all 64 terminal order records after correcting the lookup-pressure failure. Raw account evidence stays out of the repository.
+
 ## 2026-11-22 — exact trailing recovery and verification
 
 Recovered canonical source from GitHub `main` at `794ddcd5d` using the verified source checkpoint recorded in the memory bank. The exact initial stop now survives Base propagation and passes through Live preflight independently from the trailing gap. The tested native ratchet cannot replace a tighter initial stop. The longer replay and X02 results are in `docs/verification/trailing-walkforward-20261122.md`. The replay did not qualify a default change. After retrying preflight, four X02 cycles finished flat with complete ratchet proof and exact settlement matches for all 12 market fills. The shared account baseline gate did not pass.

@@ -31,6 +31,7 @@ BINGX_STRESS_TICKER_ROUNDS	test-or-operator-tool	no	no	1	scripts/stress-bingx-pu
 BINGX_STRESS_TIMEOUT_MS	test-or-operator-tool	no	no	1	scripts/stress-bingx-public-32.mjs
 BINGX_VST_ORIGIN	application-runtime	no	yes	5	.env.example,__tests__/unit/bingx-vst-environment.test.ts,lib/bingx-environment.ts,scripts/audit-bingx-vst-soak-settlements.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_REAUDIT_REPORT	test-or-operator-tool	no	no	1	scripts/audit-bingx-vst-soak-settlements.ts
+BINGX_VST_REAUDIT_TERMINAL_HISTORY	test-or-operator-tool	no	no	1	scripts/audit-bingx-vst-soak-settlements.ts
 BINGX_VST_SOAK_ALLOW_SHORT	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CONFIRM	application-runtime	no	no	4	__tests__/integration/live-order-service.test.ts,__tests__/unit/runtime-maintenance.test.ts,lib/live-order-service.ts,scripts/run-bingx-vst-live-soak.ts
 BINGX_VST_SOAK_CYCLES	test-or-operator-tool	no	no	1	scripts/run-bingx-vst-live-soak.ts

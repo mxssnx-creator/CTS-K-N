@@ -1,3 +1,11 @@
+## 2026-11-26 — exact trailing stale-update guard and forward replay
+
+Restored the canonical `/workspace/CTS-K-N` checkout from verified checkpoint `/workspace/backups/CTS-K-N/20261126T111550Z-github-pr584-recovery` at PR #584 head `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. GitHub main at recovery was `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. Pre-edit and pre-demo checkpoints were `20261126T111703Z-before-trailing-stage-continuation` and `20261126T112747Z-before-expanded-x02-exact-trailing`. The reviewed PR records the published tree and hosted checks.
+
+The engine's exact ratchet guard rechecks the stored row and source Set inside the position lease. It preserves armed stops across delayed unarmed or invalid pseudo snapshots and respects operator overrides. Verified TypeScript, 3,820 Jest tests across 569 suites with isolated native Redis, ten portable tests, and native Redis coordination. The market study scored 4,406 trailing configurations over 32 symbols and 5,184 DCA configurations apiece for BCH, XRP and SOL. No candidate changed defaults. The source and evidence are documented in `docs/verification/trailing-continuation-20261126.md`. Production service state remains unverified.
+
+X02 ran eight controlled minimum-volume virtual lifecycles and restored the position and order baseline. The first terminal read was incomplete for 25 canceled controls. With the history-first audit correction, a read-only repeat matched every one of the 64 terminal orders and 24 market fills. The verified pre-recovery checkpoint was `20261126T114917Z-before-vst-terminal-audit-recovery`. Local raw account evidence and the temporary credential were excluded from Git.
+
 ## 2026-11-22 — exact trailing bracket and longer replay
 
 Canonical checkout `/workspace/CTS-K-N` was restored from verified GitHub main `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The branch contains the preceding trailing work. The recovery checkpoint is `/workspace/backups/CTS-K-N/20261122T132110Z-github-main-trailing-recovery`. GitHub main is the recovered source history. Prior unpublished and runtime state were unavailable.

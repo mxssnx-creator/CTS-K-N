@@ -1,6 +1,7 @@
 import {
   auditVstSoakExecutionRelations,
   auditVstSoakCounters,
+  auditVstSoakTerminalHistory,
   classifyVstSoakExternalProtectionOrder,
   deriveVstSoakProtectionBand,
   evaluateVstSoakOrderHeadroom,
@@ -18,6 +19,31 @@ describe("BingX Prod-VST soak accounting audit", () => {
   test("preserves exact large venue IDs and opaque identifiers", () => {
     expect(normalizeVstSoakOrderId("12345678901234567890")).toBe("12345678901234567890")
     expect(normalizeVstSoakOrderId(" sl-1 ")).toBe("sl-1")
+  })
+  test("reads only unresolved terminal order IDs and rejects partial and unrelated receipts", async () => {
+    const reader = {
+      getOrderHistorySnapshot: jest.fn(async () => ({ ok: true, rows: [
+        { orderId: "canceled-control", status: "CANCELED" },
+        { orderId: "still-open", status: "PARTIALLY_FILLED" },
+        { orderId: "unowned", status: "FILLED" },
+      ] })),
+      getOrderDetails: jest.fn(async (_symbol: string, orderId: string) => ({
+        success: true, order: orderId === "not-in-history"
+          ? { orderId, status: "FILLED" }
+          : { orderId: "unowned", status: "FILLED" },
+      })),
+    }
+    const wait = jest.fn(async (_ms: number) => undefined)
+    const audit = await auditVstSoakTerminalHistory(reader, new Map([
+      ["BCHUSDT", ["canceled-control", "still-open", "not-in-history"]],
+    ]), wait)
+    expect(reader.getOrderDetails.mock.calls).toEqual([["BCHUSDT", "still-open"], ["BCHUSDT", "not-in-history"]])
+    expect(wait).toHaveBeenCalledWith(600)
+    expect(audit.missingOrderIds).toEqual(["still-open"])
+    expect(audit.bySymbol.BCHUSDT.terminalSources).toEqual({
+      "canceled-control": { status: "CANCELED", source: "history" },
+      "not-in-history": { status: "FILLED", source: "detail" },
+    })
   })
   test("derives liquidation-safe long and short row/security bands", () => {
     expect(deriveVstSoakProtectionBand({

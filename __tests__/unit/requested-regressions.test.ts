@@ -936,7 +936,7 @@ describe("requested regression guardrails", () => {
     expect(source).toContain("STRATEGY_VARIANT_BUILD_CONCURRENCY")
     expect(source).toContain("const buildTasks: Array<() => Promise<VariantBuildResult>>")
     expect(source).toContain("mapWithConcurrency(")
-    expect(source).toContain("(task) => task()")
+    expect(source).toMatch(/mapWithConcurrency\(batch, variantBuildConcurrency,\s*\(?task\)?\s*=>\s*task\(\)/)
     expect(source).toContain("yieldEvery: STRATEGY_COOPERATIVE_YIELD_INTERVAL")
     expect(source).toContain("onProgress: () => assertStrategyGenerationCurrent(shouldContinue)")
     expect(source).toContain("await yieldStrategyScheduler(false, shouldContinue)")
@@ -2704,9 +2704,9 @@ describe("requested regression guardrails", () => {
     expect(liveStage).toContain("setKey/parentSetKey/accumulatedSetKeys")
     expect(liveStage).toContain("every owning Set must be allowed")
     expect(liveStage).toContain("advance its trailing ratchet")
-    expect(liveStage).toContain("const liveKeys = new Set<string>()")
-    expect(liveStage).toContain("Array.isArray(p.accumulatedSetKeys)")
-    expect(liveStage).toContain("liveKeys.has(pseudoSetKey)")
+    expect(liveStage).toContain("livePositionHasSetKey(p, pseudoSetKey)")
+    expect(liveStage).toContain("hasKey(position.setKey) || hasKey(position.parentSetKey)")
+    expect(liveStage).toContain("position.accumulatedSetKeys.some(hasKey)")
   })
 
 

@@ -1411,6 +1411,7 @@ docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-features-20261111.md
 docs/verification/strategy-features-20261111/report.html
 docs/verification/strategy-features-20261111/results.json
+docs/verification/trailing-continuation-20261126.md
 docs/verification/trailing-walkforward-20261122.md
 docs/verification/ui-quickstart-indications-20261117.md
 docs/verification/x02-twelve-symbol-interrupted-recovery-20261112.md
