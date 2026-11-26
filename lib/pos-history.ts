@@ -1,4 +1,4 @@
-import {blockPrefix,blockRequired,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {AUTO_PF_CALIBRATION,blockPrefix,blockRequired,calibratedBlockFloor,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 /**
  * Position (Pos) History — lifetime, atomic, hot-path-safe.
  *
@@ -128,7 +128,7 @@ const EMPTY: PosHistoryStats = {
  * "average val for specific last count of positions").
  */
 export interface PosWindowStats {
-  blockDecision?: {state:"qualified"|"failed"|"insufficient"|"unknown";key:string;required:number;available:number};
+  blockDecision?: {state:"qualified"|"failed"|"insufficient"|"unknown";key:string;required:number;available:number;minPf?:number};
   /** Positions actually present in the window (≤ requested N). */
   count: number
   /** Wins / count over the window, or 0 when empty. */
@@ -660,15 +660,22 @@ export async function getPosHistoryBatch(
 export function derivePosWindowStats(records: string[], window: number, blocks?:BlockPolicy): PosWindowStats {
   if(blocks){
     const required=blockRequired(blocks),selected=(records??[]).slice(0,required);
-    const values=selected.map(row=>{const parts=row.split("|");return parts.length>=5&&parts[3]!==""&&Number.isFinite(Number(parts[3]))?Number(parts[3]):null});
-    const decision=evaluateBlocks(blockPrefix(values,required),blocks,1.000001);
+    const retention = required + (blocks.autoPfRatio === undefined ? 0 : AUTO_PF_CALIBRATION);
+    const values=(records??[]).slice(0,retention).map(row=>{
+      const parts=row.split("|"), value=Number(parts[3]);
+      return parts.length>=5&&parts[3]!==""&&Number.isFinite(value)?value:null
+    });
+    const prefix = blockPrefix(values, retention);
+    const minPf = blocks.autoPfRatio === undefined ? 1.000001
+      : calibratedBlockFloor(prefix, required, 1.000001, blocks.autoPfRatio);
+    const decision=evaluateBlocks(prefix,blocks,minPf);
     const aggregate=derivePosWindowStats(selected,required);
     let state=decision.state;
     if(state==="qualified"){
       if(aggregate.count!==required || !Number.isFinite(aggregate.profitFactor))state="unknown";
-      else if(aggregate.profitFactor<1.000001)state="failed";
+      else if(aggregate.profitFactor<minPf)state="failed";
     }
-    return {...aggregate,count:decision.count,hasSignal:state==="qualified",blockDecision:{state,key:decision.key,required,available:decision.count}};
+    return {...aggregate,count:decision.count,hasSignal:state==="qualified",blockDecision:{state,key:decision.key,required,available:decision.count,minPf}};
   }
   if (!records || records.length === 0) return EMPTY_WINDOW
   // records arrive newest-first (lpush head).
@@ -1775,7 +1782,7 @@ export async function getStrategySetWindowBatch(
   const out = new Map<string, PosWindowStats>()
   if (unique.length === 0) return out
   try {
-    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks):window)))
+    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
     const client = getRedisClient()
     const batchSize = 500
     for (let start = 0; start < unique.length; start += batchSize) {

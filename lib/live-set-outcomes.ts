@@ -1,4 +1,4 @@
-import {blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {AUTO_PF_CALIBRATION,blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 /**
  * Real exchange results per strategy Set.
  *
@@ -360,7 +360,7 @@ export async function getLiveSetWindowBatch(
     if (count !== undefined && count >= minimum) eligible.push([setKey, count])
   }
   if (eligible.length === 0) return out
-  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks):window)))
+  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
   try {
     const client: any = getRedisClient()
     for (let start = 0; start < eligible.length; start += 500) {

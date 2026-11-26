@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {blockPolicies,blockPrefix,evaluateBlocks,blockPolicyKey,DEFAULT_BLOCK_POLICY,LONG_COUNTS,SHORT_COUNTS,MINIMAL_COUNTS} from './blocks.ts';
+import {calibratedBlockFloor,blockPolicies,blockPrefix,evaluateBlocks,blockPolicyKey,DEFAULT_BLOCK_POLICY,LONG_COUNTS,SHORT_COUNTS,MINIMAL_COUNTS} from './blocks.ts';
 test('20/10/3 uses 33 disjoint closes and a negative tail cannot contaminate the long PF',()=>{
   const v=[-1,-1,-1,...Array(10).fill(-2),...Array(20).fill(3)];
   const p={...DEFAULT_BLOCK_POLICY,shortPolarity:'negative' as const,minimalPolarity:'negative' as const};
@@ -24,7 +24,7 @@ test('all requested signed combinations are distinct and agree with an independe
       }
       const positive=(a:number[])=>{const gp=a.reduce((s,v)=>s+Math.max(v,0),0),gl=a.reduce((s,v)=>s+Math.max(-v,0),0);return gp>gl&&(gl===0||gp/gl>=1.1)};
       const long=values.slice(p.short+p.minimal,p.short+p.minimal+p.long),short=values.slice(p.minimal,p.minimal+p.short),minimal=values.slice(0,p.minimal);
-      const pass=positive(long)&&(p.shortPolarity==='positive'?positive(short):short.reduce((a,b)=>a+b,0)<0)&&(p.minimalPolarity==='positive'?minimal.reduce((a,b)=>a+b,0)>0:minimal.reduce((a,b)=>a+b,0)<0);
+      const pass=positive(long)&&(p.shortPolarity==='positive'?positive(short):positive(short.map(value=>-value)))&&(p.minimalPolarity==='positive'?minimal.reduce((a,b)=>a+b,0)>0:minimal.reduce((a,b)=>a+b,0)<0);
       assert.equal(r.state==='qualified',pass);
     }
   }
@@ -36,4 +36,13 @@ test('zero, unknown, insufficient and signed alternatives remain separate; sizin
   const values=Array.from({length:33},(_,i)=>i%4===0?-1:2);
   const a=evaluateBlocks(blockPrefix(values),p,1.1),b=evaluateBlocks(blockPrefix(values.map(x=>x*3)),p,1.1);
   assert.equal(a.long.pf,b.long.pf);assert.equal(a.state,b.state);
+});
+
+test('Auto PF reads older own positions and preserves the floor on unknown calibration',()=>{
+  const recent=[.02,-.01,.01];
+  const older=Array.from({length:24},(_,i)=>i%2 ? -.01 : .012);
+  const p=blockPrefix([...recent,...older]);
+  assert.ok(calibratedBlockFloor(p,3,1.05,8)>calibratedBlockFloor(p,3,1.05,4));
+  older[2]=NaN;
+  assert.equal(calibratedBlockFloor(blockPrefix([...recent,...older]),3,1.05,4),1.05);
 });

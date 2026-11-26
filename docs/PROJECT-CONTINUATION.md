@@ -1,3 +1,9 @@
+## 2026-11-26 — Auto PF for signed position windows
+
+Strategy Settings expose a whole-number Auto PF ratio from 1 to 10, with default 4. Configured signed stage windows use their own 24 older closes for calibration after excluding the decision window. A negative Short window needs loss-to-gain evidence at the applicable floor. A negative Last remains a signed trigger. Closed-position and venue readers retain their separate evidence scopes.
+
+Source branch `codex/stage-auto-pf-20261126` starts at local revision `cb4b39d8`. The pre-edit verified checkpoint is `/workspace/backups/CTS-K-N/20261126T160718Z-signed-short-last-auto-pf`. Type checking and the focused PF and owned-outcome suites completed. CTS-K-N market and x02 evidence for this revision remain pending. No service or deployment changes were made.
+
 ## 2026-11-26 — Independent Last-N stage validation
 
 Configured signed blocks now use the complete settled window for the stage's PF and drawdown. Long can be omitted when another block is configured. Short counts up to 30 are available in Settings. Each signed condition still uses its own nonoverlapping block. A Set that has reached the venue sample threshold keeps an unavailable exchange window if its rows cannot be read, so paper evidence cannot substitute for an eligible venue ledger.

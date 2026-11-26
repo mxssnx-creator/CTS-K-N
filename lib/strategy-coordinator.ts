@@ -1,4 +1,4 @@
-import {stageBlockPolicies,type StageBlockPolicies} from "@/lib/disjoint-last-n";
+import {normalizeStageAutoPfRatio,stageBlockPolicies,type StageBlockPolicies} from "@/lib/disjoint-last-n";
 import {blockPolicyKey} from "@/shared/cts-lastn/blocks";
 import {derivePosWindowStats} from "@/lib/pos-history";
 import {PORTED_CATALOG as VOLUME_SOURCE_CATALOG} from "@/shared/cts-indications/catalog.ts"
@@ -3776,7 +3776,10 @@ export class StrategyCoordinator {
       this._coordinationSettings.liveEvalPosCount = Number.isFinite(liveEvalRaw) && liveEvalRaw > 0
         ? Math.min(55, Math.max(5, Math.round(liveEvalRaw / 5) * 5))
         : 20
-      this._coordinationSettings.lastNBlocks = stageBlockPolicies((s as any).lastNBlocks)
+      const autoPfRatio = normalizeStageAutoPfRatio((s as any).strategyAutoPfRatio)
+      const lastNBlocks = stageBlockPolicies((s as any).lastNBlocks)
+      for (const policy of Object.values(lastNBlocks)) policy.autoPfRatio = autoPfRatio
+      this._coordinationSettings.lastNBlocks = lastNBlocks
       this._liveConfigLossGateEnabled = liveConfigLossPolicy(s as Record<string, unknown>).enabled
       this._coordinationSettings.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(
         (s as any).liveOutcomeMinCloses ?? (s as any).live_outcome_min_closes,
