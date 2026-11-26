@@ -83,6 +83,7 @@ export interface RealPosition {
   // Variant size multiplier carried to the live executor for volume scaling.
   // block=1.5-2.0, dca=0.5, default/trailing=1.0 (absent → 1.0).
   sizeMultiplier?: number
+  relateRelationKeys?: string[]
   /** Immutable Block sizing inputs used by Live adjustment execution. */
   blockBaseVolumeMultiplier?: number
   blockVolumeRatio?: number

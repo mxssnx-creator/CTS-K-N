@@ -9,6 +9,8 @@ import {
 import { normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
 import { markStrategyPositionInactive, recordStrategyPositionEntry } from "@/lib/pos-history"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
+import { normalizeRelateSettings } from "@/lib/relate-allocation"
+import { getRelateLevels } from "@/lib/relate-outcomes"
 
 let sequence = 0
 const uniqueConnection = (name: string) => `live-outcomes-${name}-${Date.now()}-${sequence++}`
@@ -44,6 +46,27 @@ function realRow(connectionId: string, id: string, pnl: number, overrides: Recor
 }
 
 beforeEach(() => clearLiveSetOutcomeCache())
+
+test("Relate uses only earlier settled, unambiguous exchange outcomes from the requested relation", async () => {
+  const connectionId = uniqueConnection("relate")
+  const policy = normalizeRelateSettings({ enabled: true, minTrades: 60 })
+  const at = 4_000_000
+  for (let index = 0; index < 59; index++) {
+    await recordLiveSetOutcome(realRow(connectionId, `r${index}`, .01, {
+      closedAt: at - 59 + index, relateRelationKeys: ["all", "btc"],
+    }))
+  }
+  const loss = realRow(connectionId, "loss", -.001, { closedAt: at, relateRelationKeys: ["all", "btc"] })
+  await recordLiveSetOutcome(loss)
+  await recordLiveSetOutcome(loss)
+  await recordLiveSetOutcome(realRow(connectionId, "mixed", -.5, {
+    closedAt: at + 1, relateRelationKeys: ["all", "btc"], accumulatedSetKeys: ["a", "b"],
+  }))
+  expect(await getRelateLevels(connectionId, ["all"], policy, at, true)).toEqual(new Map())
+  expect(await getRelateLevels(connectionId, ["all", "btc", "eth"], policy, at + 2, true))
+    .toEqual(new Map([["all", 1], ["btc", 1]]))
+  expect(await getRelateLevels(connectionId, ["all"], policy, at + 2, false)).toEqual(new Map())
+})
 
 describe("settled real results only", () => {
   const connectionId = "outcome-classification"

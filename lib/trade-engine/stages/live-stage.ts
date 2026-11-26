@@ -14,6 +14,7 @@ import { effectiveLeverageCap, maxLeverageForStop, stopLossPercentForLeverage } 
 import { roundTripCostPercent, simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
+import { recordRelateOutcome } from "@/lib/relate-outcomes"
 /**
  * Stage 5: Live Exchange Position Creation Progression
  *
@@ -1799,6 +1800,7 @@ export interface LivePosition {
   // target factor 1 + count × ratio; DCA=0.5; others=1). Stored for audit and
   // protection coordination; Block order deltas use the immutable base.
   sizeMultiplier?: number
+  relateRelationKeys?: string[]
   /** Special-only lane plan; same-side logical legs are exchange-netted. */
   specialPositionPlan?: SpecialPositionPlan
   /** Immutable 1x quantity used to enforce Special's total <= 3x cap. */
@@ -2986,6 +2988,9 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
       ? hash.accumulatedSetKeys
       : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
+    relateRelationKeys: Array.isArray(hash.relateRelationKeys)
+      ? hash.relateRelationKeys
+      : safeJsonParse<string[] | undefined>(hash.relateRelationKeys, undefined),
     pendingAccumulation: typeof hash.pendingAccumulation === "string"
       ? safeJsonParse<LivePosition["pendingAccumulation"]>(hash.pendingAccumulation, undefined)
       : hash.pendingAccumulation,
@@ -4166,6 +4171,11 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       // Only settled exchange outcomes feed the permanent per-Set loss gate.
       // Accounting corrections/replayed closes are idempotent in the ledger.
       await recordLiveConfigOutcome(position)
+      if (position.relateRelationKeys?.length && position.status === "closed" && simulatedOutcome && verifiedOutcome &&
+          notional > 0 && !position.combinedPosCounts && new Set(position.accumulatedSetKeys).size <= 1) {
+        await recordRelateOutcome(position.connectionId, position.id, position.relateRelationKeys, closedAt,
+          netMovePctAfterPositionCost(grossPnlPct, simulatedCloseCostPercent(positionCostPct)), false).catch(() => undefined)
+      }
       // The exchange-only Set rings the coordinator judges live Sets by. A
       // paper/pseudo or still-unsettled row books nothing here; a late
       // settlement arrives through settleDeferredLiveRow().
@@ -14168,6 +14178,7 @@ export async function executeLivePosition(
     executionLane:  liveExecutionLane(realPosition),
     axisWindows:    realPosition.axisWindows,
     sizeMultiplier: realPosition.sizeMultiplier,
+    relateRelationKeys: realPosition.relateRelationKeys,
     specialPositionPlan: specialPositionPlan || undefined,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,

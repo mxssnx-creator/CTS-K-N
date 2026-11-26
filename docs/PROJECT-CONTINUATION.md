@@ -1,3 +1,9 @@
+## 2026-11-26 — Relate loss progression
+
+The Relate branch continues PR #584. Settings expose the 12-step default, Active skip count, Exact Set or Overall scope and relation volume factors. Extra exposure requires the existing exact Set PF, sample and stop gates. Overall records earlier verified closes by relation and separates paper outcomes from venue settlements. The Settings switch continues to govern the sizing adjustment on existing qualifying Normal and Trailing Sets.
+
+Thirty-one focused cases passed, including same-clock exclusion, close deduplication and the separation of paper, venue and mixed-Set outcomes. No CTS-K-N Relate market or venue PF is available for this revision. The checkpoint and test scope are recorded in the memory bank.
+
 ## 2026-11-26 — bounded strategy-stage reads and reuse
 
 Continued draft PR #584 on `codex/trailing-replay-20261122` from `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Strategy passes skip the active-indication read when admission is already blocked. Exact Set counts use bounded Redis HMGETs and closed-position context reads a six-field projection. Concurrent symbols share a pending context refresh. A stage snapshot is reusable only when compact Live inputs were retained, and changes to settings, relevant indication fields or the exact strategy ledger invalidate reuse.

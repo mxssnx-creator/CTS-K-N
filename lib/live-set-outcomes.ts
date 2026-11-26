@@ -32,6 +32,7 @@ import { classifyRow } from "@/lib/results/ledger"
 import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
 import { inferRealStrategyVariant } from "@/lib/strategy-real-stats"
 import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES } from "@/lib/live-outcome-settings"
+import { recordRelateOutcome } from "@/lib/relate-outcomes"
 
 const TTL_SECONDS = 90 * 24 * 60 * 60
 const RING_CAP = 600
@@ -229,6 +230,9 @@ export async function recordLiveSetOutcome(
   if (!row || !connectionId || !positionId) return 0
   const outcome = settledLiveSetOutcome(row, connectionId, options.notionalUsd)
   if (!outcome) return 0
+  if (row.relateRelationKeys && !truthy(row.combinedPosCounts) && new Set(stringList(row.accumulatedSetKeys)).size <= 1)
+    await recordRelateOutcome(connectionId, positionId, stringList(row.relateRelationKeys),
+    outcome.closedAt, outcome.pnlPct, true).catch(() => undefined)
   const shares = liveOutcomeSetShares(row)
   if (shares.size === 0) return 0
   const legOutcomes = blockLegOutcomes(row)
