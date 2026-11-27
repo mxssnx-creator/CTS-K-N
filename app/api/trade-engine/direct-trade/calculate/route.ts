@@ -1,3 +1,5 @@
+import { directTradeHoldLimitMs, HOLD_MINUTE_MS, normalizeDirectHoldMinutes } from "@/lib/position-hold-time"
+import { getEngineTimings } from "@/lib/engine-timings"
 import { type NextRequest, NextResponse } from "next/server"
 import { getConnection, getRedisClient, initRedis } from "@/lib/redis-db"
 import {
@@ -677,7 +679,7 @@ export async function POST(request: NextRequest) {
     const exitTactics = normaliseExitTactics(body.exitTactics)
     const entryTiming: DirectTradeEntryTiming = body.entryTiming === "last_confirmed" ? "last_confirmed" : "current"
     const activityVolumeRatio = Math.max(0, numberOr(body.activityVolumeRatio, 1))
-    const maxHoldMinutes = Math.max(1, numberOr(body.maxHoldMinutes, 120))
+    const maxHoldMinutes = directTradeHoldLimitMs(getEngineTimings(), normalizeDirectHoldMinutes(body.maxHoldMinutes) * HOLD_MINUTE_MS) / HOLD_MINUTE_MS
     const positionCostPercent = normalizePositionCostPercent(body.positionCostPercent ?? POSITION_COST_PERCENT_DEFAULT)
     const takeProfitPositionCostRatios = buildDirectTradeTakeProfitPositionCostRatios(
       normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange),

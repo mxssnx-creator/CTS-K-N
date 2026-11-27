@@ -203,6 +203,7 @@ export async function POST(request: NextRequest) {
       symbol,
       positionDirection,
       quantity,
+      maxHoldMinutes: state?.maxHoldMinutes,
       leverage,
       price: Number.isFinite(price) && price > 0 ? price : undefined,
       reconcileOnly,

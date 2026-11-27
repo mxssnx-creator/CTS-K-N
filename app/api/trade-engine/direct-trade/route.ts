@@ -1,3 +1,4 @@
+import { DEFAULT_DIRECT_HOLD_MINUTES, normalizeDirectHoldMinutes } from "@/lib/position-hold-time"
 import { maintainDirectTradeMemory } from "@/lib/direct-trade-memory-maintenance"
 import { applyDirectTradePositionRetention } from "@/lib/direct-trade-position-retention"
 import { timingSafeEqual } from "node:crypto"
@@ -218,7 +219,7 @@ const DEFAULT_STATE: DirectTradeState = {
   exitTactics: ["bracket", "momentum_reversal", "relative", "time"],
   entryTiming: "current",
   activityVolumeRatio: 1,
-  maxHoldMinutes: 120,
+  maxHoldMinutes: DEFAULT_DIRECT_HOLD_MINUTES,
   takeProfitRatioRange: DIRECT_TRADE_TAKE_PROFIT_RATIO_DEFAULT_RANGE,
   takeProfitRatioStep: DIRECT_TRADE_TAKE_PROFIT_RATIO_STEP_DEFAULT,
   trailingMinTakeProfitRatio: DIRECT_TRADE_TRAILING_MIN_TAKE_PROFIT_RATIO_DEFAULT,
@@ -405,7 +406,7 @@ async function getState(connectionId: string | null = null): Promise<DirectTrade
           : clampDirectTradeHistoryHours(persisted?.historyHours, DEFAULT_STATE.historyHours),
         activityVolumeRatio: Math.max(0, Number(persisted?.activityVolumeRatio) || DEFAULT_STATE.activityVolumeRatio),
         positionCostPercent: normalizePositionCostPercent(persisted?.positionCostPercent ?? DEFAULT_STATE.positionCostPercent),
-        maxHoldMinutes: Math.max(1, Number(persisted?.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes),
+        maxHoldMinutes: normalizeDirectHoldMinutes(persisted?.maxHoldMinutes),
         // Former shipped 4–12 and 4–8 grids were defaults, not deliberate
         // caps. Upgrade only those exact legacy defaults to the fresh 5–10
         // contract; any other persisted range remains the operator's choice.
@@ -896,7 +897,7 @@ export async function POST(request: NextRequest) {
         ...(body.exitTactics !== undefined ? { exitTactics: normaliseExitTactics(body.exitTactics) } : {}),
         ...(body.entryTiming !== undefined ? { entryTiming: body.entryTiming === "last_confirmed" ? "last_confirmed" : "current" as const } : {}),
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
-        ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
+        ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: normalizeDirectHoldMinutes(body.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
         ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),
@@ -1001,7 +1002,7 @@ export async function POST(request: NextRequest) {
         ...(body.exitTactics !== undefined ? { exitTactics: normaliseExitTactics(body.exitTactics) } : {}),
         ...(body.entryTiming !== undefined ? { entryTiming: body.entryTiming === "last_confirmed" ? "last_confirmed" : "current" as const } : {}),
         ...(body.activityVolumeRatio !== undefined ? { activityVolumeRatio: Math.max(0, Number(body.activityVolumeRatio) || 0) } : {}),
-        ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: Math.max(1, Number(body.maxHoldMinutes) || DEFAULT_STATE.maxHoldMinutes) } : {}),
+        ...(body.maxHoldMinutes !== undefined ? { maxHoldMinutes: normalizeDirectHoldMinutes(body.maxHoldMinutes) } : {}),
         ...(body.takeProfitRatioRange !== undefined ? { takeProfitRatioRange: normaliseDirectTradeTakeProfitRatioRange(body.takeProfitRatioRange, currentState.takeProfitRatioRange) } : {}),
         ...(body.takeProfitRatioStep !== undefined ? { takeProfitRatioStep: normaliseDirectTradeTakeProfitRatioStep(body.takeProfitRatioStep, currentState.takeProfitRatioStep) } : {}),
         ...(body.trailingMinTakeProfitRatio !== undefined ? { trailingMinTakeProfitRatio: normaliseDirectTradeTrailingMinTakeProfitRatio(body.trailingMinTakeProfitRatio, currentState.trailingMinTakeProfitRatio) } : {}),

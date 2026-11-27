@@ -228,7 +228,7 @@ export function runDcaBacktest(
     finitePositive(rawConfig.stopLossPct, 2.5),
     enableAdds ? profile.stepDistancesPct[Math.max(0, profile.maxSteps - 1)] + 0.1 : 0,
   )
-  const maxHoldCandles = Math.max(
+  const maxHoldCandles = rawConfig.maxHoldMinutes === 0 ? Infinity : Math.max(
     1,
     Math.ceil(finitePositive(rawConfig.maxHoldMinutes, 12 * 60) / timeframeMinutes),
   )

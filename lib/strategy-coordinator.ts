@@ -1,3 +1,4 @@
+import { holdLimitsSignature } from "@/lib/position-hold-time"
 import {
   LAST_N_STAGES,
   normalizeStageAutoPfRatio,
@@ -794,6 +795,8 @@ export interface StrategySet {
    */
   rowEvaluationKey?: string
   rowEvaluationWindow?: number
+  /** Gross winning net returns / gross losing net returns, on measured closes. */
+  rowRealizedProfitFactor?: number
   /** Explicit false retains an owned position for protection without authorizing new risk. */
   rowEntryQualified?: boolean
   lastNLane?: StageLastNLane
@@ -2007,12 +2010,15 @@ export function materializeContinuousStageRows(
     const minimumSamples = Math.max(1, Math.min(lookback, Math.floor(Number(options.minimumSamples) || ROW_WINDOW_MIN_SAMPLES)))
     const exactWindow = windowKeys
       .map((key) => options.windowBySetKey?.get(key))
-      .find((window): window is PosWindowStats => Boolean(window && (window.blockDecision || window.positionCostRatioCount >= minimumSamples)))
+      .find((window): window is PosWindowStats => Boolean(window && (
+        window.outcomeSource === "exchange" || window.blockDecision || window.positionCostRatioCount >= minimumSamples
+      )))
 
     let sampleCount = 0
     let profitFactor = Number(source.avgProfitFactor) || 0
     let drawdownTime = Number(source.avgDrawdownTime) || 0
     let drawdownRatioValue = Number((source as any).avgDrawdownRatio) || 0
+    let realizedProfitFactor: number | undefined
     let entries = fallbackEntries.length > 0 ? fallbackEntries : allEntries
 
     if (exactWindow) {
@@ -2022,6 +2028,7 @@ export function materializeContinuousStageRows(
       // of synthetic indication entries.
       sampleCount = Math.min(lookback, exactWindow.count)
       profitFactor = exactWindow.positionCostRatio
+      realizedProfitFactor = exactWindow.profitFactor
       drawdownTime = exactWindow.avgDDT
       drawdownRatioValue = exactWindow.drawdownRatio ?? 0
       entries = []
@@ -2035,13 +2042,21 @@ export function materializeContinuousStageRows(
       const count = Math.min(pnls.length, costs.length, lookback)
       if (count > 0) {
         let ratioSum = 0
+        let gains = 0
+        let losses = 0
+        let measured = true
         for (let index = 0; index < count; index++) {
-          ratioSum += movePctToMainTradePfRatio(pnls[index], costs[index])
+          const move = pnls[index]
+          measured &&= Number.isFinite(move) && Number.isFinite(costs[index]) && costs[index] > 0
+          ratioSum += movePctToMainTradePfRatio(move, costs[index])
+          gains += Math.max(0, move)
+          losses += Math.max(0, -move)
         }
         sampleCount = count
         profitFactor = ratioSum / count
         drawdownTime = Number(prev?.avgDDT) || drawdownTime
         drawdownRatioValue = drawdownRatioNewestFirst(pnls.slice(0, count))
+        if (count >= minimumSamples) realizedProfitFactor = measured ? (losses > 0 ? gains / losses : gains > 0 ? 99 : 0) : 0
         entries = []
       } else {
         const finiteEntries = fallbackEntries
@@ -2067,7 +2082,7 @@ export function materializeContinuousStageRows(
     // Never present an invented full N-position window.  When a fresh or
     // active lineage has fewer closes, the public row reports exactly the
     // available sample count and is re-evaluated as new closes arrive.
-    const rowEntryCount = sampleCount > 0
+    const rowEntryCount = exactWindow || sampleCount > 0
       ? Math.min(lookback, sampleCount)
       : Math.min(lookback, Math.max(0, Number(source.entryCount) || 0))
     // A parent Base key is intentionally *not* a wildcard for derived rows:
@@ -2086,7 +2101,9 @@ export function materializeContinuousStageRows(
       (source as unknown as Record<string, unknown>)._hasLivePositions === true,
     )
     const passes = source.rowEntryQualified !== false && (
-      (!exactWindow?.blockDecision || exactWindow.blockDecision.state==="qualified") &&
+      (!exactWindow?.blockDecision || exactWindow.blockDecision.state === "qualified") &&
+      (exactWindow?.outcomeSource !== "exchange" || exactWindow.positionCostRatioCount >= minimumSamples) &&
+      (realizedProfitFactor === undefined || (Number.isFinite(realizedProfitFactor) && realizedProfitFactor > 1)) &&
       profitFactor >= options.metrics.minProfitFactor &&
       drawdownTime <= options.metrics.maxDrawdownTime &&
       passesDrawdownRatio(drawdownRatioValue, Number(options.metrics.maxDrawdownRatio ?? 0))
@@ -2104,6 +2121,7 @@ export function materializeContinuousStageRows(
       rowSourceSetKey: source.setKey,
       rowEvaluationKey: evaluationKey,
       rowEvaluationWindow: rowEntryCount,
+      rowRealizedProfitFactor: realizedProfitFactor,
       rowEntryQualified: passes,
       avgProfitFactor: profitFactor,
       avgDrawdownTime: drawdownTime,
@@ -2147,7 +2165,8 @@ export function applyExactBlockRowWindows(
     // Below ROW_WINDOW_MIN_SAMPLES ratio samples the row keeps its parent's
     // validation (bootstrap) instead of being judged on one or two closes.
     const blockPass = row.rowEntryQualified !== false &&
-      (!window?.blockDecision || window.blockDecision.state === "qualified")
+      (!window?.blockDecision || window.blockDecision.state === "qualified") &&
+      (window?.outcomeSource !== "exchange" || window.positionCostRatioCount >= ROW_WINDOW_MIN_SAMPLES)
     if (!blockPass && !isActive) continue
     if (!window || window.positionCostRatioCount < ROW_WINDOW_MIN_SAMPLES) {
       evaluated.push(blockPass ? row : { ...row, rowEntryQualified: false })
@@ -2162,7 +2181,7 @@ export function applyExactBlockRowWindows(
         ? Number(row.blockMinimumProfitFactor)
         : metrics.minProfitFactor,
     )
-    const passes = blockPass && profitFactor >= minimumProfitFactor &&
+    const passes = blockPass && Number.isFinite(window.profitFactor) && window.profitFactor > 1 && profitFactor >= minimumProfitFactor &&
       drawdownTime <= metrics.maxDrawdownTime &&
       passesDrawdownRatio(drawdownRatioValue, Number(metrics.maxDrawdownRatio ?? 0))
     if (!passes && !isActive) {
@@ -2172,6 +2191,7 @@ export function applyExactBlockRowWindows(
       ...row,
       rowEvaluationKey: evaluationKey,
       rowEvaluationWindow: window.count,
+      rowRealizedProfitFactor: window.profitFactor,
       rowEntryQualified: passes,
       entryCount: window.count,
       avgProfitFactor: profitFactor,
@@ -3315,6 +3335,7 @@ export class StrategyCoordinator {
           row.rowSourceSetKey = source.rowSourceSetKey || source.setKey
           row.rowEvaluationKey = setKey
           row.rowEvaluationWindow = stats.count
+          row.rowRealizedProfitFactor = stats.profitFactor
         }
         const record = coordIndex?.byCoordKey.get(source.setKey) ?? (
           source.rowSourceSetKey ? coordIndex?.byCoordKey.get(source.rowSourceSetKey) : undefined
@@ -9885,9 +9906,11 @@ export class StrategyCoordinator {
     const historicTestSettings = normalizeHistoricTestSettings(
       (await getCanonicalConnectionSettingsOverlay(this.connectionId).catch(() => ({}))) as Record<string, unknown>,
     )
-    const historicValidatedKeys = historicTestSettings.enabled
-      ? await readHistoricTestValidatedKeys(historicRedis, this.connectionId).catch(() => new Set<string>())
-      : new Set<string>()
+    let historicValidatedKeys = new Set<string>()
+    if (historicTestSettings.enabled) {
+      const { getEngineTimings } = await import("@/lib/engine-timings")
+      historicValidatedKeys = await readHistoricTestValidatedKeys(historicRedis, this.connectionId, holdLimitsSignature(getEngineTimings()))
+    }
     const anyExecutionFamilyEnabled = hasAnyStrategyExecutionVariantEnabled(executionPolicy)
     const activeStrategyKeys = new Set<string>()
     const cachedActive = this._activeKeysCache.get(symbol)
@@ -9920,6 +9943,7 @@ export class StrategyCoordinator {
     let rowLive: ReturnType<typeof materializeContinuousStageRows>
     let rowLiveBlockEvaluated: number
     let rowLiveBlock: StrategySet[]
+    let qualifiedDca: StrategySet[] = []
     if (independentLive) {
       // These templates have no executable identity. Both ordinary and Block
       // paths must pass a fresh Live policy independently of the Real verdict.
@@ -9962,11 +9986,23 @@ export class StrategyCoordinator {
         }),
       ))
       const rowWindows = await this.getStrategySetWindowBatch(
-        rowHistoryKeys,
+        rowHistoryKeys.concat(dcaAdditionalSets.map(set => set.setKey)),
         this._coordinationSettings.liveEvalPosCount,
         { stage: "live" },
       )
       liveSub.windows = Date.now() - liveSub.start; liveMark = Date.now()
+      const minimumDcaSamples = Math.max(1, Math.min(this._coordinationSettings.liveEvalPosCount, ROW_WINDOW_MIN_SAMPLES))
+      qualifiedDca = dcaAdditionalSets.filter(set => {
+        const window = rowWindows.get(set.setKey)
+        if (window?.blockDecision && window.blockDecision.state !== "qualified") return false
+        if (window && (window.outcomeSource === "exchange" || window.positionCostRatioCount >= minimumDcaSamples)) {
+          return window.positionCostRatioCount >= minimumDcaSamples && Number.isFinite(window.profitFactor) && window.profitFactor > 1 &&
+            window.positionCostRatio >= metrics.minProfitFactor && window.avgDDT <= metrics.maxDrawdownTime &&
+            passesDrawdownRatio(window.drawdownRatio ?? 0, metrics.maxDrawdownRatio ?? 0)
+        }
+        return set.status === "valid_real" && set.avgProfitFactor >= metrics.minProfitFactor &&
+          set.avgDrawdownTime <= metrics.maxDrawdownTime && passesDrawdownRatio(set.avgDrawdownRatio ?? 0, metrics.maxDrawdownRatio ?? 0)
+      })
       rowLive = materializeContinuousStageRows(rowLiveSource, {
         stage: "live",
         lookback: this._coordinationSettings.liveEvalPosCount,
@@ -10000,9 +10036,10 @@ export class StrategyCoordinator {
       )
     }
     const entryRows = rowLive.rows.filter(set => set.rowEntryQualified !== false)
-    const rowQualifying = entryRows.concat(rowLiveBlock.filter(set => set.rowEntryQualified !== false))
+    const qualifiedBlockRows = rowLiveBlock.filter(set => set.rowEntryQualified !== false)
+    const rowQualifying = entryRows.concat(qualifiedBlockRows)
     const qualifyingBeforeLossGate = Array.from(new Map(
-      rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
+      rowQualifying.concat(qualifiedDca).map((set) => [set.setKey, set]),
     ).values()).sort(compareStrategySetsBestFirst)
     // Sets whose settled real results tripped the live loss gate
     // (lib/live-config-performance.ts) are not executable: without this they
@@ -10021,6 +10058,8 @@ export class StrategyCoordinator {
     const allQualifying = lossGateDeactivated.size > 0
       ? qualifyingBeforeLossGate.filter((set) => !lossGateDeactivated.has(set.setKey))
       : qualifyingBeforeLossGate
+    const liveEvaluated = rowLive.evaluated + rowLiveBlockEvaluated + dcaAdditionalSets.length
+    const declinedLiveRows = rowLive.evaluated - entryRows.length
     if (coordIndex) {
       for (const row of allQualifying) {
         const sourceKey = row.rowSourceSetKey || row.setKey
@@ -10059,7 +10098,7 @@ export class StrategyCoordinator {
       activeStrategyKeys,
       rowRealSets.length || realEvaluatedCount,
     )
-    const realRowCount = rowRealSets.length || realSets.length
+    const realRowCount = (rowRealSets.length ? rowRealSets : realSets).filter(set => set.rowEntryQualified !== false).length
 
     // These are the active-first, quality-ranked Live rows. The dispatch
     // selector independently deduplicates Signal source/config slots and
@@ -10189,18 +10228,18 @@ export class StrategyCoordinator {
           avg_profit_factor: String(liveAvgPF.toFixed(4)),
           avg_drawdown_time: String(Math.round(liveAvgDDT)),
           evaluated:         String(rowLive.evaluated),
-          passed_sets:       String(rowLive.rows.length),
+          passed_sets:       String(entryRows.length),
           row_total:         String(rowLive.evaluated),
           row_mirrored:      String(rowLive.rows.length),
           row_live_created:  String(rowLive.rows.length),
-          row_live_rejected: String(rowLive.rejected),
+          row_live_rejected: String(declinedLiveRows),
           // Keep Block materialisation and its independent PF/DDT result
           // separate: an executable total contains normal Row-Live plus only
           // those Block rows that passed their own exact result window.
           row_live_block_created: String(rowLiveBlockEvaluated),
-          row_live_block_valid: String(rowLiveBlock.length),
+          row_live_block_valid: String(qualifiedBlockRows.length),
           row_live_executable: String(rowQualifying.length),
-          additional_dca_executable: String(dcaAdditionalSets.length),
+          additional_dca_executable: String(qualifiedDca.length),
           executable_total: String(qualifying.length),
           loss_gate_deactivated: String(lossGateDeactivated.size),
           row_active:        String(liveRunningNow),
@@ -10235,16 +10274,16 @@ export class StrategyCoordinator {
           // exceeded `created` on 24 of 59 symbols (e.g. 765 > 492) and every
           // pass-rate built from the pair was wrong. Block has its own fields
           // (row_live_block_created / row_live_block_valid).
-          [`s:${symbol}:passed`]:     String(rowLive.rows.filter((row) => row.variant !== "block").length),
-          [`s:${symbol}:evaluated`]:  String(rowLive.evaluated),
+          [`s:${symbol}:passed`]:     String(qualifyingExcludingBlock.length),
+          [`s:${symbol}:evaluated`]:  String(rowLive.evaluated + dcaAdditionalSets.length),
           [`s:${symbol}:row_total`]:    String(rowLive.evaluated),
           [`s:${symbol}:row_mirrored`]: String(rowLive.rows.length),
           [`s:${symbol}:row_live_created`]: String(rowLive.rows.length),
-          [`s:${symbol}:row_live_rejected`]: String(rowLive.rejected),
+          [`s:${symbol}:row_live_rejected`]: String(declinedLiveRows),
           [`s:${symbol}:row_live_block_created`]: String(rowLiveBlockEvaluated),
-          [`s:${symbol}:row_live_block_valid`]: String(rowLiveBlock.length),
+          [`s:${symbol}:row_live_block_valid`]: String(qualifiedBlockRows.length),
           [`s:${symbol}:row_live_executable`]: String(rowQualifying.length),
-          [`s:${symbol}:additional_dca_executable`]: String(dcaAdditionalSets.length),
+          [`s:${symbol}:additional_dca_executable`]: String(qualifiedDca.length),
           [`s:${symbol}:executable_total`]: String(qualifying.length),
           [`s:${symbol}:row_active`]:   String(liveRunningNow),
           [`s:${symbol}:apf`]:        String(liveAvgPF.toFixed(4)),
@@ -11291,6 +11330,8 @@ export class StrategyCoordinator {
                   configSetKey,
                   strategySetKey: set.setKey,
                   strategyRange: set.strategyRange,
+                  autoHoldComparable: (!set.variant || set.variant === "default") && !set.axisWindows &&
+                    set.indicationType !== "special" && set.indicationType !== "signal",
                   parentSetKey: set.parentSetKey || set.setKey.split("#")[0],
                   specialPositionPlan: bestEntry.specialPositionPlan,
                   ...(profile && {
@@ -11336,11 +11377,12 @@ export class StrategyCoordinator {
         type: "live",
         symbol,
         timestamp: new Date(),
-        totalCreated: rowLive.evaluated,
-        passedEvaluation: rowLive.rows.length,
-        failedEvaluation: rowLive.rejected,
-        avgProfitFactor: rowLive.rows.length > 0 ? rowLive.rows.reduce((s, set) => s + set.avgProfitFactor, 0) / rowLive.rows.length : 0,
-        avgDrawdownTime: rowLive.rows.length > 0 ? rowLive.rows.reduce((s, set) => s + set.avgDrawdownTime, 0) / rowLive.rows.length : 0,
+        totalCreated: allQualifying.length,
+        rawEvaluated: liveEvaluated,
+        passedEvaluation: allQualifying.length,
+        failedEvaluation: Math.max(0, liveEvaluated - allQualifying.length),
+        avgProfitFactor: allQualifying.length > 0 ? allQualifying.reduce((s, set) => s + set.avgProfitFactor, 0) / allQualifying.length : 0,
+        avgDrawdownTime: allQualifying.length > 0 ? allQualifying.reduce((s, set) => s + set.avgDrawdownTime, 0) / allQualifying.length : 0,
       },
       sets: qualifying,
     }

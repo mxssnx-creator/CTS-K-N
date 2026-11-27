@@ -61,6 +61,15 @@ const independentDirection = (closes: any[]) => closes.find((close) => close.typ
 describe("per-type prehistoric measurement on real minute bars", () => {
   beforeEach(() => { directCalls.length = 0 })
 
+  test("replay commits the range deadline and respects an explicit disabled timer", async () => {
+    const bars = series(99, 0.001)
+    const fixed = { maxPositionHoldMs: 6 * MINUTE, autoHoldTimeEnabled: false, positionHoldByRange: { main: 2 } }
+    const timed = await replayDirectIndicationTypes(baseInput(bars, { holdSettings: fixed }))
+    expect(independentDirection(timed.closes)).toMatchObject({ reason: "max_hold", holdMinutes: 2 })
+    const indefinite = await replayDirectIndicationTypes(baseInput(bars, { maxHoldMs: 0 }))
+    expect(indefinite.closes.some(close => close.reason === "max_hold")).toBe(false)
+  })
+
   test("the first decision follows 90 complete bars; a wick to the target exits there, net of cost", async () => {
     const bars = series(100, 0.001, (index, shaped) => index === 95 ? { ...shaped, high: shaped.open * 1.006 } : undefined)
     const result = await replayDirectIndicationTypes(baseInput(bars))

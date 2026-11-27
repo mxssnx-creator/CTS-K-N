@@ -32,6 +32,9 @@ import {
 import { createHistoricCandleSimulator } from "@/lib/historic-test-replay"
 import { loadHistoricTestCandles } from "@/lib/historic-test-candles"
 import { normalizeTrailingGapBasis } from "@/lib/trailing-activation"
+import { getEngineTimings } from "@/lib/engine-timings"
+import { HOLD_MINUTE_MS, holdLimitsSignature, positionHoldCapMs } from "@/lib/position-hold-time"
+import { strategyProcessingRange } from "@/lib/strategy-execution-policy"
 
 /** Entry models the pass evaluates when the connection exposes no explicit set. */
 export const HISTORIC_TEST_DEFAULT_INDICATIONS = ["momentum", "mean_reversion", "breakout", "relative"] as const
@@ -99,11 +102,12 @@ async function defaultRankSymbols(settings: HistoricTestSettings, connectionId: 
   }
 }
 
-async function readLastRunAt(redis: any, connectionId: string): Promise<number | null> {
+async function readLastRunAt(redis: any, connectionId: string, holdLimits?: string): Promise<number | null> {
   try {
     const raw = await redis.get(historicTestReportKey(connectionId))
     if (!raw) return null
     const parsed = JSON.parse(String(raw))
+    if (holdLimits !== undefined && parsed?.holdLimits !== holdLimits) return null
     const ranAt = Number(parsed?.ranAt)
     return Number.isFinite(ranAt) && ranAt > 0 ? ranAt : null
   } catch {
@@ -127,7 +131,9 @@ export async function maybeRunHistoricTest(
 
   if (!settings.enabled) return { connectionId, ran: false, skipped: "disabled", result: null }
 
-  const lastRunAt = await readLastRunAt(deps.redis, connectionId)
+  const timings = getEngineTimings()
+  const holdLimits = deps.simulate ? undefined : holdLimitsSignature(timings)
+  const lastRunAt = await readLastRunAt(deps.redis, connectionId, holdLimits)
   if (!isHistoricTestRunDue(settings, lastRunAt, now)) {
     return { connectionId, ran: false, skipped: "not_due", result: null }
   }
@@ -176,6 +182,7 @@ export async function maybeRunHistoricTest(
 
   const simulate = deps.simulate || createHistoricCandleSimulator({
     loadCandles: (request: HistoricTestSimulationRequest) => loadHistoricTestCandles(request) as Promise<any>,
+    maxHoldMinutesFor: request => positionHoldCapMs(timings, strategyProcessingRange({ indicationType: request.indication })) / HOLD_MINUTE_MS,
     profile: raw as any,
     positionCostPercent,
     // Only the trailing retrace is a retrace. `trailingMinStep` is a window-gate
@@ -208,6 +215,6 @@ export async function maybeRunHistoricTest(
     now,
   })
 
-  await persistHistoricTestRun(deps.redis, result)
+  await persistHistoricTestRun(deps.redis, result, holdLimits)
   return { connectionId, ran: true, skipped: null, result }
 }

@@ -26,9 +26,11 @@ import { posRingKey, recordPosClosedBatch } from "@/lib/pos-history"
 import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { normalizeSignalRisk } from "@/lib/signal-indication"
 import { addRollingTypeCloses } from "@/lib/trade-engine/type-measurement-rolling"
+import { getEngineTimings } from "@/lib/engine-timings"
+import { DEFAULT_POSITION_HOLD_MS, effectiveHoldLimitMs, positionHoldCapMs } from "@/lib/position-hold-time"
 
 const MINUTE_MS = 60_000
-export const SIGNAL_FORWARD_MAX_HOLD_MS = 4 * 60 * MINUTE_MS
+export const SIGNAL_FORWARD_MAX_HOLD_MS = DEFAULT_POSITION_HOLD_MS
 /**
  * A pending entry's cursor trails the newest bar by this lag, so a minute the
  * exchange returned late (or missed from one batch) is still checked on a
@@ -58,6 +60,7 @@ export interface SignalForwardEntry {
   takeProfitPct: number
   stopLossPct: number
   positionCostPct: number
+  holdLimitMs?: number
   /** Bars up to (excluding) this minute have been checked. */
   checkedUntilMs: number
 }
@@ -106,21 +109,21 @@ function settle(entry: SignalForwardEntry, exitTime: number, exitPrice: number, 
  * or the entry with its cursor advanced. Pure.
  *
  * Rules: the entry minute never decides the entry; a bar opening beyond a
- * level exits at its open; a bar touching both levels is a stop; the 4-hour
- * cap exits at the cap time when the first bar after it opens beyond the cap
- * (exit price = that bar's open), and at a bar's close when the cap falls
- * inside the bar.
+ * level exits at its open; a bar touching both levels is a stop. A timed
+ * exit uses the first observable open or close at the deadline.
  */
 export function advanceSignalForwardEntry(
   entry: SignalForwardEntry,
   bars: readonly SignalForwardBar[],
+  currentCapMs = SIGNAL_FORWARD_MAX_HOLD_MS,
 ): SignalForwardAdvance {
   const long = entry.direction === "long"
   const stop = entry.entryPrice * (1 + (long ? -1 : 1) * entry.stopLossPct / 100)
   const target = entry.entryPrice * (1 + (long ? 1 : -1) * entry.takeProfitPct / 100)
   const entryMinuteMs = Math.floor(entry.entryTime / MINUTE_MS) * MINUTE_MS
   const firstBarMs = Math.max(entry.checkedUntilMs, entryMinuteMs + MINUTE_MS)
-  const capMs = entry.entryTime + SIGNAL_FORWARD_MAX_HOLD_MS
+  const holdMs = effectiveHoldLimitMs(currentCapMs, entry.holdLimitMs)
+  const capMs = holdMs > 0 ? entry.entryTime + holdMs : Infinity
   const ordered = [...bars].sort((a, b) => a.timestamp - b.timestamp)
   // The window must reach back to the first minute that still needs a check;
   // a window that starts later (a capped loader) would silently skip minutes.
@@ -128,7 +131,7 @@ export function advanceSignalForwardEntry(
   let lastEnd = Number.NaN
   for (const bar of ordered) {
     if (bar.timestamp < firstBarMs) continue
-    if (bar.timestamp >= capMs) return { close: settle(entry, capMs, bar.open, "max_hold"), entry, covered: true }
+    if (bar.timestamp >= capMs) return { close: settle(entry, bar.timestamp, bar.open, "max_hold"), entry, covered: true }
     const barEnd = bar.timestamp + MINUTE_MS
     if (long ? bar.open <= stop : bar.open >= stop) return { close: settle(entry, bar.timestamp, bar.open, "stop_loss"), entry, covered: true }
     if (long ? bar.open >= target : bar.open <= target) return { close: settle(entry, bar.timestamp, bar.open, "take_profit"), entry, covered: true }
@@ -215,6 +218,7 @@ export async function noteSignalForwardEntries(input: {
         direction,
         sourceId,
         entryTime: nowMs,
+        holdLimitMs: positionHoldCapMs(getEngineTimings(), "signals"),
         entryPrice: price,
         takeProfitPct: protection.takeProfitPct,
         stopLossPct: protection.stopLossPct,
@@ -257,6 +261,7 @@ export async function resolveSignalForwardMeasurements(input: {
     if (!pending || Object.keys(pending).length === 0) return []
     const newestEndMs = Math.max(...input.bars.map((bar) => bar.timestamp)) + MINUTE_MS
     const closes: SignalForwardClose[] = []
+    const capMs = positionHoldCapMs(getEngineTimings(), "signals")
     let expired = 0
     for (const [field, raw] of Object.entries(pending)) {
       let entry: SignalForwardEntry
@@ -266,13 +271,14 @@ export async function resolveSignalForwardMeasurements(input: {
         await client.hdel(key, field).catch(() => 0)
         continue
       }
-      const advanced = advanceSignalForwardEntry(entry, input.bars)
+      const advanced = advanceSignalForwardEntry(entry, input.bars, capMs)
       if (advanced.close) {
         const removed = Number(await client.hdel(key, field).catch(() => 0))
         if (removed === 1) closes.push(advanced.close)
         continue
       }
-      if (!advanced.covered && newestEndMs - (entry.entryTime + SIGNAL_FORWARD_MAX_HOLD_MS) > SIGNAL_FORWARD_REPLAY_LAG_MS) {
+      const holdMs = effectiveHoldLimitMs(capMs, entry.holdLimitMs)
+      if (!advanced.covered && holdMs > 0 && newestEndMs - (entry.entryTime + holdMs) > SIGNAL_FORWARD_REPLAY_LAG_MS) {
         // Well past its cap and the bars never reached its first minute: it can
         // no longer be graded honestly, so it is dropped unbooked and counted.
         await client.hdel(key, field).catch(() => 0)

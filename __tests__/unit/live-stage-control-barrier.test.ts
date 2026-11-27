@@ -4,6 +4,7 @@ import {
   normalizeLiveTradeDirection,
 } from "@/lib/trade-engine/stages/live-stage"
 import { resolveCombinedPosCountDelta } from "@/lib/pos-count-live-target"
+import { DEFAULT_ENGINE_TIMINGS } from "@/lib/engine-timings"
 
 jest.mock("@/lib/redis-db", () => ({
   initRedis: jest.fn(async () => undefined),
@@ -62,6 +63,21 @@ function connector(overrides: Record<string, unknown> = {}) {
 }
 
 describe("executing Live-stage control barriers", () => {
+  test("uses the first confirmed fill and the committed hold on an owned partial fill", () => {
+    const connectionId = "connection-control-test"
+    const now = Date.UTC(2026, 10, 27, 12)
+    const position = livePosition({ status: "partially_filled", createdAt: now - 3_600_000,
+      updatedAt: now - 100, holdLimitMs: 900_000, fills: [{ timestamp: now - 840_000 }],
+      system_tracking_id: `sys-${connectionId}-entry`, connection_tracking_id: `conn-${connectionId}` })
+    const timing = { ...DEFAULT_ENGINE_TIMINGS, maxPositionHoldMs: 3_600_000 }
+    expect(__liveStageTest.expiredLiveHold(position, connectionId, now, timing)).toBeNull()
+    expect(__liveStageTest.expiredLiveHold(position, connectionId, now + 60_000, timing)).toEqual({
+      heldMs: 900_000, maxHoldMs: 900_000,
+    })
+    expect(__liveStageTest.expiredLiveHold(position, "foreign", now + 60_000, timing)).toBeNull()
+    expect(__liveStageTest.expiredLiveHold(position, connectionId, now + 60_000, { ...timing, maxPositionHoldMs: 0 })).toBeNull()
+  })
+
   test("keeps closing and partially-closing exposure in the occupied execution slot", () => {
     expect(__liveStageTest.isActiveLiveSlotStatus("closing")).toBe(true)
     expect(__liveStageTest.isActiveLiveSlotStatus(" CLOSING_PARTIAL ")).toBe(true)

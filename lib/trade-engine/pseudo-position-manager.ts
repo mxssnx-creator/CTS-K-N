@@ -32,6 +32,10 @@ import { normalizeMarketType } from "@/lib/market-types"
 import { tradingPairKey } from "@/lib/trading-pair-keys"
 import { connectionTrackingId } from "@/lib/system-order-ownership"
 import { scanRedisSetMembers } from "@/lib/redis-scan"
+import { getEngineTimings } from "@/lib/engine-timings"
+import { AUTO_HOLD_MINUTES, HOLD_MINUTE_MS, positionHoldCapMs } from "@/lib/position-hold-time"
+import { autoHoldCheckpoint, completeAutoHoldTrial, getAutomaticHoldMs, holdEvidenceKey, queueAutoHoldTrial } from "@/lib/auto-hold-time"
+import { strategyProcessingRange } from "@/lib/strategy-execution-policy"
 
 const DIRECTION_CREATION_LOCK_TTL_MS = 15_000
 const POSITION_CLOSE_LOCK_TTL_MS = 60_000
@@ -404,6 +408,7 @@ export class PseudoPositionManager {
     strategyConfigId?: string  // StrategyConfig.id (DB primary key) — optional link into the historic-fill Set keyspace
     strategyRange?: string
     strategySetKey?: string // exact coordinated Set identity (not the config fingerprint)
+    autoHoldComparable?: boolean
     parentSetKey?: string   // authoritative Base Set identity
     /**
      * Multi-step trailing — when present, forces `trailingEnabled = true`
@@ -591,6 +596,15 @@ export class PseudoPositionManager {
 
       // Calculate position cost
       const positionCost = (finalVolume * params.entryPrice) / volumeCalc.leverage
+      const timings = getEngineTimings()
+      const range = strategyProcessingRange(params)
+      const capMs = positionHoldCapMs(timings, range)
+      const trialKey = timings.autoHoldTimeEnabled && params.autoHoldComparable && !effectiveTrailing && !specialPositionPlan
+        ? holdEvidenceKey({ connectionId: this.connectionId, setKey: params.strategySetKey,
+          symbol: params.symbol, direction: params.side, range, takeProfitPct: takeProfitFactor,
+          stopLossPct: stopLossPercent, positionCostPct: volumeCalc.positionCostPercent, capMs })
+        : undefined
+      const automaticHoldMs = trialKey ? await getAutomaticHoldMs(trialKey, capMs) : undefined
 
       // Store position in Redis
       const id = nanoid()
@@ -602,6 +616,8 @@ export class PseudoPositionManager {
       // enough for the lease to expire, an expired worker must never write after a newer creator.
       if (!(await this.refreshDirectionCreationLock(creationLock))) return null
 
+      const openedAt = Date.now()
+      const openedAtIso = new Date(openedAt).toISOString()
       const positionData: Record<string, string> = {
         connection_id: this.connectionId,
         symbol: params.symbol,
@@ -713,15 +729,20 @@ export class PseudoPositionManager {
             ? String(params.entryPrice)
             : "0",
         status: "open",
-        opened_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        opened_at: openedAtIso,
+        updated_at: openedAtIso,
+        hold_limit_ms: String(automaticHoldMs ?? capMs),
+        ...(automaticHoldMs ? { automatic_hold_time: "1" } : trialKey ? {
+          auto_hold_key: trialKey,
+          auto_hold_next_at: String(openedAt + AUTO_HOLD_MINUTES[0] * HOLD_MINUTE_MS),
+        } : {}),
         ...(specialPositionPlan && {
           special_position_plan: JSON.stringify(specialPositionPlan),
           special_logical_position_count: String(specialPositionPlan.logicalPositionCount),
           special_total_volume_ratio: String(specialPositionPlan.totalVolumeRatio),
           special_max_holding_seconds: String(specialPositionPlan.maximumHoldingSeconds),
           special_expires_at: new Date(
-            Date.now() + specialPositionPlan.maximumHoldingSeconds * 1_000,
+            openedAt + specialPositionPlan.maximumHoldingSeconds * 1_000,
           ).toISOString(),
         }),
       }
@@ -834,6 +855,7 @@ export class PseudoPositionManager {
     positionId: string,
     currentPrice: number,
     existingPosition?: Record<string, string> | null,
+    quoteAt = 0,
   ): Promise<void> {
     try {
       const client = getRedisClient()
@@ -849,12 +871,17 @@ export class PseudoPositionManager {
       const prevPrice = memoPrice ?? parseFloat(position.current_price || "0")
       const epsilon = prevPrice > 0 ? Math.max(prevPrice * 1e-6, 1e-9) : 0
       const priceMoved = Math.abs(currentPrice - prevPrice) > epsilon
+      const now = Date.now()
+      const checkpoint = autoHoldCheckpoint(position, currentPrice, quoteAt, now)
+      if (priceMoved || checkpoint) {
+        await client.hset(this.positionKey(positionId), {
+          ...(priceMoved && { current_price: String(currentPrice), updated_at: new Date(now).toISOString() }),
+          ...checkpoint,
+        })
+        if (checkpoint) Object.assign(position, checkpoint)
+      }
 
       if (priceMoved) {
-        await client.hset(this.positionKey(positionId), {
-          current_price: String(currentPrice),
-          updated_at: new Date().toISOString(),
-        })
         // FIFO-evict oldest entry if the memo grows beyond a safety cap.
         // Entries are normally cleared on close via `closePosition` →
         // `lastWrittenPrice.delete(positionId)`, so this branch only
@@ -918,6 +945,8 @@ export class PseudoPositionManager {
     existingPosition?: Record<string, string> | null,
     /** The exit price when the caller decided it (a level hit); default = the stored mark. */
     exitPrice?: number,
+    /** Timestamp of the observed market quote, used for comparable hold trials. */
+    terminalQuoteAt = 0,
   ): Promise<void> {
     let closeLock: DirectionCreationLock | null = null
     try {
@@ -998,6 +1027,8 @@ export class PseudoPositionManager {
 
       // Build the single close-path pipeline.
       const pipeline = client.multi()
+      const holdTrial = completeAutoHoldTrial(position, reason, Date.parse(closedAtIso), grossPnlPct, netPnlPct, terminalQuoteAt)
+      if (holdTrial) queueAutoHoldTrial(pipeline, position.auto_hold_key, holdTrial)
       pipeline.hset(this.positionKey(positionId), {
         status: "closed",
         closed_at: closedAtIso,

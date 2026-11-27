@@ -183,13 +183,14 @@ export async function runHistoricTest(input: HistoricTestRunInput): Promise<Hist
  * a half-updated validation, and it is replaced rather than merged: a
  * combination that stopped being positive must disappear immediately.
  */
-export async function persistHistoricTestRun(redis: any, result: HistoricTestRunResult): Promise<void> {
+export async function persistHistoricTestRun(redis: any, result: HistoricTestRunResult, holdLimits?: string): Promise<void> {
   const validatedKey = historicTestValidatedKey(result.connectionId)
   const reportKey = historicTestReportKey(result.connectionId)
   const validatedDocument = {
     connectionId: result.connectionId,
     ranAt: result.ranAt,
     window: result.window,
+    holdLimits,
     keys: result.validatedKeys,
     combinations: result.validated.map((row) => ({
       symbol: row.symbol,
@@ -206,6 +207,7 @@ export async function persistHistoricTestRun(redis: any, result: HistoricTestRun
     connectionId: result.connectionId,
     ranAt: result.ranAt,
     window: result.window,
+    holdLimits,
     symbols: result.symbols,
     families: result.families,
     summaries: result.summaries,
@@ -215,11 +217,12 @@ export async function persistHistoricTestRun(redis: any, result: HistoricTestRun
 }
 
 /** Read the validated set; an absent or unreadable document means "nothing validated yet". */
-export async function readHistoricTestValidatedKeys(redis: any, connectionId: string): Promise<Set<string>> {
+export async function readHistoricTestValidatedKeys(redis: any, connectionId: string, holdLimits?: string): Promise<Set<string>> {
   try {
     const raw = await redis.get(historicTestValidatedKey(connectionId))
     if (!raw) return new Set()
     const parsed = JSON.parse(String(raw))
+    if (holdLimits !== undefined && parsed?.holdLimits !== holdLimits) return new Set()
     const keys = Array.isArray(parsed?.keys) ? parsed.keys : []
     return new Set(keys.map((key: unknown) => String(key)))
   } catch {

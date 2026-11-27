@@ -34,7 +34,7 @@ export function strategyProcessingRange(row: any): string {
   if (kind === "signal") return "signals"
   const commonIndicator = String(row?.config?.indicatorType ?? row?.metadata?.commonIndicatorType ?? "").toLowerCase()
   if (kind === "common" && /^(lowrange[a-z0-9]|low-range-)/.test(commonIndicator)) return "low-range"
-  if (kind.includes("direct")) return "direct"
+  if (kind === "direct" || kind === "direct-trade" || kind === "direct_trade") return "direct"
   if (kind.includes("preset") || String(row?.setKey ?? row?.strategy_set_key ?? "").startsWith("preset:")) return "preset"
   return "main"
 }

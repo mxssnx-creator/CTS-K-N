@@ -23,6 +23,7 @@ import { setActiveProtectionFloors } from "@/lib/protection-floors"
 import { normalizePositionCostPercent } from "@/lib/position-cost"
 import { StepBasedIndicators } from "@/lib/step-based-indicators"
 import { ENGINE_STAGE_HISTORY_MINUTES } from "@/lib/engine-stage-history"
+import { getEngineTimings } from "@/lib/engine-timings"
 import { loadRangeMinuteBars } from "@/lib/market-data-loader"
 import { typeMeasurementRollingKey } from "@/lib/prehistoric-type-measurement"
 import { addRollingTypeCloses } from "./type-measurement-rolling"
@@ -152,6 +153,7 @@ export async function advanceTypeMeasurement(input: AdvanceTypeMeasurementInput)
       rangeStartMs: resumed ? state!.lastBarMs : input.rangeStartMs,
       rangeEndMs: input.rangeEndMs,
       positionCostPct: context.positionCostPct,
+      holdSettings: getEngineTimings(),
       indicationSettings: context.indicationSettings,
       // The dispatch path's protection for a direct indication row.
       protectionFor: ({ type, profitFactor, row }) => {
@@ -352,6 +354,7 @@ export async function backfillTypeMeasurement(input: TypeMeasurementBackfillInpu
       rangeStartMs: startMs,
       rangeEndMs: endMs,
       positionCostPct: context.positionCostPct,
+      holdSettings: getEngineTimings(),
       indicationSettings: context.indicationSettings,
       protectionFor: ({ type, profitFactor, row }) => {
         const protection = (type === "trend"

@@ -8,6 +8,7 @@ import { strategyOutcomeRecord } from "@/lib/pos-history"
 import { prepareStageLastNTape, selectStageLastNWindow, stageLastNLaneKey, stageLastNRetention, type StageLastNTape } from "@/lib/stage-last-n-lineage"
 import { AUTO_PF_CALIBRATION, blockRequired, blockWindow, settledBlockProfitFactorFloor, type BlockPolicy, type BlockPrefix } from "@/shared/cts-lastn/blocks"
 import { DAY, MINUTE, loadReplayCandles, type ReplayPeriod } from "./replay-market-input"
+import { AUTO_HOLD_MINUTES, AUTO_HOLD_PROOF_WINDOW, chooseAutomaticHoldMs, type HoldTimeTrial } from "@/lib/position-hold-time"
 
 const NOTIONAL = 100
 const STARTING_EQUITY = 10_000
@@ -32,6 +33,12 @@ const signed = (policy: BlockPolicy) => ["positive", "negative"].flatMap(shortPo
 const perStage = (choose: (stage: LastNStage) => BlockPolicy[]) => LAST_N_STAGES.map(choose)
 type Grid = { name: string; stages: BlockPolicy[][]; legacyFloor?: boolean; execFloor?: number }
 const autoPfStudy = process.argv.includes("--auto-pf-study")
+const autoHoldStudy = process.argv.includes("--auto-hold-study")
+const holdArgument = process.argv.find(argument => argument.startsWith("--hold-minutes="))
+const holdMinutes = holdArgument ? Number(holdArgument.split("=")[1]) : 120
+if (!Number.isSafeInteger(holdMinutes) || holdMinutes < 5 || holdMinutes > 720) {
+  throw new Error("Hold study requires a whole number from 5 to 720 minutes")
+}
 const GRIDS: Grid[] = autoPfStudy ? [
   { name: "signed-before", stages: perStage(() => signed(positive)), legacyFloor: true },
   ...[undefined, 1, 4, 7, 10].map(ratio => ({
@@ -41,6 +48,8 @@ const GRIDS: Grid[] = autoPfStudy ? [
   ...[1.2, 1.35].map(execFloor => ({
     name: `signed-exec-pf-${execFloor}`, stages: perStage(() => signed(positive)), execFloor,
   })),
+] : holdArgument ? [
+  { name: "signed", stages: perStage(() => signed(positive)) },
 ] : [
   { name: "single-positive", stages: perStage(() => [positive]) },
   { name: "signed", stages: perStage(() => signed(positive)) },
@@ -70,7 +79,8 @@ const PLANS = [...new Map(expandedPlans.map(plan => [
   [plan.entry, plan.tf, plan.tp, plan.sl, plan.adds].join("|"), plan,
 ])).values()]
 type Decision = { key: string; history: string; pf: number }
-type Fill = { closedAt: number; pnlPct: number; adds: number }
+type HoldStudyTrade = DcaBacktestTrade & { automaticHold?: boolean }
+type Fill = { closedAt: number; pnlPct: number; adds: number; automaticHold?: boolean }
 type Run = { fills: Fill[]; stageFills: Fill[][]; evaluated: number[]; passed: number[]; opportunities: number }
 
 function aggregateCandles(candles: readonly DcaBacktestCandle[], minutes: number): DcaBacktestCandle[] {
@@ -89,11 +99,39 @@ function aggregateCandles(candles: readonly DcaBacktestCandle[], minutes: number
   return aggregated
 }
 
-function replay(trades: readonly DcaBacktestTrade[], grid: Grid, start: number, cost: number): Run {
+/** Paired shadows finish under the control cap before their outcomes can tune future entries. */
+function replayAutomaticHolds(trades: readonly DcaBacktestTrade[], bars: readonly DcaBacktestCandle[], tf: number): HoldStudyTrade[] {
+  const priceByTime = new Map(bars.map(bar => [bar.time, bar.close]))
+  const trials: HoldTimeTrial[] = []
+  return trades.map(trade => {
+    const holdMs = chooseAutomaticHoldMs(trials, holdMinutes * MINUTE, trade.entryTime)
+    const timedNetPct: HoldTimeTrial["timedNetPct"] = {}
+    for (const minutes of AUTO_HOLD_MINUTES) {
+      if (minutes >= holdMinutes) break
+      if (minutes % tf !== 0) continue
+      const deadline = trade.entryTime + minutes * MINUTE
+      if (trade.exitTime <= deadline) timedNetPct[minutes] = trade.pnlPctOfInitialNotional
+      else {
+        const mark = priceByTime.get(deadline)
+        if (mark !== undefined) timedNetPct[minutes] = (mark / trade.initialEntryPrice - 1) * (trade.direction === "long" ? 100 : -100) - BASE_COST
+      }
+    }
+    trials.push({ closedAt: trade.exitTime, baselineNetPct: trade.pnlPctOfInitialNotional, timedNetPct })
+    if (trials.length > AUTO_HOLD_PROOF_WINDOW) trials.shift()
+    if (!holdMs || trade.entryTime + holdMs >= trade.exitTime) return trade
+    const exitTime = trade.entryTime + holdMs
+    const pnlPct = timedNetPct[holdMs / MINUTE]
+    if (pnlPct === undefined) return trade
+    return { ...trade, exitTime, pnlPctOfInitialNotional: pnlPct,
+      drawdownTimeMin: Math.min(trade.drawdownTimeMin, holdMs / MINUTE), automaticHold: true }
+  })
+}
+
+function replay(trades: readonly HoldStudyTrade[], grid: Grid, start: number, cost: number): Run {
   const result: Run = { fills: [], stageFills: [[], [], [], []], opportunities: 0, evaluated: [0, 0, 0, 0], passed: [0, 0, 0, 0] }
   const retain = stageLastNRetention(grid.stages.flat())
   const rings = new Map<string, string[]>()
-  let pending: { trade: DcaBacktestTrade; path?: Decision; stagesReached: number } | undefined
+  let pending: { trade: HoldStudyTrade; path?: Decision; stagesReached: number } | undefined
   const bookClose = () => {
     if (!pending) return
     const { trade, path } = pending
@@ -110,7 +148,7 @@ function replay(trades: readonly DcaBacktestTrade[], grid: Grid, start: number, 
         rings.set(key, ring)
       }
     }
-    const fill = { closedAt: trade.exitTime, pnlPct: modelNet, adds: trade.dcaSteps }
+    const fill = { closedAt: trade.exitTime, pnlPct: modelNet, adds: trade.dcaSteps, automaticHold: trade.automaticHold }
     if (path) result.fills.push(fill)
     if (autoPfStudy) for (let stage = 0; stage < pending.stagesReached; stage++) result.stageFills[stage].push(fill)
     pending = undefined
@@ -185,12 +223,13 @@ function measure(fills: Fill[], from: number, to: number) {
     positiveDays: [...netDays.values()].filter(net => net > 0).length,
     positiveHours: [...netHours.values()].filter(net => net > 0).length,
     activeHours: netHours.size,
+    ...(autoHoldStudy && { automaticHoldExits: sorted.filter(fill => fill.automaticHold).length }),
   }
 }
 
 const [inputPath, outputPath, ...options] = process.argv.slice(2)
 const frozenPath = sweep ? options[options.indexOf("--sweep") + 1] : undefined
-if (!inputPath || !outputPath) throw new Error("Usage: last-n-stage-market-replay.ts STUDY.json RESULTS.json [--sweep [FROZEN.json]] [--auto-pf-study]")
+if (!inputPath || !outputPath) throw new Error("Usage: last-n-stage-market-replay.ts STUDY.json RESULTS.json [--sweep [FROZEN.json]] [--auto-pf-study] [--hold-minutes=N] [--auto-hold-study]")
 const frozen: Array<{ plan: string; windows: string }> | undefined = frozenPath && !frozenPath.startsWith("--") ? JSON.parse(readFileSync(frozenPath, "utf8")) : undefined
 const periods = JSON.parse(readFileSync(inputPath, "utf8")) as ReplayPeriod[]
 const began = performance.now()
@@ -202,7 +241,8 @@ const study = periods.map(period => {
   if (!validBounds || !starts.every(value => Number.isSafeInteger(value) && value % DAY === 0)) {
     throw new Error(`Invalid complete UTC day boundaries for ${period.name}`)
   }
-  const rows = PLANS.flatMap(plan => GRIDS.filter(grid => !frozen || frozen.some(row => row.plan === plan.name && row.windows === grid.name))
+  const rows = PLANS.filter(plan => !holdArgument || holdMinutes % plan.tf === 0)
+    .flatMap(plan => GRIDS.filter(grid => !frozen || frozen.some(row => row.plan === plan.name && row.windows === grid.name))
     .map(grid => ({ plan, grid, markets: Array<[Run, Run]>() })))
   if (rows.length === 0) throw new Error("The frozen profiles matched no configured replay profiles")
   for (const market of period.markets) {
@@ -216,10 +256,11 @@ const study = periods.map(period => {
       }),
       enableAdds: plan.adds > 0,
       timeframeMinutes: plan.tf, entry: plan.entry, takeProfitPct: plan.tp, stopLossPct: plan.sl,
-      maxHoldMinutes: 120, roundTripCostPct: BASE_COST, slippagePct: 0,
-    }).trades.filter(trade => trade.exitReason !== "timeout" || trade.holdTimeMin >= 120)]))
+      maxHoldMinutes: holdMinutes, roundTripCostPct: BASE_COST, slippagePct: 0,
+    }).trades.filter(trade => trade.exitReason !== "timeout" || trade.holdTimeMin >= holdMinutes)]))
     for (const row of rows) {
-      const trades = tradeTapes.get(row.plan.name)!
+      const baseline = tradeTapes.get(row.plan.name)!
+      const trades = autoHoldStudy && row.plan.adds === 0 ? replayAutomaticHolds(baseline, aggregated.get(row.plan.tf)!, row.plan.tf) : baseline
       row.markets.push([
         replay(trades, row.grid, period.warmupEnd, BASE_COST),
         replay(trades, row.grid, period.warmupEnd, STRESS_COST),
@@ -259,5 +300,5 @@ const study = periods.map(period => {
 })
 writeFileSync(outputPath, JSON.stringify({
   costsPct: { base: BASE_COST, stress: STRESS_COST }, notionalUsd: NOTIONAL, startingEquityUsd: STARTING_EQUITY,
-  grid: GRIDS, study, elapsedMs: performance.now() - began, maxRssKiB: process.resourceUsage().maxRSS,
+  grid: GRIDS, holdMinutes, automaticHold: autoHoldStudy, study, elapsedMs: performance.now() - began, maxRssKiB: process.resourceUsage().maxRSS,
 }, null, 2) + "\n")

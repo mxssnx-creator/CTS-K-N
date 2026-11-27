@@ -27,6 +27,8 @@ const LOG_PREFIX = "[v0] [RealPositionStage]"
 
 export interface RealPosition {
   strategyRange?: string
+  /** Explicit deadline configured by a strategy with its own time limit. */
+  holdLimitMs?: number
   id: string
   connectionId: string
   symbol: string

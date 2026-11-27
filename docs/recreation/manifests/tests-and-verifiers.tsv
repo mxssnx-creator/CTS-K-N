@@ -392,6 +392,7 @@ unit	__tests__/unit/position-book-stats.test.ts
 unit	__tests__/unit/position-context-fingerprint-memo.test.ts
 unit	__tests__/unit/position-cost-net-results.test.ts
 unit	__tests__/unit/position-flow-calculations.test.ts
+unit	__tests__/unit/position-hold-time.test.ts
 unit	__tests__/unit/position-index-established-with-hash.test.ts
 unit	__tests__/unit/positions-stats-route.test.ts
 unit	__tests__/unit/post-entry-audit-retry.test.ts
