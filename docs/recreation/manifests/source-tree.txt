@@ -611,6 +611,7 @@ __tests__/unit/trade-history-own-scope.test.ts
 __tests__/unit/trade-history-pending-and-sticky.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
+__tests__/unit/trade-simulation-ledger.test.ts
 __tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-activation.test.ts
@@ -1405,11 +1406,14 @@ docs/stress/offline-70-baseline.md
 docs/stress/offline-70-compare.md
 docs/stress/offline-70-verify.json
 docs/stress/offline-70-verify.md
+docs/stress/trade-window-simulation.md
 docs/system-modules-map.md
 docs/verification/auto-pf-quality-20261127.md
 docs/verification/complete-dca-fixtures-20261114.md
 docs/verification/disjoint-lastn-volume-20261111.md
 docs/verification/exact-last-n-stage-lineage-20261127.md
+docs/verification/last-n-lanes-3-days-20261127.md
+docs/verification/last-n-validation-7day-20261127.md
 docs/verification/max-auto-hold-time-20261127.md
 docs/verification/micro-distances-x02-20261112.md
 docs/verification/older-change-integration-20260906.json
@@ -1974,6 +1978,8 @@ lib/trade-engine/type-measurement.ts
 lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts
+lib/trade-simulation/gate-explain.ts
+lib/trade-simulation/ledger.ts
 lib/trading-pair-keys.ts
 lib/trading-round-trip-cost.cjs
 lib/trading-round-trip-cost.ts
@@ -2030,6 +2036,15 @@ public/screenshot-styled.png
 public/top-info-layers/circuit-flow.png
 public/top-info-layers/market-mesh.png
 public/top-info-layers/signal-grid.png
+reports/last-n-lanes-3-days/lanes.md
+reports/last-n-lanes-3-days/study-1122.json
+reports/last-n-lanes-3-days/study-1124.json
+reports/last-n-lanes-3-days/study-1126.json
+reports/last-n-validation-7day/lanes.md
+reports/last-n-validation-7day/study-7day.json
+reports/trade-window-5d-3d-30sym/trade-window-report.html
+reports/trade-window-5d-3d-30sym/trade-window-report.md
+reports/trade-window-5d-3d-30sym/trade-window-simulation.json
 scripts/add-bingx-credentials.js
 scripts/apply-production-settings.sh
 scripts/audit-bingx-account-readonly.ts
@@ -2132,6 +2147,7 @@ scripts/regression/price-distance-grid-replay.ts
 scripts/regression/replay-market-input.ts
 scripts/regression/trailing-walkforward.ts
 scripts/remove-stray-bun-lock.mjs
+scripts/render-trade-window-report.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
@@ -2165,6 +2181,7 @@ scripts/short-range-capture.ts
 scripts/short-range-research.ts
 scripts/simulate-last-6h.ts
 scripts/simulate-signal-source-ranking.ts
+scripts/simulate-trade-window.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs
 scripts/start-development.mjs

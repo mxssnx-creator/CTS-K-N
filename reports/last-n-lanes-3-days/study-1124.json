@@ -1,0 +1,71 @@
+[
+ {
+  "name": "prehist-2026-11-23__trade-2026-11-23+1",
+  "begin": 1795392000000,
+  "warmupEnd": 1795478400000,
+  "selectionEnd": 1795564800000,
+  "end": 1795564800000,
+  "markets": [
+   {
+    "symbol": "BTC-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/BTC-USDT.csv",
+    "sha256": "5b42c554f2828720e2362f4cf379172ce3bef4685777d5569cf5cf66b84b8abb"
+   },
+   {
+    "symbol": "SOL-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/SOL-USDT.csv",
+    "sha256": "be91cfd10a89a8bee76f0291021c633959990d1fce405933c8570f39958616c4"
+   },
+   {
+    "symbol": "BCH-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/BCH-USDT.csv",
+    "sha256": "dea76e167e245b3bce55418458271f1195d5fdb92a5251924d48a61523d93197"
+   },
+   {
+    "symbol": "XRP-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/XRP-USDT.csv",
+    "sha256": "e42f4b75b125f500ef8eee11588572e6d755a68163f0af27ff625cfd607c97b2"
+   },
+   {
+    "symbol": "ETH-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/ETH-USDT.csv",
+    "sha256": "2ee0cd0184ff99c0dbfa6002736c68eab0f9417355e70cc8e15258b8613a95df"
+   },
+   {
+    "symbol": "BNB-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/BNB-USDT.csv",
+    "sha256": "e54fbf2f8dbd9b64a3039189235ba59e0e1f7c3f9941dc32484a25db6da4a566"
+   },
+   {
+    "symbol": "DOGE-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/DOGE-USDT.csv",
+    "sha256": "ace052d81dda46c83e6f350ce968d6a1c0102884ed5ca97312172943f795d7d6"
+   },
+   {
+    "symbol": "ADA-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/ADA-USDT.csv",
+    "sha256": "4e732751a1bec039ca25bd97bcf2163ee3e48559634e1a31f643585c06a99dd0"
+   },
+   {
+    "symbol": "AVAX-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/AVAX-USDT.csv",
+    "sha256": "332c5587b4a1d9e4b2a7b50c44892f53947abe66ace7369ee884171e095bc2b1"
+   },
+   {
+    "symbol": "LINK-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/LINK-USDT.csv",
+    "sha256": "a779d41366df06304d57d117462a52374aed8695243bc2d2740b5900218c854c"
+   },
+   {
+    "symbol": "DOT-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/DOT-USDT.csv",
+    "sha256": "838414dc2771657078bc100f7b6f0d4daa0941720a746b861c44756146d81026"
+   },
+   {
+    "symbol": "ATOM-USDT",
+    "path": "/tmp/claude-0/-home-user-CTS-K-N/c5c80c68-47cd-5c68-8567-b4f43d86b868/scratchpad/lastn/data-1124/ATOM-USDT.csv",
+    "sha256": "d672c7dcfaa3e9717a42ff25263cb6b699e5e8445df7f7b824813d2432e6305e"
+   }
+  ]
+ }
+]
