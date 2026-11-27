@@ -1,3 +1,7 @@
+## 2026-11-27 — Signals and stage Long continuation
+
+The release branch starts from canonical main `df70eb9dc97100fb96e8fa3eb7b82e092cb33059`. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T015254Z-long-lanes-before-edit`. Settings add Stage Long inheritance and no-Long choices with per-policy evidence, retaining a single dispatch decision per Set. 96 focused tests and TypeScript passed. The 30-symbol, 72-hour Signals score rejected all four tested sources with the native source-ranking calculation. This was an archived source/exit study. Full native execution PF remains unmeasured. No production broker or Redis data was changed by the audit.
+
 ## 2026-11-27 — independent forward-stage release checks
 
 The combined branch at `cb6e5502` exposed a TypeScript fixture inference error in the older-close Auto PF test. The test's tape now accepts numeric returns including its explicit unknown marker. The linked canonical worktree passed TypeScript, four signed Last-N checks and 146 focused stage ownership, Relate and live-dispatch tests.

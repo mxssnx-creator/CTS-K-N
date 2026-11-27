@@ -1,5 +1,7 @@
+import { stageBlockChoices, stageBlockPolicies, stageBlockRevision } from "@/lib/disjoint-last-n"
 import { getRedisClient } from "@/lib/redis-db"
 import {
+  derivePosWindowStats,
   getPosHistory,
   getPosHistoryOverall,
   getPosWindow,
@@ -84,4 +86,21 @@ describe("recordPosClosedBatch", () => {
       await client.del(bucketHash, bucketRing, overallHash, overallRing)
     }
   })
+})
+
+
+test("continues with separate Base-Long and no-Long evidence on the exact same stage ring", () => {
+  const signed = { short: 2, minimal: 1, shortPolarity: "positive", minimalPolarity: "positive" }
+  const input = { base: { ...signed, long: 4 }, main: { ...signed, long: 10, longMode: "both" } }
+  const settings = stageBlockPolicies(input)
+  const choices = stageBlockChoices(settings, "main")
+  const tape = [1, 1, 1, -2, -2, -2, -2].map(net => [net, 0.1, 1, net, 0.1].join("|"))
+  const evidence = derivePosWindowStats(tape, 12, choices)
+  expect(evidence.blockAlternatives?.map(result => [result.decision.required, result.decision.state]))
+    .toEqual([[7, "failed"], [3, "qualified"]])
+  expect(evidence.blockDecision).toMatchObject({ required: 3, state: "qualified" })
+  expect(stageBlockRevision(settings)).not.toEqual(stageBlockRevision(stageBlockPolicies({
+    ...input, base: { ...input.base, long: 5 },
+  })))
+  expect(() => stageBlockPolicies({ main: input.main })).toThrow(/Configure Base Long/)
 })

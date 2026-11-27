@@ -26,12 +26,12 @@ export const SIGNAL_MAX_ORDERS_MAX = 1_000_000
 /** Optional orders limit for ONE symbol: 0 = unlimited (default); a finite value below 32 becomes 32. */
 export const SIGNAL_MAX_ORDERS_PER_SYMBOL_MIN = 32
 /**
- * Minimum profit factor for Signals. A value below 1.2 is raised to 1.25; a
+ * Minimum profit factor for Signals. A value below 1.2 is raised to 1.35; a
  * value from 1.2 upward is kept. Applies to the Signal source validation and to
  * the Signal exact-configuration gate.
  */
 export const SIGNAL_MIN_PF_RAISE_BELOW = 1.2
-export const SIGNAL_MIN_PF_DEFAULT = 1.25
+export const SIGNAL_MIN_PF_DEFAULT = 1.35
 export const SIGNAL_MIN_PF_MAX = 5
 
 export type SignalPositionDirection = "long" | "short"

@@ -26,21 +26,21 @@ describe("Signal orders per symbol: unlimited by default, a finite value below 3
   })
 })
 
-describe("Signal minimum PF: below 1.2 becomes 1.25, 1.2 and above is kept", () => {
-  test.each([[undefined, 1.25], [null, 1.25], ["x", 1.25], [0, 1.25], [0.3, 1.25], [1, 1.25], [1.1, 1.25], [1.19, 1.25], [1.199, 1.25]])(
+describe("Signal minimum PF: below 1.2 becomes 1.35, 1.2 and above is kept", () => {
+  test.each([[undefined, 1.35], [null, 1.35], ["x", 1.35], [0, 1.35], [0.3, 1.35], [1, 1.35], [1.1, 1.35], [1.19, 1.35], [1.199, 1.35]])(
     "%p -> %p", (input, expected) => expect(normalizeSignalMinProfitFactor(input)).toBe(expected))
   test.each([[1.2, 1.2], [1.22, 1.22], [1.25, 1.25], [1.6, 1.6], [5, 5], [9, 5]])(
     "%p is kept (max 5) -> %p", (input, expected) => expect(normalizeSignalMinProfitFactor(input)).toBe(expected))
-  test("the exact-configuration gate is Signal's own setting: default 1.25, legacy 1.1 and 0.3 raised", () => {
-    expect(DEFAULT_SIGNAL_INDICATION_SETTINGS.configMinimumPfRatio).toBe(1.25)
-    expect(normalizeSignalIndicationSettings({}).configMinimumPfRatio).toBe(1.25)
-    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.1 }).configMinimumPfRatio).toBe(1.25)
-    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 0.3 }).configMinimumPfRatio).toBe(1.25)
+  test("the exact-configuration gate is Signal's own setting: default 1.35, legacy 1.1 and 0.3 raised", () => {
+    expect(DEFAULT_SIGNAL_INDICATION_SETTINGS.configMinimumPfRatio).toBe(1.35)
+    expect(normalizeSignalIndicationSettings({}).configMinimumPfRatio).toBe(1.35)
+    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.1 }).configMinimumPfRatio).toBe(1.35)
+    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 0.3 }).configMinimumPfRatio).toBe(1.35)
     expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.4 }).configMinimumPfRatio).toBe(1.4)
   })
-  test("the source validation minimum: default 1.25, a stored 1 is raised, 1.3 stays", () => {
-    expect(normalizeSignalSourceValidationSettings({}).minProfitFactor).toBe(1.25)
-    expect(normalizeSignalSourceValidationSettings({ minProfitFactor: 1 }).minProfitFactor).toBe(1.25)
+  test("the source validation minimum: default 1.35, a stored 1 is raised, 1.3 stays", () => {
+    expect(normalizeSignalSourceValidationSettings({}).minProfitFactor).toBe(1.35)
+    expect(normalizeSignalSourceValidationSettings({ minProfitFactor: 1 }).minProfitFactor).toBe(1.35)
     expect(normalizeSignalSourceValidationSettings({ minProfitFactor: 1.3 }).minProfitFactor).toBe(1.3)
   })
 })
@@ -69,8 +69,8 @@ describe("the settings are in Settings", () => {
   test("the Signal settings form has the per-symbol orders cap, and the PF floor is in the validation panel", () => {
     const form = src("components/settings/signal-indication-settings.tsx")
     expect(form).toContain('["maxOrdersPerSymbol", "Max orders per symbol (0 = unlimited, below 32 becomes 32)", 0, 1000000, 1]')
-    expect(form).toContain('["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.25)", 1.2, 5, 0.05]')
+    expect(form).toContain('["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.35)", 1.2, 5, 0.05]')
     expect(src("components/settings/signal-source-validation-panel.tsx"))
-      .toContain('["minProfitFactor", "Min PF after costs (below 1.2 becomes 1.25)", 1.2, 5, 0.05]')
+      .toContain('["minProfitFactor", "Min PF after costs (below 1.2 becomes 1.35)", 1.2, 5, 0.05]')
   })
 })

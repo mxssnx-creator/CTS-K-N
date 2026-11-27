@@ -146,7 +146,7 @@ export function normalizeSignalSourceValidationSettings(input: unknown): SignalS
   ])) as unknown as SignalSourceTactics
   return {
     minSamples: Math.round(bounded(raw.minSamples, d.minSamples, d.minSamples, 500)),
-    // Signal-only minimum PF: below 1.2 becomes 1.25, 1.2 and above is kept.
+    // Signal-only minimum PF: below 1.2 becomes 1.35, 1.2 and above is kept.
     minProfitFactor: normalizeSignalMinProfitFactor(raw.minProfitFactor),
     maxDrawdownPct: bounded(raw.maxDrawdownPct, d.maxDrawdownPct, 0.1, d.maxDrawdownPct),
     maxLossStreak: Math.round(bounded(raw.maxLossStreak, d.maxLossStreak, 1, d.maxLossStreak)),
@@ -197,7 +197,6 @@ export function computeSignalSourceMetrics(
 ): SignalSourceMetrics {
   const ordered = outcomes
     .filter((outcome) => outcome.sourceId === sourceId && Number.isFinite(outcome.netPct))
-    .slice()
     .sort((a, b) => a.closedAt - b.closedAt || a.symbol.localeCompare(b.symbol) || a.netPct - b.netPct)
     .slice(-Math.max(1, evaluationWindow))
   let equity = 0
@@ -362,15 +361,22 @@ export function buildSignalSourceRanking(input: {
   const entries: SignalSourceRankingEntry[] = []
   const validated: SignalSourceRankingEntry[] = []
   const bootstrap: SignalSourceRankingEntry[] = []
+  const outcomesBySource = new Map<string, SignalSourceOutcome[]>()
+  for (const outcome of input.outcomes) {
+    let rows = outcomesBySource.get(outcome.sourceId)
+    if (!rows) outcomesBySource.set(outcome.sourceId, rows = [])
+    rows.push(outcome)
+  }
   for (const source of input.registry) {
-    const metrics = computeSignalSourceMetrics(source.id, input.outcomes)
+    const rows = outcomesBySource.get(source.id) ?? []
+    const metrics = computeSignalSourceMetrics(source.id, rows)
     const entry: SignalSourceRankingEntry = {
       sourceId: source.id,
       status: "candidate",
       reason: "insufficient_samples",
       rank: null,
       metrics,
-      negativeHoursUtc: settings.tactics.hourOfDayGate ? negativeHoursOfDay(source.id, input.outcomes) : [],
+      negativeHoursUtc: settings.tactics.hourOfDayGate ? negativeHoursOfDay(source.id, rows) : [],
     }
     entries.push(entry)
     if (!source.enabled) {

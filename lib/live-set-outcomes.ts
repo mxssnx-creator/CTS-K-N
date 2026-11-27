@@ -1,4 +1,5 @@
-import {AUTO_PF_CALIBRATION,blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {stageBlockRetention, type StageBlocks} from "@/lib/disjoint-last-n";
+import {AUTO_PF_CALIBRATION} from "@/shared/cts-lastn/blocks";
 /**
  * Real exchange results per strategy Set.
  *
@@ -349,7 +350,7 @@ export async function getLiveSetWindowBatch(
   window: number,
   minCloses = DEFAULT_LIVE_OUTCOME_MIN_CLOSES,
   knownCounts?: Map<string, number>,
-  blocks?:BlockPolicy,
+  blocks?:StageBlocks,
 ): Promise<Map<string, PosWindowStats>> {
   const out = new Map<string, PosWindowStats>()
   const counts = knownCounts || await getLiveSetClosedCounts(connectionId, setKeys)
@@ -360,7 +361,7 @@ export async function getLiveSetWindowBatch(
     if (count !== undefined && count >= minimum) eligible.push([setKey, count])
   }
   if (eligible.length === 0) return out
-  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
+  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?stageBlockRetention(blocks,AUTO_PF_CALIBRATION):window)))
   try {
     const client: any = getRedisClient()
     for (let start = 0; start < eligible.length; start += 500) {
