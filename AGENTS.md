@@ -42,7 +42,7 @@ precedence over stale workspace paths in older notes.
   owned positions/orders reconciled and the pre-test account baseline restored.
   Never broaden this authorization to a mainnet order.
 - Operator exception 2026-11-01: the current user explicitly authorized X01
-  BingX mainnet with 15 symbols at the minimum supported volume. Canonical
+  BingX mainnet with 120 symbols at the minimum supported volume. Canonical
   `bingx-x01` may opt in with `BINGX_X01_MAINNET_LIVE=1`, the placement flag and
   exact connection allow-list. All qualification, ownership, accounting and
   protection gates still apply. Other mainnet identities and Bybit stay
