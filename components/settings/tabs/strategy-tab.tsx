@@ -220,6 +220,9 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
             {Array.from({length:10},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}
           </select>
         </label>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Auto PF uses two groups of 12 settled outcomes older than the current Last-N window. A full winning group still contributes to calibration.
+        </p>
         {LAST_N_STAGES.map(stage => {
           const policy = lastNPolicies[stage]
           return <div key={stage}>

@@ -31,15 +31,23 @@ export function blockPrefix(values:ArrayLike<number|null>,limit=95):BlockPrefix 
 }
 export const AUTO_PF_CALIBRATION = 24;
 export const LAST_N_OUTCOME_RING_CAP = 600;
+const MIN_SETTLED_PF = 1.000001;
 
 /** The weaker half of older, disjoint observations can raise the decision floor. */
 export function calibratedBlockFloor(pre:BlockPrefix, required:number, minimum:number, ratio:number):number {
   const half = AUTO_PF_CALIBRATION / 2;
   const recent = blockWindow(pre, required, half, minimum);
   const earlier = blockWindow(pre, required + half, half, minimum);
-  if (recent.pf === null || earlier.pf === null || !Number.isFinite(recent.pf) || !Number.isFinite(earlier.pf)) return minimum;
+  if (recent.pf === null || earlier.pf === null) return minimum;
+  // Positive infinity means a complete sample with gains and no losses.
+  // The weaker half still controls the increase, including the existing cap.
   const surplus = Math.max(0, Math.min(recent.pf, earlier.pf) - minimum);
   return minimum + Math.min(.2, surplus * ratio / 6);
+}
+
+export function settledBlockProfitFactorFloor(pre:BlockPrefix, policy:BlockPolicy):number {
+  return policy.autoPfRatio === undefined ? MIN_SETTLED_PF
+    : calibratedBlockFloor(pre, blockRequired(policy), MIN_SETTLED_PF, policy.autoPfRatio);
 }
 
 export interface BlockResult { offset:number; requested:number; count:number; gp:number; gl:number; net:number; pf:number|null; state:'qualified'|'failed'|'insufficient'|'unknown' }

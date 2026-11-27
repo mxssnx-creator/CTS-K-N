@@ -1,3 +1,9 @@
+## 2026-11-27 — Auto PF evidence audit
+
+Canonical `/workspace/CTS-K-N`, branch `codex/auto-pf-quality-20261127`, base `822c0959860b08f176945af83f322f2d69e0112e`. The containing pull request anchors the exact published tree. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T084558Z-before-auto-pf-replay-and-qualification`.
+
+Auto PF includes complete all-win calibration groups and shares per-tape calibration across matching window lengths. Source ranking prioritizes settled venue attribution before paper or replay. Exact live deactivation follows the dispatched intent. The 32-symbol comparison with two days of warm-up and two days of trading in each of two periods kept the profitability gate open. The [verification](../../../docs/verification/auto-pf-quality-20261127.md) records the matched profiles, tested defaults, coverage and gaps. No managed x02 activation or production mutation occurred.
+
 ## 2026-11-27 — independent Last-N lane grid
 
 Canonical `/workspace/CTS-K-N`, branch `codex/exact-lastn-stage-lineage-20261127`, based on `df70eb9dc97100fb96e8fa3eb7b82e092cb33059`. Verify the exact published head through the containing pull request. The pre-edit verified checkpoint is `/workspace/backups/CTS-K-N/20261127T050958Z-before-exact-lastn-stage-lineage`.

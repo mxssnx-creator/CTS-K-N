@@ -1065,7 +1065,9 @@ export async function recordSignalPerformanceOutcome(input: {
   sourceIds: readonly string[]
   signalLanes?: ReadonlyArray<{ sourceId: string; configId: string }>
   liveExchange?: boolean
+  sharedAttribution?: boolean
   settings?: unknown
+  openedAt?: number
   closedAt?: number
 }): Promise<void> {
   if (
@@ -1085,16 +1087,12 @@ export async function recordSignalPerformanceOutcome(input: {
   // remain diagnostic context and must not let a consensus (or any direct
   // source) loss disable healthy sibling sources. Legacy positions without an
   // exact lane retain the established source + consensus aggregation.
-  const laneSourceIds = (input.signalLanes || [])
-    .map((lane) => safePart(String(lane.sourceId || "")))
-    .filter(Boolean)
+  const laneSourceIds = (input.signalLanes || []).map(lane => safePart(lane.sourceId))
+  const contributorIds = input.sourceIds.map(safePart)
   const sourceIds = [...new Set(
     laneSourceIds.length > 0
       ? laneSourceIds
-      : [
-          ...input.sourceIds.map(safePart).filter(Boolean),
-          "consensus",
-        ],
+      : [...contributorIds, "consensus"],
   )]
   const closedAt = input.closedAt ?? Date.now()
   const explicitMovePct = Number(input.pnlPct)
@@ -1118,6 +1116,10 @@ export async function recordSignalPerformanceOutcome(input: {
     netMarketMovePct,
     positionCostPct,
   )
+  const owners = new Set([...laneSourceIds, ...contributorIds])
+  const singleSource = owners.size === 1 && !owners.has("consensus") && !owners.has("unknown")
+  const evidence = input.sharedAttribution || !singleSource || !Number.isFinite(explicitMovePct)
+    ? "shared" : input.liveExchange && input.pnlPctIsNet === true ? "exchange" : "paper"
 
   await Promise.all(sourceIds.map(async (sourceId) => {
     const key = performanceStateKey(input.connectionId, sourceId, input.symbol, input.direction)
@@ -1130,7 +1132,9 @@ export async function recordSignalPerformanceOutcome(input: {
       grossMarketMovePct,
       netMarketMovePct,
       positionCostPct,
+      openedAt: input.openedAt,
       closedAt,
+      evidence,
     })
     if (typeof client.eval === "function") {
       try {
@@ -2281,23 +2285,12 @@ async function processSignalIndicationsUncached(
   })
   const evaluated = fetched.filter((evaluation): evaluation is SignalSourceEvaluation => Boolean(evaluation))
 
-  const allowedEvaluations = (await Promise.all(evaluated.map(async (evaluation) => {
-    if (signalSourceLaneManuallyDisabled(
-      settings,
-      evaluation.sourceId,
-      options.symbol,
-      evaluation.direction,
-    )) {
-      return null
-    }
-    const decision = await getSignalSourceLanePerformanceDecision(client, {
-      connectionId: options.connectionId,
-      sourceId: evaluation.sourceId,
-      symbol: options.symbol,
-      direction: evaluation.direction,
-    })
-    return decision.allowed ? evaluation : null
-  }))).filter((evaluation): evaluation is SignalSourceEvaluation => Boolean(evaluation))
+  const allowedEvaluations = evaluated.filter(evaluation => !signalSourceLaneManuallyDisabled(
+    settings,
+    evaluation.sourceId,
+    options.symbol,
+    evaluation.direction,
+  ))
 
   // Source activation gate + risk-only tactics. Unvalidated candidate sources
   // never dispatch; tactics can only veto, never add.

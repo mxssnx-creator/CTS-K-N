@@ -1405,6 +1405,7 @@ docs/stress/offline-70-compare.md
 docs/stress/offline-70-verify.json
 docs/stress/offline-70-verify.md
 docs/system-modules-map.md
+docs/verification/auto-pf-quality-20261127.md
 docs/verification/complete-dca-fixtures-20261114.md
 docs/verification/disjoint-lastn-volume-20261111.md
 docs/verification/exact-last-n-stage-lineage-20261127.md
@@ -2119,10 +2120,12 @@ scripts/rebuild-live-position-lifetime-summary.ts
 scripts/reconcile-bingx-x02-protection-slot.ts
 scripts/redis-memory-governor.mjs
 scripts/redis-persistence-cleanup.mjs
+scripts/regression/auto-pf-catalog-replay.ts
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/last-n-stage-market-replay.ts
 scripts/regression/live-stage-simulated-protection.test.ts
 scripts/regression/price-distance-grid-replay.ts
+scripts/regression/replay-market-input.ts
 scripts/regression/trailing-walkforward.ts
 scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs

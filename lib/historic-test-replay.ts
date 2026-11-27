@@ -144,6 +144,7 @@ export function createHistoricCandleSimulator(
 
     const result = runDcaBacktest(candles, {
       profile,
+      enableAdds: request.family === "dca",
       timeframeMinutes,
       entry: resolveBacktestEntry(request.indication),
       takeProfitPct,
@@ -163,14 +164,17 @@ export function createHistoricCandleSimulator(
     // The progress bound caps how many closed trades one combination
     // contributes, so a dense symbol cannot dominate the validation.
     const bound = Math.max(1, Math.floor(Number(request.maxProgressCount) || 0) || 1)
-    const baseline: HistoricTestTrade[] = result.trades.slice(0, bound).map((trade) => ({
+    const completeTrades = result.trades.filter(trade =>
+      trade.exitReason !== "timeout" || trade.holdTimeMin >= (options.maxHoldMinutes ?? 12 * 60),
+    ).slice(0, bound)
+    const baseline: HistoricTestTrade[] = completeTrades.map((trade) => ({
       // Net percent over the round trip, expressed in PositionCost units.
       signedResultR: Number((trade.pnlPctOfInitialNotional / positionCostPercent).toFixed(12)),
       openedAt: trade.entryTime,
       closedAt: trade.exitTime,
     }))
     if (request.family === "trailing") {
-      return replayTrailing(candles, result.trades.slice(0, bound), {
+      return replayTrailing(candles, completeTrades, {
         trailingRetracePct: options.trailingRetracePct,
         trailingStartRatio: options.trailingStartRatio,
         trailingGapBasis: options.trailingGapBasis,

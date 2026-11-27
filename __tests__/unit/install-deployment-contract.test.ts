@@ -1263,6 +1263,8 @@ describe("production installation and Kilo deployment contract", () => {
       await writeFile(path.join(binDir, "sudo"), "#!/usr/bin/env bash\n[[ \"${1:-}\" != -n ]] || shift\nexec \"$@\"\n")
       await writeFile(path.join(binDir, "systemctl"), "#!/usr/bin/env bash\n[[ \"${1:-}\" != is-active ]] || exit 3\nexit 0\n")
       await writeFile(path.join(binDir, "ssh"), "#!/usr/bin/env bash\nexec /bin/bash -s\n")
+      // The fake remote host has its own volume, independent of the test runner's /tmp capacity.
+      await writeFile(path.join(binDir, "df"), "#!/usr/bin/env bash\nprintf '%s\\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' 'fixture 8388608 1048576 7340032 13% /'\n")
       await writeFile(
         path.join(binDir, "git"),
         `#!/usr/bin/env bash
@@ -1305,6 +1307,7 @@ printf '[fixture-installer] canonical contract passed\\n'
         chmod(path.join(binDir, "sudo"), 0o755),
         chmod(path.join(binDir, "systemctl"), 0o755),
         chmod(path.join(binDir, "ssh"), 0o755),
+        chmod(path.join(binDir, "df"), 0o755),
         chmod(path.join(binDir, "git"), 0o755),
         chmod(installerFixture, 0o755),
       ])

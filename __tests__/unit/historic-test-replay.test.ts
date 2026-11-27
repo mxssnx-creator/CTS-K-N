@@ -82,6 +82,21 @@ describe("Historic Test replay adapter", () => {
     }
   })
 
+  test("Normal keeps its exact stop even when the connection has a wider DCA profile", async () => {
+    const prices = [...Array.from({ length: 31 }, (_, i) => 100 + i * 0.1), 102.35, 102.35, 106]
+    const start = NOW - 200 * 60_000
+    const bars = prices.map((price, i) => ({
+      time: start + i * 5 * 60_000, open: price, high: price * 1.001, low: price * 0.999, close: price, volume: 1000,
+    }))
+    const simulate = createHistoricCandleSimulator({
+      loadCandles: async () => bars, timeframeMinutes: 5, takeProfitPct: 1.8, stopLossPct: 0.5,
+      positionCostPercent: 0.1, slippagePct: 0,
+    })
+    const trades = await simulate(request())
+    expect(trades[0]).toMatchObject({ openedAt: bars[30].time, closedAt: bars[31].time })
+    expect(trades[0].signedResultR).toBeCloseTo(-6.5)
+  })
+
   test("no history yields no trades instead of an error", async () => {
     const simulate = createHistoricCandleSimulator({ loadCandles: async () => [] })
     await expect(simulate(request())).resolves.toEqual([])

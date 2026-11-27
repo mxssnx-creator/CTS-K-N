@@ -51,10 +51,12 @@ operator-tool	scripts/verify-volatile-cleanup.mjs
 performance	scripts/stress-bingx-public-32.mjs
 performance	scripts/test-direct-trade-dev-soak.mjs
 performance	scripts/verify-prod-soak.mjs
+regression	scripts/regression/auto-pf-catalog-replay.ts
 regression	scripts/regression/direct-trade-cycle-serialization.test.mjs
 regression	scripts/regression/last-n-stage-market-replay.ts
 regression	scripts/regression/live-stage-simulated-protection.test.ts
 regression	scripts/regression/price-distance-grid-replay.ts
+regression	scripts/regression/replay-market-input.ts
 regression	scripts/regression/trailing-walkforward.ts
 unit	__tests__/unit/active-outbreak-indication.test.ts
 unit	__tests__/unit/active-outbreak-strategy-protection.test.ts

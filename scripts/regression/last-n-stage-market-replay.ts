@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto"
 import { readFileSync, writeFileSync } from "node:fs"
 import { performance } from "node:perf_hooks"
 import { LAST_N_STAGES, stageLastNAncestors, type LastNStage } from "@/lib/disjoint-last-n"
@@ -7,29 +6,15 @@ import { DEFAULT_DCA_PROFILE, normalizeDcaProfile } from "@/lib/dca-strategy"
 import { MAIN_TRADE_STAGE_PF_DEFAULTS } from "@/lib/main-trade-profit-factor"
 import { strategyOutcomeRecord } from "@/lib/pos-history"
 import { prepareStageLastNTape, selectStageLastNWindow, stageLastNLaneKey, stageLastNRetention, type StageLastNTape } from "@/lib/stage-last-n-lineage"
-import type { BlockPolicy } from "@/shared/cts-lastn/blocks"
+import { AUTO_PF_CALIBRATION, blockRequired, blockWindow, settledBlockProfitFactorFloor, type BlockPolicy, type BlockPrefix } from "@/shared/cts-lastn/blocks"
+import { DAY, MINUTE, loadReplayCandles, type ReplayPeriod } from "./replay-market-input"
 
-const MINUTE = 60_000
-const DAY = 1440 * MINUTE
 const NOTIONAL = 100
 const STARTING_EQUITY = 10_000
 const BASE_COST = 0.15
 const STRESS_COST = 0.26
 const POSITION_COST = 0.1
 
-interface Market {
-  symbol: string
-  path: string
-  sha256: string
-}
-interface Period {
-  name: string
-  begin: number
-  warmupEnd: number
-  selectionEnd: number
-  end: number
-  markets: Market[]
-}
 type Plan = { name: string; entry: DcaBacktestEntry; tf: 5 | 15 | 30; tp: number; sl: number; adds: number }
 const STARTER_PLANS: Plan[] = [
   { name: "momentum-5", entry: "momentum", tf: 5, tp: 0.9, sl: 0.6, adds: 0 },
@@ -45,7 +30,18 @@ const positive: BlockPolicy = { long: 10, short: 4, minimal: 1, shortPolarity: "
 const signed = (policy: BlockPolicy) => ["positive", "negative"].flatMap(shortPolarity =>
   ["positive", "negative"].map(minimalPolarity => ({ ...policy, shortPolarity, minimalPolarity } as BlockPolicy)))
 const perStage = (choose: (stage: LastNStage) => BlockPolicy[]) => LAST_N_STAGES.map(choose)
-const GRIDS = [
+type Grid = { name: string; stages: BlockPolicy[][]; legacyFloor?: boolean; execFloor?: number }
+const autoPfStudy = process.argv.includes("--auto-pf-study")
+const GRIDS: Grid[] = autoPfStudy ? [
+  { name: "signed-before", stages: perStage(() => signed(positive)), legacyFloor: true },
+  ...[undefined, 1, 4, 7, 10].map(ratio => ({
+    name: `signed-auto-${ratio ?? "off"}`,
+    stages: perStage(() => signed({ ...positive, autoPfRatio: ratio })),
+  })),
+  ...[1.2, 1.35].map(execFloor => ({
+    name: `signed-exec-pf-${execFloor}`, stages: perStage(() => signed(positive)), execFloor,
+  })),
+] : [
   { name: "single-positive", stages: perStage(() => [positive]) },
   { name: "signed", stages: perStage(() => signed(positive)) },
   { name: "signed-no-long-option", stages: perStage(stage => stage === "base"
@@ -53,6 +49,16 @@ const GRIDS = [
   { name: "signed-recovery-widths", stages: perStage(stage => stage === "real" || stage === "live"
     ? signed(positive).concat(signed({ ...positive, short: 8, minimal: 2 })) : signed(positive)) },
 ]
+
+function previousAutoPfFloor(prefix: BlockPrefix, policy: BlockPolicy): number {
+  if (policy.autoPfRatio === undefined) return 1.000001
+  const count = blockRequired(policy)
+  const half = AUTO_PF_CALIBRATION / 2
+  const recent = blockWindow(prefix, count, half, 1.000001).pf
+  const earlier = blockWindow(prefix, count + half, half, 1.000001).pf
+  return recent === null || earlier === null || !Number.isFinite(recent) || !Number.isFinite(earlier)
+    ? 1.000001 : settledBlockProfitFactorFloor(prefix, policy)
+}
 const sweep = process.argv.includes("--sweep")
 const expandedPlans: Plan[] = sweep
   ? STARTER_PLANS.concat((["momentum", "mean_reversion", "breakout", "relative"] as const).flatMap(entry =>
@@ -65,25 +71,7 @@ const PLANS = [...new Map(expandedPlans.map(plan => [
 ])).values()]
 type Decision = { key: string; history: string; pf: number }
 type Fill = { closedAt: number; pnlPct: number; adds: number }
-type Run = { fills: Fill[]; evaluated: number[]; passed: number[]; opportunities: number }
-
-function loadCandles(market: Market, period: Period): DcaBacktestCandle[] {
-  const bytes = readFileSync(market.path)
-  if (createHash("sha256").update(bytes).digest("hex") !== market.sha256) throw new Error(`Input digest mismatch for ${market.symbol}`)
-  const result: DcaBacktestCandle[] = []
-  for (const line of bytes.toString("utf8").split(/\r?\n/)) {
-    if (!/^\d/.test(line)) continue
-    const [time, open, high, low, close, volume] = line.split(",", 6).map(Number)
-    if (time < period.begin || time >= period.end) continue
-    if (![time, open, high, low, close, volume].every(Number.isFinite) || low <= 0 || volume < 0 ||
-        low > Math.min(open, close) || high < Math.max(open, close) || time !== period.begin + MINUTE * result.length) {
-      throw new Error(`Invalid or non-contiguous bar for ${market.symbol} at ${time}`)
-    }
-    result.push({ time, open, high, low, close, volume })
-  }
-  if (result.length !== (period.end - period.begin) / MINUTE) throw new Error(`Incomplete dataset for ${market.symbol}`)
-  return result
-}
+type Run = { fills: Fill[]; stageFills: Fill[][]; evaluated: number[]; passed: number[]; opportunities: number }
 
 function aggregateCandles(candles: readonly DcaBacktestCandle[], minutes: number): DcaBacktestCandle[] {
   const aggregated: DcaBacktestCandle[] = []
@@ -101,11 +89,11 @@ function aggregateCandles(candles: readonly DcaBacktestCandle[], minutes: number
   return aggregated
 }
 
-function replay(trades: readonly DcaBacktestTrade[], grid: (typeof GRIDS)[number], start: number, cost: number): Run {
-  const result: Run = { fills: [], opportunities: 0, evaluated: [0, 0, 0, 0], passed: [0, 0, 0, 0] }
+function replay(trades: readonly DcaBacktestTrade[], grid: Grid, start: number, cost: number): Run {
+  const result: Run = { fills: [], stageFills: [[], [], [], []], opportunities: 0, evaluated: [0, 0, 0, 0], passed: [0, 0, 0, 0] }
   const retain = stageLastNRetention(grid.stages.flat())
   const rings = new Map<string, string[]>()
-  let pending: { trade: DcaBacktestTrade; path?: Decision } | undefined
+  let pending: { trade: DcaBacktestTrade; path?: Decision; stagesReached: number } | undefined
   const bookClose = () => {
     if (!pending) return
     const { trade, path } = pending
@@ -122,19 +110,26 @@ function replay(trades: readonly DcaBacktestTrade[], grid: (typeof GRIDS)[number
         rings.set(key, ring)
       }
     }
-    if (path) result.fills.push({ closedAt: trade.exitTime, pnlPct: modelNet, adds: trade.dcaSteps })
+    const fill = { closedAt: trade.exitTime, pnlPct: modelNet, adds: trade.dcaSteps }
+    if (path) result.fills.push(fill)
+    if (autoPfStudy) for (let stage = 0; stage < pending.stagesReached; stage++) result.stageFills[stage].push(fill)
     pending = undefined
   }
   for (const trade of trades) {
     if (pending && pending.trade.exitTime >= trade.entryTime) continue
     bookClose()
-    pending = { trade }
+    pending = { trade, stagesReached: 0 }
     if (trade.entryTime < start) continue
     result.opportunities++
     let parents: Decision[] = [{ key: trade.direction, history: trade.direction, pf: 0 }]
     const tapes = new Map<string, StageLastNTape>()
     for (let index = 0; index < LAST_N_STAGES.length && parents.length > 0; index++) {
       const stage = LAST_N_STAGES[index]
+      const finalFloor = stage === "live" ? grid.execFloor : undefined
+      const stageTapes = finalFloor ? new Map<string, StageLastNTape>() : tapes
+      const floor = grid.legacyFloor ? previousAutoPfFloor : finalFloor
+        ? (prefix: BlockPrefix, policy: BlockPolicy) => Math.max(finalFloor, settledBlockProfitFactorFloor(prefix, policy))
+        : undefined
       const children: Decision[] = []
       for (const parent of parents) for (const policy of grid.stages[index]) {
         result.evaluated[index]++
@@ -142,9 +137,9 @@ function replay(trades: readonly DcaBacktestTrade[], grid: (typeof GRIDS)[number
         const evidence = Array.from(new Set([key, parent.key, parent.history]))
         for (const item of evidence) {
           const ring = rings.get(item)
-          if (ring && !tapes.has(item)) tapes.set(item, prepareStageLastNTape(ring))
+          if (ring && !stageTapes.has(item)) stageTapes.set(item, prepareStageLastNTape(ring, floor))
         }
-        const selected = selectStageLastNWindow(evidence, tapes, policy, {
+        const selected = selectStageLastNWindow(evidence, stageTapes, policy, {
           minProfitFactor: MAIN_TRADE_STAGE_PF_DEFAULTS[stage],
           maxDrawdownTime: 240,
         })
@@ -154,6 +149,7 @@ function replay(trades: readonly DcaBacktestTrade[], grid: (typeof GRIDS)[number
         }
       }
       parents = children
+      if (children.length > 0) pending.stagesReached++
     }
     const choice = parents.reduce<Decision | undefined>((best, row) =>
       !best || row.pf > best.pf || (row.pf === best.pf && row.key < best.key) ? row : best, undefined)
@@ -167,6 +163,7 @@ function measure(fills: Fill[], from: number, to: number) {
   const sorted = fills.filter(fill => fill.closedAt >= from && fill.closedAt < to).sort((a, b) => a.closedAt - b.closedAt)
   let grossProfit = 0, grossLoss = 0, equity = STARTING_EQUITY, peak = equity, drawdown = 0
   const netDays = new Map<number, number>()
+  const netHours = new Map<number, number>()
   for (const fill of sorted) {
     const pnl = NOTIONAL * fill.pnlPct / 100
     grossProfit += Math.max(0, pnl)
@@ -176,6 +173,8 @@ function measure(fills: Fill[], from: number, to: number) {
     drawdown = Math.max(drawdown, (peak - equity) * 100 / peak)
     const day = Math.floor(fill.closedAt / DAY)
     netDays.set(day, (netDays.get(day) || 0) + pnl)
+    const hour = Math.floor(fill.closedAt / 3_600_000)
+    netHours.set(hour, (netHours.get(hour) || 0) + pnl)
   }
   return {
     positions: sorted.length, entryOrders: sorted.length, additionalEntryOrders: sorted.reduce((sum, fill) => sum + fill.adds, 0),
@@ -184,24 +183,30 @@ function measure(fills: Fill[], from: number, to: number) {
     grossProfit, grossLoss,
     netUsd: equity - STARTING_EQUITY, maxClosedEquityDrawdownPct: drawdown,
     positiveDays: [...netDays.values()].filter(net => net > 0).length,
+    positiveHours: [...netHours.values()].filter(net => net > 0).length,
+    activeHours: netHours.size,
   }
 }
 
-const [inputPath, outputPath, , frozenPath] = process.argv.slice(2)
-if (!inputPath || !outputPath) throw new Error("Usage: last-n-stage-market-replay.ts STUDY.json RESULTS.json [--sweep [FROZEN.json]]")
-const frozen: Array<{ plan: string; windows: string }> | undefined = frozenPath ? JSON.parse(readFileSync(frozenPath, "utf8")) : undefined
-const periods = JSON.parse(readFileSync(inputPath, "utf8")) as Period[]
+const [inputPath, outputPath, ...options] = process.argv.slice(2)
+const frozenPath = sweep ? options[options.indexOf("--sweep") + 1] : undefined
+if (!inputPath || !outputPath) throw new Error("Usage: last-n-stage-market-replay.ts STUDY.json RESULTS.json [--sweep [FROZEN.json]] [--auto-pf-study]")
+const frozen: Array<{ plan: string; windows: string }> | undefined = frozenPath && !frozenPath.startsWith("--") ? JSON.parse(readFileSync(frozenPath, "utf8")) : undefined
+const periods = JSON.parse(readFileSync(inputPath, "utf8")) as ReplayPeriod[]
 const began = performance.now()
 const study = periods.map(period => {
   const starts = [period.begin, period.warmupEnd, period.selectionEnd, period.end]
-  if (!starts.every((value, index) => Number.isSafeInteger(value) && value % DAY === 0 && (index === 0 || value > starts[index - 1]))) {
-    throw new Error(`Periods must have strictly increasing complete UTC days for ${period.name}`)
+  const validBounds = autoPfStudy
+    ? period.warmupEnd - period.begin === 2 * DAY && period.selectionEnd === period.warmupEnd && period.end - period.selectionEnd === 2 * DAY
+    : starts.every((value, index) => index === 0 || value > starts[index - 1])
+  if (!validBounds || !starts.every(value => Number.isSafeInteger(value) && value % DAY === 0)) {
+    throw new Error(`Invalid complete UTC day boundaries for ${period.name}`)
   }
   const rows = PLANS.flatMap(plan => GRIDS.filter(grid => !frozen || frozen.some(row => row.plan === plan.name && row.windows === grid.name))
     .map(grid => ({ plan, grid, markets: Array<[Run, Run]>() })))
   if (rows.length === 0) throw new Error("The frozen profiles matched no configured replay profiles")
   for (const market of period.markets) {
-    const candles = loadCandles(market, period)
+    const candles = loadReplayCandles(market, period)
     const activePlans = [...new Set(rows.map(row => row.plan))]
     const aggregated = new Map([5, 15, 30].map(minutes => [minutes, aggregateCandles(candles, minutes)]))
     const tradeTapes = new Map(activePlans.map(plan => [plan.name, runDcaBacktest(aggregated.get(plan.tf)!, {
@@ -234,6 +239,10 @@ const study = periods.map(period => {
       opportunities: normal.reduce((sum, run) => sum + run.opportunities, 0),
       stageEvaluated: LAST_N_STAGES.map((_, index) => normal.reduce((sum, run) => sum + run.evaluated[index], 0)),
       stagePassed: LAST_N_STAGES.map((_, index) => normal.reduce((sum, run) => sum + run.passed[index], 0)),
+      ...(autoPfStudy && {
+        stageValidation: LAST_N_STAGES.map((_, index) => measure(normal.flatMap(run => run.stageFills[index]), period.selectionEnd, period.end)),
+        stageValidationStress: LAST_N_STAGES.map((_, index) => measure(stress.flatMap(run => run.stageFills[index]), period.selectionEnd, period.end)),
+      }),
     }
   })
   const qualifies = (value: ReturnType<typeof measure>) =>

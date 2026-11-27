@@ -10008,15 +10008,15 @@ export class StrategyCoordinator {
     // (lib/live-config-performance.ts) are not executable: without this they
     // qualified every cycle and were rejected only at order time, taking the
     // dispatch slot of a healthy Set.
-    const lossGateDeactivated = this._liveConfigLossGateEnabled && await this.isLiveTradingEnabledForConnection()
-      ? await findDeactivatedLiveSetKeys(this.connectionId, qualifyingBeforeLossGate.map((set) => ({
-          symbol,
-          direction: set.direction,
-          setKey: set.setKey,
-          executionIntents: String(set.indicationType || "").toLowerCase() === "signal"
-            ? ["signal"]
-            : ["main", "preset"],
-        })))
+    const lossGateDeactivated = this._liveConfigLossGateEnabled && isLiveTradeEnabled
+      ? await findDeactivatedLiveSetKeys(this.connectionId, qualifyingBeforeLossGate.map(set => {
+          const type = String(set.indicationType || "").trim().toLowerCase()
+          // This flow already requires Main live mode. A historic Preset loss
+          // belongs to that execution intent, even if the Set key is the same.
+          const intent = type === "direct-trade" ? "direct"
+            : type === "signal" || set.signalRisk?.sourceIds?.length ? "signal" : "main"
+          return { symbol, direction: set.direction, setKey: set.setKey, executionIntents: [intent] }
+        }))
       : new Set<string>()
     const allQualifying = lossGateDeactivated.size > 0
       ? qualifyingBeforeLossGate.filter((set) => !lossGateDeactivated.has(set.setKey))

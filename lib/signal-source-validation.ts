@@ -161,10 +161,11 @@ export interface SignalSourceOutcome {
   sourceId: string
   symbol: string
   direction: "long" | "short"
+  openedAt?: number
   closedAt: number
-  /** Net market move in percent after one PositionCost. */
+  /** Net market move in percent after the round-trip cost. */
   netPct: number
-  origin: "recorded" | "replay" | "synthetic"
+  origin: "recorded" | "paper" | "replay" | "synthetic"
 }
 
 export interface SignalSourceMetrics {
@@ -184,6 +185,7 @@ export interface SignalSourceMetrics {
   lastOutcomeAt: number
   recentDrawdownPct: number
   recordedSamples: number
+  paperSamples?: number
   replaySamples: number
 }
 
@@ -196,8 +198,8 @@ export function computeSignalSourceMetrics(
   evaluationWindow: number = SIGNAL_SOURCE_VALIDATION_DEFAULTS.evaluationWindow,
 ): SignalSourceMetrics {
   const ordered = outcomes
-    .filter((outcome) => outcome.sourceId === sourceId && Number.isFinite(outcome.netPct))
-    .slice()
+    .filter((outcome) => outcome.sourceId === sourceId && Number.isFinite(outcome.netPct) &&
+      Number.isFinite(outcome.closedAt) && outcome.closedAt > 0)
     .sort((a, b) => a.closedAt - b.closedAt || a.symbol.localeCompare(b.symbol) || a.netPct - b.netPct)
     .slice(-Math.max(1, evaluationWindow))
   let equity = 0
@@ -252,7 +254,8 @@ export function computeSignalSourceMetrics(
     lastOutcomeAt: ordered.at(-1)?.closedAt ?? 0,
     recentDrawdownPct: round(recentDrawdown),
     recordedSamples: ordered.filter((outcome) => outcome.origin === "recorded").length,
-    replaySamples: ordered.filter((outcome) => outcome.origin !== "recorded").length,
+    paperSamples: ordered.filter((outcome) => outcome.origin === "paper").length,
+    replaySamples: ordered.filter((outcome) => outcome.origin === "replay" || outcome.origin === "synthetic").length,
   }
 }
 
@@ -324,7 +327,7 @@ export interface SignalSourceRankingEntry {
   reason: string
   rank: number | null
   metrics: SignalSourceMetrics
-  /** Hour-of-day buckets (0-23) where this source is net negative with enough samples. */
+  /** UTC entry-hour buckets (0-23) where this source is net negative with enough samples. */
   negativeHoursUtc: number[]
 }
 
@@ -335,8 +338,9 @@ export function negativeHoursOfDay(
 ): number[] {
   const buckets = new Map<number, { count: number; net: number }>()
   for (const outcome of outcomes) {
-    if (outcome.sourceId !== sourceId) continue
-    const hour = new Date(outcome.closedAt).getUTCHours()
+    const { openedAt, closedAt } = outcome
+    if (outcome.sourceId !== sourceId || openedAt === undefined || !(openedAt > 0 && openedAt <= closedAt)) continue
+    const hour = Math.floor(openedAt / HOUR_MS) % 24
     const bucket = buckets.get(hour) || { count: 0, net: 0 }
     bucket.count++
     bucket.net += outcome.netPct
@@ -357,20 +361,37 @@ export function buildSignalSourceRanking(input: {
   registry: readonly SignalSourceRegistryEntry[]
   outcomes: readonly SignalSourceOutcome[]
   settings: SignalSourceValidationSettings
+  asOf?: number
 }): SignalSourceRankingEntry[] {
   const { settings } = input
   const entries: SignalSourceRankingEntry[] = []
   const validated: SignalSourceRankingEntry[] = []
   const bootstrap: SignalSourceRankingEntry[] = []
+  const bySource = new Map<string, Record<"recorded" | "paper" | "replay", SignalSourceOutcome[]>>()
+  for (const outcome of input.outcomes) {
+    if ((outcome.origin !== "recorded" && outcome.origin !== "paper" && outcome.origin !== "replay") || !Number.isFinite(outcome.netPct) ||
+      !Number.isFinite(outcome.closedAt) || outcome.closedAt <= 0 || outcome.closedAt >= (input.asOf ?? Infinity)) continue
+    let evidence = bySource.get(outcome.sourceId)
+    if (!evidence) {
+      evidence = { recorded: [], paper: [], replay: [] }
+      bySource.set(outcome.sourceId, evidence)
+    }
+    evidence[outcome.origin].push(outcome)
+  }
+  const sampleWindow = Math.max(SIGNAL_SOURCE_VALIDATION_DEFAULTS.evaluationWindow, settings.minSamples)
   for (const source of input.registry) {
-    const metrics = computeSignalSourceMetrics(source.id, input.outcomes)
+    const evidence = bySource.get(source.id)
+    const hasRecordedEvidence = (evidence?.recorded.length ?? 0) >= settings.minSamples
+    const rows = evidence ? [evidence.recorded, evidence.paper, evidence.replay].find(group => group.length >= settings.minSamples)
+      ?? evidence.recorded : []
+    const metrics = computeSignalSourceMetrics(source.id, rows, SIGNAL_SOURCE_VALIDATION_DEFAULTS.quarantineWindow, sampleWindow)
     const entry: SignalSourceRankingEntry = {
       sourceId: source.id,
       status: "candidate",
       reason: "insufficient_samples",
       rank: null,
       metrics,
-      negativeHoursUtc: settings.tactics.hourOfDayGate ? negativeHoursOfDay(source.id, input.outcomes) : [],
+      negativeHoursUtc: settings.tactics.hourOfDayGate && hasRecordedEvidence ? negativeHoursOfDay(source.id, rows) : [],
     }
     entries.push(entry)
     if (!source.enabled) {
@@ -381,6 +402,7 @@ export function buildSignalSourceRanking(input: {
     const verdict = validateSignalSourceMetrics(metrics, settings)
     if (verdict.passed) {
       if (
+        hasRecordedEvidence &&
         settings.tactics.drawdownQuarantine &&
         metrics.recentDrawdownPct > SIGNAL_SOURCE_VALIDATION_DEFAULTS.quarantineDrawdownPct
       ) {
@@ -391,11 +413,12 @@ export function buildSignalSourceRanking(input: {
       validated.push(entry)
       continue
     }
-    if (verdict.reason !== "insufficient_samples") {
+    if (hasRecordedEvidence && verdict.reason !== "insufficient_samples") {
       entry.status = "rejected"
       entry.reason = verdict.reason
       continue
     }
+    if (verdict.reason !== "insufficient_samples") entry.reason = `modeled_${verdict.reason}`
     if (source.lifecycle === "established" && !settings.strictActivation) {
       entry.status = "bootstrap"
       entry.reason = "established_bootstrap"
@@ -403,7 +426,8 @@ export function buildSignalSourceRanking(input: {
     }
   }
   const priorityById = new Map(input.registry.map((source) => [source.id, source.priority]))
-  validated.sort((a, b) => compareSignalSourceMetrics(a.metrics, b.metrics))
+  const evidencePriority = (metrics: SignalSourceMetrics) => metrics.recordedSamples > 0 ? 2 : (metrics.paperSamples ?? 0) > 0 ? 1 : 0
+  validated.sort((a, b) => evidencePriority(b.metrics) - evidencePriority(a.metrics) || compareSignalSourceMetrics(a.metrics, b.metrics))
   bootstrap.sort((a, b) =>
     (priorityById.get(a.sourceId) ?? 9) - (priorityById.get(b.sourceId) ?? 9) ||
     a.sourceId.localeCompare(b.sourceId),

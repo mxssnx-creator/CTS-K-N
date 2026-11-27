@@ -39,6 +39,7 @@ interface RankingEntry {
     maxLossStreak: number
     hourlySuccessRate: number
     recordedSamples: number
+    paperSamples?: number
     replaySamples: number
   }
 }
@@ -58,7 +59,7 @@ interface AuditRecord {
 const TACTICS: Array<{ key: keyof SourceValidationSettingsValue["tactics"]; label: string; help: string }> = [
   { key: "correlationDedupe", label: "Correlation dedupe", help: "Same-venue feeds count once for consensus (veto only)." },
   { key: "drawdownQuarantine", label: "Drawdown quarantine", help: "Recent drawdown breach sidelines a validated source." },
-  { key: "hourOfDayGate", label: "Hourly re-ranking gate", help: "Skip a source in UTC hours where its own history is net negative." },
+  { key: "hourOfDayGate", label: "Entry-hour gate", help: "Skip a source in UTC entry hours with net losses from settled venue trades." },
   { key: "volatilityRegimeGate", label: "Volatility regime gate", help: "Skip signals whose ATR stop would be clipped by the SL ceiling." },
   { key: "validatedConsensus", label: "Validated consensus", help: "A consensus needs a validated contributor once any exist." },
 ]
@@ -221,7 +222,7 @@ export function SignalSourceValidationPanel(props: {
                   <th className="px-2 py-1.5 font-medium">#</th>
                   <th className="px-2 py-1.5 font-medium">Source</th>
                   <th className="px-2 py-1.5 font-medium">Status</th>
-                  <th className="px-2 py-1.5 text-right font-medium">Samples (rec/replay)</th>
+                  <th className="px-2 py-1.5 text-right font-medium">Samples (venue / paper / replay)</th>
                   <th className="px-2 py-1.5 text-right font-medium">Max DD %</th>
                   <th className="px-2 py-1.5 text-right font-medium">Loss streak</th>
                   <th className="px-2 py-1.5 text-right font-medium">PF after cost</th>
@@ -237,7 +238,7 @@ export function SignalSourceValidationPanel(props: {
                       <Badge variant={STATUS_VARIANT[entry.status] || "outline"} title={entry.reason}>{entry.status}</Badge>
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums">
-                      {entry.metrics.samples} ({entry.metrics.recordedSamples}/{entry.metrics.replaySamples})
+                      {entry.metrics.samples} ({entry.metrics.recordedSamples}/{entry.metrics.paperSamples ?? 0}/{entry.metrics.replaySamples})
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{entry.metrics.maxDrawdownPct.toFixed(3)}</td>
                     <td className="px-2 py-1.5 text-right tabular-nums">{entry.metrics.maxLossStreak}</td>
