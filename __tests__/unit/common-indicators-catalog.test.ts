@@ -1,4 +1,5 @@
 import {PORTED_CATALOG} from "@/shared/cts-indications/catalog.ts"
+import { REVERSAL_TACTICS } from "@/shared/cts-reversal/reversal"
 /**
  * Generic checks over every Common type (the 17 original ones and the types
  * ported from CTS-A-O): catalogue / registry consistency, causality (a bar's
@@ -87,8 +88,11 @@ describe("Common catalogue and registry", () => {
   })
 
   test("every ported type maps to a registered CTS-A-O rule and its parameters", () => {
-    expect(COMMON_CATALOG.length).toBe(123)
-    for (const entry of COMMON_CATALOG) {
+    const nativeIds = new Set(REVERSAL_TACTICS.map(tactic => `trendReversal-${tactic.id}`))
+    const imported = COMMON_CATALOG.filter(entry => !nativeIds.has(entry.type))
+    expect(imported).toHaveLength(123)
+    expect(COMMON_CATALOG.filter(entry => nativeIds.has(entry.type)).map(entry => entry.type)).toEqual([...nativeIds])
+    for (const entry of imported) {
       const mapping = NEW_RULE_MAPPINGS[entry.type]
       expect(mapping).toBeDefined()
       if(entry.type==="tacticDca"||entry.type==="inverseAo")expect(PORTED_CATALOG.some(source=>entry.type==="tacticDca"?source.id.startsWith("tactic-dca-"):source.kind==="inverse")).toBe(true)

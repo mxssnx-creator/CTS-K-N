@@ -16,7 +16,7 @@ import {
   normalizeTrendTimeframesMinutes,
 } from "@/lib/trend-indication"
 import {
-  SIGNAL_SOURCE_DEFINITIONS,
+  ALL_SIGNAL_SOURCE_DEFINITIONS as SIGNAL_SOURCE_DEFINITIONS,
 } from "@/lib/signal-source-registry"
 import { buildSignalTradeConfigurations } from "@/lib/signal-config-matrix"
 import { MAX_INDICATION_WINDOW, normalizeBaseMinStep } from "@/lib/constants"
