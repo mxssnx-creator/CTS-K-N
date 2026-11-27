@@ -611,6 +611,7 @@ __tests__/unit/trade-history-own-scope.test.ts
 __tests__/unit/trade-history-pending-and-sticky.test.ts
 __tests__/unit/trade-history-stability.test.ts
 __tests__/unit/trade-protection-contract.test.ts
+__tests__/unit/trade-simulation-ledger.test.ts
 __tests__/unit/trading-round-trip-cost.test.ts
 __tests__/unit/trading-stats-route.test.ts
 __tests__/unit/trailing-activation.test.ts
@@ -1405,6 +1406,7 @@ docs/stress/offline-70-baseline.md
 docs/stress/offline-70-compare.md
 docs/stress/offline-70-verify.json
 docs/stress/offline-70-verify.md
+docs/stress/trade-window-simulation.md
 docs/system-modules-map.md
 docs/verification/auto-pf-quality-20261127.md
 docs/verification/complete-dca-fixtures-20261114.md
@@ -1974,6 +1976,8 @@ lib/trade-engine/type-measurement.ts
 lib/trade-execution-orchestrator.ts
 lib/trade-history.ts
 lib/trade-protection-contract.ts
+lib/trade-simulation/gate-explain.ts
+lib/trade-simulation/ledger.ts
 lib/trading-pair-keys.ts
 lib/trading-round-trip-cost.cjs
 lib/trading-round-trip-cost.ts
@@ -2030,6 +2034,9 @@ public/screenshot-styled.png
 public/top-info-layers/circuit-flow.png
 public/top-info-layers/market-mesh.png
 public/top-info-layers/signal-grid.png
+reports/trade-window-5d-3d-30sym/trade-window-report.html
+reports/trade-window-5d-3d-30sym/trade-window-report.md
+reports/trade-window-5d-3d-30sym/trade-window-simulation.json
 scripts/add-bingx-credentials.js
 scripts/apply-production-settings.sh
 scripts/audit-bingx-account-readonly.ts
@@ -2132,6 +2139,7 @@ scripts/regression/price-distance-grid-replay.ts
 scripts/regression/replay-market-input.ts
 scripts/regression/trailing-walkforward.ts
 scripts/remove-stray-bun-lock.mjs
+scripts/render-trade-window-report.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
 scripts/repair-redis-retention.ts
@@ -2165,6 +2173,7 @@ scripts/short-range-capture.ts
 scripts/short-range-research.ts
 scripts/simulate-last-6h.ts
 scripts/simulate-signal-source-ranking.ts
+scripts/simulate-trade-window.ts
 scripts/smoke-routes-test.mjs
 scripts/standalone-bingx-live-diagnostic.mjs
 scripts/start-development.mjs
