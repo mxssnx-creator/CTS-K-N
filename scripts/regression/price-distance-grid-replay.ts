@@ -7,6 +7,7 @@ import {
   PRICE_TRAILING_STOP_RATIOS,
 } from "../../lib/trailing-settings"
 import { roundTripCostPercent } from "../../lib/trading-round-trip-cost"
+import { simulateGeneralTrailingExit, TRAILING_ACTIVATION_ABSOLUTE } from "../../lib/trailing-activation"
 
 type Candle = { time: number; open: number; high: number; low: number; close: number }
 type Mode = "fixed" | "dynamic"
@@ -156,64 +157,33 @@ function simulate(signal: ReplaySignal, config: GridConfig, periodEnd: number): 
   const entryPrice = entry?.open
   if (!entry || !Number.isFinite(entryPrice) || entryPrice <= 0) return null
   const isLong = signal.side === "long"
-  const stopFraction = config.stopLossPct / 100
-  let extreme = entryPrice
-  let stopPrice = isLong ? entryPrice * (1 - stopFraction) : entryPrice * (1 + stopFraction)
-  let exitPrice = entryPrice
-  let exitTime = entry.time
-  let reason: Settlement["reason"] = "timeout"
   const lastByHold = Math.min(rows.length - 1, signal.entryIndex + HOLD_MINUTES)
-  let lastIndex = signal.entryIndex
-  while (lastIndex + 1 <= lastByHold && rows[lastIndex + 1].time < periodEnd) lastIndex++
+  let lastIndex = lastByHold
+  while (lastIndex > signal.entryIndex && rows[lastIndex].time >= periodEnd) lastIndex--
   const endedAtBoundary = lastIndex < lastByHold
-
-  for (let index = signal.entryIndex; index <= lastIndex; index++) {
-    const candle = rows[index]
-    if (isLong) {
-      extreme = Math.max(extreme, candle.high)
-      const favorablePct = ((extreme / entryPrice) - 1) * 100
-      if (favorablePct + 1e-12 >= config.gapRatio * 100) {
-        const trailing = config.mode === "fixed"
-          ? extreme - entryPrice * config.gapRatio
-          : extreme * (1 - config.gapRatio)
-        stopPrice = Math.max(stopPrice, trailing)
-      }
-      if (candle.low <= stopPrice) {
-        exitPrice = stopPrice
-        exitTime = candle.time
-        reason = stopPrice > entryPrice * (1 - stopFraction) + 1e-12
-          ? "trailing_stop"
-          : "initial_stop"
-        break
-      }
-    } else {
-      extreme = Math.min(extreme, candle.low)
-      const favorablePct = ((entryPrice / extreme) - 1) * 100
-      if (favorablePct + 1e-12 >= config.gapRatio * 100) {
-        const trailing = config.mode === "fixed"
-          ? extreme + entryPrice * config.gapRatio
-          : extreme * (1 + config.gapRatio)
-        stopPrice = Math.min(stopPrice, trailing)
-      }
-      if (candle.high >= stopPrice) {
-        exitPrice = stopPrice
-        exitTime = candle.time
-        reason = stopPrice < entryPrice * (1 + stopFraction) - 1e-12
-          ? "trailing_stop"
-          : "initial_stop"
-        break
-      }
-    }
-    exitPrice = candle.close
-    exitTime = candle.time
-    reason = endedAtBoundary ? "period_boundary" : "timeout"
-  }
-
-  const grossReturnPct = (isLong ? exitPrice / entryPrice - 1 : entryPrice / exitPrice - 1) * 100
+  const exit = simulateGeneralTrailingExit({
+    direction: signal.side,
+    entryPrice,
+    bars: rows,
+    fromIndex: signal.entryIndex,
+    toIndexExclusive: lastIndex + 1,
+    takeProfitPct: 0,
+    stopLossPct: config.stopLossPct,
+    startRatio: config.gapRatio,
+    stopRatio: config.gapRatio,
+    minimumTrailingDistancePct: PRICE_TRAILING_STOP_RATIOS[0] * 100,
+    activationMode: TRAILING_ACTIVATION_ABSOLUTE,
+    gapBasis: config.mode === "fixed" ? "entry" : "peak",
+  })
+  const exitPrice = exit?.price ?? rows[lastIndex].close
+  const reason = exit
+    ? exit.reason === "trailing_stop" ? "trailing_stop" : "initial_stop"
+    : endedAtBoundary ? "period_boundary" : "timeout"
+  const grossReturnPct = (isLong ? 1 : -1) * (exitPrice - entryPrice) / entryPrice * 100
   return {
     ...signal,
     configKey: config.key,
-    exitTime,
+    exitTime: exit?.time ?? rows[lastIndex].time,
     reason,
     grossReturnPct,
     costPct,
@@ -418,7 +388,8 @@ const summary = {
     "Paper replay only; no exchange connection or order submission.",
     "The committed 24-hour fixture is previously viewed baseline data, so this is later held-out within the fixed file, not an independent unseen market sample.",
     "One indication parent configuration (range 30) is used to isolate protection-grid behavior.",
-    "Intrabar ordering is conservative: the updated trailing stop may be hit after the same candle extends the favorable extreme.",
+    "The existing stop is tested before the favorable extreme. New stops are eligible from the next candle. Opening gaps fill at the opening price.",
+    "Trailing-only diagnostic with an absolute activation threshold. Use trailing-walkforward.ts for brackets and range protection limits.",
     "Venue minimums, funding, partial fills and order-book execution are not modeled.",
   ],
 }

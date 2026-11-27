@@ -1,4 +1,4 @@
-import {blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {AUTO_PF_CALIBRATION,blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 /**
  * Real exchange results per strategy Set.
  *
@@ -32,6 +32,7 @@ import { classifyRow } from "@/lib/results/ledger"
 import { resolveSettledRealizedPnl } from "@/lib/live-position-pnl"
 import { inferRealStrategyVariant } from "@/lib/strategy-real-stats"
 import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES } from "@/lib/live-outcome-settings"
+import { recordRelateOutcome } from "@/lib/relate-outcomes"
 
 const TTL_SECONDS = 90 * 24 * 60 * 60
 const RING_CAP = 600
@@ -229,6 +230,9 @@ export async function recordLiveSetOutcome(
   if (!row || !connectionId || !positionId) return 0
   const outcome = settledLiveSetOutcome(row, connectionId, options.notionalUsd)
   if (!outcome) return 0
+  if (row.relateRelationKeys && !truthy(row.combinedPosCounts) && new Set(stringList(row.accumulatedSetKeys)).size <= 1)
+    await recordRelateOutcome(connectionId, positionId, stringList(row.relateRelationKeys),
+      outcome.closedAt, outcome.pnlPct, true, row.relateTrials).catch(() => undefined)
   const shares = liveOutcomeSetShares(row)
   if (shares.size === 0) return 0
   const legOutcomes = blockLegOutcomes(row)
@@ -314,9 +318,15 @@ export async function getLiveSetClosedCounts(
     }
     for (let start = 0; start < unique.length; start += 500) {
       const batch = unique.slice(start, start + 500)
-      const pipeline = client.multi()
-      for (const key of batch) pipeline.hget(liveSetClosedCountsKey(connectionId), key)
-      const results = await pipeline.exec()
+      const countsKey = liveSetClosedCountsKey(connectionId)
+      let results: unknown[]
+      if (typeof client.hmget === "function") {
+        results = await client.hmget(countsKey, ...batch)
+      } else {
+        const pipeline = client.multi()
+        for (const key of batch) pipeline.hget(countsKey, key)
+        results = await pipeline.exec()
+      }
       batch.forEach((key, index) => {
         const count = Number(pipelineValue(results?.[index])) || 0
         if (count > 0) out.set(key, count)
@@ -343,9 +353,14 @@ export async function getLiveSetWindowBatch(
 ): Promise<Map<string, PosWindowStats>> {
   const out = new Map<string, PosWindowStats>()
   const counts = knownCounts || await getLiveSetClosedCounts(connectionId, setKeys)
-  const eligible = [...counts.entries()].filter(([, count]) => count >= Math.max(1, minCloses))
+  const minimum = Math.max(1, minCloses)
+  const eligible: Array<[string, number]> = []
+  for (const setKey of new Set(setKeys)) {
+    const count = counts.get(setKey)
+    if (count !== undefined && count >= minimum) eligible.push([setKey, count])
+  }
   if (eligible.length === 0) return out
-  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks):window)))
+  const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
   try {
     const client: any = getRedisClient()
     for (let start = 0; start < eligible.length; start += 500) {
@@ -361,7 +376,12 @@ export async function getLiveSetWindowBatch(
       })
     }
   } catch {
-    // Fall back to the general ring for this read.
+    // A transient read failure leaves this Set's venue evidence unavailable.
+  }
+  const empty = derivePosWindowStats([], winN, blocks)
+  for (const [setKey, count] of eligible) if (!out.has(setKey)) {
+    out.set(setKey, { ...empty, outcomeSource: "exchange", exchangeCloses: count,
+      ...(empty.blockDecision && { blockDecision: { ...empty.blockDecision, state: "unknown" } }) })
   }
   return out
 }

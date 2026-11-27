@@ -39,7 +39,7 @@ export interface FamilyReplayOptions {
    * round trip (0.26 %).
    */
   roundTripCostPercent?: number
-  /** Take-profit in percent of entry; the general trailing exit checks it first (audit TRAIL-07). */
+  /** Take-profit in percent of entry. */
   takeProfitPct?: number
   /** Configured trailing start band (0.3 … 1.5 keys); activation is its share of the TP distance. */
   trailingStartRatio?: number
@@ -48,6 +48,7 @@ export interface FamilyReplayOptions {
   trailingRetracePct?: number
   /** Stop loss in percent of entry, shared with the entry stream. */
   stopLossPct?: number
+  maxHoldMinutes?: number
   /** Axis window: how many prior trades are inspected. */
   axisWindow?: number
   /** Axis admission: how many of those must be positive. */
@@ -69,6 +70,18 @@ function asTrade(entryTime: number, exitTime: number, netPct: number, positionCo
     openedAt: entryTime,
     closedAt: exitTime,
   }
+}
+
+/** The first candle strictly after a timestamp in the ordered market series. */
+function firstBarAfter(candles: readonly DcaBacktestCandle[], time: number): number {
+  let low = 0
+  let high = candles.length
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (candles[middle].time <= time) low = middle + 1
+    else high = middle
+  }
+  return low
 }
 
 /** The entry stream, unchanged: this is the `normal` family. */
@@ -100,19 +113,26 @@ export function replayTrailing(
   const takeProfitPct = Number(options.takeProfitPct) > 0 ? Number(options.takeProfitPct) : options.positionCostPercent * 5
   const startRatio = Number(options.trailingStartRatio) > 0 ? Number(options.trailingStartRatio) : 0.3
   const cost = Number(options.roundTripCostPercent) > 0 ? Number(options.roundTripCostPercent) : options.positionCostPercent
+  const holdMs = Number(options.maxHoldMinutes) > 0 ? Number(options.maxHoldMinutes) * 60_000 : Infinity
   const out: HistoricTestTrade[] = []
 
   for (const trade of trades) {
     // Walk only the bars after the entry decision: the entry bar printed before the fill.
-    const startIndex = candles.findIndex((candle) => candle.time > trade.entryTime)
-    if (startIndex < 0) continue
+    const startIndex = firstBarAfter(candles, trade.entryTime)
+    if (startIndex >= candles.length) continue
+    const endIndex = Number.isFinite(holdMs)
+      ? firstBarAfter(candles, trade.entryTime + holdMs)
+      : candles.length
+    if (startIndex >= endIndex) continue
     const entry = Number(trade.initialEntryPrice) > 0 ? Number(trade.initialEntryPrice) : candles[startIndex].open
     if (!(entry > 0)) continue
     const long = trade.direction === "long"
     const exit = simulateGeneralTrailingExit({
       direction: long ? "long" : "short",
       entryPrice: entry,
-      bars: candles.slice(startIndex),
+      bars: candles,
+      fromIndex: startIndex,
+      toIndexExclusive: endIndex,
       takeProfitPct,
       stopLossPct,
       startRatio,
@@ -120,8 +140,8 @@ export function replayTrailing(
       activationMode: TRAILING_ACTIVATION_TP_SHARE,
       gapBasis: options.trailingGapBasis,
     })
-    const exitTime = exit ? exit.time : candles[candles.length - 1].time
-    const exitPrice = exit ? exit.price : candles[candles.length - 1].close
+    const exitTime = exit ? exit.time : candles[endIndex - 1].time
+    const exitPrice = exit ? exit.price : candles[endIndex - 1].close
     const grossPct = long
       ? ((exitPrice - entry) / entry) * 100
       : ((entry - exitPrice) / entry) * 100

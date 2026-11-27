@@ -211,12 +211,24 @@ export class StrategyProcessor {
           )
         }
       }
-      
-      // If no indications passed, retrieve from Redis (populated by indication processor)
+      const throttleKey = `${this.connectionId}:${mode}:${symbol}`
+      const timings = getEngineTimings()
+      const hardThrottleMs = timings.strategyFlowHardThrottleMs || STRATEGY_FLOW_HARD_THROTTLE_MS
+      const isBlocked = (entry: FlowThrottleEntry | undefined, now: number): boolean =>
+        entry !== undefined && (entry.inFlight === true || now - entry.lastRunAt < hardThrottleMs)
+
+      // A blocked flow does not need the indication snapshot. Check again
+      // immediately after the asynchronous read before filtering or hashing.
+      if (isBlocked(flowThrottle.get(throttleKey), Date.now())) {
+        return { strategiesEvaluated: 0, liveReady: 0 }
+      }
       if (!indications || indications.length === 0) {
         indications = await this.getActiveIndications(symbol)
       }
       if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
+      const now = Date.now()
+      const prev = flowThrottle.get(throttleKey)
+      if (isBlocked(prev, now)) return { strategiesEvaluated: 0, liveReady: 0 }
 
       if (indications.length === 0) {
         if (!isPrehistoric) {
@@ -284,57 +296,15 @@ export class StrategyProcessor {
       }
       if (!isCurrent()) return { strategiesEvaluated: 0, liveReady: 0 }
 
-      // ── Throttle gate ────────────────────────────────────────────────
-      // Compute a compact fingerprint of indication identities, timestamps,
-      // and strategy-relevant scalar values. If unchanged from the last run AND we're
-      // inside the min-interval window, skip the expensive flow. This
-      // prevents the 20×/sec re-evaluation feedback loop documented in
-      // the module header above. The flow still runs on:
-      //   - first call for this (conn, symbol)
-      //   - fingerprint change (new indications arrived)
-      //   - heartbeat (STRATEGY_FLOW_MAX_INTERVAL_MS elapsed)
-      // and is ALWAYS gated by STRATEGY_FLOW_HARD_THROTTLE_MS regardless
-      // of fingerprint changes (protects against pathological generators
-      // that bump the timestamp every tick).
-      const throttleKey = `${this.connectionId}:${mode}:${symbol}`
-      const now = Date.now()
+      // Changed snapshots can proceed after the hard throttle. Unchanged
+      // snapshots wait for the configured heartbeat to check position state.
       const indicationFingerprint = buildStrategyIndicationFingerprint(validIndications)
-      const prev = flowThrottle.get(throttleKey)
-      if (prev) {
-        // A full strategy pass is CPU/heap intensive. The duration throttle
-        // below is insufficient by itself: a pass can legitimately exceed
-        // 750ms, at which point a timer used to admit a duplicate concurrent
-        // pass. Preserve one authoritative owner until it completes/cancels.
-        if (prev.inFlight) {
-          return { strategiesEvaluated: 0, liveReady: 0 }
-        }
-        const elapsed = now - prev.lastRunAt
-        // Read live throttle values from settings:system at gate-eval
-        // time (cheap in-memory cache hit). Settings updates from the
-        // UI take effect within ~10 s without restart.
-        const _t = getEngineTimings()
-        const HARD_THROTTLE_MS = _t.strategyFlowHardThrottleMs || STRATEGY_FLOW_HARD_THROTTLE_MS
-        const MIN_INTERVAL_MS  = _t.strategyFlowMinIntervalMs  || STRATEGY_FLOW_MIN_INTERVAL_MS
-        const MAX_INTERVAL_MS  = _t.strategyFlowMaxIntervalMs  || STRATEGY_FLOW_MAX_INTERVAL_MS
-        // Hard throttle: never re-run within HARD_THROTTLE_MS, period.
-        if (elapsed < HARD_THROTTLE_MS) {
-          return { strategiesEvaluated: 0, liveReady: 0 }
-        }
-        // Within MIN_INTERVAL: only re-run if fingerprint changed.
-        if (elapsed < MIN_INTERVAL_MS) {
-          const fingerprintUnchanged = prev.lastFingerprint === indicationFingerprint
-          if (fingerprintUnchanged) {
-            return { strategiesEvaluated: 0, liveReady: 0 }
-          }
-        }
-        // Past MIN_INTERVAL but under MAX_INTERVAL: also require
-        // fingerprint change. Past MAX_INTERVAL: always run (heartbeat).
-        if (elapsed < MAX_INTERVAL_MS) {
-          const fingerprintUnchanged = prev.lastFingerprint === indicationFingerprint
-          if (fingerprintUnchanged) {
-            return { strategiesEvaluated: 0, liveReady: 0 }
-          }
-        }
+      const heartbeatMs = Math.max(
+        timings.strategyFlowMinIntervalMs || STRATEGY_FLOW_MIN_INTERVAL_MS,
+        timings.strategyFlowMaxIntervalMs || STRATEGY_FLOW_MAX_INTERVAL_MS,
+      )
+      if (prev?.lastFingerprint === indicationFingerprint && now - prev.lastRunAt < heartbeatMs) {
+        return { strategiesEvaluated: 0, liveReady: 0 }
       }
       // Reserve the slot BEFORE the await so concurrent ticks for the
       // same (conn,symbol) — possible if two engines somehow share a
@@ -373,6 +343,7 @@ export class StrategyProcessor {
         undefined,
         skipLiveDispatch || isPrehistoric,
         isCurrent,
+        indicationFingerprint,
       )
       if (!isCurrent()) {
         releaseReservation()

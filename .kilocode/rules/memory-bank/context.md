@@ -1,6 +1,64 @@
+## 2026-11-27 — independent forward-stage release checks
+
+The combined branch at `cb6e5502` exposed a TypeScript fixture inference error in the older-close Auto PF test. The test's tape now accepts numeric returns including its explicit unknown marker. The linked canonical worktree passed TypeScript, four signed Last-N checks and 146 focused stage ownership, Relate and live-dispatch tests.
+
+The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T011808Z-forward-lineage-typefix-before-edit`. PR #587 carries the combined source. Market and exchange Exec PF for this revision remain unmeasured.
+
+## 2026-11-27 — exact stage entry eligibility
+
+The forward-stage branch combines the current main Trend-Reversal work at `36a0a399` with the signed Auto PF branch at `aa13b48a`. Rows retained for owned-position handling carry current entry eligibility separately. A failed Short or Last window still reaches held-position management. New ordinary and Block exposure still require a qualified current row.
+
+The coordinator, signed-stage, settlement and owned-outcome suites passed 86 tests. TypeScript and the recreation manifest verifier completed. The canonical checkout remains at its existing local revision. The pre-commit checkpoint is `/workspace/backups/CTS-K-N/20261127T005420Z-forward-set-lineage-pre-commit-20261127`. Market and x02 settlement PF for this revision remain unmeasured.
+
 ## 2026-11-27 — Trend-Reversal
 
 Added opt-in Common and separately gated Signal reversal sources. Verified recovery from `/workspace/backups/CTS-K-N/20261126T233813Z-trend-reversal-canonical-recovery` at main `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The containing PR gives the exact reviewed code and CI revision. See the project continuation for study scope and outstanding execution evidence.
+
+## 2026-11-26 — Auto PF for signed position windows
+
+Strategy Settings expose a whole-number Auto PF ratio from 1 to 10, with default 4. Configured signed stage windows use their own 24 older closes for calibration after excluding the decision window. A negative Short window needs loss-to-gain evidence at the applicable floor. A negative Last remains a signed trigger. Closed-position and venue readers retain their separate evidence scopes.
+
+Source branch `codex/stage-auto-pf-20261126` starts at local revision `cb4b39d8`. The pre-edit verified checkpoint is `/workspace/backups/CTS-K-N/20261126T160718Z-signed-short-last-auto-pf`. Type checking and the focused PF and owned-outcome suites completed. CTS-K-N market and x02 evidence for this revision remain pending. No service or deployment changes were made.
+
+## 2026-11-26 — Last-N stage validation
+
+The complete configured signed window supplies stage PF after costs. Each sign uses its own block, and settings support a Short/Last path without Long. Eligible exchange Sets retain exchange provenance when rows are unavailable. The focused stage and outcome suites passed 57 tests. Continue on `codex/relate-relations-20261126` in draft PR #585. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T152836Z-last-n-progression-before`. No venue or deployment state was measured.
+
+## 2026-11-26 Relate recovery qualification
+
+Work from the canonical checkout and continue on `codex/relate-relations-20261126` in draft PR #585. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T144533Z-relate-exec-rebuild-before`.
+
+Relate sizing now requires two chronological groups of same-step after-cost trials from the exact Set. Every contributing Overall relation supplies its own equivalent evidence. Each recorded position carries its entry-time trial receipts until an owned, unambiguous close. Paper and exchange histories remain separate. The focused settlement and sizing suite passed 21 tests. The change supplies no venue Exec PF evidence.
+
+## 2026-11-26 — Relate loss progression and relation settings
+
+Canonical checkout `/workspace/CTS-K-N`, branch `codex/relate-relations-20261126`, based on PR #584 head `6ac7b285`. The pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T135027Z-relate-relations-before`. The containing GitHub review records the published revision.
+
+Relate sizes the next qualified Set from prior settled losses. The default depth is 12 and a non-loss resets the progression. Relate Active waits for a configured loss count while ordinary orders continue. Overall uses independently weighted relation windows. Paper and settled exchange closes use separate, bounded chronological indexes. Mixed-Set and combined Position Count closes are excluded from the broader Relate windows.
+
+The targeted allocation, exchange-settlement, stage reuse and settings suites passed 31 cases. The CTS-C historical replay is cross-project evidence and does not measure CTS-K-N profitability. CTS-K-N Relate remains opt-in. Production service state, full Relate market replay and venue execution stay unverified.
+
+## 2026-11-26 — strategy stage reuse and Redis workload
+
+Canonical checkout `/workspace/CTS-K-N`, draft PR #584, branch `codex/trailing-replay-20261122`. Starting revision `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Pre-edit checkpoint `/workspace/backups/CTS-K-N/20261126T120458Z-before-strategy-stage-performance`. The containing PR records the published revision and hosted results.
+
+Base/Main/Real reuse now requires a compact Live snapshot. Relevant indication fields, exact ledger counters and settings invalidate reuse. Early scheduling checks avoid loading indication snapshots for blocked symbols. A shared position-context refresh reads six required close fields and keeps its most recent eight records. Main fingerprint hashes renew unchanged contents with expiry alone. Exact count and candidate history lookups remain bounded.
+
+Verification includes isolated native Redis and a 70-symbol paper fixture with 140 reconciled trades. Frozen 14-day, 32-symbol trailing and BCH, XRP and SOL DCA results match the preceding run. No replay candidate met the full promotion gates. The x02 reachability check timed out before authentication. Current remote runtime and venue execution parity remain unverified. See `docs/verification/strategy-stage-performance-20261126.md` for measured workloads, soak diagnostics and replay details.
+
+## 2026-11-26 — exact trailing stale-update guard and forward replay
+
+Restored the canonical `/workspace/CTS-K-N` checkout from verified checkpoint `/workspace/backups/CTS-K-N/20261126T111550Z-github-pr584-recovery` at PR #584 head `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. GitHub main at recovery was `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. Pre-edit and pre-demo checkpoints were `20261126T111703Z-before-trailing-stage-continuation` and `20261126T112747Z-before-expanded-x02-exact-trailing`. The reviewed PR records the published tree and hosted checks.
+
+The engine's exact ratchet guard rechecks the stored row and source Set inside the position lease. It preserves armed stops across delayed unarmed or invalid pseudo snapshots and respects operator overrides. Verified TypeScript, 3,820 Jest tests across 569 suites with isolated native Redis, ten portable tests, and native Redis coordination. The market study scored 4,406 trailing configurations over 32 symbols and 5,184 DCA configurations apiece for BCH, XRP and SOL. No candidate changed defaults. The source and evidence are documented in `docs/verification/trailing-continuation-20261126.md`. Production service state remains unverified.
+
+X02 ran eight controlled minimum-volume virtual lifecycles and restored the position and order baseline. The first terminal read was incomplete for 25 canceled controls. With the history-first audit correction, a read-only repeat matched every one of the 64 terminal orders and 24 market fills. The verified pre-recovery checkpoint was `20261126T114917Z-before-vst-terminal-audit-recovery`. Local raw account evidence and the temporary credential were excluded from Git.
+
+## 2026-11-22 — exact trailing bracket and longer replay
+
+Canonical checkout `/workspace/CTS-K-N` was restored from verified GitHub main `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The branch contains the preceding trailing work. The recovery checkpoint is `/workspace/backups/CTS-K-N/20261122T132110Z-github-main-trailing-recovery`. GitHub main is the recovered source history. Prior unpublished and runtime state were unavailable.
+
+Exact initial stops now persist on Base profiles and are honored by Live admission, independently of the trail gap. Native trailing sync must tighten existing protection and preserves the admitted exact bracket. Historical replay uses the existing stop on an ambiguous candle and honors opening gaps and hold bounds. The 24-symbol November replay tested 1,346 candidates over 14 full evaluation days plus three days of prehistory. The later PF was 0.7878 fixed, 0.7839 dynamic and 0.7813 for the matching control. The candidate grid stays disabled. X02 preflight passed on retry, four virtual cycles verified trailing replacement and finished flat, and the separate audit matched 12 market fills. The whole-account baseline gate failed after changes to the shared account. The owned lifecycle checkpoint is `/workspace/backups/CTS-K-N/20261122T140128Z-before-x02-owned-trailing-lifecycle`. See `docs/verification/trailing-walkforward-20261122.md` for local validation, the data digest, boundaries and reproduction command.
 
 ## 2026-11-18 — immediate Main ownership of Axis projections
 

@@ -3,14 +3,16 @@ export const LONG_COUNTS = Object.freeze(Array.from({length:13},(_,i)=>10+i*5));
 export const SHORT_COUNTS = Object.freeze(Array.from({length:6},(_,i)=>5+i*3));
 export const MINIMAL_COUNTS = Object.freeze([1,2,3,4,5]);
 export type Polarity = 'positive' | 'negative';
-export interface BlockPolicy { long:number; short:number; minimal:number; shortPolarity:Polarity; minimalPolarity:Polarity }
+export interface BlockPolicy { long:number; short:number; minimal:number; shortPolarity:Polarity; minimalPolarity:Polarity; autoPfRatio?:number }
 export const DEFAULT_BLOCK_POLICY: Readonly<BlockPolicy> = Object.freeze({long:20,short:10,minimal:3,shortPolarity:'positive',minimalPolarity:'positive'});
 export function checkBlockPolicy(p:BlockPolicy):void {
-  if(!p||![p.long,p.short,p.minimal].every(Number.isSafeInteger)||p.long<1||p.long>500||p.short<0||p.short>200||p.minimal<0||p.minimal>5||
+  if(!p||![p.long,p.short,p.minimal].every(Number.isSafeInteger)||p.long<0||p.long>500||p.short<0||p.short>200||p.minimal<0||p.minimal>5||
+    blockRequired(p)===0||
+    (p.autoPfRatio!==undefined&&(!Number.isInteger(p.autoPfRatio)||p.autoPfRatio<1||p.autoPfRatio>10))||
     !['positive','negative'].includes(p.shortPolarity)||!['positive','negative'].includes(p.minimalPolarity))throw new Error('Invalid disjoint Last-N policy');
 }
 export const blockRequired=(p:BlockPolicy)=>p.long+p.short+p.minimal;
-export const blockPolicyKey=(p:BlockPolicy)=>JSON.stringify(['disjoint-positions-v1',p.long,p.short,p.minimal,p.shortPolarity,p.minimalPolarity]);
+export const blockPolicyKey=(p:BlockPolicy)=>JSON.stringify(['disjoint-positions-v1',p.long,p.short,p.minimal,p.shortPolarity,p.minimalPolarity,...(p.autoPfRatio===undefined?[]:[p.autoPfRatio])]);
 /** No max(short/long) clipping: every requested combination has its own exact identity. */
 export function* blockPolicies():Generator<Readonly<BlockPolicy>> {
   for(const long of LONG_COUNTS)for(const short of SHORT_COUNTS)for(const minimal of MINIMAL_COUNTS)
@@ -27,13 +29,27 @@ export function blockPrefix(values:ArrayLike<number|null>,limit=95):BlockPrefix 
   }
   return {n,gp,gl,unknown};
 }
+export const AUTO_PF_CALIBRATION = 24;
+
+/** The weaker half of older, disjoint observations can raise the decision floor. */
+export function calibratedBlockFloor(pre:BlockPrefix, required:number, minimum:number, ratio:number):number {
+  const half = AUTO_PF_CALIBRATION / 2;
+  const recent = blockWindow(pre, required, half, minimum);
+  const earlier = blockWindow(pre, required + half, half, minimum);
+  if (recent.pf === null || earlier.pf === null || !Number.isFinite(recent.pf) || !Number.isFinite(earlier.pf)) return minimum;
+  const surplus = Math.max(0, Math.min(recent.pf, earlier.pf) - minimum);
+  return minimum + Math.min(.2, surplus * ratio / 6);
+}
+
 export interface BlockResult { offset:number; requested:number; count:number; gp:number; gl:number; net:number; pf:number|null; state:'qualified'|'failed'|'insufficient'|'unknown' }
 export function blockWindow(pre:BlockPrefix,offset:number,n:number,minPf:number,polarity:Polarity='positive',signOnly=false):BlockResult {
   const start=Math.min(pre.n,offset),end=Math.min(pre.n,offset+n),count=end-start;
   const gp=pre.gp[end]-pre.gp[start],gl=pre.gl[end]-pre.gl[start],net=gp-gl;
   const unknown=pre.unknown[end]!==pre.unknown[start]||![gp,gl,net].every(Number.isFinite);
   const pf=unknown||count<n?null:gl>0?gp/gl:gp>0?Infinity:0;
-  const passed=n===0||(polarity==='negative'?net<0:net>0&&(signOnly||pf!==null&&pf>=minPf));
+  const passed=n===0||(polarity==='negative'
+    ? net<0&&(signOnly||gl>=gp*minPf)
+    : net>0&&(signOnly||pf!==null&&pf>=minPf));
   return {offset,requested:n,count,gp,gl,net,pf,state:unknown?'unknown':count<n?'insufficient':passed?'qualified':'failed'};
 }
 /** One prefix per exact configuration can evaluate all 1,560 policies without copying position arrays. */

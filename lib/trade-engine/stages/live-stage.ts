@@ -2,6 +2,7 @@ import {relationalVolumeFactor,type VolumeContext} from "../../../shared/cts-vol
 import { isStrategySetExecutionEnabled, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
 import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
+import { trailingPriceDistancesFit } from "@/lib/trailing-settings"
 import { STALE_CONTROL_SWEEP_SECONDS, sweepStaleOwnControlOrders } from "@/lib/trade-engine/stale-control-sweep"
 import { confirmMissingControlOrders, ownLookupLiveOrderIdSet, ownProtectionFallbackEnabled, readOwnControlOrdersById } from "@/lib/trade-engine/own-protection-orders"
 import {
@@ -13,6 +14,8 @@ import { effectiveLeverageCap, maxLeverageForStop, stopLossPercentForLeverage } 
 import { roundTripCostPercent, simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import { overallControlOrdersOnly, type ControlOrderScope } from "@/lib/overall-control-orders"
 import { allocateAggregateControlFill } from "@/lib/aggregate-control-fill"
+import { recordRelateOutcome } from "@/lib/relate-outcomes"
+import type { RelateTrialStamps } from "@/lib/relate-allocation"
 /**
  * Stage 5: Live Exchange Position Creation Progression
  *
@@ -1294,7 +1297,9 @@ function computeSetAwareSL(
   strategyRange?: string,
 ): number {
   let candidateSl: number
-  if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
+  if (trailingProfile?.initialStopLossPct !== undefined) {
+    candidateSl = trailingProfile.initialStopLossPct
+  } else if (setVariant === "trailing" && trailingProfile && trailingProfile.stopRatio > 0) {
     // For trailing-variant positions the initial exchange SL is placed at the
     // trailing stop distance from entry. The trailing machine then ratchets this
     // upward (long) or downward (short) as price moves in our favour. Using the
@@ -1796,6 +1801,8 @@ export interface LivePosition {
   // target factor 1 + count × ratio; DCA=0.5; others=1). Stored for audit and
   // protection coordination; Block order deltas use the immutable base.
   sizeMultiplier?: number
+  relateRelationKeys?: string[]
+  relateTrials?: RelateTrialStamps
   /** Special-only lane plan; same-side logical legs are exchange-netted. */
   specialPositionPlan?: SpecialPositionPlan
   /** Immutable 1x quantity used to enforce Special's total <= 3x cap. */
@@ -2983,6 +2990,12 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     accumulatedSetKeys: Array.isArray(hash.accumulatedSetKeys)
       ? hash.accumulatedSetKeys
       : safeJsonParse<string[]>(hash.accumulatedSetKeys, []),
+    relateRelationKeys: Array.isArray(hash.relateRelationKeys)
+      ? hash.relateRelationKeys
+      : safeJsonParse<string[] | undefined>(hash.relateRelationKeys, undefined),
+    relateTrials: typeof hash.relateTrials === "string"
+      ? safeJsonParse<RelateTrialStamps | undefined>(hash.relateTrials, undefined)
+      : hash.relateTrials,
     pendingAccumulation: typeof hash.pendingAccumulation === "string"
       ? safeJsonParse<LivePosition["pendingAccumulation"]>(hash.pendingAccumulation, undefined)
       : hash.pendingAccumulation,
@@ -4163,6 +4176,11 @@ async function savePosition(position: LivePosition, retries: number = 0): Promis
       // Only settled exchange outcomes feed the permanent per-Set loss gate.
       // Accounting corrections/replayed closes are idempotent in the ledger.
       await recordLiveConfigOutcome(position)
+      if (position.relateRelationKeys?.length && position.status === "closed" && simulatedOutcome && verifiedOutcome &&
+          notional > 0 && !position.combinedPosCounts && new Set(position.accumulatedSetKeys).size <= 1) {
+        await recordRelateOutcome(position.connectionId, position.id, position.relateRelationKeys, closedAt,
+          netMovePctAfterPositionCost(grossPnlPct, simulatedCloseCostPercent(positionCostPct)), false, position.relateTrials).catch(() => undefined)
+      }
       // The exchange-only Set rings the coordinator judges live Sets by. A
       // paper/pseudo or still-unsettled row books nothing here; a late
       // settlement arrives through settleDeferredLiveRow().
@@ -9378,16 +9396,49 @@ function repairLiveEntryPriceDomain(
 }
 
 function isTrailingStopTightening(
-  pos: Pick<LivePosition, "direction" | "side" | "trailingStopPrice">,
+  pos: Pick<LivePosition, "direction" | "side" | "trailingStopPrice"> &
+    Partial<Pick<LivePosition, "averageExecutionPrice" | "entryPrice" | "stopLoss" | "stopLossPrice">>,
   candidateValue: unknown,
 ): boolean {
   const candidate = Number(candidateValue)
-  if (!Number.isFinite(candidate) || candidate <= 0) return true
-  const existing = Number(pos.trailingStopPrice)
-  if (!Number.isFinite(existing) || existing <= 0) return true
+  if (!Number.isFinite(candidate) || candidate <= 0) return false
   const direction = resolveLivePositionDirection(pos as LivePosition)
   if (!direction) return false
-  return direction === "long" ? candidate >= existing : candidate <= existing
+  const isLong = direction === "long"
+  const fill = finitePositive(pos.averageExecutionPrice) || finitePositive(pos.entryPrice)
+  const stopPct = finitePositive(pos.stopLoss)
+  const staticStop = fill && stopPct ? fill * (1 + (isLong ? -1 : 1) * stopPct / 100) : 0
+  // The first ratchet has no previous trailing price. It still must improve
+  // the initial bracket and any confirmed venue stop.
+  return [staticStop, pos.stopLossPrice, pos.trailingStopPrice].every((value) => {
+    const existing = Number(value)
+    return !Number.isFinite(existing) || existing <= 0 || (isLong ? candidate >= existing : candidate <= existing)
+  })
+}
+
+function livePositionHasSetKey(
+  position: Pick<LivePosition, "setKey" | "parentSetKey" | "accumulatedSetKeys">,
+  setKey: string,
+): boolean {
+  if (!setKey) return false
+  const hasKey = (key: unknown) => String(key || "").trim() === setKey
+  return hasKey(position.setKey) || hasKey(position.parentSetKey) ||
+    (Array.isArray(position.accumulatedSetKeys) && position.accumulatedSetKeys.some(hasKey))
+}
+
+function acceptsPseudoProtectionUpdate(
+  position: LivePosition,
+  setKey: string,
+  trailingActive: boolean,
+  trailingStopPrice?: number,
+): boolean {
+  if (position.manualProtectionOverride) return false
+  if (position.trailingProfile?.initialStopLossPct !== undefined && !livePositionHasSetKey(position, setKey)) return false
+  // An unarmed or truncated pseudo snapshot can arrive after the tick that
+  // armed this Live row. Only an explicit operator action can clear its stop.
+  return trailingActive
+    ? isTrailingStopTightening(position, trailingStopPrice)
+    : !finitePositive(position.trailingStopPrice)
 }
 
 /**
@@ -14093,8 +14144,8 @@ export async function executeLivePosition(
     // ── Set-config-aware initial SL% ──────────────────────────────────────
     // Use `computeSetAwareSL` so the protection level is derived from the Set's
     // own configuration rather than a generic PF-derived percentage:
-    //   • trailing variant: SL = trailingProfile.stopRatio * 100 (trail distance
-    //     anchor; ratchets upward once the trailing machine activates)
+    //   • exact trailing: independent initial SL and trailing gap
+    //   • legacy trailing: initial SL follows the historical gap-based rule
     //   • block/dca/default: normalised PF-derived value (already variant-scaled
     //     by sizeMultiplier in deriveProtectionFromProfitFactor at dispatch)
     stopLoss: computeSetAwareSL(
@@ -14109,7 +14160,7 @@ export async function executeLivePosition(
     // progression panel and post-trade stats can always recover what the
     // upstream Set originally specified. Mirrors `stopLoss`/`takeProfit`
     // at creation; never mutated thereafter.
-    assignedStopLoss: realPosition.stopLoss,
+    assignedStopLoss: realPosition.trailingProfile?.initialStopLossPct ?? realPosition.stopLoss,
     assignedTakeProfit: realPosition.takeProfit,
     status: "pending",
     fills: [],
@@ -14132,6 +14183,8 @@ export async function executeLivePosition(
     executionLane:  liveExecutionLane(realPosition),
     axisWindows:    realPosition.axisWindows,
     sizeMultiplier: realPosition.sizeMultiplier,
+    relateRelationKeys: realPosition.relateRelationKeys,
+    relateTrials: realPosition.relateTrials,
     specialPositionPlan: specialPositionPlan || undefined,
     blockBaseVolumeMultiplier: realPosition.blockBaseVolumeMultiplier,
     blockVolumeRatio: realPosition.blockVolumeRatio,
@@ -14182,7 +14235,7 @@ export async function executeLivePosition(
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
   normalizeLivePositionProtection(livePosition)
 
-  const normalizedInitialSl = normalizeStopLossPercent(realPosition.stopLoss, realPosition.strategyRange)
+  const normalizedInitialSl = normalizeStopLossPercent(livePosition.assignedStopLoss, realPosition.strategyRange)
   if (normalizedInitialSl.adjusted) {
     pushStep(livePosition, "protection_sl_normalized", true, normalizedInitialSl.reason!)
     logProgressionEvent(
@@ -14207,6 +14260,7 @@ export async function executeLivePosition(
   if (
     realPosition.setVariant === "trailing" &&
     livePosition.trailingProfile &&
+    livePosition.trailingProfile.initialStopLossPct === undefined &&
     livePosition.trailingProfile.stopRatio > 0
   ) {
     const trailSl = Math.max(minExchangeStopLossPercent(livePosition.strategyRange), livePosition.trailingProfile.stopRatio * 100)
@@ -14389,6 +14443,22 @@ export async function executeLivePosition(
         symbol: realPosition.symbol,
         direction: realPosition.direction,
       })
+      return livePosition
+    }
+
+    const exactProfile = realPosition.trailingProfile
+    if (exactProfile?.initialStopLossPct !== undefined && (
+      !trailingPriceDistancesFit(exactProfile, protectionFloorsForRange(realPosition.strategyRange), realPosition.takeProfit) ||
+      realPosition.takeProfit < minimumViableTakeProfitPct() ||
+      Math.abs(finitePositive(livePosition.stopLoss) - exactProfile.initialStopLossPct) > 1e-10 ||
+      Math.abs(finitePositive(livePosition.takeProfit) - realPosition.takeProfit) > 1e-10
+    )) {
+      livePosition.status = "rejected"
+      livePosition.executionMode = "blocked"
+      livePosition.executionBlockCode = "exact_trailing_protection_out_of_bounds"
+      livePosition.statusReason = "The exact trailing stop, gap or target conflicts with the current protection limits"
+      livePosition.executionBlockReason = livePosition.statusReason
+      pushStep(livePosition, "preflight", false, livePosition.statusReason)
       return livePosition
     }
 
@@ -22980,6 +23050,8 @@ export async function recalculateAndApplySLTP(
     takeProfitPct?: number
     trailingActive?: boolean
     trailingStopPrice?: number
+    /** Present for an automated pseudo update, even when a legacy source has no Set key. */
+    pseudoSourceSetKey?: string
     manualProtection?: {
       stopLossPrice?: number | null
       takeProfitPrice?: number | null
@@ -23059,7 +23131,11 @@ export async function recalculateAndApplySLTP(
     // read-modify-write path out of order. Reject an older absolute level here
     // (after rereading Redis under the lock) rather than allowing it to loosen
     // an already tightened long/short stop on the exchange.
-    const isAutomatedTrailingSync =
+    const pseudoSourceSetKey = overrides?.pseudoSourceSetKey
+    if (pseudoSourceSetKey !== undefined && !acceptsPseudoProtectionUpdate(
+      position, pseudoSourceSetKey, overrides?.trailingActive === true, overrides?.trailingStopPrice,
+    )) return position
+    const isAutomatedTrailingSync = pseudoSourceSetKey === undefined &&
       !overrides?.manualProtection &&
       !overrides?.clearManualProtection &&
       overrides?.trailingActive === true &&
@@ -23331,14 +23407,10 @@ export async function syncLiveFromPseudo(
     // live-position-relative percentage by anchoring it to the LIVE
     // position's actual fill price (entry-side). The percent space
     // is what `recalculateAndApplySLTP` consumes.
-    const trailingActive =
-      pseudoPos?.trailing_active === "1" ||
-      pseudoPos?.trailing_active === true ||
-      (() => {
-        const ts = parseFloat(String(pseudoPos?.trailing_stop_price || "0"))
-        return Number.isFinite(ts) && ts > 0
-      })()
-    const trailingStopPrice = parseFloat(String(pseudoPos?.trailing_stop_price || "0"))
+    const trailingFlag = pseudoPos?.trailing_active ?? pseudoPos?.trailingActive
+    const trailingStopPrice = finitePositive(pseudoPos?.trailing_stop_price ?? pseudoPos?.trailingStopPrice)
+    const trailingActive = trailingFlag === "1" || trailingFlag === 1 || trailingFlag === true || trailingStopPrice > 0
+    if (trailingActive && !trailingStopPrice) return
     const pseudoEntryPrice = finitePositive(
       pseudoPos?.entry_price ??
       pseudoPos?.entryPrice ??
@@ -23396,19 +23468,7 @@ export async function syncLiveFromPseudo(
     // backward-compatible behaviour without silently dropping the sync.
     let matches = slotMatches
     if (pseudoSetKey) {
-      const scoped = slotMatches.filter((p: any) => {
-        const liveKeys = new Set<string>()
-        for (const key of [p.setKey, p.parentSetKey]) {
-          const normalized = String(key || "").trim()
-          if (normalized) liveKeys.add(normalized)
-        }
-        const accumulated = Array.isArray(p.accumulatedSetKeys) ? p.accumulatedSetKeys : []
-        for (const key of accumulated) {
-          const normalized = String(key || "").trim()
-          if (normalized) liveKeys.add(normalized)
-        }
-        return liveKeys.has(pseudoSetKey)
-      })
+      const scoped = slotMatches.filter((p) => livePositionHasSetKey(p, pseudoSetKey))
       const anyLiveKeyed = slotMatches.some((p: any) => {
         if (String(p.setKey || p.parentSetKey || "").trim().length > 0) return true
         return Array.isArray(p.accumulatedSetKeys) && p.accumulatedSetKeys.some((key: any) => String(key || "").trim().length > 0)
@@ -23437,11 +23497,7 @@ export async function syncLiveFromPseudo(
         if (i >= matches.length) return
         const livePos = matches[i]
         try {
-          // An operator override is a durable control contract. The normal
-          // pseudo-position sync must not overwrite it on the next 200 ms tick;
-          // updateProtectionOrders owns its absolute SL/TP and trailing ratchet
-          // until the operator explicitly restores strategy defaults.
-          if (livePos.manualProtectionOverride) continue
+          const exactProtection = livePos.trailingProfile?.initialStopLossPct !== undefined
           const localAuthoritativeEntry =
             finitePositive(livePos.initialEntryPrice) ||
             finitePositive(livePos.averageExecutionPrice) ||
@@ -23454,24 +23510,12 @@ export async function syncLiveFromPseudo(
           const translatedTrailingStopPrice = trailingActive
             ? translatePseudoTrailingStopPrice(trailingStopPrice, pseudoEntryPrice, fill)
             : undefined
-          // Never copy an absolute pseudo/historic price directly into a live
-          // venue position. If it cannot be projected through the pseudo entry
-          // ratio, leave the currently armed live protection untouched.
-          if (trailingActive && trailingStopPrice > 0 && !(translatedTrailingStopPrice && translatedTrailingStopPrice > 0)) {
-            continue
-          }
-          // Fast-path stale guard. The locked recalculation path performs the
-          // same check again against a fresh Redis read; this early skip avoids
-          // unnecessary venue work when an older fire-and-forget ratchet
-          // arrives after a tighter one has already been persisted.
-          if (
-            trailingActive &&
-            !!translatedTrailingStopPrice &&
-            !isTrailingStopTightening(livePos, translatedTrailingStopPrice)
-          ) continue
-          let effectiveSlPct = slPct
+          // Repeat this check under the mutation lease against the fresh row.
+          if (!acceptsPseudoProtectionUpdate(livePos, pseudoSetKey, trailingActive, translatedTrailingStopPrice)) continue
+          let effectiveSlPct = exactProtection ? livePos.stopLoss : slPct
+          const effectiveTpPct = exactProtection ? livePos.takeProfit : tpPct
           // CRITICAL: Guard trailing stop calculation against NaN and division errors
-          if (trailingActive && Number.isFinite(Number(translatedTrailingStopPrice)) && Number(translatedTrailingStopPrice) > 0) {
+          if (!exactProtection && trailingActive && Number.isFinite(Number(translatedTrailingStopPrice)) && Number(translatedTrailingStopPrice) > 0) {
             // Ensure fill price is valid and positive before using in division
             if (Number.isFinite(fill) && fill > 0) {
               const liveSide = resolveLivePositionDirection(livePos)
@@ -23554,11 +23598,11 @@ export async function syncLiveFromPseudo(
           })()
           
           const tpDeltaPct = (() => {
-            if (currentTpPct === undefined && tpPct === undefined) return 0 // both undefined → no change
-            if (currentTpPct === undefined || tpPct === undefined) return 1 // one newly defined → changed
-            if (!Number.isFinite(currentTpPct) || !Number.isFinite(tpPct)) return 1
+            if (currentTpPct === undefined && effectiveTpPct === undefined) return 0 // both undefined → no change
+            if (currentTpPct === undefined || effectiveTpPct === undefined) return 1 // one newly defined → changed
+            if (!Number.isFinite(currentTpPct) || !Number.isFinite(effectiveTpPct)) return 1
             if (currentTpPct <= 0) return 1 // undefined TP → treat as changed
-            const delta = Math.abs(tpPct - currentTpPct) / Math.abs(currentTpPct)
+            const delta = Math.abs(effectiveTpPct - currentTpPct) / Math.abs(currentTpPct)
             return Number.isFinite(delta) ? delta : 1
           })()
           // When trailing is active the ratchet can advance even when the
@@ -23573,8 +23617,8 @@ export async function syncLiveFromPseudo(
           if (nothingChanged) continue
 
           await recalculateAndApplySLTP(connectionId, livePos.id, exchangeConnector, {
-            stopLossPct: effectiveSlPct,
-            takeProfitPct: tpPct,
+            ...(exactProtection ? {} : { stopLossPct: effectiveSlPct, takeProfitPct: effectiveTpPct }),
+            pseudoSourceSetKey: pseudoSetKey,
             trailingActive,
             trailingStopPrice: nextTrailingStopPrice,
           })

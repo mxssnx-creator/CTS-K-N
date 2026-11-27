@@ -578,6 +578,7 @@ __tests__/unit/strategy-sets-processor.test.ts
 __tests__/unit/strategy-snapshot-consistency.test.ts
 __tests__/unit/strategy-stage-accounting.test.ts
 __tests__/unit/strategy-stage-relations.test.ts
+__tests__/unit/strategy-stage-reuse.test.ts
 __tests__/unit/strategy-tuple-coverage.test.ts
 __tests__/unit/strategy-volume-coordination.test.ts
 __tests__/unit/stuck-placement-sweeper.test.ts
@@ -1412,6 +1413,9 @@ docs/verification/runtime-memory-20260906.md
 docs/verification/strategy-features-20261111.md
 docs/verification/strategy-features-20261111/report.html
 docs/verification/strategy-features-20261111/results.json
+docs/verification/strategy-stage-performance-20261126.md
+docs/verification/trailing-continuation-20261126.md
+docs/verification/trailing-walkforward-20261122.md
 docs/verification/ui-quickstart-indications-20261117.md
 docs/verification/x02-twelve-symbol-interrupted-recovery-20261112.md
 drizzle.config.ts
@@ -1826,6 +1830,7 @@ lib/redis-runtime-root.ts
 lib/redis-scan.ts
 lib/redis-service.ts
 lib/relate-allocation.ts
+lib/relate-outcomes.ts
 lib/request-sequence.ts
 lib/results/ledger.ts
 lib/results/response.ts
@@ -2114,6 +2119,7 @@ scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
 scripts/regression/live-stage-simulated-protection.test.ts
 scripts/regression/price-distance-grid-replay.ts
+scripts/regression/trailing-walkforward.ts
 scripts/remove-stray-bun-lock.mjs
 scripts/repack-redis-indication-lists.mjs
 scripts/repair-live-position-ledgers.mjs
@@ -2242,6 +2248,8 @@ shared/cts-lastn/blocks.test.ts
 shared/cts-lastn/blocks.ts
 shared/cts-lastn/fields.tsx
 shared/cts-lastn/package.json
+shared/cts-relate/policy.ts
+shared/cts-relate/recovery.ts
 shared/cts-reversal/reversal.test.ts
 shared/cts-reversal/reversal.ts
 shared/cts-volume/README.md

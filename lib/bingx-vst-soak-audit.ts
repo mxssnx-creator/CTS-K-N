@@ -4,6 +4,79 @@ export function normalizeVstSoakOrderId(value: unknown): string {
   return !id || /^(?:undefined|null|nan|0+)$/i.test(id) ? "" : id
 }
 
+export function isVstSoakTerminalOrderStatus(value: unknown): boolean {
+  const status = String(value || "").trim().toLowerCase().replace(/[^a-z]/g, "")
+  return ["filled", "fullyfilled", "canceled", "cancelled", "partiallycanceled", "partiallycancelled", "rejected", "expired"].includes(status)
+}
+
+type VenueHistoryRow = { orderId?: unknown; orderID?: unknown; id?: unknown; status?: unknown; orderStatus?: unknown }
+type VenueHistoryReader = {
+  getOrderHistorySnapshot(symbol: string, limit: number): Promise<{ ok: boolean; rows: VenueHistoryRow[]; error?: string }>
+  getOrderDetails(symbol: string, orderId: string): Promise<{ success: boolean; order?: VenueHistoryRow }>
+}
+
+/** Verify exact owned orders and use individually paced reads only for missing terminal history. */
+export async function auditVstSoakTerminalHistory(
+  reader: VenueHistoryReader,
+  expectedBySymbol: ReadonlyMap<string, readonly string[]>,
+  pause: (ms: number) => Promise<void>,
+) {
+  const bySymbol = new Map<string, {
+    expectedOrderIds: readonly string[]; observedExpectedOrderIds: string[]; terminalVerifiedOrderIds: string[];
+    detailVerifiedOrderIds: string[]; listMissingOrderIds: string[]; detailMissingOrderIds: string[];
+    terminalSources: Record<string, { status: string; source: "history" | "detail" }>;
+    returnedRows: number; historyError?: string;
+  }>()
+  const listMissingOrderIds: string[] = []
+  const missingOrderIds: string[] = []
+  let lookupCount = 0
+  const orderIdOf = (row?: VenueHistoryRow) => normalizeVstSoakOrderId(row?.orderId ?? row?.orderID ?? row?.id)
+  const statusOf = (row?: VenueHistoryRow) => String(row?.status ?? row?.orderStatus ?? "")
+
+  for (const [symbol, expectedOrderIds] of expectedBySymbol) {
+    let snapshot = await reader.getOrderHistorySnapshot(symbol, 50)
+    for (let attempt = 1; !snapshot.ok && /109500|network issue/i.test(snapshot.error || "") && attempt <= 3; attempt++) {
+      await pause(2_000 * attempt)
+      snapshot = await reader.getOrderHistorySnapshot(symbol, 50)
+    }
+    const expected = new Set(expectedOrderIds)
+    const historyRows = snapshot.ok ? snapshot.rows : []
+    const observed = new Set<string>()
+    const terminal = new Map<string, { status: string; source: "history" | "detail" }>()
+    for (const row of historyRows) {
+      const orderId = orderIdOf(row)
+      if (!expected.has(orderId)) continue
+      observed.add(orderId)
+      const status = statusOf(row)
+      if (isVstSoakTerminalOrderStatus(status)) terminal.set(orderId, { status, source: "history" })
+    }
+    const detailVerifiedOrderIds: string[] = []
+    for (const orderId of expectedOrderIds) {
+      if (terminal.has(orderId)) continue
+      // Keep below BingX's two exact order queries per second per IP.
+      if (lookupCount > 0) await pause(600)
+      lookupCount++
+      const detail = await reader.getOrderDetails(symbol, orderId)
+      const status = statusOf(detail.order)
+      if (detail.success && orderIdOf(detail.order) === orderId && isVstSoakTerminalOrderStatus(status)) {
+        detailVerifiedOrderIds.push(orderId)
+        terminal.set(orderId, { status, source: "detail" })
+      }
+    }
+    const absentFromList = expectedOrderIds.filter((orderId) => !observed.has(orderId))
+    const unverified = expectedOrderIds.filter((orderId) => !terminal.has(orderId))
+    listMissingOrderIds.push(...absentFromList)
+    missingOrderIds.push(...unverified)
+    bySymbol.set(symbol, {
+      expectedOrderIds, observedExpectedOrderIds: [...observed], terminalVerifiedOrderIds: [...terminal.keys()],
+      detailVerifiedOrderIds, listMissingOrderIds: absentFromList, detailMissingOrderIds: unverified,
+      terminalSources: Object.fromEntries(terminal), returnedRows: historyRows.length,
+      ...(snapshot.ok ? {} : { historyError: snapshot.error || "order history unavailable" }),
+    })
+  }
+  return { bySymbol: Object.fromEntries(bySymbol), listMissingOrderIds, missingOrderIds, lookupCount }
+}
+
 export const VST_SOAK_PROGRESSION_FIELDS = [
   "live_orders_placed_count",
   "live_orders_filled_count",

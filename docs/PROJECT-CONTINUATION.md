@@ -1,8 +1,58 @@
+## 2026-11-27 — exact stage entry eligibility
+
+The forward-stage branch combines the current main Trend-Reversal work at `36a0a399` with the signed Auto PF branch at `aa13b48a`. Rows retained for owned-position handling carry current entry eligibility separately. A failed Short or Last window still reaches held-position management. New ordinary and Block exposure still require a qualified current row.
+
+The coordinator, signed-stage, settlement and owned-outcome suites passed 86 tests. TypeScript and the recreation manifest verifier completed. The canonical checkout remains at its existing local revision. The pre-commit checkpoint is `/workspace/backups/CTS-K-N/20261127T005420Z-forward-set-lineage-pre-commit-20261127`. Market and x02 settlement PF for this revision remain unmeasured.
+
 ## Current continuation — 2026-11-27 — Trend-Reversal
 
 Seven opt-in Common profiles use completed candles, independent parameter/side identities and standard stage admission. The Signal settings list separately validated candidates using the existing BingX market-data provider. They reuse the provider request and stay off until selected. Provider consensus still accounts for the common venue.
 
 Canonical main was recovered from the verified source bundle for `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The 12-symbol, 48-hour cross-project study did not justify a profitable default. Type checking and focused Common and Signal tests completed. Full CTS-K-N native funded forward PF and venue execution remain unmeasured. No deployment or account mutation occurred.
+
+## 2026-11-26 — Auto PF for signed position windows
+
+Strategy Settings expose a whole-number Auto PF ratio from 1 to 10, with default 4. Configured signed stage windows use their own 24 older closes for calibration after excluding the decision window. A negative Short window needs loss-to-gain evidence at the applicable floor. A negative Last remains a signed trigger. Closed-position and venue readers retain their separate evidence scopes.
+
+Source branch `codex/stage-auto-pf-20261126` starts at local revision `cb4b39d8`. The pre-edit verified checkpoint is `/workspace/backups/CTS-K-N/20261126T160718Z-signed-short-last-auto-pf`. Type checking and the focused PF and owned-outcome suites completed. CTS-K-N market and x02 evidence for this revision remain pending. No service or deployment changes were made.
+
+## 2026-11-26 — Independent Last-N stage validation
+
+Configured signed blocks now use the complete settled window for the stage's PF and drawdown. Long can be omitted when another block is configured. Short counts up to 30 are available in Settings. Each signed condition still uses its own nonoverlapping block. A Set that has reached the venue sample threshold keeps an unavailable exchange window if its rows cannot be read, so paper evidence cannot substitute for an eligible venue ledger.
+
+The focused stage, settlement, and coordinator reuse suites passed 57 checks before publication. This is source and offline verification. No exchange execution PF or live deployment was measured. The pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261126T152836Z-last-n-progression-before`. Continue on draft PR #585.
+
+## 2026-11-26 Relate recovery qualification
+
+Relate evaluates the exact Set and each enabled Overall relation separately. It records the proposed loss step and volume at entry. Each relation needs its own earlier and later groups of closed, after-cost trials at that step. Each group must clear the configured unit-return PF, size-weighted PF and drawdown limits. Missing evidence holds the increase at base size. The twelve-step default, independent volume factors and tighter-stop eligibility are retained.
+
+Paper and venue outcomes stay in separate bounded Redis windows. Older rows contribute their verified returns and cannot supply entry-time recovery trials. The targeted settlement and sizing suite passed 21 tests, including same-clock exclusion, duplicate close handling, exact Set proof and independent shares. No exchange results were collected for this revision. Positive venue Exec PF remains unverified. Source continuation is on `codex/relate-relations-20261126` in draft PR #585.
+
+## 2026-11-26 — Relate loss progression
+
+The Relate branch continues PR #584. Settings expose the 12-step default, Active skip count, Exact Set or Overall scope and relation volume factors. Extra exposure requires the existing exact Set PF, sample and stop gates. Overall records earlier verified closes by relation and separates paper outcomes from venue settlements. The Settings switch continues to govern the sizing adjustment on existing qualifying Normal and Trailing Sets.
+
+Thirty-one focused cases passed, including same-clock exclusion, close deduplication and the separation of paper, venue and mixed-Set outcomes. No CTS-K-N Relate market or venue PF is available for this revision. The checkpoint and test scope are recorded in the memory bank.
+
+## 2026-11-26 — bounded strategy-stage reads and reuse
+
+Continued draft PR #584 on `codex/trailing-replay-20261122` from `f267df097ea7eb4afd2095db245b1aa5bf61e188`. Strategy passes skip the active-indication read when admission is already blocked. Exact Set counts use bounded Redis HMGETs and closed-position context reads a six-field projection. Concurrent symbols share a pending context refresh. A stage snapshot is reusable only when compact Live inputs were retained, and changes to settings, relevant indication fields or the exact strategy ledger invalidate reuse.
+
+The native Redis benchmark preserved all checked outputs and reduced median latency for Set counts, candidate history and position context. The 32-symbol trailing and three-symbol DCA replays replicated the previous configuration results. No candidate met its promotion gates. The 70-symbol paper fixture reconciled all 140 positions. See [strategy stage verification](verification/strategy-stage-performance-20261126.md) for benchmarks, production-build paper soak results and remaining gates.
+
+The x02 venue connection timed out before authenticated preflight. The earlier eight-cycle virtual-funds run belongs to the preceding revision. The containing PR records the published revision and checks. The pre-edit source checkpoint was `/workspace/backups/CTS-K-N/20261126T120458Z-before-strategy-stage-performance`.
+
+## 2026-11-26 — exact trailing update isolation and 32-symbol replay
+
+Continued PR #584 at `3ce65113cd93f55dbf3ad85df036ddad973a7d3d`. Exact trailing sync rejects missing, stale and unowned updates under the same lock used for applying venue protection. The x02 harness checks for account changes before authenticated writes and retains read-only owned settlement evidence when the strict final account gate fails.
+
+The 32-symbol replay found no trailing configuration that met its after-cost qualification requirements. A separate 15,552-configuration BCH, XRP and SOL DCA matrix found no setting that cleared both the PF and drawdown gates. See `docs/verification/trailing-continuation-20261126.md` for the dates, prior-settings comparison, full regression counts and reproduction commands.
+
+Eight x02 virtual-funds cycles restored the account's position and open-order baseline. The final read-only audit reconciled all 24 fills and all 64 terminal order records after correcting the lookup-pressure failure. Raw account evidence stays out of the repository.
+
+## 2026-11-22 — exact trailing recovery and verification
+
+Recovered canonical source from GitHub `main` at `794ddcd5d` using the verified source checkpoint recorded in the memory bank. The exact initial stop now survives Base propagation and passes through Live preflight independently from the trailing gap. The tested native ratchet cannot replace a tighter initial stop. The longer replay and X02 results are in `docs/verification/trailing-walkforward-20261122.md`. The replay did not qualify a default change. After retrying preflight, four X02 cycles finished flat with complete ratchet proof and exact settlement matches for all 12 market fills. The shared account baseline gate did not pass.
 
 ## Current continuation — 2026-11-18 — Low-Range, Relate and trailing
 

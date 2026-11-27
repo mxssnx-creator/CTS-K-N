@@ -170,19 +170,20 @@ export function createHistoricCandleSimulator(
       closedAt: trade.exitTime,
     }))
     if (request.family === "trailing") {
-      return replayTrailing(candles, result.trades, {
+      return replayTrailing(candles, result.trades.slice(0, bound), {
         trailingRetracePct: options.trailingRetracePct,
         trailingStartRatio: options.trailingStartRatio,
         trailingGapBasis: options.trailingGapBasis,
         takeProfitPct,
         stopLossPct,
+        maxHoldMinutes: options.maxHoldMinutes ?? 12 * 60,
         positionCostPercent,
         // The same real round trip the fixed-exit family pays (audit TRAIL-05).
         roundTripCostPercent: roundTripCostPercent({
           takerFeeFraction: options.takerFeeFraction,
           slippageFraction: options.slippageFraction,
         }),
-      }).slice(0, bound)
+      })
     }
     if (request.family === "block") {
       // The variant IS the independent config: "2" replays Block count 2 on

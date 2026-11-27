@@ -14,7 +14,8 @@ describe("strategy-flow diagnostic throttling", () => {
   test("keeps one in-flight Base→Main→Real owner per connection and symbol", () => {
     const source = readFileSync(join(process.cwd(), "lib/trade-engine/strategy-processor.ts"), "utf8")
     expect(source).toContain("inFlight?: boolean")
-    expect(source).toContain("if (prev.inFlight)")
+    expect(source).toContain("entry.inFlight === true")
+    expect(source).toContain("if (isBlocked(prev, now))")
     expect(source).toContain("inFlight: true")
     expect(source).toContain("inFlight: false")
     expect(source).toContain("completeReservation()")

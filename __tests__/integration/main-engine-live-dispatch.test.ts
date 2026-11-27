@@ -890,6 +890,84 @@ describe("Main Trade Engine Real → Live dispatch", () => {
     expect(placeOrder).not.toHaveBeenCalled()
   })
 
+  test("keeps an exact initial stop independent of its gap and rejects an infeasible bracket", async () => {
+    connection.is_live_trade = "0"
+    connection.live_trade_requested = "0"
+    const { executeLivePosition } = await import("@/lib/trade-engine/stages/live-stage")
+    const source = {
+      id: "real-exact-trailing",
+      connectionId: connection.id, symbol: "BTCUSDT", direction: "long", quantity: 0,
+      entryPrice: 100, leverage: 2, stopLoss: 0.8, takeProfit: 1.2,
+      indicationType: "direction", setVariant: "trailing", status: "pending", timestamp: Date.now(),
+      setKey: "BTCUSDT:direction:long:t30-p14-entry-slp8",
+      trailingProfile: { mode: "fixed", gapBasis: "entry", startRatio: 0.3, stopRatio: 0.014, stepRatio: 0.007, initialStopLossPct: 0.8 },
+    } as const
+    const accepted = await executeLivePosition(connection.id, source as any, recordingConnector)
+    expect(accepted).toMatchObject({ status: "simulated", stopLoss: 0.8, assignedStopLoss: 0.8, takeProfit: 1.2 })
+    expect(accepted.stopLossPrice).toBeCloseTo(99.2, 8)
+    const rejected = await executeLivePosition(connection.id, { ...source, takeProfit: 0.4 } as any, recordingConnector)
+    expect(rejected).toMatchObject({
+      status: "rejected", executionMode: "blocked", executionBlockCode: "exact_trailing_protection_out_of_bounds",
+    })
+    expect(placeOrder).not.toHaveBeenCalled()
+  })
+
+  test.each(["long", "short"] as const)("isolates the exact %s ratchet from incomplete and unrelated pseudo ticks", async (direction) => {
+    const { executeLivePosition, getLivePositions, recalculateAndApplySLTP, syncLiveFromPseudo } = await import("@/lib/trade-engine/stages/live-stage")
+    const setKey = `BTCUSDT:direction:${direction}:exact-native-ratchet`
+    const position = await executeLivePosition(connection.id, {
+      id: `real-exact-ratchet-${direction}`, connectionId: connection.id, symbol: "BTCUSDT",
+      direction, quantity: 0, entryPrice: 100, leverage: 2, stopLoss: 0.8, takeProfit: 1.2,
+      indicationType: "direction", setVariant: "trailing", setKey, status: "pending", timestamp: Date.now(),
+      trailingProfile: { mode: "fixed", gapBasis: "entry", startRatio: 0.3, stopRatio: 0.014, stepRatio: 0.007, initialStopLossPct: 0.8 },
+    } as any, recordingConnector)
+    expect(position.stopLossPrice).toBeCloseTo(direction === "long" ? 99.2 : 100.8)
+    expect(position.stopLossOrderId).toBeTruthy()
+    expect(position.takeProfitOrderId).toBeTruthy()
+
+    const ratchet = direction === "long" ? 99.6 : 100.4
+    const pseudo = {
+      symbol: position.symbol, direction, system_tracking_id: "sys-exact-native-ratchet",
+      entry_price: 100, stoploss_pct: 0.6, takeprofit_pct: 1.5,
+      trailing_active: 1, trailing_stop_price: ratchet,
+    }
+    const readPosition = async () => (await getLivePositions(connection.id)).find(({ id }) => id === position.id)
+    const initialStops = placeStopOrder.mock.calls.length
+    await syncLiveFromPseudo(connection.id, pseudo, recordingConnector)
+    expect(placeStopOrder).toHaveBeenCalledTimes(initialStops)
+    expect((await readPosition())?.trailingStopPrice).toBeUndefined()
+
+    // The recording venue honours the same per-order rearm cooldown as live.
+    await new Promise((resolve) => setTimeout(resolve, 260))
+    await syncLiveFromPseudo(connection.id, { ...pseudo, strategy_set_key: setKey }, recordingConnector)
+    const armed = await readPosition()
+    expect(armed).toMatchObject({ trailingActive: true, stopLoss: 0.8, takeProfit: 1.2, takeProfitOrderId: position.takeProfitOrderId })
+    expect(armed?.trailingStopPrice).toBeCloseTo(ratchet)
+    expect(armed?.stopLossPrice).toBeCloseTo(ratchet)
+    expect(armed?.stopLossOrderId).not.toBe(position.stopLossOrderId)
+
+    const stopWrites = placeStopOrder.mock.calls.length
+    const cancellations = recordingConnector.cancelOrder.mock.calls.length
+    const alternateKey = `${setKey}-other`
+    for (const lateTick of [
+      { ...pseudo, strategy_set_key: alternateKey, trailing_stop_price: 100 },
+      { ...pseudo, strategy_set_key: setKey, trailing_stop_price: "invalid" },
+      { ...pseudo, strategy_set_key: setKey, trailing_active: 0, trailing_stop_price: undefined },
+    ]) {
+      await syncLiveFromPseudo(connection.id, lateTick, recordingConnector)
+    }
+    // An admitted but delayed write must be checked again against the locked row.
+    await recalculateAndApplySLTP(connection.id, position.id, recordingConnector, {
+      pseudoSourceSetKey: setKey, trailingActive: false,
+    })
+    expect(await readPosition()).toMatchObject({
+      trailingStopPrice: armed?.trailingStopPrice, trailingActive: true,
+      stopLossOrderId: armed?.stopLossOrderId, takeProfitOrderId: armed?.takeProfitOrderId,
+    })
+    expect(placeStopOrder).toHaveBeenCalledTimes(stopWrites)
+    expect(recordingConnector.cancelOrder).toHaveBeenCalledTimes(cancellations)
+  })
+
   test("opens every exact Signal source and TP/SL configuration in its own slot under the shared 120 cap", async () => {
     connection.is_live_trade = "0"
     connection.live_trade_requested = "0"

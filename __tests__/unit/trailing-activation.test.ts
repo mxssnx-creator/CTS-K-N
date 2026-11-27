@@ -152,9 +152,38 @@ describe("simulateGeneralTrailingExit follows the live rule", () => {
     })
     expect(exit).toBeNull()
   })
+
+  test.each([
+    { direction: "long" as const, openingGap: 97, stop: 98 },
+    { direction: "short" as const, openingGap: 103, stop: 102 },
+  ])("$direction uses the opening gap or existing stop when both extremes cross protection", ({ direction, openingGap, stop }) => {
+    const input = { ...base, direction, activationMode: TRAILING_ACTIVATION_TP_SHARE }
+    expect(simulateGeneralTrailingExit({ ...input, bars: [bar(1, 100, 104, 96)] }))
+      .toMatchObject({ reason: "stop_loss", price: stop, trailingArmed: false })
+    expect(simulateGeneralTrailingExit({ ...input, bars: [bar(1, openingGap, 104, 96)] }))
+      .toMatchObject({ reason: "stop_loss", price: openingGap, trailingArmed: false })
+  })
+
+  test("an opening target precedes a later adverse extreme", () => {
+    expect(simulateGeneralTrailingExit({
+      ...base, direction: "long", activationMode: TRAILING_ACTIVATION_TP_SHARE,
+      bars: [bar(1, 102, 103, 97)],
+    })).toMatchObject({ reason: "take_profit", price: 101 })
+  })
 })
 
 describe("replayTrailing (historic family) uses the same rule", () => {
+  test("settles at the configured hold limit without reading a later target", () => {
+    const candles = [bar(0, 100, 100, 100), bar(60_000, 100, 100.6, 99.9, 100.5), bar(120_000, 101, 104, 101)]
+      .map((candle) => ({ ...candle, volume: 1 }))
+    const entry = { entryTime: 0, direction: "long", initialEntryPrice: 100 } as any
+    const [trade] = replayTrailing(candles, [entry], {
+      positionCostPercent: 0.1, roundTripCostPercent: 0.15, takeProfitPct: 1, stopLossPct: 2, maxHoldMinutes: 1,
+    })
+    expect(trade.closedAt).toBe(60_000)
+    expect(trade.signedResultR).toBeCloseTo(3.5, 10)
+  })
+
   test("replays the selected gap against the same recorded path and costs", () => {
     const candles = [bar(1, 100, 100, 100), bar(2, 100, 102, 100), bar(3, 102, 102, 100.9)]
       .map((candle) => ({ ...candle, volume: 1 }))
