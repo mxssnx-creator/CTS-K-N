@@ -237,7 +237,8 @@ const study = periods.map(period => {
   const starts = [period.begin, period.warmupEnd, period.selectionEnd, period.end]
   const validBounds = autoPfStudy
     ? period.warmupEnd - period.begin === 2 * DAY && period.selectionEnd === period.warmupEnd && period.end - period.selectionEnd === 2 * DAY
-    : starts.every((value, index) => index === 0 || value > starts[index - 1])
+    // The final boundary may equal the selection end: a single development day has an empty validation window.
+    : starts.every((value, index) => index === 0 || value > starts[index - 1] || (index === 3 && value === starts[2]))
   if (!validBounds || !starts.every(value => Number.isSafeInteger(value) && value % DAY === 0)) {
     throw new Error(`Invalid complete UTC day boundaries for ${period.name}`)
   }
