@@ -1,3 +1,4 @@
+import { REVERSAL_TACTICS } from "@/shared/cts-reversal/reversal";
 import {PORTED_CATALOG} from "@/shared/cts-indications/catalog"
 /**
  * Catalogue of the Common types ported from CTS-A-O (classic registry families,
@@ -96,6 +97,13 @@ const entry = <T extends string>(
 })
 
 export const COMMON_CATALOG = [
+  ...REVERSAL_TACTICS.map(tactic => entry(
+    "trendReversal-" + tactic.id, "structure", "state", ["trend-reversal-" + tactic.id],
+    "Trend-Reversal · " + tactic.label,
+    "Completed OHLCV reversal with an exact period and independent direction and stage evidence.", {
+      period: range("Lookback (bars)", 6, 16, 2, 4, 60),
+    }, { defaultEnabled: false, requiresWallClock: true },
+  )),
   entry("tacticDca", "structure", "state", ["tactic-dca"], "Tactic · DCA decline / recovery",
     "Independent CTS-A-O decline levels, spacing bases, recovery ratios and confirmation methods. Source index selects one exact catalogue configuration; PF qualification remains independent.", {
       sourceIndex: range("Tactic source index (see catalogue)",0,3,1,0,PORTED_CATALOG.filter(s=>s.id.startsWith("tactic-dca-")).length-1),

@@ -1,5 +1,6 @@
 import { MAX_INDICATION_WINDOW } from "@/lib/constants"
 import { calculateIndicationConfigurationCounts } from "@/lib/indication-configuration-counts"
+import { REVERSAL_TACTICS } from "@/shared/cts-reversal/reversal"
 import {
   COMMON_INDICATOR_DEFINITIONS,
   DEFAULT_COMMON_INDICATION_SETTINGS,
@@ -29,7 +30,7 @@ describe("indication configuration counts", () => {
 
     // Fresh installations start the exhaustive Base window at the configured
     // default of 2 (then evaluate every integer through MAX_INDICATION_WINDOW).
-    expect(defaultCommonTuples).toBe(2_509)
+    expect(defaultCommonTuples).toBe(2_509 + 6 * REVERSAL_TACTICS.length)
     expect(enabledCommonTuples).toBe(2_325)
     expect(result.totalPossibleSets).toBe(47_938)
     expect(result.totalEvaluationConfigurations).toBe(16_249)
@@ -90,6 +91,13 @@ describe("indication configuration counts", () => {
     expect(trend?.possibleSets).toBe(12)
     expect(result.settings.commonTimeframes).toEqual([1, 5, 15, 30])
     expect(common?.params.timeframes).toBe("1/5/15/30")
+  })
+
+  it("includes an independently enabled Trend-Reversal Signal in the configuration totals", () => {
+    const counts = calculateIndicationConfigurationCounts({}, undefined, {
+      sources: { "bingx-trend-reversal-confluence-10": { enabled: true } },
+    })
+    expect(counts.types.find(type => type.type === "signal")?.params.directSourceInputs).toBe(46)
   })
 
   it("reports Auto runtime work separately from durable Common and Signal Long/Short sets", () => {

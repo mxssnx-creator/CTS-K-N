@@ -1,7 +1,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { iterateRedisSetMembers } from "@/lib/redis-scan"
 import {
-  SIGNAL_SOURCE_DEFINITIONS,
+  ALL_SIGNAL_SOURCE_DEFINITIONS as SIGNAL_SOURCE_DEFINITIONS,
   signalSourceSupportsSymbol,
   type SignalCandle,
   type SignalSourceDefinition,
@@ -253,7 +253,7 @@ async function computeAndPersist(
     const recordedCount = new Map<string, number>()
     for (const outcome of recorded) recordedCount.set(outcome.sourceId, (recordedCount.get(outcome.sourceId) || 0) + 1)
     const needReplay = SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
-      settings.sources[source.id]?.enabled !== false &&
+      (settings.sources[source.id]?.enabled ?? source.enabledByDefault) &&
       (recordedCount.get(source.id) || 0) < validation.minSamples,
     )
     const jobs: Array<{ source: SignalSourceDefinition; symbol: string }> = []
@@ -285,7 +285,7 @@ async function computeAndPersist(
     registry: SIGNAL_SOURCE_DEFINITIONS.map((source) => ({
       id: source.id,
       lifecycle: source.lifecycle || "established",
-      enabled: settings.sources[source.id]?.enabled !== false,
+      enabled: (settings.sources[source.id]?.enabled ?? source.enabledByDefault),
       priority: source.priority,
     })),
     outcomes,

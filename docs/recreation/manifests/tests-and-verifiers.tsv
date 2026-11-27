@@ -603,6 +603,7 @@ unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trailing-family-replay-wiring.test.ts
 unit	__tests__/unit/transient-halt-short-ttl.test.ts
 unit	__tests__/unit/trend-indication.test.ts
+unit	__tests__/unit/trend-reversal.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
 unit	__tests__/unit/truthful-dispatch-reasons.test.ts
 unit	__tests__/unit/type-measurement-rolling.test.ts

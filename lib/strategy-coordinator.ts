@@ -769,6 +769,8 @@ export interface StrategySet {
    */
   rowEvaluationKey?: string
   rowEvaluationWindow?: number
+  /** Explicit false retains an owned position for protection without authorizing new risk. */
+  rowEntryQualified?: boolean
   
   /**
    * ── Set validity status across stages ──────────────────────────────────
@@ -2057,13 +2059,13 @@ export function materializeContinuousStageRows(
       (isLegacyBaseSource && options.activeSetKeys?.has(parentKey)) ||
       (source as unknown as Record<string, unknown>)._hasLivePositions === true,
     )
-    const passes = sourceIsActive || (
+    const passes = source.rowEntryQualified !== false && (
       (!exactWindow?.blockDecision || exactWindow.blockDecision.state==="qualified") &&
       profitFactor >= options.metrics.minProfitFactor &&
       drawdownTime <= options.metrics.maxDrawdownTime &&
       passesDrawdownRatio(drawdownRatioValue, Number(options.metrics.maxDrawdownRatio ?? 0))
     )
-    if (!passes) {
+    if (!passes && !sourceIsActive) {
       rejected++
       continue
     }
@@ -2076,6 +2078,7 @@ export function materializeContinuousStageRows(
       rowSourceSetKey: source.setKey,
       rowEvaluationKey: evaluationKey,
       rowEvaluationWindow: rowEntryCount,
+      rowEntryQualified: passes,
       avgProfitFactor: profitFactor,
       avgDrawdownTime: drawdownTime,
       avgDrawdownRatio: drawdownRatioValue,
@@ -2117,9 +2120,11 @@ export function applyExactBlockRowWindows(
     )
     // Below ROW_WINDOW_MIN_SAMPLES ratio samples the row keeps its parent's
     // validation (bootstrap) instead of being judged on one or two closes.
-    if(window?.blockDecision && window.blockDecision.state!=="qualified" && !isActive)continue
+    const blockPass = row.rowEntryQualified !== false &&
+      (!window?.blockDecision || window.blockDecision.state === "qualified")
+    if (!blockPass && !isActive) continue
     if (!window || window.positionCostRatioCount < ROW_WINDOW_MIN_SAMPLES) {
-      evaluated.push(row)
+      evaluated.push(blockPass ? row : { ...row, rowEntryQualified: false })
       continue
     }
     const profitFactor = window.positionCostRatio
@@ -2131,17 +2136,17 @@ export function applyExactBlockRowWindows(
         ? Number(row.blockMinimumProfitFactor)
         : metrics.minProfitFactor,
     )
-    if (!isActive && (
-      profitFactor < minimumProfitFactor ||
-      drawdownTime > metrics.maxDrawdownTime ||
-      !passesDrawdownRatio(drawdownRatioValue, Number(metrics.maxDrawdownRatio ?? 0))
-    )) {
+    const passes = blockPass && profitFactor >= minimumProfitFactor &&
+      drawdownTime <= metrics.maxDrawdownTime &&
+      passesDrawdownRatio(drawdownRatioValue, Number(metrics.maxDrawdownRatio ?? 0))
+    if (!passes && !isActive) {
       continue
     }
     evaluated.push({
       ...row,
       rowEvaluationKey: evaluationKey,
       rowEvaluationWindow: window.count,
+      rowEntryQualified: passes,
       entryCount: window.count,
       avgProfitFactor: profitFactor,
       avgDrawdownTime: drawdownTime,
@@ -9784,7 +9789,8 @@ export class StrategyCoordinator {
     // Row-Live is already PF/DDT validated. Do not feed it into the generic
     // selector below, which would apply the Live gate a second time and make
     // a saved 15-position row behave differently at dispatch.
-    const builtRowLiveBlock = await this.buildRowLiveBlockOverlays(symbol, rowLive.rows, metrics)
+    const entryRows = rowLive.rows.filter(set => set.rowEntryQualified !== false)
+    const builtRowLiveBlock = await this.buildRowLiveBlockOverlays(symbol, entryRows, metrics)
     liveSub.blockOverlays = Date.now() - liveMark; liveMark = Date.now()
     // Independent Row-Live Blocks are executable configurations in their own
     // right.  Read their exact result rings in one batch and retain a row only
@@ -9803,7 +9809,7 @@ export class StrategyCoordinator {
       metrics,
       activeStrategyKeys,
     )
-    const rowQualifying = rowLive.rows.concat(rowLiveBlock)
+    const rowQualifying = entryRows.concat(rowLiveBlock.filter(set => set.rowEntryQualified !== false))
     const qualifyingBeforeLossGate = Array.from(new Map(
       rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
     ).values()).sort(compareStrategySetsBestFirst)
@@ -9904,7 +9910,7 @@ export class StrategyCoordinator {
       // descendants are additional executable Sets, not extra successful
       // evaluations, so they must not inflate this ratio beyond 100%.
       const passRatioLive = rowLive.evaluated > 0
-        ? rowLive.rows.length / rowLive.evaluated
+        ? entryRows.length / rowLive.evaluated
         : 0
       const liveRunningNow = coherentActiveCounts.live
 

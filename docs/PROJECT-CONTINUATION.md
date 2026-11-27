@@ -1,3 +1,15 @@
+## 2026-11-27 — exact stage entry eligibility
+
+The forward-stage branch combines the current main Trend-Reversal work at `36a0a399` with the signed Auto PF branch at `aa13b48a`. Rows retained for owned-position handling carry current entry eligibility separately. A failed Short or Last window still reaches held-position management. New ordinary and Block exposure still require a qualified current row.
+
+The coordinator, signed-stage, settlement and owned-outcome suites passed 86 tests. TypeScript and the recreation manifest verifier completed. The canonical checkout remains at its existing local revision. The pre-commit checkpoint is `/workspace/backups/CTS-K-N/20261127T005420Z-forward-set-lineage-pre-commit-20261127`. Market and x02 settlement PF for this revision remain unmeasured.
+
+## Current continuation — 2026-11-27 — Trend-Reversal
+
+Seven opt-in Common profiles use completed candles, independent parameter/side identities and standard stage admission. The Signal settings list separately validated candidates using the existing BingX market-data provider. They reuse the provider request and stay off until selected. Provider consensus still accounts for the common venue.
+
+Canonical main was recovered from the verified source bundle for `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The 12-symbol, 48-hour cross-project study did not justify a profitable default. Type checking and focused Common and Signal tests completed. Full CTS-K-N native funded forward PF and venue execution remain unmeasured. No deployment or account mutation occurred.
+
 ## 2026-11-26 — Auto PF for signed position windows
 
 Strategy Settings expose a whole-number Auto PF ratio from 1 to 10, with default 4. Configured signed stage windows use their own 24 older closes for calibration after excluding the decision window. A negative Short window needs loss-to-gain evidence at the applicable floor. A negative Last remains a signed trigger. Closed-position and venue readers retain their separate evidence scopes.

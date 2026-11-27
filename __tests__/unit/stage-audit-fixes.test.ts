@@ -161,6 +161,11 @@ describe("disjoint stage qualification",()=>{
   const window=derivePosWindowStats([],20,policy);
   const options={stage:"real" as const,lookback:20,metrics:{minProfitFactor:1.1,maxDrawdownTime:240},windowBySetKey:new Map([[source.setKey+"#row_real#row_live",window]])};
   expect(materializeContinuousStageRows([source],options).rows).toHaveLength(0);
-  expect(materializeContinuousStageRows([source],{...options,activeSetKeys:new Set([source.setKey])}).rows).toHaveLength(1);
+  const held=materializeContinuousStageRows([source],{...options,activeSetKeys:new Set([source.setKey])}).rows;
+  expect(held).toHaveLength(1);
+  expect(held[0]).toMatchObject({_hasLivePositions:true,rowEntryQualified:false});
+  const live=materializeContinuousStageRows(held,{...options,stage:"live" as const,
+    activeSetKeys:new Set([held[0].setKey]),windowBySetKey:undefined});
+  expect(live.rows[0]).toMatchObject({rowEntryQualified:false});
  });
 })
