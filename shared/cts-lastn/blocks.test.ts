@@ -40,7 +40,7 @@ test('zero, unknown, insufficient and signed alternatives remain separate; sizin
 
 test('Auto PF reads older own positions and preserves the floor on unknown calibration',()=>{
   const recent=[.02,-.01,.01];
-  const older=Array.from({length:24},(_,i)=>i%2 ? -.01 : .012);
+  const older: number[]=Array.from({length:24},(_,i)=>i%2 ? -.01 : .012);
   const p=blockPrefix([...recent,...older]);
   assert.ok(calibratedBlockFloor(p,3,1.05,8)>calibratedBlockFloor(p,3,1.05,4));
   older[2]=NaN;

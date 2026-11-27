@@ -1,3 +1,9 @@
+## 2026-11-27 — independent forward-stage release checks
+
+The combined branch at `cb6e5502` exposed a TypeScript fixture inference error in the older-close Auto PF test. The test's tape now accepts numeric returns including its explicit unknown marker. The linked canonical worktree passed TypeScript, four signed Last-N checks and 146 focused stage ownership, Relate and live-dispatch tests.
+
+The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T011808Z-forward-lineage-typefix-before-edit`. PR #587 carries the combined source. Market and exchange Exec PF for this revision remain unmeasured.
+
 ## 2026-11-27 — exact stage entry eligibility
 
 The forward-stage branch combines the current main Trend-Reversal work at `36a0a399` with the signed Auto PF branch at `aa13b48a`. Rows retained for owned-position handling carry current entry eligibility separately. A failed Short or Last window still reaches held-position management. New ordinary and Block exposure still require a qualified current row.
