@@ -1412,6 +1412,7 @@ docs/verification/auto-pf-quality-20261127.md
 docs/verification/complete-dca-fixtures-20261114.md
 docs/verification/disjoint-lastn-volume-20261111.md
 docs/verification/exact-last-n-stage-lineage-20261127.md
+docs/verification/last-n-lanes-3-days-20261127.md
 docs/verification/max-auto-hold-time-20261127.md
 docs/verification/micro-distances-x02-20261112.md
 docs/verification/older-change-integration-20260906.json
@@ -2034,6 +2035,10 @@ public/screenshot-styled.png
 public/top-info-layers/circuit-flow.png
 public/top-info-layers/market-mesh.png
 public/top-info-layers/signal-grid.png
+reports/last-n-lanes-3-days/lanes.md
+reports/last-n-lanes-3-days/study-1122.json
+reports/last-n-lanes-3-days/study-1124.json
+reports/last-n-lanes-3-days/study-1126.json
 reports/trade-window-5d-3d-30sym/trade-window-report.html
 reports/trade-window-5d-3d-30sym/trade-window-report.md
 reports/trade-window-5d-3d-30sym/trade-window-simulation.json
