@@ -1,3 +1,9 @@
+## Current continuation — 2026-11-27 — Trend-Reversal
+
+Seven opt-in Common profiles use completed candles, independent parameter/side identities and standard stage admission. The Signal settings list separately validated candidates using the existing BingX market-data provider. They reuse the provider request and stay off until selected. Provider consensus still accounts for the common venue.
+
+Canonical main was recovered from the verified source bundle for `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The 12-symbol, 48-hour cross-project study did not justify a profitable default. Type checking and focused Common and Signal tests completed. Full CTS-K-N native funded forward PF and venue execution remain unmeasured. No deployment or account mutation occurred.
+
 ## Current continuation — 2026-11-18 — Low-Range, Relate and trailing
 
 GitHub PR #578 connects the Common Low-Range indications to an independent strategy range, adds opt-in Relate sizing from the exact Set's prior signed settlements, and adds a fixed entry-distance option to the general trailing matrix. The existing dynamic peak option remains the default. Settings changes reload the progression graph and preserve the trailing distance recorded on existing positions. The canonical source was restored from published main `dbfe9ac2beb4d3d72b361adb05ca5e11502b9677`, with recovery and test details in `.kilocode/rules/memory-bank/context.md`.

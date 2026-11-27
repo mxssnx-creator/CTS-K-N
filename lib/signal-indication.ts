@@ -1,3 +1,4 @@
+import { trendReversalAt } from "@/shared/cts-reversal/reversal";
 import { latestWilderRsi } from "@/lib/wilder-rsi"
 import { getRedisClient, initRedis, type RedisClientLike } from "@/lib/redis-db"
 import {
@@ -7,7 +8,8 @@ import {
   resolveProtectionFloors,
 } from "@/lib/protection-floors"
 import {
-  SIGNAL_SOURCE_DEFINITIONS,
+  ALL_SIGNAL_SOURCE_DEFINITIONS as SIGNAL_SOURCE_DEFINITIONS,
+  getSignalSource,
   getSignalSourceDescriptors,
   signalSourceSupportsSymbol,
   type SignalCandle,
@@ -1460,12 +1462,22 @@ export function evaluateSignalCandles(input: {
   const volumeImpulse = averageVolume > 0
     ? clamp((latest.volume / averageVolume - 1) * Math.sign(momentum3 || trendScore), -1, 1)
     : 0
-  const rawScore =
+  let rawScore =
     trendScore * 0.35 +
     momentumScore * 0.3 +
     rsiScore * 0.18 +
     rangeScore * 0.12 +
     volumeImpulse * 0.05
+  if (input.source.reversal) {
+    const { period, tactic } = input.source.reversal
+    const col = (key: keyof SignalCandle) => candles.map(candle => candle[key])
+    const bars = { t: col("timestamp"), o: col("open"), h: col("high"), l: col("low"), c: closes, v: col("volume") }
+    const i = candles.length - 1
+    const interval = input.source.timeframeMinutes * 60_000
+    const direction = trendReversalAt(bars, i, period, tactic, interval)
+    if (!direction || direction === trendReversalAt(bars, i - 1, period, tactic, interval)) return null
+    rawScore = direction * clamp(Math.abs(latest.close - latest.open) / trendScale, 0, 1)
+  }
   const strength = Math.abs(rawScore)
   if (!Number.isFinite(strength) || strength < input.settings.minimumStrength) return null
 
@@ -1775,7 +1787,7 @@ function selectSources(
   _cursor: number,
 ): SignalSourceDefinition[] {
   return SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
-    settings.sources[source.id]?.enabled !== false &&
+    (settings.sources[source.id]?.enabled ?? source.enabledByDefault) &&
     !settings.sources[source.id]?.disabledSymbols.includes(normalizeSymbol(symbol)) &&
     signalSourceSupportsSymbol(source, symbol),
   )
@@ -2223,25 +2235,21 @@ async function processSignalIndicationsUncached(
     process.env.FORCE_SIMULATED === "1" &&
     process.env.FORCE_LIVE !== "1"
 
+  const providerCandles = new Map<string, Promise<SignalCandle[]>>()
   const fetched = await mapLimit(sources, settings.concurrency, async (source) => {
     try {
-      const candles = simulatedSourceData
-        ? buildSimulatedSignalCandles(
-            options.symbol,
-            source.id,
-            settings.candleLimit,
-            now,
-          )
-        : await fetchSourceCandles({
-            client,
-            connectionId: options.connectionId,
-            source,
-            symbol: options.symbol,
-            settings,
-            now,
-            fetchImpl,
-            useCache: !options.fetchImpl,
-          })
+      const provider = source.candleSourceId ? getSignalSource(source.candleSourceId)! : source
+      let request = providerCandles.get(provider.id)
+      if (!request) {
+        request = simulatedSourceData ? Promise.resolve(buildSimulatedSignalCandles(
+          options.symbol, provider.id, settings.candleLimit, now,
+        )) : fetchSourceCandles({
+          client, connectionId: options.connectionId, source: provider, symbol: options.symbol,
+          settings, now, fetchImpl, useCache: !options.fetchImpl,
+        })
+        providerCandles.set(provider.id, request)
+      }
+      const candles = await request
       if (simulatedSourceData) {
         await updateSourceHealth(client, options.connectionId, source, {
           success: true,

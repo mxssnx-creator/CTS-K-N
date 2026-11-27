@@ -1,3 +1,4 @@
+import { REVERSAL_TACTICS, trendReversalSeries } from "@/shared/cts-reversal/reversal";
 import {portedStates} from "@/shared/cts-indications/index.ts"
 import {PORTED_CATALOG} from "@/shared/cts-indications/catalog"
 /**
@@ -222,6 +223,26 @@ function holdContiguousEvents(raw: Int8Array, keep: number, ctx: CommonSeriesCon
 }
 
 function ruleFor(entry: CommonCatalogEntry, mapping: Mapping): CommonRule {
+  const reversal = REVERSAL_TACTICS.find(tactic => entry.type === "trendReversal-" + tactic.id)
+  if (reversal) {
+    const states = (ctx: CommonSeriesContext, p: RuleParams) => ctx.memo(`reversal:${reversal.id}:${p.period}`,
+      () => trendReversalSeries(ctx.ao().b, p.period, reversal.id, ctx.tfMin * 60_000))
+    return {
+      type: entry.type, kind: "state", states,
+      resolve(raw) {
+        const period = raw?.period ?? 10
+        if (!Number.isSafeInteger(period) || period < 4 || period > 60) throw Error("Invalid reversal period")
+        return { period }
+      },
+      warmup: (p) => p.period * (reversal.id === "pullback" || reversal.id === "confluence" ? 2 : 1) + 2,
+      at(ctx, p, index) {
+        const side = states(ctx, p)[index] ?? 0
+        const signal = side !== states(ctx, p)[index - 1] ? side : 0
+        return { direction: signal > 0 ? "long" : signal < 0 ? "short" : "neutral",
+          signal, strength: signal ? .6 : 0, value: ctx.candles[index]?.close ?? 0, details: { period: p.period } }
+      },
+    }
+  }
   if(entry.type==="tacticDca"||entry.type==="inverseAo"){
     const sources=PORTED_CATALOG.filter(s=>entry.type==="tacticDca"?s.id.startsWith("tactic-dca-"):s.kind==="inverse")
     const resolve=(raw:Record<string,number>|undefined)=>{const index=raw?.sourceIndex??0;if(!Number.isInteger(index)||index<0||index>=sources.length)throw new Error("Unknown Tactic / Inverse source index");return {sourceIndex:index}}

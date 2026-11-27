@@ -116,7 +116,7 @@ import {
   signalSourceLaneManuallyDisabled,
 } from "@/lib/signal-indication"
 import { initRedis } from "@/lib/redis-db"
-import { SIGNAL_SOURCE_DEFINITIONS } from "@/lib/signal-source-registry"
+import { ALL_SIGNAL_SOURCE_DEFINITIONS, SIGNAL_SOURCE_DEFINITIONS } from "@/lib/signal-source-registry"
 import { setActiveProtectionFloors } from "@/lib/protection-floors"
 
 // These contracts pre-date the 0.5 % operator stop-loss floor; they are
@@ -395,7 +395,7 @@ describe("Signal indication persistence and independent performance gates", () =
     }
     expect(mockHashes.get("indications_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
     expect(mockHashes.get("indication_sets_active:conn-a")?.["BTCUSDT:signal"]).toBe("4")
-    expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(45)
+    expect(JSON.parse(mockStrings.get("signal:cycle:conn-a:BTCUSDT") || "{}").sourceRegistrySize).toBe(ALL_SIGNAL_SOURCE_DEFINITIONS.length)
     const candidateRank = JSON.parse(
       mockHashes.get("signal:candidate_rank:conn-a")?.BTCUSDT || "{}",
     )
@@ -814,13 +814,16 @@ describe("Signal indication persistence and independent performance gates", () =
     expect(settings.performanceDisableBelowPnl).toBe(0)
   })
 
-  test("defaults all 45 registry sources, 100 positions, unlimited orders and best-first admission", () => {
+  test("retains legacy Signal defaults and exposes opt-in reversal candidates", () => {
     const defaults = normalizeSignalIndicationSettings({})
     const clamped = normalizeSignalIndicationSettings({
       maxPositionsTotal: 9_999,
       positionSelectionMode: "fifo",
     })
-    expect(defaults.maxSourcesPerCycle).toBe(45)
+    expect(defaults.maxSourcesPerCycle).toBe(ALL_SIGNAL_SOURCE_DEFINITIONS.length)
+    for (const source of ALL_SIGNAL_SOURCE_DEFINITIONS) {
+      expect(defaults.sources[source.id].enabled).toBe(source.enabledByDefault)
+    }
     expect(defaults.sourceValidation.maxActiveSources).toBe(50)
     expect(defaults.maxPositionsTotal).toBe(100)
     expect(defaults.maxOrders).toBe(0)

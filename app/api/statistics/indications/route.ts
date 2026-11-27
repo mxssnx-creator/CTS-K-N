@@ -18,7 +18,7 @@ import {
   signalSourceLaneIdentity,
 } from "@/lib/signal-indication"
 import {
-  SIGNAL_SOURCE_DEFINITIONS,
+  getSignalSource,
   getSignalSourceDescriptors,
   signalSourceSupportsSymbol,
 } from "@/lib/signal-source-registry"
@@ -286,12 +286,11 @@ export async function GET(request: Request) {
       ...openRows.map((row) => row.symbol),
     ].filter(Boolean))).sort()
 
-    const sourceById = new Map(SIGNAL_SOURCE_DEFINITIONS.map((source) => [source.id, source]))
     const allSourceHealth = snapshots.flatMap((snapshot) => snapshot.sourceHealth)
     const signalSources = getSignalSourceDescriptors().map((descriptor) => {
-      const source = sourceById.get(descriptor.id)!
+      const source = getSignalSource(descriptor.id)
       const sourceTrades = signalTrades.filter((trade) => trade.sourceIds.includes(descriptor.id))
-      const supportedSymbols = candidateSymbols.filter((symbol) => signalSourceSupportsSymbol(source, symbol))
+      const supportedSymbols = source ? candidateSymbols.filter((symbol) => signalSourceSupportsSymbol(source, symbol)) : []
       const symbols = pruneInactiveSymbolRows(sortSymbolsBestFirst(Array.from(new Set([
         ...supportedSymbols,
         ...sourceTrades.map((trade) => trade.symbol),
@@ -525,7 +524,7 @@ export async function PATCH(request: Request) {
     body.direction === "long" || body.direction === "short"
       ? body.direction
       : null
-  if (!SIGNAL_SOURCE_DEFINITIONS.some((source) => source.id === sourceId) || !symbol) {
+  if (!getSignalSource(sourceId) || !symbol) {
     return NextResponse.json(
       { success: false, error: "A valid sourceId and symbol are required" },
       { status: 400 },

@@ -404,6 +404,7 @@ unit	__tests__/unit/preset-pseudo-trailing-resilience.test.ts
 unit	__tests__/unit/preset-type-config.test.ts
 unit	__tests__/unit/preset-types-persistence.test.ts
 unit	__tests__/unit/presets-route-persistence.test.ts
+unit	__tests__/unit/price-distance-grid.test.ts
 unit	__tests__/unit/production-continuity.test.ts
 unit	__tests__/unit/production-deploy-init-state.test.ts
 unit	__tests__/unit/production-start-shutdown.test.ts
@@ -600,6 +601,7 @@ unit	__tests__/unit/trailing-dca-strategy.test.ts
 unit	__tests__/unit/trailing-family-replay-wiring.test.ts
 unit	__tests__/unit/transient-halt-short-ttl.test.ts
 unit	__tests__/unit/trend-indication.test.ts
+unit	__tests__/unit/trend-reversal.test.ts
 unit	__tests__/unit/trend-wiring.test.ts
 unit	__tests__/unit/truthful-dispatch-reasons.test.ts
 unit	__tests__/unit/type-measurement-rolling.test.ts
