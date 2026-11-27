@@ -13,6 +13,19 @@ function candles(prices: number[], intervalMinutes = 5): DcaBacktestCandle[] {
 }
 
 describe("DCA seven-day optimizer core", () => {
+  test("a fixed-bracket control keeps its requested stop with DCA disabled", () => {
+    const bars = candles([...Array.from({ length: 31 }, (_, index) => 100 + index * 0.1), 102.35, 102.35, 106])
+    const config = {
+      profile: DEFAULT_DCA_PROFILE, timeframeMinutes: 5, entry: "momentum",
+      takeProfitPct: 1.8, stopLossPct: 0.5, roundTripCostPct: 0, slippagePct: 0,
+    } as const
+    const bracket = runDcaBacktest(bars, { ...config, enableAdds: false }).trades[0]
+    expect(bracket).toMatchObject({ direction: "long", exitReason: "sl", dcaSteps: 0, volumeRatio: 1 })
+    expect(bracket.exitPrice).toBeCloseTo(103 * 0.995)
+    expect(bracket.holdTimeMin).toBe(5)
+    expect(runDcaBacktest(bars, config).trades[0].exitReason).toBe("tp")
+  })
+
   test("never lets any simulated position exceed the configured 5x ratio", () => {
     const prices = [
       ...Array.from({ length: 35 }, (_, index) => 100 + index * 0.05),

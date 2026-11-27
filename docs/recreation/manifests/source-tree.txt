@@ -276,6 +276,7 @@ __tests__/unit/historic-test-section-contract.test.ts
 __tests__/unit/historic-test-service.test.ts
 __tests__/unit/historic-test-settings.test.ts
 __tests__/unit/historic-test-stats-surface.test.ts
+__tests__/unit/independent-stage-last-n.test.ts
 __tests__/unit/indication-configuration-counts.test.ts
 __tests__/unit/indication-connection-selection.test.ts
 __tests__/unit/indication-lane-identity.test.ts
@@ -1406,6 +1407,7 @@ docs/stress/offline-70-verify.md
 docs/system-modules-map.md
 docs/verification/complete-dca-fixtures-20261114.md
 docs/verification/disjoint-lastn-volume-20261111.md
+docs/verification/exact-last-n-stage-lineage-20261127.md
 docs/verification/micro-distances-x02-20261112.md
 docs/verification/older-change-integration-20260906.json
 docs/verification/redis-memory-recovery-20260905.md
@@ -1878,6 +1880,7 @@ lib/sqlite-bulk-operations.ts
 lib/sse-client.ts
 lib/stage-funnel-contract.cjs
 lib/stage-funnel-contract.ts
+lib/stage-last-n-lineage.ts
 lib/stage-pf-default-migration.ts
 lib/stage-row-snapshot.ts
 lib/startup-coordinator.ts
@@ -2117,6 +2120,7 @@ scripts/reconcile-bingx-x02-protection-slot.ts
 scripts/redis-memory-governor.mjs
 scripts/redis-persistence-cleanup.mjs
 scripts/regression/direct-trade-cycle-serialization.test.mjs
+scripts/regression/last-n-stage-market-replay.ts
 scripts/regression/live-stage-simulated-protection.test.ts
 scripts/regression/price-distance-grid-replay.ts
 scripts/regression/trailing-walkforward.ts

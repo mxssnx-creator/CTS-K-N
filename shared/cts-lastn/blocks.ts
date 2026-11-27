@@ -30,6 +30,7 @@ export function blockPrefix(values:ArrayLike<number|null>,limit=95):BlockPrefix 
   return {n,gp,gl,unknown};
 }
 export const AUTO_PF_CALIBRATION = 24;
+export const LAST_N_OUTCOME_RING_CAP = 600;
 
 /** The weaker half of older, disjoint observations can raise the decision floor. */
 export function calibratedBlockFloor(pre:BlockPrefix, required:number, minimum:number, ratio:number):number {

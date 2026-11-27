@@ -19,6 +19,8 @@ export interface DcaBacktestCandle {
 
 export interface DcaBacktestConfig {
   profile: DcaProfile
+  /** Use the fixed bracket without allocating additional entry legs. */
+  enableAdds?: boolean
   timeframeMinutes: 5 | 15 | 30
   entry: DcaBacktestEntry
   takeProfitPct: number
@@ -220,10 +222,11 @@ export function runDcaBacktest(
   const entryDirections = preparedEntryDirections(prepared, rawConfig.entry)
   const profile = normalizeDcaProfile(rawConfig.profile)
   const timeframeMinutes = rawConfig.timeframeMinutes
+  const enableAdds = rawConfig.enableAdds !== false
   const takeProfitPct = finitePositive(rawConfig.takeProfitPct, 0.6)
   const stopLossPct = Math.max(
     finitePositive(rawConfig.stopLossPct, 2.5),
-    profile.stepDistancesPct[Math.max(0, profile.maxSteps - 1)] + 0.1,
+    enableAdds ? profile.stepDistancesPct[Math.max(0, profile.maxSteps - 1)] + 0.1 : 0,
   )
   const maxHoldCandles = Math.max(
     1,
@@ -302,7 +305,7 @@ export function runDcaBacktest(
         break
       }
 
-      if (nextDcaStep <= profile.maxSteps) {
+      if (enableAdds && nextDcaStep <= profile.maxSteps) {
         const distance = profile.stepDistancesPct[nextDcaStep - 1]
         const triggerPrice = direction === "long"
           ? initialEntryPrice * (1 - distance / 100)

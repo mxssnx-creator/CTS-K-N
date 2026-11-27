@@ -1,6 +1,7 @@
 "use client"
 import {BlockPolicyFields} from "@/shared/cts-lastn/fields"
-import {normalizeStageAutoPfRatio,stageBlockPolicies} from "@/lib/disjoint-last-n"
+import { LAST_N_STAGES, baseLongChoices, normalizeStageAutoPfRatio, stageBlockPolicies, type LastNStage, type StageBlockGrid, type StageBlockPolicy } from "@/lib/disjoint-last-n"
+import { MINIMAL_COUNTS, type Polarity } from "@/shared/cts-lastn/blocks"
 import {VolumeRatioSliders} from "@/shared/cts-volume/sliders.tsx"
 import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, resolveTrailingSwitch } from "@/lib/strategy-execution-policy"
 
@@ -90,9 +91,82 @@ function PresetOptimizerSlider({
   )
 }
 
+function LastNGridFields({ stage, policy, onChange }: {
+  stage: LastNStage
+  policy: StageBlockPolicy
+  onChange: (value: StageBlockPolicy) => void
+}) {
+  const defaults: StageBlockGrid = {
+    long: [10, 20, 30, 40, 50],
+    short: stage === "real" || stage === "live" ? [4, 8, 12, 16, 20, 24, 28, 30] : [4, 8, 12, 16],
+    minimal: [...MINIMAL_COUNTS],
+    shortPolarity: ["positive", "negative"],
+    minimalPolarity: ["positive", "negative"],
+  }
+  const grid = policy.grid
+  const stageLabel = stage === "live" ? "Exec / Live" : stage
+  const counts = (key: "long" | "short" | "minimal", label: string) => grid && (
+    <label className="grid gap-1 text-sm">
+      {label} closes
+      <select multiple aria-label={`${stageLabel} ${label} choices`} size={5}
+        className="rounded-md border bg-background p-1" value={grid[key].map(String)}
+        onChange={event => {
+          const values = Array.from(event.target.selectedOptions, option => Number(option.value))
+          if (values.length) onChange({ ...policy, grid: { ...grid, [key]: values } })
+        }}>
+        {[...new Set([0, ...defaults[key], ...grid[key]])].sort((a, b) => a - b).map(value => (
+          <option key={value} value={value}>{value === 0 ? "Omit" : value}</option>
+        ))}
+      </select>
+    </label>
+  )
+  const signs = (key: "shortPolarity" | "minimalPolarity", label: string) => grid && (
+    <label className="grid gap-1 text-sm">
+      {label} conditions
+      <select multiple aria-label={`${stageLabel} ${label} conditions`} size={2}
+        className="rounded-md border bg-background p-1" value={grid[key]}
+        onChange={event => {
+          const values = Array.from(event.target.selectedOptions, option => option.value as Polarity)
+          if (values.length) onChange({ ...policy, grid: { ...grid, [key]: values } })
+        }}>
+        <option value="positive">Positive</option>
+        <option value="negative">Negative</option>
+      </select>
+    </label>
+  )
+  return (
+    <div className="mb-4 space-y-2">
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={Boolean(grid)} onChange={event => onChange({ ...policy, grid: event.target.checked ? {
+          ...defaults, long: [policy.long], short: [policy.short], minimal: [policy.minimal],
+        } : undefined })} />
+        Evaluate independent {stageLabel} window combinations
+      </label>
+      {grid && <div className="grid gap-3 sm:grid-cols-3">
+        {counts("long", "Long")}{counts("short", "Short")}{counts("minimal", "Last")}
+        {signs("shortPolarity", "Short")}{signs("minimalPolarity", "Last")}
+      </div>}
+    </div>
+  )
+}
+
 export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps) {
   const [strategySubTab, setStrategySubTab] = useState("main")
   const [strategyMainSubTab, setStrategyMainSubTab] = useState("base")
+  const [lastNError, setLastNError] = useState("")
+  const lastNPolicies = stageBlockPolicies(settings.lastNBlocks)
+  const hasBaseLong = baseLongChoices(lastNPolicies).length > 0
+  const updateLastN = (stage: LastNStage, value?: StageBlockPolicy) => {
+    try {
+      const next = { ...lastNPolicies }
+      if (value) next[stage] = value
+      else delete next[stage]
+      handleSettingChange("lastNBlocks", stageBlockPolicies(next))
+      setLastNError("")
+    } catch (error) {
+      setLastNError(error instanceof Error ? error.message : "Invalid Last-N settings")
+    }
+  }
   // The engine reads variantBlockEnabled / variantDcaEnabled (strategy-coordinator);
   // blockAdjustment / dcaAdjustment are legacy mirrors kept in step for older readers.
   const blockAdjustmentEnabled = parseStoredBoolean(settings.variantBlockEnabled ?? settings.blockAdjustment, true)
@@ -145,7 +219,27 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
             onChange={event=>handleSettingChange("strategyAutoPfRatio",Number(event.target.value))}>
             {Array.from({length:10},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}
           </select>
-        </label>{(["base","main","real","live"] as const).map(stage=><BlockPolicyFields key={stage} label={stage+" Last-N blocks"} value={stageBlockPolicies(settings.lastNBlocks)[stage]} onChange={p=>{const next=stageBlockPolicies(settings.lastNBlocks);if(p)next[stage]=p;else delete next[stage];handleSettingChange("lastNBlocks",next)}}/>)}</CardContent></Card>
+        </label>
+        {LAST_N_STAGES.map(stage => {
+          const policy = lastNPolicies[stage]
+          return <div key={stage}>
+            <BlockPolicyFields label={`${stage === "live" ? "Exec / Live" : stage} Last-N blocks`} value={policy}
+              onChange={value => updateLastN(stage, value && { ...policy, ...value })} />
+            {policy && <LastNGridFields stage={stage} policy={policy} onChange={value => updateLastN(stage, value)} />}
+            {policy && stage !== "base" && <label className="flex items-center gap-2 text-sm">
+              {stage === "live" ? "Exec / Live" : stage} Long choices
+              <select className="rounded-md border bg-background p-1" value={policy.longMode ?? "configured"}
+                onChange={event => updateLastN(stage, { ...policy, longMode: event.target.value as StageBlockPolicy["longMode"] })}>
+                <option value="configured">Use configured counts</option>
+                <option value="inherit" disabled={!hasBaseLong}>Use Base Long</option>
+                <option value="none">Omit Long</option>
+                <option value="both" disabled={!hasBaseLong}>Evaluate Base Long and omitted Long</option>
+              </select>
+            </label>}
+          </div>
+        })}
+        {lastNError && <p className="text-sm text-destructive" role="alert">{lastNError}</p>}
+      </CardContent></Card>
       <Card>
         <CardHeader><CardTitle>Strategy processing · Normal & Trailing</CardTitle><CardDescription>Normal keeps calculated evidence for additional strategies when disabled. Standalone Normal and Trailing entries require Normal. Trailing off applies across every strategy. Overall and range switches must both allow processing.</CardDescription></CardHeader>
         <CardContent className="space-y-3">

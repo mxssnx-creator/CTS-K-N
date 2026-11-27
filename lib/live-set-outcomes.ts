@@ -1,4 +1,4 @@
-import {AUTO_PF_CALIBRATION,blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {AUTO_PF_CALIBRATION,LAST_N_OUTCOME_RING_CAP,blockRequired,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 /**
  * Real exchange results per strategy Set.
  *
@@ -24,6 +24,7 @@ import {AUTO_PF_CALIBRATION,blockRequired,type BlockPolicy} from "@/shared/cts-l
 import { getRedisClient } from "@/lib/redis-db"
 import {
   derivePosWindowStats,
+  readExactSetOutcomeRings,
   strategyOutcomeRecord,
   type PosWindowStats,
   type StrategyPositionCloseOutcome,
@@ -35,7 +36,7 @@ import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES } from "@/lib/live-outcome-settings"
 import { recordRelateOutcome } from "@/lib/relate-outcomes"
 
 const TTL_SECONDS = 90 * 24 * 60 * 60
-const RING_CAP = 600
+const RING_CAP = LAST_N_OUTCOME_RING_CAP
 const COUNTS_CACHE_MS = 2_000
 /** Above this many indexed Sets, per-key HGETs are cheaper than one HGETALL. */
 const COUNTS_HGETALL_MAX = 20_000
@@ -214,7 +215,7 @@ const RECORD_LIVE_SET_OUTCOMES_LUA = `
   return inserted
 `
 
-const countsCache = new Map<string, { at: number; counts: Map<string, number> | null }>()
+const countsCache = new Map<string, { at: number; counts: Map<string, number> | null; checked: boolean }>()
 
 /**
  * Book the settled real result of `row` into the exchange-only rings of all
@@ -279,6 +280,11 @@ function pipelineValue(raw: unknown): unknown {
   return Array.isArray(raw) && raw.length === 2 ? raw[1] : raw
 }
 
+function isOutcomeCount(raw: unknown): boolean {
+  return (typeof raw === "number" || typeof raw === "string" && /^\d+$/.test(raw)) &&
+    Number.isSafeInteger(Number(raw)) && Number(raw) >= 0
+}
+
 /**
  * Settled real closes per requested Set key (only keys with at least one).
  * A connection without any real result answers with one HLEN; a small index
@@ -287,6 +293,7 @@ function pipelineValue(raw: unknown): unknown {
 export async function getLiveSetClosedCounts(
   connectionId: string,
   setKeys: readonly string[],
+  strict = false,
 ): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
@@ -294,20 +301,25 @@ export async function getLiveSetClosedCounts(
   try {
     const client: any = getRedisClient()
     const cached = countsCache.get(connectionId)
-    let counts = cached && Date.now() - cached.at < COUNTS_CACHE_MS ? cached.counts : undefined
+    let counts = cached && (!strict || cached.checked) && Date.now() - cached.at < COUNTS_CACHE_MS ? cached.counts : undefined
     if (counts === undefined) {
-      const size = Number(await client.hlen(liveSetClosedCountsKey(connectionId)).catch(() => 0)) || 0
+      const rawSize = await client.hlen(liveSetClosedCountsKey(connectionId))
+      if (strict && !isOutcomeCount(rawSize)) throw new Error("Invalid exchange Set count index")
+      const size = Number(rawSize) || 0
       if (size === 0) {
         counts = new Map()
       } else if (size <= COUNTS_HGETALL_MAX) {
-        const all = (await client.hgetall(liveSetClosedCountsKey(connectionId)).catch(() => ({}))) || {}
-        counts = new Map(Object.entries(all as Record<string, string>)
+        const all = await client.hgetall(liveSetClosedCountsKey(connectionId))
+        if (strict && (!all || typeof all !== "object" || Array.isArray(all) || !Object.values(all).every(isOutcomeCount))) {
+          throw new Error("Invalid exchange Set counts")
+        }
+        counts = new Map(Object.entries((all || {}) as Record<string, string>)
           .map(([key, value]) => [key, Number(value) || 0] as [string, number])
           .filter(([, value]) => value > 0))
       } else {
         counts = null
       }
-      countsCache.set(connectionId, { at: Date.now(), counts })
+      countsCache.set(connectionId, { at: Date.now(), counts, checked: strict })
     }
     if (counts) {
       for (const key of unique) {
@@ -327,12 +339,19 @@ export async function getLiveSetClosedCounts(
         for (const key of batch) pipeline.hget(countsKey, key)
         results = await pipeline.exec()
       }
+      if (strict && (!Array.isArray(results) || results.length !== batch.length)) throw new Error("Incomplete exchange Set count read")
       batch.forEach((key, index) => {
-        const count = Number(pipelineValue(results?.[index])) || 0
+        const result = results?.[index]
+        const raw = pipelineValue(result)
+        if (strict && (Array.isArray(result) && result[0] != null || raw !== null && !isOutcomeCount(raw))) {
+          throw new Error("Invalid exchange Set count")
+        }
+        const count = Number(raw) || 0
         if (count > 0) out.set(key, count)
       })
     }
-  } catch {
+  } catch (error) {
+    if (strict) throw error
     // No real result readable: callers keep the general ring.
   }
   return out
@@ -361,22 +380,10 @@ export async function getLiveSetWindowBatch(
   }
   if (eligible.length === 0) return out
   const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
-  try {
-    const client: any = getRedisClient()
-    for (let start = 0; start < eligible.length; start += 500) {
-      const batch = eligible.slice(start, start + 500)
-      const pipeline = client.multi()
-      for (const [setKey] of batch) pipeline.lrange(liveSetRingKey(connectionId, setKey), 0, winN - 1)
-      const results = await pipeline.exec()
-      batch.forEach(([setKey, count], index) => {
-        const raw = pipelineValue(results?.[index])
-        const records = Array.isArray(raw) ? raw.map(String) : []
-        const stats = derivePosWindowStats(records, winN,blocks)
-        if (stats.count > 0) out.set(setKey, { ...stats, outcomeSource: "exchange", exchangeCloses: count })
-      })
-    }
-  } catch {
-    // A transient read failure leaves this Set's venue evidence unavailable.
+  const windows = await readExactSetOutcomeRings(eligible.map(([key]) => key), winN,
+    key => liveSetRingKey(connectionId, key), records => derivePosWindowStats(records, winN, blocks))
+  for (const [key, stats] of windows) if (stats.count > 0) {
+    out.set(key, { ...stats, outcomeSource: "exchange", exchangeCloses: counts.get(key) })
   }
   const empty = derivePosWindowStats([], winN, blocks)
   for (const [setKey, count] of eligible) if (!out.has(setKey)) {
@@ -384,6 +391,17 @@ export async function getLiveSetWindowBatch(
       ...(empty.blockDecision && { blockDecision: { ...empty.blockDecision, state: "unknown" } }) })
   }
   return out
+}
+
+/** Prefer a mature venue ledger for the same exact Set. A failed read never falls back to paper. */
+export async function readMeasuredLiveSetOutcomes(
+  connectionId: string,
+  counts: ReadonlyMap<string, number>,
+  retention: number,
+  minCloses: number,
+): Promise<Map<string, string[]>> {
+  const eligible = Array.from(counts, ([key, count]) => count >= minCloses ? key : "").filter(Boolean)
+  return readExactSetOutcomeRings(eligible, retention, key => liveSetRingKey(connectionId, key), rows => rows, true)
 }
 
 /** Test hook: forget cached index snapshots. */

@@ -52,6 +52,7 @@ performance	scripts/stress-bingx-public-32.mjs
 performance	scripts/test-direct-trade-dev-soak.mjs
 performance	scripts/verify-prod-soak.mjs
 regression	scripts/regression/direct-trade-cycle-serialization.test.mjs
+regression	scripts/regression/last-n-stage-market-replay.ts
 regression	scripts/regression/live-stage-simulated-protection.test.ts
 regression	scripts/regression/price-distance-grid-replay.ts
 regression	scripts/regression/trailing-walkforward.ts
@@ -263,6 +264,7 @@ unit	__tests__/unit/historic-test-section-contract.test.ts
 unit	__tests__/unit/historic-test-service.test.ts
 unit	__tests__/unit/historic-test-settings.test.ts
 unit	__tests__/unit/historic-test-stats-surface.test.ts
+unit	__tests__/unit/independent-stage-last-n.test.ts
 unit	__tests__/unit/indication-configuration-counts.test.ts
 unit	__tests__/unit/indication-connection-selection.test.ts
 unit	__tests__/unit/indication-lane-identity.test.ts
