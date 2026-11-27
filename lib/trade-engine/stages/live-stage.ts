@@ -1,5 +1,5 @@
 import {relationalVolumeFactor,type VolumeContext} from "../../../shared/cts-volume/ratios.ts";
-import { isStrategySetExecutionEnabled, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
+import { isStrategySetExecutionEnabled, normalizeStrategyExecutionPolicy, strategyProcessingRange } from "@/lib/strategy-execution-policy"
 import { maxNewNotionalForRiskBudget, openStopRiskUsd, riskBudgetPercentSetting, rowStopPercent } from "@/lib/portfolio-risk-budget"
 import { allowedStopLossPrice } from "@/lib/protection-allowed-range"
 import { trailingPriceDistancesFit } from "@/lib/trailing-settings"
@@ -67,6 +67,8 @@ import { fetchBingXInstrumentRules } from "@/lib/bingx-instrument-rules"
 import { SystemLogger } from "@/lib/system-logger"
 import type { RealPosition } from "./real-stage"
 import { getEngineTimings } from "@/lib/engine-timings"
+import { directTradeHoldLimitMs, effectiveHoldLimitMs, positionHoldCapMs, positionHoldExpiry, positionTimestampMs } from "@/lib/position-hold-time"
+import { getAutomaticHoldMs, holdEvidenceKey } from "@/lib/auto-hold-time"
 import { withTimeout } from "@/lib/async-safety"
 import { readFreshPositionSnapshot } from "@/lib/fresh-position-snapshot"
 import { getMaxLeverageForExchange } from "@/lib/leverage-policy"
@@ -1474,6 +1476,8 @@ function releaseStopSem(): void {
 export interface LivePosition {
   capturedMicroProtection?: {slPct: number; trailPct: number}
   strategyRange?: string
+  holdLimitMs?: number
+  automaticHoldTime?: boolean
   id: string
   connectionId: string
   symbol: string
@@ -2901,6 +2905,8 @@ function parseRedisHashPosition(hash: Record<string, any>): LivePosition {
     quantity: Number(hash.quantity || hash.executedQuantity || 0),
     leverage: Number(hash.leverage || 1),
     version: Number(hash.version || 0),
+    holdLimitMs: parseRedisFiniteNumber(hash.holdLimitMs),
+    automaticHoldTime: parseRedisBoolean(hash.automaticHoldTime),
     createdAt: Number(hash.createdAt || 0),
     updatedAt: Number(hash.updatedAt || 0),
     closedAt: Number(hash.closedAt || 0) || undefined,
@@ -8200,26 +8206,16 @@ async function releaseLock(connId: string, symbol: string, direction: string, to
     return false
   }
 }
-function resolveMaxHoldMs(connId: string): number {
-  // DEV/SIM override: the simulated connector uses a constant price so
-  // positions never hit TP/SL organically. Without a short max-hold the
-  // live:positions:{connId} list fills up unboundedly (500+ entries in a
-  // few minutes), making positionsOpen stat nonsensical and consuming memory.
-  // Cap at 2 minutes in non-production so positions roll quickly and the
-  // open-book stays small. Real production runs use the configured value.
-  // Delegate to the centralised engine-timings snapshot rather than a
-  // bespoke settings read. `maxPositionHoldMs` is the single source of
-  // truth (Redis `settings:system`, default 4h, `0` disables). The sync
-  // getter returns the last cached snapshot — refreshed off the hot path
-  // by `refreshEngineTimings()` — so the six reconcile/sweep call sites
-  // pay zero per-tick Redis cost. The previous `return 0` stub silently
-  // disabled the max-hold safety closer everywhere.
-  try {
-    const ms = getEngineTimings().maxPositionHoldMs
-    return Number.isFinite(ms) && ms > 0 ? ms : 0
-  } catch {
-    return 0
-  }
+function expiredLiveHold(position: LivePosition, connectionId: string, now = Date.now(), timings = getEngineTimings()) {
+  if (position.status !== "open" && position.status !== "filled" &&
+      position.status !== "partially_filled" && position.status !== "simulated") return null
+  if (!(position.executedQuantity > 0)) return null
+  const openedAt = positionTimestampMs(position.fills?.[0]?.timestamp) || positionTimestampMs(position.createdAt) ||
+    positionTimestampMs(position.timestamp)
+  const range = position.strategyRange ?? (position.executionIntent === "signal" ? "signals" : position.executionIntent)
+  const capMs = position.executionIntent === "direct" ? directTradeHoldLimitMs(timings, position.holdLimitMs) : positionHoldCapMs(timings, range)
+  const expiry = positionHoldExpiry({ openedAt, now, committedCapMs: position.holdLimitMs, currentCapMs: capMs })
+  return expiry && isSystemTrackedLivePosition(position, connectionId) ? expiry : null
 }
 
 /**
@@ -14234,6 +14230,20 @@ export async function executeLivePosition(
   normalizeLivePositionProtection(livePosition)
   if (specialPositionPlan) applySpecialPlanToPosition(livePosition, specialPositionPlan)
   normalizeLivePositionProtection(livePosition)
+  const timings = getEngineTimings()
+  const holdRange = livePosition.strategyRange ?? (isSignalPosition ? "signals" : executionIntent)
+  const capMs = isDirectPosition ? directTradeHoldLimitMs(timings, realPosition.holdLimitMs)
+    : effectiveHoldLimitMs(positionHoldCapMs(timings, holdRange), realPosition.holdLimitMs)
+  const trialKey = timings.autoHoldTimeEnabled && executionIntent === "main" && !isSpecialPosition &&
+    !livePosition.trailingProfile && !realPosition.axisWindows && !realPosition.combinedPosCounts &&
+    (!realPosition.setVariant || realPosition.setVariant === "default")
+    ? holdEvidenceKey({ connectionId, setKey: livePosition.setKey, symbol: livePosition.symbol, direction: realPosition.direction,
+      range: holdRange, takeProfitPct: Number(livePosition.takeProfit), stopLossPct: Number(livePosition.stopLoss),
+      positionCostPct, capMs })
+    : undefined
+  const automaticHoldMs = trialKey ? await getAutomaticHoldMs(trialKey, capMs) : undefined
+  livePosition.holdLimitMs = automaticHoldMs ?? capMs
+  if (automaticHoldMs) livePosition.automaticHoldTime = true
 
   const normalizedInitialSl = normalizeStopLossPercent(livePosition.assignedStopLoss, realPosition.strategyRange)
   if (normalizedInitialSl.adjusted) {
@@ -20273,14 +20283,7 @@ async function checkAndForceCloseOnSltpCross(
 
 /**
  * Orphan-close all open positions for a connection that have exceeded the
- * max hold time, writing `orphan_no_connector` or `orphan_exchange_error`
- * as the close reason. Called when the exchange connector is unavailable or
- * `getPositions()` throws, so positions are never left open in Redis
- * indefinitely even when the exchange cannot be reached.
- *
- * @param connectionId  Redis connection ID
- * @param connector     Exchange connector (null when unavailable)
- * @param summary       Mutable reconcile summary to increment counters
+ * maximum holding time using the normal owned close and protection lifecycle.
  */
 async function orphanCloseExpiredPositions(
   connectionId: string,
@@ -20288,7 +20291,7 @@ async function orphanCloseExpiredPositions(
   // Same shape as the reconcile summary so the function can roll up
   // sweep activity into the engine-level totals without the caller
   // having to mirror counters.
-  summary: {
+  summary?: {
     reconciled: number
     closed: number
     errors: number
@@ -20297,76 +20300,32 @@ async function orphanCloseExpiredPositions(
     orphansSwept: number
   },
 ): Promise<void> {
-  const MAX_HOLD_TIME_MS = resolveMaxHoldMs(connectionId)
-  if (MAX_HOLD_TIME_MS <= 0) return
+  // Without a usable connector the owned position and its protective orders
+  // remain intact. closeLivePosition handles confirmation and retry with it.
+  if (!connector) return
+  const timings = getEngineTimings()
 
   try {
     const allOpen = await getLivePositions(connectionId)
-    const expired = allOpen.filter((p) => {
-      if (p.status !== "open" && p.status !== "filled" && p.status !== "partially_filled") return false
-      if (!isSystemTrackedLivePosition(p, connectionId)) return false
-      if ((p.executedQuantity ?? 0) <= 0) return false
-      const openedAt = p.createdAt || p.updatedAt || 0
-      return openedAt > 0 && Date.now() - openedAt > MAX_HOLD_TIME_MS
-    })
-
-    for (const pos of expired) {
-      summary.reconciled++
-      const heldMin = Math.round((Date.now() - (pos.createdAt || pos.updatedAt || 0)) / 60000)
-      // Same exit-price resolution chain as reconcileLivePositions:
-      // markPrice → averageExecutionPrice → Redis market_data → entryPrice
-      let exitPrice: number = Number(pos.exchangeData?.markPrice) || pos.averageExecutionPrice || 0
-      if (exitPrice <= 0) {
-        try {
-          const orphanRedis = getRedisClient()
-          const mdHash = await orphanRedis.hgetall(marketDataKey(pos.symbol, "", pos.connectionId || connectionId))
-          const mdPrice = parseFloat(String(mdHash?.lastPrice ?? mdHash?.price ?? mdHash?.close ?? "0"))
-          if (mdPrice > 0) exitPrice = mdPrice
-        } catch { /* ignore */ }
-      }
-      if (exitPrice <= 0) exitPrice = pos.entryPrice || 0
-      const reason = connector ? "orphan_exchange_error" : "orphan_no_connector"
-
-      console.warn(
-        `${LOG_PREFIX} [orphan-close] ${pos.symbol} held ${heldMin}min, connector=${connector ? "error" : "missing"} — marking closed`,
-      )
-      await logProgressionEvent(
-        connectionId,
-        "live_trading",
-        "warning",
-        `Orphan-close ${pos.symbol} (held ${heldMin}min, ${reason})`,
-        { positionId: pos.id, heldMin, exitPrice, reason },
-      )
-
-      // Best-effort cancel protection orders first (connector may be partially working)
-      if (connector) {
-        const cancels: Promise<any>[] = []
-        if (pos.stopLossOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.stopLossOrderId, "StopLoss", pos.connectionId).catch(() => {}))
-        if (pos.takeProfitOrderId) cancels.push(cancelProtectionOrder(connector, pos.symbol, pos.takeProfitOrderId, "TakeProfit", pos.connectionId).catch(() => {}))
-        if (cancels.length) await Promise.all(cancels).catch(() => {})
-        // Same orphan-sweep used inside `closeLivePosition`. Wired here
-        // too so max-hold-expired positions also get the chaos-prevention
-        // pass — without it, an operator-placed reduce-only that the
-        // engine never recorded would survive the orphan-close because
-        // there'd be no by-id cancellation to trigger the sweep on.
-        const sweepCloseSide: "buy" | "sell" = pos.direction === "long" ? "sell" : "buy"
-        try {
-          const swept = await sweepOrphanProtectionOrders(connector, pos.symbol, sweepCloseSide, pos)
-          summary.orphansSwept += swept.cancelled
-        } catch { /* sweep is best-effort */ }
-      }
-
-      const closeResult = await closeLivePosition(connectionId, pos.id, exitPrice, connector, reason).catch((err) => {
-        console.warn(`${LOG_PREFIX} [orphan-close] closeLivePosition failed for ${pos.id}:`, err instanceof Error ? err.message : String(err))
-        summary.errors++
+    const now = Date.now()
+    for (const pos of allOpen) {
+      if (pos.status === "simulated") continue
+      const expired = expiredLiveHold(pos, connectionId, now, timings)
+      if (!expired) continue
+      if (summary) summary.reconciled++
+      const exitPrice = Number(pos.exchangeData?.markPrice) || pos.averageExecutionPrice || pos.entryPrice
+      const closeResult = await closeLivePosition(connectionId, pos.id, exitPrice, connector, "max_hold_time_exceeded").catch((err) => {
+        console.warn(`${LOG_PREFIX} expired hold close failed for ${pos.id}:`, err instanceof Error ? err.message : String(err))
         return null
       })
-      if (closeResult?.status === "closed") summary.closed++
-      else if (closeResult) summary.errors++
+      if (summary) {
+        if (closeResult?.status === "closed") summary.closed++
+        else summary.errors++
+      }
     }
   } catch (err) {
     console.warn(`${LOG_PREFIX} [orphan-close] sweep error:`, err instanceof Error ? err.message : String(err))
-    summary.errors++
+    if (summary) summary.errors++
   }
 }
 
@@ -20490,7 +20449,6 @@ export async function reconcileLivePositions(
     // connector capable of doing it.
     const liveTradeOn = await isLiveTradeEnabledForConnection(connectionId)
     if (!liveTradeOn && (!exchangeConnector || typeof exchangeConnector.getPositions !== "function")) {
-      if (!skipOrphanAdoption) await orphanCloseExpiredPositions(connectionId, null, summary)
       return summary
     }
     if (!liveTradeOn) {
@@ -20500,8 +20458,6 @@ export async function reconcileLivePositions(
     // ── Step 4+ from reconcileLivePositions ───────────���────────────────────
     // Nothing to do if connector absent (sim-only is already done above)
     if (!exchangeConnector || typeof exchangeConnector.getPositions !== "function") {
-      if (!reconcileMode) return summary  // cron always runs full path
-      await orphanCloseExpiredPositions(connectionId, null, summary)
       return summary
     }
 
@@ -20938,16 +20894,9 @@ export async function reconcileLivePositions(
           }
 
           // ── Max-hold-time safety closer (reconcile path) ────────────
-          const MAX_HOLD_TIME_MS = resolveMaxHoldMs(connectionId)
-          const openedAt = pos.createdAt || pos.updatedAt || 0
-          const heldMs = Date.now() - openedAt
-          if (
-            MAX_HOLD_TIME_MS > 0 &&
-            heldMs > MAX_HOLD_TIME_MS &&
-            pos.executedQuantity > 0 &&
-            isSystemTrackedLivePosition(pos, connectionId) &&
-            (pos.status === "open" || pos.status === "filled")
-          ) {
+          const expiredHold = expiredLiveHold(pos, connectionId)
+          if (expiredHold) {
+            const { heldMs, maxHoldMs } = expiredHold
             const exitPrice = markPrice || pos.averageExecutionPrice || pos.entryPrice
             console.warn(
               `${LOG_PREFIX} [reconcile] MAX HOLD TIME exceeded for ${pos.symbol} (held ${Math.round(heldMs / 60000)}min) — force-closing`,
@@ -20957,7 +20906,7 @@ export async function reconcileLivePositions(
               "live_trading",
               "warning",
               `Max hold time exceeded for ${pos.symbol} — force-closing (reconcile)`,
-              { positionId: pos.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
+              { positionId: pos.id, heldMs, maxHoldMs, exitPrice },
             )
             const closeResult = await closeLivePosition(
               connectionId,
@@ -21433,7 +21382,7 @@ export async function processSimulatedPositions(
       }),
     )
 
-    const MAX_HOLD_TIME_MS = resolveMaxHoldMs(connectionId)
+    const holdTimings = getEngineTimings()
     type SimulatedDelta = { processed: number; closed: number; errors: number }
     const processOne = async (pos: LivePosition): Promise<SimulatedDelta> => {
       const delta: SimulatedDelta = { processed: 1, closed: 0, errors: 0 }
@@ -21464,21 +21413,16 @@ export async function processSimulatedPositions(
           }
         }
         // Max-hold safety closer.
-        const openedAt = pos.createdAt || pos.updatedAt || 0
-        const heldMs = Date.now() - openedAt
-        if (
-          MAX_HOLD_TIME_MS > 0 &&
-          heldMs > MAX_HOLD_TIME_MS &&
-          isSystemTrackedLivePosition(pos, connectionId) &&
-          (pos.executedQuantity ?? 0) > 0
-        ) {
+        const expiredHold = expiredLiveHold(pos, connectionId, now, holdTimings)
+        if (expiredHold) {
+          const { heldMs, maxHoldMs } = expiredHold
           const exitPrice = markPrice || pos.averageExecutionPrice || pos.entryPrice
           await logProgressionEvent(
             connectionId,
             "live_trading",
             "warning",
             `Max hold time exceeded for simulated ${pos.symbol} — force-closing`,
-            { positionId: pos.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
+            { positionId: pos.id, heldMs, maxHoldMs, exitPrice },
           )
           const closeResult = await closeLivePosition(connectionId, pos.id, exitPrice, null, "max_hold_time_exceeded")
           if (closeResult?.status === "closed") {
@@ -21999,22 +21943,16 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
               if (crossed) continue
             }
             // Max-hold safety closer (parallel to the real-position path).
-            const MAX_HOLD_TIME_MS = resolveMaxHoldMs(connectionId)
-            const openedAt = pos.createdAt || pos.updatedAt || 0
-            const heldMs = Date.now() - openedAt
-            if (
-              MAX_HOLD_TIME_MS > 0 &&
-              heldMs > MAX_HOLD_TIME_MS &&
-              isSystemTrackedLivePosition(pos, connectionId) &&
-              (pos.executedQuantity ?? 0) > 0
-            ) {
+            const expiredHold = expiredLiveHold(pos, connectionId)
+            if (expiredHold) {
+              const { heldMs, maxHoldMs } = expiredHold
               const exitPrice = markPrice || pos.averageExecutionPrice || pos.entryPrice
               await logProgressionEvent(
                 connectionId,
                 "live_trading",
                 "warning",
                 `Max hold time exceeded for simulated ${pos.symbol} — force-closing`,
-                { positionId: pos.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
+                { positionId: pos.id, heldMs, maxHoldMs, exitPrice },
               )
               await closeLivePosition(connectionId, pos.id, exitPrice, null, "max_hold_time_exceeded")
               continue
@@ -22335,7 +22273,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
     if (openPositions.length === 0) {
       // Nothing to sync after adoption — fire-and-forget the TTL expiry
       // sweep so we return immediately (no exchange call latency on idle path).
-      orphanCloseExpiredPositions(connectionId, exchangeConnector, undefined as any).catch(() => {})
+      orphanCloseExpiredPositions(connectionId, exchangeConnector).catch(() => {})
       return
     }
 
@@ -22802,30 +22740,13 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
           if (crossed) return
         }
 
-        // ── Max-hold-time safety closer ────────────────────────────────
-        // If the position has been open longer than MAX_HOLD_TIME_MS,
-        // force-close it regardless of whether SL/TP levels were
-        // crossed. This is the "orders not closing in time" safety net —
-        // even if the exchange-placed SL/TP orders fail to fire (e.g.
-        // network issue, illiquid gap, operator manual cancel), the
-        // position will not be held indefinitely.
-        //
-        // Default: 4 hours. Live override via /settings → System →
-        // Engine Timings → max_position_hold_ms (or deploy-time
-        // MAX_POSITION_HOLD_MS env var). 0 = disabled.
-        const MAX_HOLD_TIME_MS = resolveMaxHoldMs(connectionId)
-        const openedAt = position.createdAt || position.updatedAt || 0
-        const heldMs = Date.now() - openedAt
-        if (
-          MAX_HOLD_TIME_MS > 0 &&
-          heldMs > MAX_HOLD_TIME_MS &&
-          position.executedQuantity > 0 &&
-          isSystemTrackedLivePosition(position, connectionId) &&
-          (position.status === "open" || position.status === "filled")
-        ) {
+        // The same deadline applies during reconciliation and standalone sync.
+        const expiredHold = expiredLiveHold(position, connectionId)
+        if (expiredHold) {
+          const { heldMs, maxHoldMs } = expiredHold
           const exitPrice = markPrice || position.averageExecutionPrice || position.entryPrice
           console.warn(
-            `${LOG_PREFIX} MAX HOLD TIME exceeded for ${position.symbol} (held ${Math.round(heldMs / 60000)}min > ${Math.round(MAX_HOLD_TIME_MS / 60000)}min) — force-closing`,
+            `${LOG_PREFIX} MAX HOLD TIME exceeded for ${position.symbol} (held ${Math.round(heldMs / 60000)}min > ${Math.round(maxHoldMs / 60000)}min) — force-closing`,
           )
           // Fire-and-forget — close should not be gated on log write.
           logProgressionEvent(
@@ -22833,7 +22754,7 @@ export async function syncWithExchange(connectionId: string, exchangeConnector: 
             "live_trading",
             "warning",
             `Max hold time exceeded for ${position.symbol} — force-closing`,
-            { positionId: position.id, heldMs, maxHoldMs: MAX_HOLD_TIME_MS, exitPrice },
+            { positionId: position.id, heldMs, maxHoldMs, exitPrice },
           ).catch(() => {})
           await closeLivePosition(connectionId, position.id, exitPrice, exchangeConnector, "max_hold_time_exceeded")
           return
@@ -23641,6 +23562,7 @@ export async function syncLiveFromPseudo(
 }
 
 export const __liveStageTest = {
+  expiredLiveHold,
   isHandoffInProgressOnly,
   isEntrySlotProtectionHalted,
   liveExecutionSlot,

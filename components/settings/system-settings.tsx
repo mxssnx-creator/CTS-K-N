@@ -8,6 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { AlertCircle, Loader2, Zap, Clock } from "lucide-react"
 import { toast } from "@/lib/simple-toast"
+import { Switch } from "@/components/ui/switch"
+import { DEFAULT_POSITION_HOLD_MS, HOLD_TIME_RANGES, normalizeAutoHoldTimeEnabled, normalizeHoldTimeByRange, type HoldTimeByRange } from "@/lib/position-hold-time"
 
 interface RiskSettings {
   enabled: boolean
@@ -89,7 +91,7 @@ const DEFAULT_TIMINGS: EngineTimings = {
   strategyFlowHardThrottleMs:  250,
   strategyFlowMaxIntervalMs: 5_000,
   lockExtendIntervalMs:     15_000,
-  maxPositionHoldMs:    4 * 60 * 60 * 1000,
+  maxPositionHoldMs:    DEFAULT_POSITION_HOLD_MS,
   progressionBufferFlushMs:  3_000,
   // ── API Timeouts (live settings, updated on write) ────────────────────────
   apiTimeoutMs:            40_000, // 40s general timeout for BingX API
@@ -157,7 +159,7 @@ const TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; max: number; uni
   },
   maxPositionHoldMs: {
     min: 0, max: 7 * 24 * 60 * 60_000, unit: "ms", live: true,
-    help: "Force-close positions held longer than this. 0 = disabled (positions held indefinitely).",
+    help: "Maximum holding time for paper and exchange positions. A tighter range or entry limit can close sooner. 0 disables the general timer.",
   },
   progressionBufferFlushMs: {
     min: 500, max: 60_000, unit: "ms", live: false,
@@ -242,6 +244,8 @@ export function SystemSettings() {
   const [riskSettings, setRiskSettings] = useState<RiskSettings | null>(null)
   const [engineSettings, setEngineSettings] = useState<EngineSettings | null>(null)
   const [timings, setTimings] = useState<EngineTimings>(DEFAULT_TIMINGS)
+  const [autoHoldTime, setAutoHoldTime] = useState(false)
+  const [holdTimeByRange, setHoldTimeByRange] = useState<HoldTimeByRange>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
@@ -272,6 +276,8 @@ export function SystemSettings() {
         // timing keys, falling back to defaults for any that are absent
         // (e.g. a fresh deploy where nobody has saved yet).
         if (sys) {
+          setAutoHoldTime(normalizeAutoHoldTimeEnabled(sys.auto_hold_time_enabled ?? sys.autoHoldTimeEnabled))
+          setHoldTimeByRange(normalizeHoldTimeByRange(sys.position_hold_by_range ?? sys.positionHoldByRange))
           const next: EngineTimings = { ...DEFAULT_TIMINGS }
           const readNum = (snake: string, camel: keyof EngineTimings) => {
             const raw = sys[snake] ?? (sys as any)[camel]
@@ -368,6 +374,8 @@ export function SystemSettings() {
             strategy_flow_max_interval_ms: timings.strategyFlowMaxIntervalMs,
             lock_extend_interval_ms:       timings.lockExtendIntervalMs,
             max_position_hold_ms:          timings.maxPositionHoldMs,
+            auto_hold_time_enabled:        autoHoldTime,
+            position_hold_by_range:        holdTimeByRange,
             progression_buffer_flush_ms:   timings.progressionBufferFlushMs,
             api_timeout_ms:                timings.apiTimeoutMs,
             api_place_order_timeout_ms:    timings.apiPlaceOrderTimeoutMs,
@@ -902,6 +910,30 @@ value={timings.normalizeMaxPerDirection}
                 </div>
               )
             })}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Position holding time</CardTitle>
+          <CardDescription>Leave a range empty to inherit the system maximum. Range values are in minutes.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center justify-between gap-4 text-sm">
+            Auto Hold Time
+            <Switch checked={autoHoldTime} onCheckedChange={setAutoHoldTime} />
+          </label>
+          <p className="text-xs text-muted-foreground">A shorter limit requires 24 matched closes from the same fixed-protection Set and must improve both groups after costs.</p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {HOLD_TIME_RANGES.map(range => (
+              <label key={range} className="space-y-1 text-sm">
+                <span className="capitalize">{range.replace("-", " ")}</span>
+                <Input type="number" min={1} max={10_080} step={1} value={holdTimeByRange[range] ?? ""}
+                  placeholder="Inherit" aria-label={`${range} maximum hold in minutes`}
+                  onChange={event => setHoldTimeByRange(normalizeHoldTimeByRange({ ...holdTimeByRange, [range]: event.target.value }))} />
+              </label>
+            ))}
           </div>
         </CardContent>
       </Card>

@@ -14,6 +14,7 @@ import {
   type LivePosition,
 } from "@/lib/trade-engine/stages/live-stage"
 import type { RealPosition } from "@/lib/trade-engine/stages/real-stage"
+import { HOLD_MINUTE_MS, normalizeDirectHoldMinutes } from "@/lib/position-hold-time"
 import {
   evaluateDirectTradeLiveReadiness,
   isDirectTradeVstConnection,
@@ -35,6 +36,7 @@ export interface DirectTradeCanonicalOrderInput {
   symbol: string
   positionDirection: LiveOrderDirection
   quantity: number
+  maxHoldMinutes?: number
   price?: number
   leverage?: number
   reconcileOnly?: boolean
@@ -115,6 +117,7 @@ function buildRealPosition(input: DirectTradeCanonicalOrderInput): RealPosition 
     quantity: input.quantity,
     requestedQuantityCap: input.quantity,
     requestedDcaStep: dcaStep || undefined,
+    holdLimitMs: normalizeDirectHoldMinutes(input.maxHoldMinutes) * HOLD_MINUTE_MS,
     positionCostPctOverride: positionCostPctOverride || undefined,
     leverage: Math.max(1, Math.floor(Number(input.leverage) || 1)),
     riskAmount: 0,

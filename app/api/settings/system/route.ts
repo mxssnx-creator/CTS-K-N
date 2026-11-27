@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { getSettings, setSettings, bumpSettingsVersion, getAllConnections, withSharedPersistenceLease } from "@/lib/redis-db"
 import { notifySettingsChanged } from "@/lib/settings-coordinator"
-import { refreshEngineTimings } from "@/lib/engine-timings"
+import { DEFAULT_ENGINE_TIMINGS, refreshEngineTimings } from "@/lib/engine-timings"
+import { normalizeAutoHoldTimeEnabled, normalizeHoldTimeByRange, normalizePositionHoldMs } from "@/lib/position-hold-time"
 
 /**
  * System-scoped settings bundle (rate limits, cleanup, backup toggles).
@@ -42,7 +43,10 @@ export const dynamic = "force-dynamic"
 export async function GET(_request: NextRequest) {
   try {
     const settings = await readMergedSystem()
-    return NextResponse.json(settings)
+    return NextResponse.json({ ...settings,
+      max_position_hold_ms: normalizePositionHoldMs(settings.max_position_hold_ms ?? settings.maxPositionHoldMs,
+        DEFAULT_ENGINE_TIMINGS.maxPositionHoldMs),
+    })
   } catch (error) {
     console.error("[v0] Failed to fetch system settings:", error)
     return NextResponse.json({})
@@ -54,6 +58,13 @@ async function handlePatch(request: NextRequest) {
     const body = await request.json()
     const current = await readMergedSystem()
     const merged = { ...current, ...body }
+    const hold = body.max_position_hold_ms ?? body.maxPositionHoldMs
+    const automatic = body.auto_hold_time_enabled ?? body.autoHoldTimeEnabled
+    const ranges = body.position_hold_by_range ?? body.positionHoldByRange
+    if (hold !== undefined) merged.max_position_hold_ms = normalizePositionHoldMs(hold,
+      normalizePositionHoldMs(current.max_position_hold_ms ?? current.maxPositionHoldMs, DEFAULT_ENGINE_TIMINGS.maxPositionHoldMs))
+    if (automatic !== undefined) merged.auto_hold_time_enabled = normalizeAutoHoldTimeEnabled(automatic)
+    if (ranges !== undefined) merged.position_hold_by_range = normalizeHoldTimeByRange(ranges)
 
     await writeMirroredSystem(merged)
 

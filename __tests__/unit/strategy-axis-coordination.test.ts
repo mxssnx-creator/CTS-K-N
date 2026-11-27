@@ -53,6 +53,36 @@ function baseSet(recentPnls: number[]): StrategySet {
 }
 
 describe("strategy position-count axis coordination", () => {
+  test("a high PositionCost ratio cannot promote a measured net-losing Live window", () => {
+    const source = baseSet([0.3, 0.3, 0.3, 0.3, 0.3])
+    const window = { ...source.prevPos!, profitFactor: 0.86, positionCostRatio: 1.4, hasSignal: true, drawdownRatio: 0 }
+    const options = { stage: "live" as const, lookback: 5,
+      metrics: { minProfitFactor: 1.1, maxDrawdownTime: 30 }, windowBySetKey: new Map([[`${source.setKey}#row_live`, window]]) }
+    expect(materializeContinuousStageRows([source], options)).toMatchObject({ rows: [], rejected: 1 })
+    const held = materializeContinuousStageRows([source], { ...options, activeSetKeys: new Set([source.setKey]) })
+    expect(held.rows[0]).toMatchObject({ rowEntryQualified: false, rowRealizedProfitFactor: 0.86 })
+  })
+
+  test("does not fall back to paper when the mature venue result window is unavailable", () => {
+    const source = baseSet([0.3, 0.3, 0.3, 0.3, 0.3])
+    const ownKey = `${source.setKey}#row_live`
+    const paper = { ...source.prevPos!, hasSignal: true, drawdownRatio: 0 }
+    const venue: PosWindowStats = {
+      ...paper, count: 0, positionCostRatioCount: 0, positionCostRatio: 0, profitFactor: 0,
+      exchangeCloses: 10, outcomeSource: "exchange", hasSignal: false,
+      recentPnls: [], recentPnlPcts: [], recentPositionCostPcts: [],
+    }
+    const metrics = { minProfitFactor: 1.1, maxDrawdownTime: 30 }
+    const windows = new Map([[ownKey, venue], [source.setKey, paper]])
+    const options = { stage: "live" as const, lookback: 5, metrics, windowBySetKey: windows }
+    expect(materializeContinuousStageRows([source], options).rows).toEqual([])
+    const held = materializeContinuousStageRows([source], { ...options, activeSetKeys: new Set([source.setKey]) })
+    expect(held.rows[0]).toMatchObject({ rowEntryQualified: false, rowEvaluationWindow: 0 })
+    const block: StrategySet = { ...source, setKey: ownKey, variant: "block" }
+    expect(applyExactBlockRowWindows([block], windows, metrics)).toEqual([])
+    expect(applyExactBlockRowWindows([block], windows, metrics, new Set([ownKey]))[0]).toMatchObject({ rowEntryQualified: false })
+  })
+
   test("materializes one explicit Row-Real from the exact latest PF/DDT position window", () => {
     const source = baseSet([1, -1, 1])
     source.entries = [

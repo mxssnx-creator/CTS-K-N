@@ -94,6 +94,10 @@ describe("Historic Test run orchestration", () => {
     })
     await persistHistoricTestRun(redis, first)
     expect([...(await readHistoricTestValidatedKeys(redis, "c2"))]).toEqual(["AAA|i|normal"])
+    expect(await readHistoricTestValidatedKeys(redis, "c2", "hold-v1:240")).toEqual(new Set())
+    await persistHistoricTestRun(redis, first, "hold-v1:240")
+    expect(await readHistoricTestValidatedKeys(redis, "c2", "hold-v1:240")).toEqual(new Set(["AAA|i|normal"]))
+    expect(await readHistoricTestValidatedKeys(redis, "c2", "hold-v1:120")).toEqual(new Set())
 
     // A later pass where the combination stopped being positive must remove it.
     const second = await runHistoricTest({

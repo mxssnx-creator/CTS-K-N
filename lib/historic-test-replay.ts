@@ -40,6 +40,7 @@ import {
 } from "@/lib/historic-test-family-derivations"
 import { roundTripCostPercent } from "@/lib/trading-round-trip-cost"
 import type { TrailingGapBasis } from "@/lib/trailing-activation"
+import { DEFAULT_POSITION_HOLD_MS, HOLD_MINUTE_MS, normalizePositionHoldMs } from "@/lib/position-hold-time"
 
 export class HistoricTestUnsupportedFamilyError extends Error {
   readonly family: string
@@ -82,6 +83,7 @@ export interface HistoricCandleSimulatorOptions {
   trailingStartRatio?: number
   trailingGapBasis?: TrailingGapBasis
   maxHoldMinutes?: number
+  maxHoldMinutesFor?: (request: HistoricTestSimulationRequest) => number
   /** Round-trip cost in percent; also the PositionCost the result is expressed in. */
   positionCostPercent?: number
   /** Exchange taker fee per side, as a fraction; defaults to the shared constant. */
@@ -141,6 +143,8 @@ export function createHistoricCandleSimulator(
     const stopLossPct = tpslPair
       ? tpslPair.stopLossPct
       : Number(options.stopLossPct) > 0 ? Number(options.stopLossPct) : positionCostPercent * 20
+    const maximumHoldMs = normalizePositionHoldMs(Number(options.maxHoldMinutesFor?.(request) ?? options.maxHoldMinutes) * HOLD_MINUTE_MS, DEFAULT_POSITION_HOLD_MS)
+    const maxHoldMinutes = maximumHoldMs / HOLD_MINUTE_MS
 
     const result = runDcaBacktest(candles, {
       profile,
@@ -149,7 +153,7 @@ export function createHistoricCandleSimulator(
       entry: resolveBacktestEntry(request.indication),
       takeProfitPct,
       stopLossPct,
-      maxHoldMinutes: options.maxHoldMinutes,
+      maxHoldMinutes,
       // Real round-trip cost, NOT the PositionCost sizing setting. Charging
       // PositionCost here understated every simulated trade by 0.16 points of
       // ProfitFactor, so the simulation could only ever look better than live.
@@ -165,7 +169,7 @@ export function createHistoricCandleSimulator(
     // contributes, so a dense symbol cannot dominate the validation.
     const bound = Math.max(1, Math.floor(Number(request.maxProgressCount) || 0) || 1)
     const completeTrades = result.trades.filter(trade =>
-      trade.exitReason !== "timeout" || trade.holdTimeMin >= (options.maxHoldMinutes ?? 12 * 60),
+      trade.exitReason !== "timeout" || (maxHoldMinutes > 0 && trade.holdTimeMin >= maxHoldMinutes),
     ).slice(0, bound)
     const baseline: HistoricTestTrade[] = completeTrades.map((trade) => ({
       // Net percent over the round trip, expressed in PositionCost units.
@@ -180,7 +184,7 @@ export function createHistoricCandleSimulator(
         trailingGapBasis: options.trailingGapBasis,
         takeProfitPct,
         stopLossPct,
-        maxHoldMinutes: options.maxHoldMinutes ?? 12 * 60,
+        maxHoldMinutes,
         positionCostPercent,
         // The same real round trip the fixed-exit family pays (audit TRAIL-05).
         roundTripCostPercent: roundTripCostPercent({

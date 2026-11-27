@@ -53,7 +53,8 @@ import { resolveConsistentTradeDirection } from "@/lib/trade-direction"
 import { isTruthyFlag } from "@/lib/connection-state-utils"
 import { isExactSystemPositionOwner } from "@/lib/system-order-ownership"
 import { getCanonicalConnectionSettingsOverlay } from "@/lib/connection-settings-overlay"
-import { isMainTrailingAllowed, normalizeStrategyExecutionPolicy } from "@/lib/strategy-execution-policy"
+import { isMainTrailingAllowed, normalizeStrategyExecutionPolicy, strategyProcessingRange } from "@/lib/strategy-execution-policy"
+import { positionHoldCapMs, positionHoldExpiry, positionTimestampMs } from "@/lib/position-hold-time"
 
 // ── Module-level import memoization for live-sync hot paths ──────────
 // `fireSyncLiveFromPseudo` and `maybeRunLiveSync` were previously doing
@@ -674,16 +675,15 @@ export class RealtimeProcessor {
       // Phase B (prev-set) only fires when prehistoric is ready, and
       // runs in parallel with the price fetch to avoid sequential
       // latency under high symbol counts.
-      const pricePromise = this.getCurrentPrice(position.symbol)
+      const pricePromise = this.getPositionQuote(position.symbol)
       const prevSetPromise: Promise<PseudoPosition | null> = prehistoricReady
         ? this.getPrevSetPosition(position)
         : Promise.resolve(null)
 
-      const [currentPrice, prevSetPos] = await Promise.all([pricePromise, prevSetPromise])
+      const [quote, prevSetPos] = await Promise.all([pricePromise, prevSetPromise])
 
-      if (!currentPrice) {
-        return
-      }
+      if (!quote) return
+      const { price: currentPrice, observedAt } = quote
 
       // Phase B attachment — only when prehistoric produced something.
       // Underscore prefix makes clear this is transient enrichment,
@@ -695,7 +695,7 @@ export class RealtimeProcessor {
       // Update position with current price. Pass the in-memory hash
       // through so the manager skips a redundant HGETALL round-trip
       // (see PseudoPositionManager.updatePosition hot-path notes).
-      await this.positionManager.updatePosition(position.id, currentPrice, position)
+      await this.positionManager.updatePosition(position.id, currentPrice, position, observedAt)
 
       // Calculate profit/loss
       const entryPrice = parseFloat(position.entry_price || "0")
@@ -721,36 +721,30 @@ export class RealtimeProcessor {
 
       // Check take profit
       if (this.shouldCloseTakeProfit(position, currentPrice)) {
-        await this.positionManager.closePosition(position.id, "take_profit", position)
+        await this.positionManager.closePosition(position.id, "take_profit", position, currentPrice, observedAt)
         this.invalidatePrevSet(cacheConfigId)
         return
       }
 
       // Check stop loss
       if (this.shouldCloseStopLoss(position, currentPrice)) {
-        await this.positionManager.closePosition(position.id, "stop_loss", position)
+        await this.positionManager.closePosition(position.id, "stop_loss", position, currentPrice, observedAt)
         this.invalidatePrevSet(cacheConfigId)
         return
       }
 
-      // Max hold-time force-close — matches the same env-var used by the
-      // live-stage so both pseudo and live positions share one time limit.
-      // Reads `opened_at` first (canonical pseudo-position field), falls
-      // back to `entry_time` (historic fills) then `created_at` (legacy).
-      const MAX_HOLD_MS = Number(process.env.MAX_POSITION_HOLD_MS ?? 4 * 60 * 60 * 1000)
-      if (MAX_HOLD_MS > 0) {
-        const openedRaw = position.opened_at || position.entry_time || position.created_at
-        const openedAt = openedRaw ? new Date(openedRaw).getTime() : 0
-        if (openedAt > 0 && Date.now() - openedAt > MAX_HOLD_MS) {
-          await this.positionManager.closePosition(position.id, "max_hold_time_exceeded", position)
-          this.invalidatePrevSet(cacheConfigId)
-          const heldHrs = ((Date.now() - openedAt) / 3_600_000).toFixed(1)
-          console.log(
-            `[v0] [Realtime] Max hold exceeded for ${position.symbol} ${side} ` +
-            `(held ${heldHrs}h) | PnL: ${pnl.toFixed(4)}`,
-          )
-          return
-        }
+      const now = Date.now()
+      const openedAt = positionTimestampMs(position.opened_at) || positionTimestampMs(position.entry_time) || positionTimestampMs(position.created_at)
+      const maxHold = positionHoldExpiry({ openedAt, now, committedCapMs: position.hold_limit_ms,
+        currentCapMs: positionHoldCapMs(getEngineTimings(), strategyProcessingRange(position)) })
+      const specialDeadline = positionTimestampMs(position.special_expires_at)
+      const specialExpired = specialDeadline > openedAt && now >= specialDeadline
+      if (maxHold || specialExpired) {
+        await this.positionManager.closePosition(position.id,
+          specialExpired ? "special_max_duration" : "max_hold_time_exceeded", position, currentPrice, observedAt)
+        this.invalidatePrevSet(cacheConfigId)
+        console.log(`[v0] [Realtime] Max hold exceeded for ${position.symbol} ${side} | PnL: ${pnl.toFixed(4)}`)
+        return
       }
 
       // Update trailing stop if enabled — the prev-set context is on
@@ -803,12 +797,15 @@ export class RealtimeProcessor {
    * prefetch, so every realtime tick pays at most ONE Redis RTT per
    * 200ms window regardless of how many positions share the symbol.
    */
-  private async getCurrentPrice(symbol: string): Promise<number | null> {
+  private async getPositionQuote(symbol: string): Promise<{ price: number; observedAt: number } | null> {
     try {
       const data = await getMarketDataCached(symbol, this.connectionId)
       if (!data) return null
       const price = parseFloat(data?.close || data?.price || "0")
-      return price > 0 ? price : null
+      const source = String(data.data_source ?? data.source ?? "").toLowerCase()
+      const observedAt = source && !/synthetic|simulat|unknown/.test(source)
+        ? positionTimestampMs(data.timestamp ?? data.time) : 0
+      return price > 0 ? { price, observedAt } : null
     } catch (error) {
       console.error(`[v0] Failed to get current price for ${symbol}:`, error)
       return null

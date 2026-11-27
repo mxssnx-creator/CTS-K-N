@@ -24,8 +24,9 @@
  */
 
 import { initRedis, getRedisClient } from "@/lib/redis-db"
+import { MAX_POSITION_HOLD_MS, normalizeAutoHoldTimeEnabled, normalizeHoldTimeByRange, normalizePositionHoldMs, type PositionHoldTimeSettings } from "@/lib/position-hold-time"
 
-export interface EngineTimings {
+export interface EngineTimings extends PositionHoldTimeSettings {
   // ── Long-lived-server recovery cadence ────────────────────────────────
   // The portable external scheduler always ticks once per minute. A
   // long-lived Node/PM2/Docker process additionally reconciles open Live
@@ -74,11 +75,6 @@ export interface EngineTimings {
   // prevent a leadership-flap on transient Redis latency. Used by both
   // engine-manager (extender setInterval) and progression-lock module.
   lockExtendIntervalMs: number
-
-  // ── Max position hold time (force-close after) ────────────────────────
-  // Live-stage closes any position held longer than this with reason
-  // `max_hold_time_exceeded`. Default 4h. `0` disables the check.
-  maxPositionHoldMs: number
 
   // ── Progression log buffer flush cadence ──────────────────────────────
   // `lib/engine-progression-logs.ts` buffers progression events and
@@ -170,7 +166,9 @@ export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
   strategyFlowHardThrottleMs:  250,
   strategyFlowMaxIntervalMs: 5_000,
   lockExtendIntervalMs:     15_000,
-  maxPositionHoldMs:    4 * 60 * 60 * 1000,
+  maxPositionHoldMs:    normalizePositionHoldMs(process.env.MAX_POSITION_HOLD_MS),
+  autoHoldTimeEnabled: false,
+  positionHoldByRange: {},
   progressionBufferFlushMs:  3_000,
   // ── API/Exchange operation timeout defaults ────────────────────────────
   apiTimeoutMs:            40_000,  // 40s general timeout for BingX API
@@ -201,7 +199,9 @@ export const DEFAULT_ENGINE_TIMINGS: EngineTimings = {
 // Hard min/max bounds — UI + API normalise to these to avoid pathological
 // values (a 1ms tick rate would lock the event loop; a 1h heartbeat
 // would silence the dashboard's "engine alive" indicator).
-export const ENGINE_TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; max: number }> = {
+type TimingKey = Exclude<keyof EngineTimings, "autoHoldTimeEnabled" | "positionHoldByRange">
+
+export const ENGINE_TIMING_BOUNDS: Record<TimingKey, { min: number; max: number }> = {
   cronSyncIntervalSeconds:   { min: 5,           max: 60                  },
   // 500 ms is the supported fast-path floor. Single-flight execution and the
   // exchange limiter prevent overlap/rate storms while avoiding a hot loop.
@@ -212,7 +212,7 @@ export const ENGINE_TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; ma
   strategyFlowHardThrottleMs:{ min: 100,         max: 30_000              },
   strategyFlowMaxIntervalMs: { min: 1_000,       max: 5 * 60_000          },
   lockExtendIntervalMs:      { min: 1_000,       max: 60_000              },
-  maxPositionHoldMs:         { min: 0 /* off */, max: 7 * 24 * 60 * 60_000 },
+  maxPositionHoldMs:         { min: 0 /* off */, max: MAX_POSITION_HOLD_MS },
   progressionBufferFlushMs:  { min: 500,         max: 60_000              },
   // ── API/Exchange operation timeouts ───────────────────────────────────
   apiTimeoutMs:              { min: 5_000,       max: 120_000             },
@@ -240,7 +240,7 @@ export const ENGINE_TIMING_BOUNDS: Record<keyof EngineTimings, { min: number; ma
 
 // snake_case key in Redis hash → camelCase key in object. Both forms are
 // accepted on read so a hand-edited HSET against either casing works.
-const REDIS_KEY_MAP: Record<keyof EngineTimings, string[]> = {
+const REDIS_KEY_MAP: Record<TimingKey, string[]> = {
   cronSyncIntervalSeconds:    ["cron_sync_interval_seconds",    "cronSyncIntervalSeconds"],
   liveSyncIntervalMs:         ["live_sync_interval_ms",         "liveSyncIntervalMs"],
   liveSyncPauseMs:            ["live_sync_pause_ms",            "liveSyncPauseMs"],
@@ -274,7 +274,7 @@ let cached: EngineTimings = { ...DEFAULT_ENGINE_TIMINGS }
 let cachedAt = 0
 let inflight: Promise<EngineTimings> | null = null
 
-function clamp(key: keyof EngineTimings, value: number): number {
+function clamp(key: TimingKey, value: number): number {
   const b = ENGINE_TIMING_BOUNDS[key]
   if (!Number.isFinite(value)) return DEFAULT_ENGINE_TIMINGS[key] as number
   return Math.max(b.min, Math.min(b.max, value))
@@ -283,7 +283,7 @@ function clamp(key: keyof EngineTimings, value: number): number {
 function parseTimingsFromHash(hash: Record<string, any> | null | undefined): EngineTimings {
   const out: EngineTimings = { ...DEFAULT_ENGINE_TIMINGS }
   if (!hash) return out
-  ;(Object.keys(REDIS_KEY_MAP) as (keyof EngineTimings)[]).forEach((k) => {
+  ;(Object.keys(REDIS_KEY_MAP) as TimingKey[]).forEach((k) => {
     const aliases = REDIS_KEY_MAP[k]
     let raw: any = undefined
     for (const a of aliases) {
@@ -293,7 +293,9 @@ function parseTimingsFromHash(hash: Record<string, any> | null | undefined): Eng
       }
     }
     if (raw === undefined) return
-    if (k === "neutralizeEnabled") {
+    if (k === "maxPositionHoldMs") {
+      out[k] = normalizePositionHoldMs(raw, DEFAULT_ENGINE_TIMINGS.maxPositionHoldMs)
+    } else if (k === "neutralizeEnabled") {
       out[k] = raw === "1" || raw === 1 || raw === true
     } else if (k === "neutralizeVolumeMode") {
       out[k] = raw as "neutralize" | "rebalance" | "reduce"
@@ -304,6 +306,8 @@ function parseTimingsFromHash(hash: Record<string, any> | null | undefined): Eng
       out[k] = clamp(k, parseFloat(String(raw)))
     }
   })
+  out.autoHoldTimeEnabled = normalizeAutoHoldTimeEnabled(hash.auto_hold_time_enabled ?? hash.autoHoldTimeEnabled)
+  out.positionHoldByRange = normalizeHoldTimeByRange(hash.position_hold_by_range ?? hash.positionHoldByRange)
   return out
 }
 

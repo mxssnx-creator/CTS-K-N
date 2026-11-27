@@ -1,3 +1,9 @@
+## 2026-11-27 — holding-time consistency and evidence
+
+Canonical `/workspace/CTS-K-N`, branch `codex/max-auto-hold-time-20261127`, starting at merged main `d38febc3c21f0ca628e8b5a2f2ad424db5632592`. See the containing pull request for the reviewed revision. The pre-edit source checkpoint is `/workspace/backups/CTS-K-N/20261127T102746Z-before-max-and-auto-hold-time`.
+
+The general 240-minute limit now handles empty defaults consistently. Paper and Live retain the selected limit, and owned Live needs the confirmed entry clock when it is available. Opt-in Auto Hold requires paired earlier paper outcomes for the exact fixed-protection configuration. The [14-day replay](../../../docs/verification/max-auto-hold-time-20261127.md) supports retaining the current default and leaves repeatable high final PF open. The managed x02 path is absent and no venue orders or deployment were performed.
+
 ## 2026-11-27 — Auto PF evidence audit
 
 Canonical `/workspace/CTS-K-N`, branch `codex/auto-pf-quality-20261127`, base `822c0959860b08f176945af83f322f2d69e0112e`. The containing pull request anchors the exact published tree. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T084558Z-before-auto-pf-replay-and-qualification`.

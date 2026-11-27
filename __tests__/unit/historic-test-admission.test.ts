@@ -69,7 +69,8 @@ describe("the coordinator consults the gate at both dispatch sites", () => {
 
   test("the validated set is loaded once per cycle and both dispatch selections are filtered", () => {
     expect(src).toContain("const historicTestSettings = normalizeHistoricTestSettings(")
-    expect(src).toContain("readHistoricTestValidatedKeys(historicRedis, this.connectionId)")
+    expect(src.match(/await readHistoricTestValidatedKeys\(/g)).toHaveLength(1)
+    expect(src).toContain("readHistoricTestValidatedKeys(historicRedis, this.connectionId, holdLimitsSignature(getEngineTimings()))")
     // Settings come through the canonical overlay, never a raw hash read.
     expect(src).toContain("normalizeHistoricTestSettings(\n      (await getCanonicalConnectionSettingsOverlay(this.connectionId)")
     // The gate lives in ONE helper (partitionLiveDispatch) that both dispatch sites call, so the
@@ -82,7 +83,8 @@ describe("the coordinator consults the gate at both dispatch sites", () => {
   })
 
   test("a disabled test costs nothing: no validated set is read", () => {
-    expect(src).toContain("historicTestSettings.enabled\n      ? await readHistoricTestValidatedKeys(")
-    expect(src).toContain(": new Set<string>()")
+    expect(src).toContain("let historicValidatedKeys = new Set<string>()")
+    const enabledBlock = src.match(/if \(historicTestSettings.enabled\) \{([\s\S]*?)\n    \}/)?.[1]
+    expect(enabledBlock).toContain("historicValidatedKeys = await readHistoricTestValidatedKeys(")
   })
 })

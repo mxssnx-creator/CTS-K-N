@@ -42,6 +42,8 @@ import {
   timestampMs,
 } from "./direct-indications"
 import { commonWarmupMinutes, commonWindowSlice } from "@/lib/common-indicators/history"
+import { effectiveHoldLimitMs, normalizePositionHoldMs, positionHoldCapMs, type PositionHoldTimeSettings } from "@/lib/position-hold-time"
+import { strategyProcessingRange } from "@/lib/strategy-execution-policy"
 
 export interface ReplayCandle {
   timestamp: number
@@ -103,6 +105,7 @@ export interface TypeReplayInput {
    */
   stepIndicatorSeries?: (bars: ReplayCandle[], timeframesMinutes: number[]) => { at(index: number): Promise<any> }
   maxHoldMs?: number
+  holdSettings?: PositionHoldTimeSettings
   /** Positions a previous call left open; they continue with the bars after `resumeAfterMs`. */
   initialOpen?: readonly TypeReplayOpenPosition[]
   /** The last bar a previous call processed: bars up to it only provide history. */
@@ -133,6 +136,8 @@ export interface TypeReplayOpenPosition {
   entryPrice: number
   takeProfitPct: number
   stopLossPct: number
+  strategyRange?: string
+  holdLimitMs?: number
 }
 
 /** A stored open position that can safely be resumed, or null. */
@@ -143,11 +148,14 @@ export function normalizeOpenPosition(value: any): TypeReplayOpenPosition | null
   const numbers = [value?.entryTime, value?.entryPrice, value?.takeProfitPct, value?.stopLossPct].map(Number)
   if (!direction || !type || !rule || !numbers.every((entry) => Number.isFinite(entry) && entry > 0)) return null
   const [entryTime, entryPrice, takeProfitPct, stopLossPct] = numbers
-  return { key: `${type}|${direction}|${rule}`, type, direction, rule, entryTime, entryPrice, takeProfitPct, stopLossPct }
+  const holdLimitMs = normalizePositionHoldMs(value?.holdLimitMs, 0)
+  return { key: `${type}|${direction}|${rule}`, type, direction, rule, entryTime, entryPrice, takeProfitPct, stopLossPct,
+    ...(typeof value?.strategyRange === "string" && { strategyRange: value.strategyRange }),
+    ...(holdLimitMs > 0 && { holdLimitMs }),
+  }
 }
 
 const MINUTE_MS = 60_000
-const DEFAULT_MAX_HOLD_MS = 4 * 60 * 60 * 1000
 const YIELD_EVERY_STEPS = 30
 
 /** Valid bars, aligned to their minute, oldest first; a repeated minute keeps its last bar. */
@@ -227,7 +235,8 @@ export function typeReplayWarmupMinutes(indicationSettings: any): number {
 
 export async function replayDirectIndicationTypes(input: TypeReplayInput): Promise<TypeReplayResult> {
   const bars = normalizeBars(input.bars)
-  const maxHoldMs = Math.max(MINUTE_MS, Number(input.maxHoldMs) || DEFAULT_MAX_HOLD_MS)
+  const defaultHoldCap = normalizePositionHoldMs(input.maxHoldMs)
+  const holdCap = (range?: string) => input.holdSettings ? positionHoldCapMs(input.holdSettings, range) : defaultHoldCap
   const positionCostPct = Number(input.positionCostPct) > 0 ? Number(input.positionCostPct) : 0.1
   const open = new Map<string, TypeReplayOpenPosition>()
   for (const raw of input.initialOpen || []) {
@@ -290,11 +299,14 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
       const long = position.direction === "long"
       const stopPrice = position.entryPrice * (1 + (long ? -1 : 1) * position.stopLossPct / 100)
       const targetPrice = position.entryPrice * (1 + (long ? 1 : -1) * position.takeProfitPct / 100)
-      if (long ? bar.open <= stopPrice : bar.open >= stopPrice) settle(position, bar.timestamp, bar.open, "stop_loss")
+      const cap = effectiveHoldLimitMs(holdCap(position.strategyRange), position.holdLimitMs)
+      const deadline = cap > 0 ? position.entryTime + cap : Infinity
+      if (bar.timestamp >= deadline) settle(position, bar.timestamp, bar.open, "max_hold")
+      else if (long ? bar.open <= stopPrice : bar.open >= stopPrice) settle(position, bar.timestamp, bar.open, "stop_loss")
       else if (long ? bar.open >= targetPrice : bar.open <= targetPrice) settle(position, bar.timestamp, bar.open, "take_profit")
       else if (long ? bar.low <= stopPrice : bar.high >= stopPrice) settle(position, barEnd, stopPrice, "stop_loss")
       else if (long ? bar.high >= targetPrice : bar.low <= targetPrice) settle(position, barEnd, targetPrice, "take_profit")
-      else if (barEnd - position.entryTime >= maxHoldMs) settle(position, barEnd, bar.close, "max_hold")
+      else if (barEnd >= deadline) settle(position, barEnd, bar.close, "max_hold")
     }
   }
 
@@ -353,6 +365,7 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
       if (open.has(key)) continue
       const protection = input.protectionFor({ type, profitFactor: Number(row.profitFactor) || 0, row })
       if (!(protection.takeProfitPct > 0) || !(protection.stopLossPct > 0)) continue
+      const strategyRange = strategyProcessingRange(row)
       open.set(key, {
         key,
         type,
@@ -362,6 +375,8 @@ export async function replayDirectIndicationTypes(input: TypeReplayInput): Promi
         entryPrice: bar.close,
         takeProfitPct: protection.takeProfitPct,
         stopLossPct: protection.stopLossPct,
+        strategyRange,
+        holdLimitMs: holdCap(strategyRange),
       })
     }
   }

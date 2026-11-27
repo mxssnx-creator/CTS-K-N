@@ -1,3 +1,9 @@
+## 2026-11-27 — holding time and exact final qualification
+
+Canonical `/workspace/CTS-K-N` uses branch `codex/max-auto-hold-time-20261127` from merged main `d38febc3c21f0ca628e8b5a2f2ad424db5632592`. The containing pull request records the published revision and hosted checks. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T102746Z-before-max-and-auto-hold-time`.
+
+The system timer and range caps now govern paper, replay and exchange positions. Confirmed exchange fills anchor the timer. Auto Hold requires matching fixed-protection paper evidence and remains opt-in. Mature Real, Live, Block and DCA outcomes enforce actual net PF before admitting more exposure. The [verification](verification/max-auto-hold-time-20261127.md) gives the 14-day, 32-symbol results, exact configuration coverage and reproduction. The study kept the profitability gate open. x02 access and deployment remain pending.
+
 ## 2026-11-27 — Auto PF and exact performance evidence
 
 Canonical `/workspace/CTS-K-N`, branch `codex/auto-pf-quality-20261127` from the merged independent-stage release `822c0959860b08f176945af83f322f2d69e0112e`. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T084558Z-before-auto-pf-replay-and-qualification`. The containing pull request records the published revision and GitHub verification runs.
