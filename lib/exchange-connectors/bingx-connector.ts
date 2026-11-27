@@ -3915,79 +3915,94 @@ export class BingXConnector extends BaseExchangeConnector {
     quantity: number
     price?: number
     options?: PlaceOrderOptions
-  }>): Promise<{ success: boolean; orders?: any[]; errors?: any[]; error?: string }> {
+  }>): Promise<{ success: boolean; orders?: any[]; errors?: any[]; error?: string;
+    clientOrderIds?: string[]; unknown?: boolean }> {
+    let release: (() => void) | undefined
+    let dispatched = false
+    const clientOrderIds: string[] = []
     try {
-      if (!Array.isArray(orders) || orders.length === 0) {
-        throw new Error("Orders must be a non-empty array")
+      if (!Array.isArray(orders) || orders.length === 0 || orders.length > 5) {
+        throw new Error("A batch must contain between 1 and 5 orders")
       }
-      
-      if (orders.length > 5) {
-        throw new Error("Maximum 5 orders per batch request")
+      if (this.credentials.apiType === "spot") throw new Error("Swap batch orders require a swap account")
+      for (const order of orders) {
+        if (!order || !order.symbol || !["buy", "sell"].includes(order.side) ||
+            !Number.isFinite(order.quantity) || order.quantity <= 0 ||
+            Math.round(order.quantity * 1e6) < 1 ||
+            (order.type !== undefined && !["market", "limit"].includes(order.type)) ||
+            (order.type !== "market" && (!Number.isFinite(order.price) || order.price! <= 0))) {
+          throw new Error("Invalid batch order")
+        }
+        const options = order.options
+        if (options?.closePosition || options?.positionTicket !== undefined ||
+            options?.stopLossPrice !== undefined || options?.takeProfitPrice !== undefined) {
+          throw new Error("Batch order cannot silently omit position-specific protection")
+        }
+        const id = (options?.clientOrderId || `ctskn_${crypto.randomBytes(12).toString("hex")}`).toLowerCase()
+        if (!id.trim() || id.length > 40 || clientOrderIds.includes(id)) {
+          throw new Error("Batch client order IDs must be unique and at most 40 characters")
+        }
+        clientOrderIds.push(id)
       }
-      
-      this.log(`[API] Batch placing ${orders.length} orders`)
-      
-      // Build individual order params
-      const batchOrders = orders.map(order => {
-        const isSpot = this.credentials.apiType === "spot"
-        const bingxSymbol = this.toBingXSymbol(order.symbol)
-        const roundedQty = Math.round((order.quantity) * 1e6) / 1e6
-        const qtyStr = roundedQty.toFixed(6).replace(/\.?0+$/, "")
-        
-        const orderObj: Record<string, any> = {
-          symbol: bingxSymbol,
+
+      release = await this.acquireBingxSlot("batchPlaceOrders")
+      const accountMode = await this.resolveAccountHedgeMode()
+      const batch = orders.map((order, index) => {
+        const options = order.options ?? {}
+        const hedge = this.reconcileHedgeMode(accountMode, options.hedgeMode !== false, "batchPlaceOrders")
+        const symbol = this.toBingXSymbol(order.symbol)
+        const quantity = Math.round(order.quantity * 1e6) / 1e6
+        const row: Record<string, unknown> = {
+          symbol,
           side: order.side.toUpperCase(),
-          type: (order.type === "market" ? "MARKET" : "LIMIT"),
-          quantity: qtyStr,
+          type: order.type === "market" ? "MARKET" : "LIMIT",
+          quantity,
+          clientOrderId: clientOrderIds[index],
         }
-        
-        if (order.price && order.type !== "market") {
-          const priceRounded = Math.round(order.price * 1e8) / 1e8
-          orderObj.price = priceRounded.toFixed(8).replace(/\.?0+$/, "")
+        if (order.type !== "market") row.price = Math.round(order.price! * 1e8) / 1e8
+        if (hedge) {
+          row.positionSide = options.positionSide ?? (options.reduceOnly
+            ? (order.side === "sell" ? "LONG" : "SHORT")
+            : (order.side === "buy" ? "LONG" : "SHORT"))
+        } else if (options.reduceOnly) {
+          row.reduceOnly = "true"
         }
-        
-        if (!isSpot && order.options?.hedgeMode !== false) {
-          orderObj.positionSide = order.options?.positionSide || (order.side === "buy" ? "LONG" : "SHORT")
-        }
-        
-        return orderObj
+        this.clearNotFoundCache(symbol, clientOrderIds[index])
+        return row
       })
-      
-      const params: Record<string, any> = {
-        batchOrders: JSON.stringify(batchOrders),
-        timestamp: this.getTimestamp(),
+
+      const buildUrl = () => {
+        const params = this.withRecvWindow({ batchOrders: JSON.stringify(batch), timestamp: this.getTimestamp() })
+        const { signature } = this.signParams(params)
+        const query = Object.keys(params).sort()
+          .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(String(params[key]))}`).join("&")
+        return `${this.getBaseUrl()}/openApi/swap/v2/trade/batchOrders?${query}&signature=${signature}`
       }
-      
-      const { signature, queryString: signedQs } = this.signParams(params)
-      const url = `${this.getBaseUrl()}/openApi/swap/v2/trade/batchOrders?${signedQs}&signature=${signature}`
-      
-      const response = await this.rateLimitedFetch(url, {
+      dispatched = true
+      const response = await this.rateLimitedFetch(buildUrl, {
         method: "POST",
         headers: { "X-BX-APIKEY": this.credentials.apiKey },
       })
-      
-      const data = await this.safeJson(response)
-      
-      if (!this.isBingXSuccess(data.code)) {
-        throw new Error(`BingX API error (code=${data.code}): ${data.msg || "Unknown error"}`)
+      const result = await this.safeJson(response)
+      if (!response.ok || !this.isBingXSuccess(result?.code)) {
+        // A failed HTTP/API envelope does not prove the venue never accepted
+        // an individual order. Reconcile the supplied client IDs first.
+        throw new Error(`BingX API error (code=${result?.code}): ${result?.msg || "Unknown error"}`)
       }
-      
-      const placedOrders = data.data?.orders || []
-      const failedOrders = data.data?.errors || []
-      
-      this.log(`✓ Batch orders: ${placedOrders.length} placed, ${failedOrders.length} failed`)
-      return {
-        success: true,
-        orders: placedOrders,
-        errors: failedOrders,
-      }
+      const placed = result.data?.orders
+      const failed = result.data?.errors ?? []
+      if (!Array.isArray(placed) || !Array.isArray(failed) || placed.length + failed.length !== batch.length)
+        throw new Error("Incomplete batch acknowledgement; reconcile by client order ID")
+      this.log(`✓ Batch orders: ${placed.length} placed, ${failed.length} failed`)
+      return { success: true, orders: placed, errors: failed, clientOrderIds }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error)
+      this.recordBingxRateLimitIfMatched("batchPlaceOrders", errorMsg)
       this.logError(`✗ Failed to batch place orders: ${errorMsg}`)
-      return {
-        success: false,
-        error: errorMsg,
-      }
+      return { success: false, error: errorMsg, ...(clientOrderIds.length ? { clientOrderIds } : {}),
+        ...(dispatched ? { unknown: true } : {}) }
+    } finally {
+      release?.()
     }
   }
 

@@ -54,6 +54,31 @@ describe("branch audit fixes", () => {
     expect(ExchangeConnectorFactory.getConnector).toHaveBeenCalledWith("bingx-x02")
   })
 
+  test("batch signals preserve every input and use the protected order lifecycle", async () => {
+    const orchestrator = new TradeExecutionOrchestrator() as any
+    const first = { symbol: "BTCUSDT", signal: "buy", confidence: 0.9, reasons: [], indicatorScores: {} }
+    const second = { ...first, confidence: 0.8 }
+    const third = { ...first, symbol: "ETHUSDT", confidence: 0.7 }
+    const seen: string[] = []
+    const submit = jest.spyOn(orchestrator, "executeBuySignal").mockImplementation(async (_connection, symbol, signal) => {
+      seen.push(`${symbol}:${signal.confidence}`)
+      if (signal === second) throw new Error("outcome unknown")
+      return { success: true, orderId: String(signal.confidence) }
+    })
+    const results = await orchestrator.executeBatchBuySignals("bingx-x02", [
+      { symbol: "BTCUSDT", signal: first },
+      { symbol: "BTCUSDT", signal: second },
+      { symbol: "ETHUSDT", signal: third },
+    ])
+    expect(seen).toEqual(["BTCUSDT:0.9", "BTCUSDT:0.8", "ETHUSDT:0.7"])
+    expect(results).toEqual([
+      { success: true, orderId: "0.9" },
+      { success: false, error: "Error: outcome unknown" },
+      { success: true, orderId: "0.7" },
+    ])
+    expect(submit).toHaveBeenCalledTimes(3)
+  })
+
   test("synthetic continuation after a gap longer than the window still ends at now", () => {
     const now = Date.now()
     const seed = generateSyntheticCandles("BCHUSDT", 100, 50, 1_000).map((candle, index) => ({
