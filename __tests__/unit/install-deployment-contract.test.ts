@@ -1263,6 +1263,12 @@ describe("production installation and Kilo deployment contract", () => {
       await writeFile(path.join(binDir, "sudo"), "#!/usr/bin/env bash\n[[ \"${1:-}\" != -n ]] || shift\nexec \"$@\"\n")
       await writeFile(path.join(binDir, "systemctl"), "#!/usr/bin/env bash\n[[ \"${1:-}\" != is-active ]] || exit 3\nexit 0\n")
       await writeFile(path.join(binDir, "ssh"), "#!/usr/bin/env bash\nexec /bin/bash -s\n")
+      const freeDisk = path.join(binDir, "available-kib")
+      await writeFile(path.join(binDir, "df"), [
+        "#!/usr/bin/env bash",
+        "read -r available < \"$(dirname \"$0\")/available-kib\"",
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\nfixture 16777216 0 %s 0%% /\\n' \"$available\"",
+      ].join("\n"), { mode: 0o755 })
       await writeFile(
         path.join(binDir, "git"),
         `#!/usr/bin/env bash
@@ -1318,7 +1324,7 @@ printf '[fixture-installer] canonical contract passed\\n'
       process.env.CTS_TEST_CAPTURE = capture
 
       process.env.CTS_TEST_EXPECT_MODE = "preflight"
-      const preflightResponse = await POST(remoteRequest({
+      const preflight = () => POST(remoteRequest({
         mode: "preflight",
         host: "localhost",
         username: "root",
@@ -1326,6 +1332,12 @@ printf '[fixture-installer] canonical contract passed\\n'
         installDir,
         repoUrl: "https://github.com/mxssnx-creator/CTS-K-N.git",
       }))
+      // Exercise both sides of the remote 4 GiB boundary on the fixture's disk.
+      await writeFile(freeDisk, "4194303\n")
+      const insufficient = await preflight()
+      expect((await insufficient.json()).logs).toContainEqual(expect.stringContaining("4 GiB free disk"))
+      await writeFile(freeDisk, "4194304\n")
+      const preflightResponse = await preflight()
       const preflightPayload = await preflightResponse.json()
       expect({ status: preflightResponse.status, payload: preflightPayload }).toMatchObject({
         status: 200,

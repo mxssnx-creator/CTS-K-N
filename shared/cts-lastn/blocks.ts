@@ -53,9 +53,9 @@ export function blockWindow(pre:BlockPrefix,offset:number,n:number,minPf:number,
   return {offset,requested:n,count,gp,gl,net,pf,state:unknown?'unknown':count<n?'insufficient':passed?'qualified':'failed'};
 }
 /** One prefix per exact configuration can evaluate all 1,560 policies without copying position arrays. */
-export function evaluateBlocks(pre:BlockPrefix,p:BlockPolicy,minPf:number) {
+export function evaluateBlocks(pre:BlockPrefix,p:BlockPolicy,minPf:number,requireLastPf=false) {
   checkBlockPolicy(p);if(!Number.isFinite(minPf)||minPf<=1)throw new Error('Last-N PF floor must exceed one');
-  const minimal=blockWindow(pre,0,p.minimal,minPf,p.minimalPolarity,true);
+  const minimal=blockWindow(pre,0,p.minimal,minPf,p.minimalPolarity,!requireLastPf);
   const short=blockWindow(pre,p.minimal,p.short,minPf,p.shortPolarity);
   const long=blockWindow(pre,p.minimal+p.short,p.long,minPf);
   const rows=[long,short,minimal];const state:BlockResult["state"]=rows.some(w=>w.state==='unknown')?'unknown':rows.some(w=>w.state==='insufficient')?'insufficient':rows.every(w=>w.state==='qualified')?'qualified':'failed';

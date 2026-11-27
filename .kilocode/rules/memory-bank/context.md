@@ -1,3 +1,8 @@
+
+## 2026-11-27 — DCA fixed-stop validation
+
+The independent research checkout is based on published PR #591 at `a08a8614cfe960dd14ed12408167173e9935cecb`. The shared canonical checkout was at `822c0959860b08f176945af83f322f2d69e0112e` during validation. The verified pre-edit recovery point was `20261127T065852Z-fixed-stop-ratio-edit`. Research tested 5,040 fixed-band configurations and 1,104 last-rung configurations per symbol on BCH, XRP and SOL over 14 complete UTC days. None qualified across both weeks. The three native DCA and volume suites passed 25 checks. The research code passed focused TypeScript checking. The frozen plan and thresholds are in `docs/research/fixed-stop-dca-20261127.md`. The live K-N grid still has legacy ratio coordinations. This release changes offline research. No service, Redis or venue state was modified.
+
 ## 2026-11-27 — Signals and stage Long continuation
 
 The release branch starts from canonical main `df70eb9dc97100fb96e8fa3eb7b82e092cb33059`. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T015254Z-long-lanes-before-edit`. Settings add Stage Long inheritance and no-Long choices with per-policy evidence, retaining a single dispatch decision per Set. 96 focused tests and TypeScript passed. The 30-symbol, 72-hour Signals score rejected all four tested sources with the native source-ranking calculation. This was an archived source/exit study. Full native execution PF remains unmeasured. No production broker or Redis data was changed by the audit.

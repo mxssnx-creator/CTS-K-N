@@ -6,14 +6,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import { runDcaBacktest, type DcaBacktestCandle, type DcaBacktestConfig, type DcaBacktestEntry, type DcaBacktestResult } from "../lib/dca-backtest"
 import { normalizeDcaProfile } from "../lib/dca-strategy"
+import { fixedStopsAt, maxStopRatio, stopSelections, type FixedStopSelections, type StopBand } from "../shared/cts-protection/fixed-stop-bands"
 
 type Plan = {
   evaluationStart: number; evaluationEndExclusive: number; warmupStart: number; selectionEndExclusive: number
   symbols: string[]; timeframes: Array<5 | 15 | 30>; entries: DcaBacktestEntry[]; maxSteps: number[]
-  volumeLadders: number[][]; distanceLadders: number[][]; takeProfits: number[]; lastStepStopMultipliers: number[]
+  volumeLadders: number[][]; distanceLadders: number[][]; takeProfits: number[]; lastStepStopMultipliers?: number[]
+  fixedSlBands?: FixedStopSelections; maxStopLossRatio?: number
   maxHoldMinutes: number; baseRoundTripCostPct: number; stressRoundTripCostPct: number; slippagePct: number
 }
-type Candidate = { id: number; requestedStopMultipliers: number[]; config: DcaBacktestConfig }
+type Candidate = { id: number; requestedStopMultipliers: number[]; stopBand?: StopBand; config: DcaBacktestConfig }
 type Metrics = [number, number | null, boolean, number, number, number, number, number, number]
 type Row = { id: number; train: Metrics; trainStress: Metrics; holdout?: Metrics; holdoutStress?: Metrics; full?: Metrics; fullStress?: Metrics }
 
@@ -58,23 +60,41 @@ async function main() {
   }
   const candidates: Candidate[] = [], byConfig = new Map<string, Candidate>()
   let rawConfigurations = 0
+  const selections = plan.fixedSlBands === undefined ? undefined : stopSelections(plan.fixedSlBands)
+  const ceiling = maxStopRatio(plan.maxStopLossRatio)
+  if (!selections && !plan.lastStepStopMultipliers?.length) throw new Error("A DCA plan needs stop distances")
+  const stopGrid = new Map(plan.takeProfits.map(tp => [tp, selections ? fixedStopsAt(tp, selections, ceiling) : []]))
   for (const timeframeMinutes of plan.timeframes) for (const entry of plan.entries) for (const maxSteps of plan.maxSteps)
-    for (const volumes of plan.volumeLadders) for (const distances of plan.distanceLadders) for (const takeProfitPct of plan.takeProfits)
-      for (const multiple of plan.lastStepStopMultipliers) {
-        rawConfigurations++
-        const profile = normalizeDcaProfile({ maxSteps, stepVolumeMultipliers: volumes, stepDistancesPct: distances,
-          takeProfitMode: "average", breakevenProfitPct: .2, cooldownSeconds: 30,
-          maxPositionVolumeRatio: 1 + volumes.slice(0, maxSteps).reduce((sum, value) => sum + value, 0) })
-        const lastDistance = profile.stepDistancesPct[maxSteps - 1]
-        const config: DcaBacktestConfig = { profile, timeframeMinutes, entry, takeProfitPct,
-          stopLossPct: Math.max(lastDistance + .1, lastDistance * multiple), maxHoldMinutes: plan.maxHoldMinutes,
-          roundTripCostPct: plan.baseRoundTripCostPct, slippagePct: plan.slippagePct }
-        const key = JSON.stringify(config)
-        const existing = byConfig.get(key)
-        if (existing) { existing.requestedStopMultipliers.push(multiple); continue }
-        const candidate = { id: candidates.length, requestedStopMultipliers: [multiple], config }
-        candidates.push(candidate); byConfig.set(key, candidate)
+    for (const volumes of plan.volumeLadders) for (const distances of plan.distanceLadders) {
+      const profile = normalizeDcaProfile({ maxSteps, stepVolumeMultipliers: volumes, stepDistancesPct: distances,
+        takeProfitMode: "average", breakevenProfitPct: .2, cooldownSeconds: 30,
+        maxPositionVolumeRatio: 1 + volumes.slice(0, maxSteps).reduce((sum, value) => sum + value, 0) })
+      const lastDistance = profile.stepDistancesPct[maxSteps - 1]
+      // This is the minimum executable stop in runDcaBacktest. Reject an ineligible fixed stop before simulation.
+      const minimumStop = lastDistance + .1
+      for (const takeProfitPct of plan.takeProfits) {
+        const stops: { stopPct: number; band?: StopBand; multiple?: number }[] = selections
+          ? stopGrid.get(takeProfitPct)!.filter(stop => stop.stopPct + 1e-12 >= minimumStop)
+          : plan.lastStepStopMultipliers!.map(multiple => ({ multiple, stopPct: Math.max(minimumStop, lastDistance * multiple) }))
+        for (const stop of stops) {
+          rawConfigurations++
+          const config: DcaBacktestConfig = { profile, timeframeMinutes, entry, takeProfitPct,
+            stopLossPct: stop.stopPct, maxHoldMinutes: plan.maxHoldMinutes,
+            roundTripCostPct: plan.baseRoundTripCostPct, slippagePct: plan.slippagePct }
+          const key = JSON.stringify([stop.band, config])
+          const existing = byConfig.get(key)
+          if (existing) {
+            if (stop.multiple !== undefined) existing.requestedStopMultipliers.push(stop.multiple)
+            continue
+          }
+          const candidate: Candidate = { id: candidates.length, stopBand: stop.band,
+            requestedStopMultipliers: stop.multiple === undefined ? [] : [stop.multiple], config }
+          candidates.push(candidate)
+          byConfig.set(key, candidate)
+        }
       }
+    }
+  if (!candidates.length) throw new Error("No DCA protection pair fits the configured stop bands, rungs and ratio ceiling")
   const output = resolve(directory, "results")
   await mkdir(output, { recursive: true })
   await writeFile(resolve(output, "configs.json"), JSON.stringify(candidates))
@@ -83,7 +103,7 @@ async function main() {
     codeSha256: createHash("sha256").update(await readFile(resolve(process.argv[1]))).digest("hex"),
     plan, rawConfigurationsPerSymbol: rawConfigurations, uniqueConfigurationsPerSymbol: candidates.length, metricFields,
     drawdownMethod: "Conservative cumulative PnL drawdown bound using each trade's worst observed intratrade adverse mark and maximum fill costs; closed-trade drawdown is reported separately. Percentage points of initial order notional, not account-equity percentages.",
-    costModel: "0.15% all-in round trip at base and0.225% stress, scaled by actual DCA volume; no extra price slippage, funding, partial fills or exchange-minimum model.",
+    costModel: `Round-trip cost is ${plan.baseRoundTripCostPct}% at base and ${plan.stressRoundTripCostPct}% under stress, scaled by filled DCA volume. Price slippage is ${plan.slippagePct}% per fill. Funding, partial fills and exchange minimums are excluded.`,
     scope: "Four generic DCA entry rules, 5/15/30-minute bars, steps1–4 and the complete frozen sizing/SL/TP grid. This is not the 135-type indication pipeline, Block/Shared/Overall execution or a live strategy-profitability proof.",
     defaultsPromoted: false,
     symbols: [] as Array<{ symbol: string; qualifyingTraining: number; selectedId: number | null; independentValidationPassed: boolean; selected: Row | null }>,

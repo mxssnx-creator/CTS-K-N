@@ -1,3 +1,8 @@
+
+## 2026-11-27 — DCA fixed-stop validation
+
+The independent research checkout is based on published PR #591 at `a08a8614cfe960dd14ed12408167173e9935cecb`. The shared canonical checkout was at `822c0959860b08f176945af83f322f2d69e0112e` during validation. The verified pre-edit recovery point was `20261127T065852Z-fixed-stop-ratio-edit`. Research tested 5,040 fixed-band configurations and 1,104 last-rung configurations per symbol on BCH, XRP and SOL over 14 complete UTC days. None qualified across both weeks. The three native DCA and volume suites passed 25 checks. The research code passed focused TypeScript checking. The frozen plan and thresholds are in `docs/research/fixed-stop-dca-20261127.md`. The live K-N grid still has legacy ratio coordinations. This release changes offline research. No service, Redis or venue state was modified.
+
 ## 2026-11-27 — Exact Last-N Long choices and Signals
 
 Strategy Settings can evaluate Base Long and no-Long independently on the exact Main, Real and Exec / Live result ring. The two proofs share one bounded batch read and use the configured Short and Last conditions. Dispatch chooses at most one passing proof per Set. The two proofs do not create separate executed-position histories. The Signals default after-cost PF is 1.35, with explicit existing settings at or above 1.2 preserved.

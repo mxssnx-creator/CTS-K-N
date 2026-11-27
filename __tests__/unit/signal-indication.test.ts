@@ -260,7 +260,7 @@ describe("Signal indication persistence and independent performance gates", () =
     // Direct execution cannot be switched off. The exact-config minimum is
     // Signal's own operator setting since 2026-09-29: an operator value from
     // 1.2 upward is kept, anything below 1.2 (legacy 1.1 or 0.3, missing) is
-    // raised to 1.25.
+    // raised to the current Signals default of 1.35.
     expect(normalizeSignalIndicationSettings({
       directExecutionEnabled: false,
       configMinimumPfRatio: 2.7,
@@ -268,7 +268,7 @@ describe("Signal indication persistence and independent performance gates", () =
       directExecutionEnabled: true,
       configMinimumPfRatio: 2.7,
     })
-    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.1 }).configMinimumPfRatio).toBe(1.25)
+    expect(normalizeSignalIndicationSettings({ configMinimumPfRatio: 1.1 }).configMinimumPfRatio).toBe(1.35)
 
     const settings = normalizeSignalIndicationSettings({})
     const request = {
