@@ -525,136 +525,22 @@ export class TradeExecutionOrchestrator {
   }
 
   /**
-   * Execute batch buy signals - places multiple orders efficiently using batchPlaceOrders
+   * Execute every buy through the protected single-signal lifecycle. Keep
+   * result order and duplicates because each signal is an independent request.
    */
   async executeBatchBuySignals(
     connectionId: string,
     signals: Array<{ symbol: string; signal: SignalEvaluation }>
   ): Promise<Array<TradeExecutionResult>> {
-    const startTime = Date.now()
-
-    try {
-      if (signals.length === 0) {
-        return []
+    const results: TradeExecutionResult[] = []
+    for (const { symbol, signal } of signals) {
+      try {
+        results.push(await this.executeBuySignal(connectionId, symbol, signal))
+      } catch (error) {
+        results.push({ success: false, error: String(error) })
       }
-
-      this.log(`Executing batch buy signals for ${signals.length} symbols`)
-
-      const connector = ExchangeConnectorFactory.getConnector(connectionId)
-      if (!connector) {
-        throw new Error(`Connector not found for ${connectionId}`)
-      }
-
-      // Get balance once
-      const balance = await connector.getBalance()
-      if (!balance.success) {
-        throw new Error(`Failed to fetch balance: ${balance.error}`)
-      }
-
-      // Build order array
-      const orders = []
-      const resultMap: Record<string, TradeExecutionResult> = {}
-
-      for (const { symbol, signal } of signals) {
-        const size = await this.calculatePositionSize(connectionId, balance.balance, null)
-
-        if (size > 0) {
-          orders.push({
-            symbol,
-            side: "buy",
-            quantity: size,
-            type: "market",
-          })
-
-          resultMap[symbol] = {
-            success: false,
-            size,
-          }
-        } else {
-          resultMap[symbol] = {
-            success: false,
-            error: "Position size too small",
-          }
-        }
-      }
-
-      if (orders.length === 0) {
-        this.log("No valid orders to place in batch")
-        return Object.values(resultMap)
-      }
-
-      // Use new API method for efficient batch placement (max 5 per call)
-      const batchSize = 5
-      const allResults: Array<any> = []
-
-      for (let i = 0; i < orders.length; i += batchSize) {
-        const batch = orders.slice(i, Math.min(i + batchSize, orders.length))
-        const result = await connector.executeSwapTrade("batchPlaceOrders", { orders: batch })
-
-        if (result.success && result.orders) {
-          allResults.push(...result.orders)
-        }
-
-        if (result.errors) {
-          this.error(`Batch ${Math.floor(i / batchSize) + 1} had errors: ${JSON.stringify(result.errors)}`)
-        }
-      }
-
-      // Update results and database
-      for (const order of allResults) {
-        const symbol = order.symbol || ""
-        if (resultMap[symbol]) {
-          resultMap[symbol].success = true
-          resultMap[symbol].orderId = order.orderId
-          resultMap[symbol].entryPrice = order.price
-
-          // Store in database
-          await dbCoordinator.storeOrder(connectionId, order.orderId, {
-            id: order.orderId,
-            connectionId,
-            symbol,
-            side: "buy",
-            quantity: order.quantity,
-            price: order.price,
-            status: "pending",
-            createdAt: new Date().toISOString(),
-          })
-
-          // Operator policy: store venue max leverage on the persisted
-          // position so reconciliation/UI render the actual margin
-          // semantics. Resolved once per batch via the connection lookup.
-          const batchMaxLeverage = await getMaxLeverageForConnection(connectionId)
-          await dbCoordinator.storePosition(connectionId, symbol, {
-            id: `pos_${Date.now()}`,
-            connectionId,
-            symbol,
-            side: "long",
-            size: order.quantity,
-            entryPrice: order.price,
-            currentPrice: order.price,
-            unrealizedPnl: 0,
-            leverage: batchMaxLeverage,
-            status: "open",
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-        }
-      }
-
-      const duration = Date.now() - startTime
-      const successCount = Object.values(resultMap).filter(r => r.success).length
-      this.log(`✓ Batch buy signals executed in ${duration}ms: ${successCount}/${signals.length} successful`)
-
-      return Object.values(resultMap)
-    } catch (err) {
-      const duration = Date.now() - startTime
-      this.error(`Batch buy signals failed after ${duration}ms: ${err}`)
-
-      return signals.map(s => ({
-        success: false,
-        error: String(err),
-      }))
     }
+    return results
   }
 
   /**

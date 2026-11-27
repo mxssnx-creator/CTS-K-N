@@ -5,6 +5,7 @@ import {
   normalizeBingXEnvironment,
 } from "@/lib/bingx-environment"
 import { BingXConnector } from "@/lib/exchange-connectors/bingx-connector"
+import { createHmac } from "crypto"
 
 describe("BingX Prod-VST connector contract", () => {
   const originalFetch = global.fetch
@@ -30,6 +31,68 @@ describe("BingX Prod-VST connector contract", () => {
   afterAll(() => {
     if (originalVstOrigin === undefined) delete process.env.BINGX_VST_ORIGIN
     else process.env.BINGX_VST_ORIGIN = originalVstOrigin
+  })
+
+  test("batch orders preserve their client IDs, signed JSON and hedge close side", async () => {
+    const connector = new BingXConnector({
+      apiKey: "batch-key", apiSecret: "batch-secret", isTestnet: true, apiType: "perpetual_futures",
+    })
+    jest.spyOn(connector as any, "resolveAccountHedgeMode").mockResolvedValue(true)
+    let requestUrl = ""
+    const send = jest.spyOn(connector as any, "rateLimitedFetch").mockImplementation(async (url: string | (() => string)) => {
+      requestUrl = typeof url === "function" ? url() : url
+      return Response.json({ code: 0, data: { orders: [{ orderId: "1" }], errors: [{ code: 1 }] } })
+    })
+    const result = await connector.batchPlaceOrders([
+      { symbol: "BTCUSDT", side: "sell", type: "market", quantity: .01,
+        options: { reduceOnly: true, clientOrderId: "Close&ONE" } },
+      { symbol: "ETHUSDT", side: "buy", type: "limit", quantity: .25, price: 1200,
+        options: { clientOrderId: "entry-2" } },
+    ])
+    expect(result).toMatchObject({ success: true, clientOrderIds: ["close&one", "entry-2"] })
+    expect(send).toHaveBeenCalledTimes(1)
+    const query = new URL(requestUrl).searchParams
+    const rows = JSON.parse(query.get("batchOrders")!)
+    expect(rows).toMatchObject([
+      { symbol: "BTC-USDT", side: "SELL", type: "MARKET", quantity: .01,
+        positionSide: "LONG", clientOrderId: "close&one" },
+      { symbol: "ETH-USDT", side: "BUY", type: "LIMIT", quantity: .25,
+        price: 1200, positionSide: "LONG", clientOrderId: "entry-2" },
+    ])
+    expect(rows[0].reduceOnly).toBeUndefined()
+    const raw = [...query.keys()].filter(key => key !== "signature").sort()
+      .map(key => `${key}=${query.get(key)}`).join("&")
+    expect(query.get("signature")).toBe(createHmac("sha256", "batch-secret").update(raw).digest("hex"))
+    expect(requestUrl).toContain("%26")
+  })
+
+  test("batch ambiguity retains client IDs without a second submission", async () => {
+    const connector = new BingXConnector({
+      apiKey: "batch-key", apiSecret: "batch-secret", isTestnet: true, apiType: "perpetual_futures",
+    })
+    jest.spyOn(connector as any, "resolveAccountHedgeMode").mockResolvedValue(false)
+    const send = jest.spyOn(connector as any, "rateLimitedFetch").mockRejectedValue(new Error("transport timeout"))
+    const result = await connector.batchPlaceOrders([
+      { symbol: "BTCUSDT", side: "sell", type: "market", quantity: 1,
+        options: { reduceOnly: true, clientOrderId: "retry-safe" } },
+    ])
+    expect(result).toMatchObject({ success: false, unknown: true, clientOrderIds: ["retry-safe"] })
+    expect(send).toHaveBeenCalledTimes(1)
+    send.mockClear()
+    send.mockResolvedValueOnce(Response.json({ code: 100001, msg: "upstream error" }, { status: 500 }))
+    const upstream = await connector.batchPlaceOrders([
+      { symbol: "BTCUSDT", side: "buy", type: "market", quantity: 1,
+        options: { clientOrderId: "server-uncertain" } },
+    ])
+    expect(upstream).toMatchObject({ success: false, unknown: true, clientOrderIds: ["server-uncertain"] })
+    expect(send).toHaveBeenCalledTimes(1)
+    send.mockClear()
+    const invalid = await connector.batchPlaceOrders([
+      { symbol: "BTCUSDT", side: "buy", type: "market", quantity: 1,
+        options: { stopLossPrice: 90 } },
+    ])
+    expect(invalid.success).toBe(false)
+    expect(send).not.toHaveBeenCalled()
   })
 
   test("normalizes explicit environment aliases and fails closed on unknown values", () => {
