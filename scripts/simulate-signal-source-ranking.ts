@@ -128,8 +128,13 @@ const settings: SignalSourceValidationSettings = {
   tactics: { ...SIGNAL_SOURCE_VALIDATION_SETTINGS_DEFAULT.tactics },
 }
 
+// This offline exercise can model receipts with known synthetic truth. The
+// runtime ranking never lets synthetic evidence authorize source activation.
+const scoringRows = (rows: SignalSourceOutcome[]) => recordedPath ? rows
+  : rows.map(row => ({ ...row, origin: "recorded" as const }))
+
 // 1) Static selection: validate on the first half only, evaluate on the second half.
-const staticRanking = buildSignalSourceRanking({ registry: registryFor(ids), outcomes: train, settings })
+const staticRanking = buildSignalSourceRanking({ registry: registryFor(ids), outcomes: scoringRows(train), settings })
 const staticActive = new Set(staticRanking.filter((e) => e.status === "active").map((e) => e.sourceId))
 const staticTest = test.filter((o) => staticActive.has(o.sourceId))
 
@@ -138,7 +143,7 @@ const staticTest = test.filter((o) => staticActive.has(o.sourceId))
 const hourlyTaken: SignalSourceOutcome[] = []
 for (let hourStart = split; hourStart < end; hourStart += HOUR) {
   const history = outcomes.filter((o) => o.closedAt < hourStart)
-  const ranking = buildSignalSourceRanking({ registry: registryFor(ids), outcomes: history, settings })
+  const ranking = buildSignalSourceRanking({ registry: registryFor(ids), outcomes: scoringRows(history), settings })
   const hourOfDay = new Date(hourStart).getUTCHours()
   const allowed = new Set(ranking
     .filter((e) => e.status === "active" && !e.negativeHoursUtc.includes(hourOfDay))

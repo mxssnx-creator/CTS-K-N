@@ -1,5 +1,6 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { iterateRedisSetMembers } from "@/lib/redis-scan"
+import { simulatedCloseCostPercent } from "@/lib/trading-round-trip-cost"
 import {
   ALL_SIGNAL_SOURCE_DEFINITIONS as SIGNAL_SOURCE_DEFINITIONS,
   signalSourceSupportsSymbol,
@@ -18,6 +19,7 @@ import {
   type SignalSourceOutcome,
 } from "@/lib/signal-source-validation"
 import {
+  SIGNAL_SOURCE_EVIDENCE_VERSION,
   readSignalSourceSnapshot,
   signalSourceHourLockKey,
   utcHourKey,
@@ -39,8 +41,8 @@ import {
  * adapters.
  */
 
-const MAX_INDEX_KEYS = 5_000
 const MAX_SAMPLES_PER_KEY = 50
+const SAMPLE_READ_CONCURRENCY = 32
 const DEFAULT_REPLAY_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"] as const
 const REPLAY_CANDLE_LIMIT = 300
 const REPLAY_WARMUP = 60
@@ -58,27 +60,43 @@ export async function collectRecordedSignalOutcomes(connectionId: string): Promi
   const client = getRedisClient()
   const indexKey = `signal:performance:index:${safePart(connectionId)}`
   const outcomes: SignalSourceOutcome[] = []
-  let scanned = 0
-  for await (const key of iterateRedisSetMembers(client, indexKey, { count: 250 })) {
-    if (++scanned > MAX_INDEX_KEYS) break
-    const parts = String(key).split(":")
-    const direction = parts.at(-1)
-    const symbol = parts.at(-2) || "unknown"
-    const sourceId = parts.at(-3) || "unknown"
-    if ((direction !== "long" && direction !== "short") || sourceId === "consensus") continue
-    const rows = await client.lrange(`${key}:samples`, 0, MAX_SAMPLES_PER_KEY - 1).catch((): string[] => [])
-    for (const row of rows) {
-      try {
-        const sample = JSON.parse(row)
-        const netPct = Number(sample?.netMarketMovePct)
-        const closedAt = Number(sample?.closedAt)
-        if (!Number.isFinite(netPct) || !Number.isFinite(closedAt)) continue
-        outcomes.push({ sourceId, symbol, direction, closedAt, netPct, origin: "recorded" })
-      } catch {
-        // Ignore malformed sample rows.
+  const seen = new Set<string>()
+  const batch: Array<{ key: string; direction: "long" | "short"; symbol: string; sourceId: string }> = []
+  const readBatch = async () => {
+    const lists = await Promise.all(batch.splice(0).map(async lane => ({
+      ...lane, rows: await client.lrange(`${lane.key}:samples`, 0, MAX_SAMPLES_PER_KEY - 1),
+    })))
+    for (const { direction, symbol, sourceId, rows } of lists) {
+      for (const row of rows) {
+        try {
+          const sample = JSON.parse(row)
+          if (sample?.netMarketMovePct == null || sample?.closedAt == null) continue
+          const origin = sample.evidence === "exchange" ? "recorded" : sample.evidence === "paper" ? "paper" : null
+          // Shared or unclassified receipts cannot establish an individual source's PF.
+          if (origin === null) continue
+          const netPct = Number(sample.netMarketMovePct)
+          const openedAt = sample.openedAt == null ? undefined : Number(sample.openedAt)
+          const closedAt = Number(sample.closedAt)
+          if (!Number.isFinite(netPct) || !Number.isFinite(closedAt) || closedAt <= 0) continue
+          outcomes.push({ sourceId, symbol, direction, openedAt, closedAt, netPct, origin })
+        } catch {
+          // Ignore malformed sample rows.
+        }
       }
     }
   }
+  for await (const key of iterateRedisSetMembers(client, indexKey, { count: 250 })) {
+    if (seen.has(key)) continue
+    seen.add(key)
+    const parts = String(key).split(":")
+    const direction = parts.at(-1)
+    const symbol = parts.at(-2)
+    const sourceId = parts.at(-3)
+    if ((direction !== "long" && direction !== "short") || !symbol || !sourceId || sourceId === "consensus") continue
+    batch.push({ key, direction, symbol, sourceId })
+    if (batch.length === SAMPLE_READ_CONCURRENCY) await readBatch()
+  }
+  if (batch.length > 0) await readBatch()
   return outcomes
 }
 
@@ -86,7 +104,7 @@ export async function collectRecordedSignalOutcomes(connectionId: string): Promi
  * Walk-forward replay of one source's own local signal on its own candles.
  * Entries are non-overlapping; an exit bar touching both stop and target is
  * booked as a stop (conservative); unfinished trades exit at the last close
- * of the hold window. One PositionCost is deducted from every trade.
+ * of the complete hold window. The simulated round-trip cost is deducted once.
  */
 export function replaySignalSourceOutcomes(input: {
   source: SignalSourceDefinition
@@ -94,9 +112,12 @@ export function replaySignalSourceOutcomes(input: {
   candles: readonly SignalCandle[]
   settings: SignalIndicationSettings
   positionCostPct: number
+  roundTripCostPct?: number
   origin?: SignalSourceOutcome["origin"]
 }): SignalSourceOutcome[] {
   const candles = input.candles
+  const barMs = input.source.timeframeMinutes * 60_000
+  const closeCostPct = input.roundTripCostPct ?? simulatedCloseCostPercent(input.positionCostPct)
   const outcomes: SignalSourceOutcome[] = []
   let index = REPLAY_WARMUP
   while (index < candles.length - 1) {
@@ -116,6 +137,7 @@ export function replaySignalSourceOutcomes(input: {
     const target = long ? entry * (1 + evaluation.takeProfitPct / 100) : entry * (1 - evaluation.takeProfitPct / 100)
     let exitPrice = entry
     let exitIndex = index
+    let protectedExit = false
     const last = Math.min(candles.length - 1, index + REPLAY_MAX_HOLD_BARS)
     for (let bar = index + 1; bar <= last; bar++) {
       const candle = candles[bar]
@@ -123,23 +145,26 @@ export function replaySignalSourceOutcomes(input: {
       const hitTarget = long ? candle.high >= target : candle.low <= target
       exitIndex = bar
       if (hitStop) {
-        exitPrice = stop
+        exitPrice = (long ? candle.open <= stop : candle.open >= stop) ? candle.open : stop
+        protectedExit = true
         break
       }
       if (hitTarget) {
         exitPrice = target
+        protectedExit = true
         break
       }
       exitPrice = candle.close
     }
-    if (exitIndex === index) break
+    if (exitIndex === index || (!protectedExit && exitIndex - index < REPLAY_MAX_HOLD_BARS)) break
     const grossPct = ((exitPrice - entry) / entry) * 100 * (long ? 1 : -1)
     outcomes.push({
       sourceId: input.source.id,
       symbol: input.symbol,
       direction: evaluation.direction,
-      closedAt: candles[exitIndex].timestamp,
-      netPct: grossPct - input.positionCostPct,
+      openedAt: candles[index].timestamp + barMs,
+      closedAt: candles[exitIndex].timestamp + barMs,
+      netPct: grossPct - closeCostPct,
       origin: input.origin ?? "replay",
     })
     index = exitIndex + 1
@@ -169,7 +194,8 @@ async function fetchReplayCandles(
     } catch {
       payload = text
     }
-    return source.parse(payload)
+    const barMs = source.timeframeMinutes * 60_000
+    return source.parse(payload).filter(candle => candle.timestamp + barMs <= now)
   } catch {
     return []
   } finally {
@@ -245,16 +271,18 @@ async function computeAndPersist(
     ? await loadSignalIndicationSettings()
     : normalizeSignalIndicationSettings(options.settings)
   const validation = settings.sourceValidation
-  const recorded = options.outcomes ?? await collectRecordedSignalOutcomes(options.connectionId)
-
-  const outcomes = [...recorded]
+  const supplied = options.outcomes ?? await collectRecordedSignalOutcomes(options.connectionId)
+  const outcomes = supplied.filter(outcome => outcome.origin !== "synthetic" && outcome.closedAt < now)
   let replayCount = 0
   if (options.fetchImpl) {
-    const recordedCount = new Map<string, number>()
-    for (const outcome of recorded) recordedCount.set(outcome.sourceId, (recordedCount.get(outcome.sourceId) || 0) + 1)
+    const samples = new Map<string, number>()
+    for (const outcome of outcomes) {
+      const key = `${outcome.sourceId}:${outcome.origin}`
+      samples.set(key, (samples.get(key) || 0) + 1)
+    }
     const needReplay = SIGNAL_SOURCE_DEFINITIONS.filter((source) =>
       (settings.sources[source.id]?.enabled ?? source.enabledByDefault) &&
-      (recordedCount.get(source.id) || 0) < validation.minSamples,
+      ["recorded", "paper", "replay"].every(origin => (samples.get(`${source.id}:${origin}`) || 0) < validation.minSamples),
     )
     const jobs: Array<{ source: SignalSourceDefinition; symbol: string }> = []
     for (const source of needReplay) {
@@ -290,10 +318,12 @@ async function computeAndPersist(
     })),
     outcomes,
     settings: validation,
+    asOf: now,
   })
   const previous = await readSignalSourceSnapshot(options.connectionId, { useCache: false })
   const changes = diffSignalSourceRanking(previous?.entries, entries)
   const snapshot: SignalSourceValidationSnapshot = {
+    evidenceVersion: SIGNAL_SOURCE_EVIDENCE_VERSION,
     connectionId: options.connectionId,
     hourKey,
     generatedAt: now,

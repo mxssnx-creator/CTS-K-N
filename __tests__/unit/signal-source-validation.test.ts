@@ -63,7 +63,7 @@ function outcomes(sourceId: string, pnls: number[], stepMs = HOUR): SignalSource
     direction: "long",
     closedAt: T0 + index * stepMs,
     netPct,
-    origin: "synthetic",
+    origin: "recorded",
   }))
 }
 
@@ -110,7 +110,35 @@ describe("source metrics and validation", () => {
 })
 
 describe("activation gating and capacity", () => {
+  test("source rejection requires sufficient earlier recorded outcomes on its own tape", () => {
+    const registry = [
+      { id: "losing", lifecycle: "established" as const, enabled: true, priority: 1 },
+      { id: "replay-only", lifecycle: "established" as const, enabled: true, priority: 1 },
+      { id: "observed", lifecycle: "candidate" as const, enabled: true, priority: 3 },
+    ]
+    const history: SignalSourceOutcome[] = [
+      ...outcomes("losing", Array(60).fill(-0.1)),
+      ...outcomes("losing", Array(60).fill(0.9)).map(row => ({ ...row, origin: "replay" as const })),
+      ...outcomes("replay-only", Array(60).fill(-0.2)).map(row => ({ ...row, origin: "replay" as const })),
+      ...outcomes("observed", Array(61).fill(0.2)),
+      ...outcomes("observed", Array(60).fill(-0.5)).map(row => ({ ...row, origin: "synthetic" as const })),
+    ]
+    const ranked = buildSignalSourceRanking({ registry, outcomes: history, settings: settings({ minSamples: 60 }), asOf: T0 + 60 * HOUR })
+    const byId = new Map(ranked.map(entry => [entry.sourceId, entry]))
+    expect(byId.get("losing")).toMatchObject({ status: "rejected", metrics: { recordedSamples: 60, replaySamples: 0 } })
+    expect(byId.get("replay-only")).toMatchObject({ status: "bootstrap", metrics: { recordedSamples: 0, replaySamples: 60 } })
+    expect(byId.get("observed")).toMatchObject({ status: "active", metrics: { recordedSamples: 60, replaySamples: 0 } })
+  })
   const good = Array.from({ length: 12 }, (_, i) => (i % 4 === 3 ? -0.1 : 0.15))
+
+  test("qualified venue evidence ranks ahead of modeled evidence at capacity", () => {
+    const registry = ["recorded", "replay"].map(id => ({ id, lifecycle: "established" as const, enabled: true, priority: 1 }))
+    const ranked = buildSignalSourceRanking({ registry, settings: settings({ maxActiveSources: 1 }), outcomes: [
+      ...outcomes("recorded", good),
+      ...outcomes("replay", Array(12).fill(1)).map(row => ({ ...row, origin: "replay" as const })),
+    ] })
+    expect(ranked.map(row => [row.sourceId, row.status])).toEqual([["recorded", "active"], ["replay", "standby"]])
+  })
 
   test("unvalidated candidates never dispatch; established sources bootstrap unless strict", () => {
     const registry = [
@@ -221,10 +249,15 @@ describe("tactics: toggles and effects (veto-only)", () => {
   })
 
   test("hour-of-day gate vetoes a source in its net-negative UTC hour", () => {
-    // 4 losing outcomes all closing at 05:xx UTC, plus winners elsewhere.
+    // Losses entered at 05:00 and closed at 07:00. Missing entry times cannot veto 08:00.
     const history = [
-      ...[0, 1, 2, 3].map((day) => ({ ...outcomes("a", [-0.1])[0], closedAt: T0 + day * 24 * HOUR + 5 * HOUR })),
-      ...outcomes("a", Array(12).fill(0.2), 24 * HOUR).map((o) => ({ ...o, closedAt: o.closedAt + 10 * HOUR })),
+      ...[0, 1, 2, 3].flatMap(day => {
+        const dayStart = T0 + day * 24 * HOUR
+        const loss = outcomes("a", [-0.04])[0]
+        return [{ ...loss, openedAt: dayStart + 5 * HOUR, closedAt: dayStart + 7 * HOUR },
+          { ...loss, closedAt: dayStart + 8 * HOUR }]
+      }),
+      ...outcomes("a", Array(12).fill(0.2), 24 * HOUR).map(o => ({ ...o, openedAt: o.closedAt + 9 * HOUR, closedAt: o.closedAt + 10 * HOUR })),
     ]
     const ranking = buildSignalSourceRanking({
       registry: [{ id: "a", lifecycle: "established", enabled: true, priority: 1 }],
@@ -347,7 +380,7 @@ describe("replay and hourly optimization job", () => {
 
   test("hourly job runs once per UTC hour, is idempotent and writes an audit record", async () => {
     const now = T0 + 30 * 60_000
-    const good = outcomes("okx-spot", Array.from({ length: 12 }, (_, i) => (i % 4 === 3 ? -0.1 : 0.15)))
+    const good = outcomes("okx-spot", Array.from({ length: 12 }, (_, i) => (i % 4 === 3 ? -0.1 : 0.15)), 60_000)
     const first = await runSignalSourceOptimization({ connectionId: "conn-x", now, settings: {}, outcomes: good })
     expect(first.ran).toBe(true)
     expect(first.snapshot?.entries.find((e) => e.sourceId === "okx-spot")?.status).toBe("active")

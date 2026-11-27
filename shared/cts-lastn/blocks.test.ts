@@ -46,3 +46,13 @@ test('Auto PF reads older own positions and preserves the floor on unknown calib
   older[2]=NaN;
   assert.equal(calibratedBlockFloor(blockPrefix([...recent,...older]),3,1.05,4),1.05);
 });
+
+test('a complete winning calibration window uses the weaker half and cap', () => {
+  const current = [0.3, -0.2, 0.1];
+  const winning = Array(12).fill(0.15);
+  const mixed = [0.6, -0.5, ...Array(10).fill(0)];
+  const floor = (older: number[]) => calibratedBlockFloor(blockPrefix([...current, ...older]), 3, 1.000001, 4);
+  assert.ok(Math.abs(floor([...winning, ...winning]) - 1.200001) < 1e-8);
+  assert.ok(Math.abs(floor([...winning, ...mixed]) - 1.1333336667) < 1e-8);
+  assert.equal(floor([...winning, ...mixed.slice(1)]), 1.000001);
+});

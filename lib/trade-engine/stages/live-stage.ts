@@ -136,7 +136,7 @@ import {
   type RealStrategyVariant,
 } from "@/lib/strategy-real-stats"
 import { getLivePositionSetLineageKeys } from "@/lib/live-position-lineage"
-import { findDeactivatedLiveConfig, recordLiveConfigOutcome } from "@/lib/live-config-performance"
+import { confirmedLiveConfigOutcome, findDeactivatedLiveConfig, recordLiveConfigOutcome } from "@/lib/live-config-performance"
 import { buildLivePositionCompatibilitySnapshot } from "@/lib/live-position-mirror"
 import { isLiveOpenStatus } from "@/lib/live-position-status"
 import {
@@ -18670,6 +18670,9 @@ async function recordClosedRowSignalOutcome(
     sourceIds: position.signalRisk.sourceIds,
     signalLanes: position.signalRisk.signalLanes,
     liveExchange,
+    sharedAttribution: position.executionIntent !== "signal" || notional <= 0 ||
+      (liveExchange && !confirmedLiveConfigOutcome(position)),
+    openedAt: position.createdAt || position.timestamp,
     closedAt: position.closedAt || Date.now(),
   }).catch((error) => {
     console.warn(

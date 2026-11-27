@@ -1,11 +1,11 @@
 import type { LastNStage } from "@/lib/disjoint-last-n"
 import { passesDrawdownRatio } from "@/lib/drawdown-ratio"
-import { derivePosWindowStats, type PosWindowStats } from "@/lib/pos-history"
+import { derivePosWindowStats, measuredLastNNetPercent, type PosWindowStats } from "@/lib/pos-history"
 import {
   AUTO_PF_CALIBRATION,
   blockPrefix,
   blockRequired,
-  calibratedBlockFloor,
+  settledBlockProfitFactorFloor,
   evaluateBlocks,
   type BlockPolicy,
 } from "@/shared/cts-lastn/blocks"
@@ -32,25 +32,20 @@ export function stageLastNRetention(choices: readonly BlockPolicy[]): number {
 }
 
 /** Parse each exact tape once. Sign alternatives share aggregate window reads. */
-export function prepareStageLastNTape(records: string[]) {
-  const values = records.map(record => {
-    const fields = record.split("|")
-    const net = fields[3]
-    const cost = Number(fields[4])
-    const drawdown = Number(fields[2])
-    return net !== undefined && net !== "" && Number.isFinite(Number(net)) && Number.isFinite(cost) && cost > 0 &&
-      fields[0] !== "" && Number.isFinite(Number(fields[0])) && fields[2] !== "" && Number.isFinite(drawdown) && drawdown >= 0
-      ? Number(net)
-      : null
-  })
+export function prepareStageLastNTape(records: string[], profitFactorFloor = settledBlockProfitFactorFloor) {
+  const values = records.map(measuredLastNNetPercent)
   const prefix = blockPrefix(values, values.length)
   const aggregates = new Map<number, PosWindowStats>()
+  const floors = new Map<number, number>()
   type Decision = { state: "qualified" | "failed" | "insufficient" | "unknown"; stats?: PosWindowStats }
   const evaluate = (policy: BlockPolicy): Decision => {
     const required = blockRequired(policy)
-    const minimum = 1.000001
-    const minPf = policy.autoPfRatio === undefined ? minimum
-      : calibratedBlockFloor(prefix, required, minimum, policy.autoPfRatio)
+    const floorKey = required * 11 + (policy.autoPfRatio ?? 0)
+    let minPf = floors.get(floorKey)
+    if (minPf === undefined) {
+      minPf = profitFactorFloor(prefix, policy)
+      floors.set(floorKey, minPf)
+    }
     const decision = evaluateBlocks(prefix, policy, minPf)
     if (decision.state !== "qualified") return { state: decision.state }
     let aggregate = aggregates.get(required)

@@ -1,7 +1,7 @@
 import { getRedisClient, initRedis } from "@/lib/redis-db"
 import { stageBlockPolicies, stageLastNAncestors, stageLastNChoices } from "@/lib/disjoint-last-n"
 import { prepareStageLastNTape, selectStageLastNWindow, stageLastNLaneKey } from "@/lib/stage-last-n-lineage"
-import { getStrategySetLedgerBatch, recordStrategySetCloseOutcome, strategyOutcomeRecord } from "@/lib/pos-history"
+import { derivePosWindowStats, getStrategySetLedgerBatch, recordStrategySetCloseOutcome, strategyOutcomeRecord } from "@/lib/pos-history"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
 
 const positive = { long: 4, short: 2, minimal: 1, shortPolarity: "positive", minimalPolarity: "positive" } as const
@@ -38,6 +38,18 @@ test("each signed decision takes its own blocks and only older samples calibrate
   const opposite = tape([-0.2, 0.5, 0.5, 1, 1, 1, 1])
   expect(opposite(lastNegative).state).toBe("qualified")
   expect(opposite(positive).state).toBe("failed")
+})
+
+test("scalar and independent stages share the same Auto PF and outcome validation", () => {
+  const policy = { ...positive, autoPfRatio: 4 }
+  const records = Array.from({ length: 31 }, () => strategyOutcomeRecord(outcome(0.5))!)
+  const scalar = derivePosWindowStats(records, 7, policy)
+  const grid = prepareStageLastNTape(records)(policy)
+  expect(grid.stats?.blockDecision).toEqual(scalar.blockDecision)
+  expect(grid.stats?.blockDecision?.minPf).toBeCloseTo(1.200001)
+  records[0] = "0.5|0||0.5|0.1"
+  expect(derivePosWindowStats(records, 7, policy).blockDecision?.state).toBe("unknown")
+  expect(prepareStageLastNTape(records)(policy).state).toBe("unknown")
 })
 
 test("an insufficient exact lane can bootstrap from its parent while mature failures are final", () => {

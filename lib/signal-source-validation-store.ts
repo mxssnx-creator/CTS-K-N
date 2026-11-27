@@ -13,10 +13,12 @@ import type {
  */
 
 export const SIGNAL_SOURCE_AUDIT_MAX = 200
+export const SIGNAL_SOURCE_EVIDENCE_VERSION = 1
 const SNAPSHOT_TTL_SECONDS = 7 * 24 * 60 * 60
 const SNAPSHOT_CACHE_MS = 30_000
 
 export interface SignalSourceValidationSnapshot {
+  evidenceVersion?: number
   connectionId: string
   hourKey: string
   generatedAt: number
@@ -86,7 +88,7 @@ export async function readSignalSourceSnapshot(
   if (typeof raw === "string" && raw) {
     try {
       const parsed = JSON.parse(raw)
-      if (parsed && Array.isArray(parsed.entries)) snapshot = parsed
+      if (parsed?.evidenceVersion === SIGNAL_SOURCE_EVIDENCE_VERSION && Array.isArray(parsed.entries)) snapshot = parsed
     } catch {
       snapshot = null
     }

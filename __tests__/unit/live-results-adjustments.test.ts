@@ -1,6 +1,7 @@
 import { getRedisClient } from "@/lib/redis-db"
 import { DEFAULT_SIGNAL_INDICATION_SETTINGS, recordSignalPerformanceOutcome } from "@/lib/signal-indication"
 import { findDeactivatedLiveSetKeys, recordLiveConfigOutcome } from "@/lib/live-config-performance"
+import { collectRecordedSignalOutcomes } from "@/lib/signal-source-optimizer"
 import { clearResultLedgerCache, ledgerEntriesKey, ledgerMetaKey } from "@/lib/results/ledger"
 import { StrategyCoordinator } from "@/lib/strategy-coordinator"
 
@@ -33,6 +34,7 @@ describe("Signal quality from a real close", () => {
     await recordSignalPerformanceOutcome(input(connectionId, "real-1", true))
     const [sample] = await samples(connectionId)
     expect(sample.netMarketMovePct).toBeCloseTo(0.3, 12)
+    expect(sample.evidence).toBe("exchange")
   })
 
   test("a paper result still pays its modelled PositionCost", async () => {
@@ -40,6 +42,20 @@ describe("Signal quality from a real close", () => {
     await recordSignalPerformanceOutcome(input(connectionId, "paper-1", false))
     const [sample] = await samples(connectionId)
     expect(sample.netMarketMovePct).toBeLessThan(0.3)
+    expect(sample.evidence).toBe("paper")
+  })
+
+  test("source rankings can distinguish exchange and paper receipts and exclude shared attribution", async () => {
+    const connectionId = uniqueConnection("signal-source-evidence")
+    await recordSignalPerformanceOutcome(input(connectionId, "real-1", true))
+    await recordSignalPerformanceOutcome(input(connectionId, "paper-1", false))
+    await recordSignalPerformanceOutcome({ ...input(connectionId, "shared-1", true), sourceIds: ["okx-swap", "binance-swap"] })
+    await recordSignalPerformanceOutcome({ ...input(connectionId, "shared-2", true), sourceIds: ["okx-swap", "binance-swap"],
+      signalLanes: [{ sourceId: "okx-swap", configId: "fixed-stop" }] })
+    await recordSignalPerformanceOutcome({ ...input(connectionId, "shared-3", true), sharedAttribution: true })
+    expect((await collectRecordedSignalOutcomes(connectionId)).map(row => [row.sourceId, row.origin]).sort()).toEqual([
+      ["okx-swap", "paper"], ["okx-swap", "recorded"],
+    ])
   })
 })
 
@@ -63,6 +79,15 @@ describe("Sets switched off by real losses leave the Live stage", () => {
       { symbol: "BTCUSDT", direction: "short", setKey: losing, executionIntents: ["main"] },
     ])
     expect([...found]).toEqual([losing])
+  })
+
+  test("a losing Preset intent does not deactivate the same Main Set", async () => {
+    const connectionId = uniqueConnection("intent-loss-gate")
+    const setKey = "BTCUSDT:direction:long#row_real#row_live"
+    for (let n = 0; n < 12; n++) await recordLiveConfigOutcome({ ...row(connectionId, n, setKey), executionIntent: "preset" })
+    const candidate = { symbol: "BTCUSDT", direction: "long", setKey }
+    expect(await findDeactivatedLiveSetKeys(connectionId, [{ ...candidate, executionIntents: ["main"] }])).toEqual(new Set())
+    expect(await findDeactivatedLiveSetKeys(connectionId, [{ ...candidate, executionIntents: ["preset"] }])).toEqual(new Set([setKey]))
   })
 })
 

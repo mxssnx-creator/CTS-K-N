@@ -1,4 +1,4 @@
-import {AUTO_PF_CALIBRATION,LAST_N_OUTCOME_RING_CAP,blockPrefix,blockRequired,calibratedBlockFloor,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {AUTO_PF_CALIBRATION,LAST_N_OUTCOME_RING_CAP,blockPrefix,blockRequired,settledBlockProfitFactorFloor,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
 import { stageLastNAncestors } from "@/lib/disjoint-last-n"
 /**
  * Position (Pos) History — lifetime, atomic, hot-path-safe.
@@ -658,25 +658,25 @@ export async function getPosHistoryBatch(
  * is up to ~2h and the DDT *threshold* is a per-stage time ceiling, not a
  * position count.)
  */
-export function derivePosWindowStats(records: string[], window: number, blocks?:BlockPolicy): PosWindowStats {
-  if(blocks){
-    const required=blockRequired(blocks),selected=(records??[]).slice(0,required);
-    const retention = required + (blocks.autoPfRatio === undefined ? 0 : AUTO_PF_CALIBRATION);
-    const values=(records??[]).slice(0,retention).map(row=>{
-      const parts=row.split("|"), value=Number(parts[3]);
-      return parts.length>=5&&parts[3]!==""&&Number.isFinite(value)?value:null
-    });
-    const prefix = blockPrefix(values, retention);
-    const minPf = blocks.autoPfRatio === undefined ? 1.000001
-      : calibratedBlockFloor(prefix, required, 1.000001, blocks.autoPfRatio);
-    const decision=evaluateBlocks(prefix,blocks,minPf);
-    const aggregate=derivePosWindowStats(selected,required);
-    let state=decision.state;
-    if(state==="qualified"){
-      if(aggregate.count!==required || !Number.isFinite(aggregate.profitFactor))state="unknown";
-      else if(aggregate.profitFactor<minPf)state="failed";
+export function derivePosWindowStats(records: string[], window: number, blocks?: BlockPolicy): PosWindowStats {
+  if (blocks) {
+    const required = blockRequired(blocks)
+    const retention = required + (blocks.autoPfRatio === undefined ? 0 : AUTO_PF_CALIBRATION)
+    const prefix = blockPrefix((records ?? []).slice(0, retention).map(measuredLastNNetPercent), retention)
+    const minPf = settledBlockProfitFactorFloor(prefix, blocks)
+    const decision = evaluateBlocks(prefix, blocks, minPf)
+    const aggregate = derivePosWindowStats(records, required)
+    let state = decision.state
+    if (state === "qualified") {
+      if (aggregate.positionCostRatioCount !== required || !Number.isFinite(aggregate.profitFactor)) state = "unknown"
+      else if (aggregate.profitFactor < minPf) state = "failed"
     }
-    return {...aggregate,count:decision.count,hasSignal:state==="qualified",blockDecision:{state,key:decision.key,required,available:decision.count,minPf}};
+    return {
+      ...aggregate,
+      count: decision.count,
+      hasSignal: state === "qualified",
+      blockDecision: { state, key: decision.key, required, available: decision.count, minPf },
+    }
   }
   if (!records || records.length === 0) return EMPTY_WINDOW
   // records arrive newest-first (lpush head).
@@ -775,6 +775,15 @@ export function derivePosWindowStats(records: string[], window: number, blocks?:
     recentPnlPcts,
     recentPositionCostPcts,
   }
+}
+
+/** Signed Last-N and its older calibration use only complete net-percent outcomes. */
+export function measuredLastNNetPercent(record: string): number | null {
+  const [pnl, , ddt, netPct, positionCost] = record.split("|")
+  if (![pnl, ddt, netPct, positionCost].every(value => value !== undefined && value.trim() !== "" && Number.isFinite(Number(value)))) {
+    return null
+  }
+  return Number(positionCost) > 0 && Number(ddt) >= 0 ? Number(netPct) : null
 }
 
 /**

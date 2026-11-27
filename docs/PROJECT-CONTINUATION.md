@@ -1,3 +1,11 @@
+## 2026-11-27 — Auto PF and exact performance evidence
+
+Canonical `/workspace/CTS-K-N`, branch `codex/auto-pf-quality-20261127` from the merged independent-stage release `822c0959860b08f176945af83f322f2d69e0112e`. The verified pre-edit checkpoint is `/workspace/backups/CTS-K-N/20261127T084558Z-before-auto-pf-replay-and-qualification`. The containing pull request records the published revision and GitHub verification runs.
+
+Complete winning calibration groups contribute to Auto PF. Exact Last-N paths share the same settlement validation and reuse calibration across sibling windows. The Live loss gate tracks the dispatched intent. Signal ranking separates individually attributed venue outcomes, paper positions and public replays. Ordinary, Axis, Block and Trailing replays use single-entry positions.
+
+The [verification](verification/auto-pf-quality-20261127.md) gives the two 48-hour trading periods and two 48-hour warm-ups, 32-symbol stage comparison, catalogue coverage and runner commands. No stage profile met the repeatability gate. The 82 focused native Redis tests and five shared Last-N tests passed. The simulated SSH fixture now supplies its own free-volume measurement, independent of the workspace disk. Provider removal requires actual settlement evidence. Current x02 exchange parity and deployment remain open.
+
 ## 2026-11-27 — independent Last-N descendants from Base through Live
 
 The canonical branch `codex/exact-lastn-stage-lineage-20261127` was rebuilt from GitHub main `df70eb9dc97100fb96e8fa3eb7b82e092cb33059`. Each qualifying Set now owns a new identity per configured Long, Short and Last alternative at every stage. Exact paper and exchange ledgers validate each child, with bounded source reads and independent attribution. Existing held positions remain on the owned protection path. See [verification](verification/exact-last-n-stage-lineage-20261127.md) for the compared branches and replay results.
