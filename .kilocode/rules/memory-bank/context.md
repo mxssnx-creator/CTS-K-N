@@ -1,3 +1,7 @@
+## 2026-11-27 — Trend-Reversal
+
+Added opt-in Common and separately gated Signal reversal sources. Verified recovery from `/workspace/backups/CTS-K-N/20261126T233813Z-trend-reversal-canonical-recovery` at main `794ddcd5dda377deba2590d9e9d73a92b1beaa8e`. The containing PR gives the exact reviewed code and CI revision. See the project continuation for study scope and outstanding execution evidence.
+
 ## 2026-11-18 — immediate Main ownership of Axis projections
 
 Each eligible Main variant now emits every configured Position Count Axis child. The child retains its immediate Main Set key and the Base registry anchor used for dispatch. Existing default Axis ledger keys are stable. Sibling Main variants have distinct Axis ledger and cache keys. The Main builder releases completed task batches while scanning the parent list. The focused regression exercises six Axis children across three parents and two windows. This change has no measured venue PF.

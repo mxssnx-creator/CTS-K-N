@@ -1,3 +1,4 @@
+import { REVERSAL_SOURCES } from "@/shared/cts-reversal/reversal";
 import { isForexSymbol, normalizeForexSymbol } from "@/lib/forex-market"
 
 /**
@@ -42,7 +43,9 @@ export interface SignalSourceDefinition {
   priority: 1 | 2 | 3
   timeframeMinutes: number
   officialDocs: string
-  enabledByDefault: true
+  enabledByDefault: boolean
+  candleSourceId?: string
+  reversal?: (typeof REVERSAL_SOURCES)[number]
   /**
    * "candidate" sources are registered and fetchable but never dispatch
    * until the source-validation optimizer has proven them on their own
@@ -1271,19 +1274,33 @@ if (SIGNAL_SOURCE_DEFINITIONS.length !== SIGNAL_SOURCE_REGISTRY_SIZE) {
   )
 }
 
+const bingxCandleSource = SIGNAL_SOURCE_DEFINITIONS.find(source => source.id === "bingx-swap")!
+export const ALL_SIGNAL_SOURCE_DEFINITIONS: readonly SignalSourceDefinition[] = [
+  ...SIGNAL_SOURCE_DEFINITIONS,
+  ...REVERSAL_SOURCES.filter(source => source.period === 10).map(reversal => ({
+    ...bingxCandleSource,
+    id: "bingx-" + reversal.id,
+    name: "BingX · " + reversal.label,
+    enabledByDefault: false,
+    lifecycle: "candidate" as const,
+    candleSourceId: bingxCandleSource.id,
+    reversal,
+  })),
+]
+
 /** Sources that must pass validation before they may ever dispatch. */
-export const SIGNAL_CANDIDATE_SOURCE_IDS: readonly string[] = SIGNAL_SOURCE_DEFINITIONS
+export const SIGNAL_CANDIDATE_SOURCE_IDS: readonly string[] = ALL_SIGNAL_SOURCE_DEFINITIONS
   .filter((source) => source.lifecycle === "candidate")
   .map((source) => source.id)
 
-const SOURCE_BY_ID = new Map(SIGNAL_SOURCE_DEFINITIONS.map((source) => [source.id, source]))
+const SOURCE_BY_ID = new Map(ALL_SIGNAL_SOURCE_DEFINITIONS.map((source) => [source.id, source]))
 
 export function getSignalSource(sourceId: string): SignalSourceDefinition | undefined {
   return SOURCE_BY_ID.get(sourceId)
 }
 
 export function getSignalSourceDescriptors(): SignalSourceDescriptor[] {
-  return SIGNAL_SOURCE_DEFINITIONS.map((source) => ({
+  return ALL_SIGNAL_SOURCE_DEFINITIONS.map((source) => ({
     id: source.id,
     name: source.name,
     market: source.market,

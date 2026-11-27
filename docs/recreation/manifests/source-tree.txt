@@ -615,6 +615,7 @@ __tests__/unit/trailing-dca-strategy.test.ts
 __tests__/unit/trailing-family-replay-wiring.test.ts
 __tests__/unit/transient-halt-short-ttl.test.ts
 __tests__/unit/trend-indication.test.ts
+__tests__/unit/trend-reversal.test.ts
 __tests__/unit/trend-wiring.test.ts
 __tests__/unit/truthful-dispatch-reasons.test.ts
 __tests__/unit/type-measurement-rolling.test.ts
@@ -2241,6 +2242,8 @@ shared/cts-lastn/blocks.test.ts
 shared/cts-lastn/blocks.ts
 shared/cts-lastn/fields.tsx
 shared/cts-lastn/package.json
+shared/cts-reversal/reversal.test.ts
+shared/cts-reversal/reversal.ts
 shared/cts-volume/README.md
 shared/cts-volume/package.json
 shared/cts-volume/ratios.test.ts

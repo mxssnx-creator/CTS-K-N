@@ -51,7 +51,7 @@ import {
 import { snapshotDispatchView } from "@/lib/signal-source-validation-store"
 import { normalizeSignalIndicationSettings, signalConsensusWithVetoes } from "@/lib/signal-indication"
 import { replaySignalSourceOutcomes, runSignalSourceOptimization } from "@/lib/signal-source-optimizer"
-import { SIGNAL_SOURCE_DEFINITIONS, getSignalSource } from "@/lib/signal-source-registry"
+import { ALL_SIGNAL_SOURCE_DEFINITIONS, getSignalSource } from "@/lib/signal-source-registry"
 
 const HOUR = 3_600_000
 const T0 = Date.UTC(2026, 8, 1, 0, 0, 0)
@@ -352,8 +352,8 @@ describe("replay and hourly optimization job", () => {
     expect(first.ran).toBe(true)
     expect(first.snapshot?.entries.find((e) => e.sourceId === "okx-spot")?.status).toBe("active")
     expect(first.snapshot?.entries.find((e) => e.sourceId === "kucoin-spot")?.status).toBe("candidate")
-    expect(first.snapshot?.entries).toHaveLength(SIGNAL_SOURCE_DEFINITIONS.length)
-    expect(first.audit?.changes.length).toBe(SIGNAL_SOURCE_DEFINITIONS.length)
+    expect(first.snapshot?.entries).toHaveLength(ALL_SIGNAL_SOURCE_DEFINITIONS.length)
+    expect(first.audit?.changes.length).toBe(ALL_SIGNAL_SOURCE_DEFINITIONS.length)
 
     const second = await runSignalSourceOptimization({ connectionId: "conn-x", now: now + 10 * 60_000, settings: {}, outcomes: good })
     expect(second).toEqual({ ran: false, skipped: "already_ran_this_hour" })
