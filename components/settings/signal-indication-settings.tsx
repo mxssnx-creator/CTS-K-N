@@ -317,7 +317,7 @@ export function SignalIndicationSettings() {
               ["maxPositionsTotal", "Max positions (one per symbol + direction; default 100)", 1, 350, 1],
               ["maxOrders", "Max orders incl. position rows and partial fills (0 = unlimited)", 0, 1000000, 1],
               ["maxOrdersPerSymbol", "Max orders per symbol (0 = unlimited, below 32 becomes 32)", 0, 1000000, 1],
-              ["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.25)", 1.2, 5, 0.05],
+              ["configMinimumPfRatio", "Minimum PF per config (below 1.2 becomes 1.35)", 1.2, 5, 0.05],
               ["sourceBasePositionsLimit", "Source base positions limit (overall)", 1, 350, 1],
               ["symbolsPerSourceLimit", "Symbols per source", 1, 100, 1],
               ["candleLimit", "Candles per source", 20, 250, 1],

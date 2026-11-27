@@ -1,6 +1,6 @@
 "use client"
 import {BlockPolicyFields} from "@/shared/cts-lastn/fields"
-import {normalizeStageAutoPfRatio,stageBlockPolicies} from "@/lib/disjoint-last-n"
+import {normalizeStageAutoPfRatio,stageBlockPolicies,type StageLongMode} from "@/lib/disjoint-last-n"
 import {VolumeRatioSliders} from "@/shared/cts-volume/sliders.tsx"
 import { STRATEGY_PROCESSING_RANGES, normalizeStrategyProcessingByRange, resolveTrailingSwitch } from "@/lib/strategy-execution-policy"
 
@@ -133,6 +133,7 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
   const presetBlockPauseCountRatio = Number(settings.presetBlockPauseCountRatio ?? settings.blockPauseCountRatio ?? 1)
   const presetBlockActiveRealEnabled = settings.presetBlockActiveRealEnabled ?? settings.blockActiveRealEnabled ?? true
   const presetBlockActiveLiveEnabled = settings.presetBlockActiveLiveEnabled ?? settings.blockActiveLiveEnabled ?? true
+  const lastNBlocks = stageBlockPolicies(settings.lastNBlocks)
   const indicationVariantPolicy = normalizeStrategyIndicationVariantPolicy(settings)
 
   return (
@@ -145,7 +146,40 @@ export function StrategyTab({ settings, handleSettingChange }: StrategyTabProps)
             onChange={event=>handleSettingChange("strategyAutoPfRatio",Number(event.target.value))}>
             {Array.from({length:10},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}
           </select>
-        </label>{(["base","main","real","live"] as const).map(stage=><BlockPolicyFields key={stage} label={stage+" Last-N blocks"} value={stageBlockPolicies(settings.lastNBlocks)[stage]} onChange={p=>{const next=stageBlockPolicies(settings.lastNBlocks);if(p)next[stage]=p;else delete next[stage];handleSettingChange("lastNBlocks",next)}}/>)}</CardContent></Card>
+        </label>
+        {(["base", "main", "real", "live"] as const).map(stage => {
+          const policy = lastNBlocks[stage]
+          const label = stage === "live" ? "Exec / Live" : stage[0].toUpperCase() + stage.slice(1)
+          return <div key={stage}>
+            <BlockPolicyFields label={label + " Last-N blocks"} value={policy} onChange={value => {
+              const next = { ...lastNBlocks }
+              if (value) next[stage] = { ...value, longMode: value.short || value.minimal ? policy?.longMode : undefined }
+              else delete next[stage]
+              if (!next.base?.long) {
+                for (const name of ["main", "real", "live"] as const) {
+                  const item = next[name]
+                  if (item?.longMode === "inherit" || item?.longMode === "both")
+                    next[name] = { ...item, longMode: undefined }
+                }
+              }
+              handleSettingChange("lastNBlocks", next)
+            }} />
+            {stage !== "base" && policy && (policy.short > 0 || policy.minimal > 0) && <label className="flex items-center justify-between text-sm">
+              {label} Long
+              <select value={policy.longMode ?? "configured"} onChange={event =>
+                handleSettingChange("lastNBlocks", {
+                  ...lastNBlocks, [stage]: { ...policy, longMode: event.target.value as StageLongMode },
+                })
+              }>
+                <option value="configured">Use this stage’s configured Long</option>
+                <option value="inherit" disabled={!lastNBlocks.base?.long}>Use Base Long</option>
+                <option value="none">Without Long</option>
+                <option value="both" disabled={!lastNBlocks.base?.long}>Evaluate both</option>
+              </select>
+            </label>}
+          </div>
+        })}
+      </CardContent></Card>
       <Card>
         <CardHeader><CardTitle>Strategy processing · Normal & Trailing</CardTitle><CardDescription>Normal keeps calculated evidence for additional strategies when disabled. Standalone Normal and Trailing entries require Normal. Trailing off applies across every strategy. Overall and range switches must both allow processing.</CardDescription></CardHeader>
         <CardContent className="space-y-3">

@@ -1,5 +1,4 @@
-import {normalizeStageAutoPfRatio,stageBlockPolicies,type StageBlockPolicies} from "@/lib/disjoint-last-n";
-import {blockPolicyKey} from "@/shared/cts-lastn/blocks";
+import {normalizeStageAutoPfRatio,stageBlockChoices,stageBlockPolicies,stageBlockRevision,type StageBlockPolicies} from "@/lib/disjoint-last-n";
 import {derivePosWindowStats} from "@/lib/pos-history";
 import {PORTED_CATALOG as VOLUME_SOURCE_CATALOG} from "@/shared/cts-indications/catalog.ts"
 import { DDR_DEFAULT_MAX, drawdownRatioNewestFirst, maxDrawdownRatioSetting, passesDrawdownRatio } from "@/lib/drawdown-ratio"
@@ -3258,7 +3257,7 @@ export class StrategyCoordinator {
       const legacyClosedKeys = await getStrategySetClosedResultKeys(this.connectionId, setKeys)
       keysToRead = legacyClosedKeys === null ? setKeys : Array.from(legacyClosedKeys)
     }
-    const blocks = options.stage ? this._coordinationSettings.lastNBlocks?.[options.stage] : undefined
+    const blocks = options.stage ? stageBlockChoices(this._coordinationSettings.lastNBlocks ?? {}, options.stage) : undefined
     const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window,blocks)
     if (blocks && windows.size < setKeys.length) {
       const emptyWindow = derivePosWindowStats([], window, blocks)
@@ -4727,7 +4726,7 @@ export class StrategyCoordinator {
     // one Base row and made the per-config open-position limit appear global.
     const setMap = new Map<string, { indicationType: string; strategyRange: string; direction: "long" | "short"; indications: any[] }>()
 
-    const blockRevision=Object.entries(this._coordinationSettings.lastNBlocks??{}).sort(([a],[b])=>a.localeCompare(b)).map(([stage,p])=>[stage,blockPolicyKey(p)])
+    const blockRevision=stageBlockRevision(this._coordinationSettings.lastNBlocks ?? {})
     const blockSuffix=blockRevision.length?":lastn:"+encodeURIComponent(JSON.stringify(blockRevision)):""
     let groupedIndications = 0
     for (const ind of expandedIndications) {

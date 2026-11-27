@@ -1,3 +1,9 @@
+## 2026-11-27 — Exact Last-N Long choices and Signals
+
+Strategy Settings can evaluate Base Long and no-Long independently on the exact Main, Real and Exec / Live result ring. The two proofs share one bounded batch read and use the configured Short and Last conditions. Dispatch chooses at most one passing proof per Set. The two proofs do not create separate executed-position histories. The Signals default after-cost PF is 1.35, with explicit existing settings at or above 1.2 preserved.
+
+The offline source audit used 30 Binance USD-M symbol bar histories from 23–26 November with 24 hours of prehistory. The exact source scoring and stop-first exit model rejected all four tested formulas for PF. The three BingX-labeled formulas used Binance candles in this audit. Venue-source accuracy and complete native executed-order PF remain unverified.
+
 ## 2026-11-27 — exact stage entry eligibility
 
 The forward-stage branch combines the current main Trend-Reversal work at `36a0a399` with the signed Auto PF branch at `aa13b48a`. Rows retained for owned-position handling carry current entry eligibility separately. A failed Short or Last window still reaches held-position management. New ordinary and Block exposure still require a qualified current row.

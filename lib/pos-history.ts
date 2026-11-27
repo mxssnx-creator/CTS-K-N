@@ -1,4 +1,5 @@
-import {AUTO_PF_CALIBRATION,blockPrefix,blockRequired,calibratedBlockFloor,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {stageBlockRetention,type StageBlocks} from "@/lib/disjoint-last-n";
+import {AUTO_PF_CALIBRATION,blockPrefix,blockRequired,calibratedBlockFloor,evaluateBlocks} from "@/shared/cts-lastn/blocks";
 /**
  * Position (Pos) History — lifetime, atomic, hot-path-safe.
  *
@@ -129,6 +130,7 @@ const EMPTY: PosHistoryStats = {
  */
 export interface PosWindowStats {
   blockDecision?: {state:"qualified"|"failed"|"insufficient"|"unknown";key:string;required:number;available:number;minPf?:number};
+  blockAlternatives?: readonly { decision: NonNullable<PosWindowStats["blockDecision"]>; profitFactor: number; positionCostRatio: number; avgDDT: number }[];
   /** Positions actually present in the window (≤ requested N). */
   count: number
   /** Wins / count over the window, or 0 when empty. */
@@ -657,8 +659,19 @@ export async function getPosHistoryBatch(
  * is up to ~2h and the DDT *threshold* is a per-stage time ceiling, not a
  * position count.)
  */
-export function derivePosWindowStats(records: string[], window: number, blocks?:BlockPolicy): PosWindowStats {
-  if(blocks){
+export function derivePosWindowStats(records: string[], window: number, blocks?:StageBlocks): PosWindowStats {
+  if (blocks && !("long" in blocks)) {
+    const results = blocks.map(policy => derivePosWindowStats(records, window, policy));
+    const ranked = [...results].sort((a, b) =>
+      Number(b.hasSignal) - Number(a.hasSignal) || b.positionCostRatio - a.positionCostRatio ||
+      b.profitFactor - a.profitFactor || b.count - a.count);
+    const best = ranked[0];
+    if (best) return { ...best, blockAlternatives: results.map(result => ({
+      decision: result.blockDecision!, profitFactor: result.profitFactor,
+      positionCostRatio: result.positionCostRatio, avgDDT: result.avgDDT,
+    })) };
+  }
+  if (blocks && "long" in blocks) {
     const required=blockRequired(blocks),selected=(records??[]).slice(0,required);
     const retention = required + (blocks.autoPfRatio === undefined ? 0 : AUTO_PF_CALIBRATION);
     const values=(records??[]).slice(0,retention).map(row=>{
@@ -1776,13 +1789,13 @@ export async function getStrategySetWindowBatch(
   connectionId: string,
   setKeys: string[],
   window = 12,
-  blocks?:BlockPolicy,
+  blocks?:StageBlocks,
 ): Promise<Map<string, PosWindowStats>> {
   const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
   const out = new Map<string, PosWindowStats>()
   if (unique.length === 0) return out
   try {
-    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
+    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?stageBlockRetention(blocks,AUTO_PF_CALIBRATION):window)))
     const client = getRedisClient()
     const batchSize = 500
     for (let start = 0; start < unique.length; start += batchSize) {

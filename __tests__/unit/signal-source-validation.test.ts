@@ -184,9 +184,9 @@ describe("activation gating and capacity", () => {
       minSamples: 1, minProfitFactor: 0.5, maxDrawdownPct: 50, maxLossStreak: 99,
     })
     expect(loosened.minSamples).toBe(12)
-    // Below 1.2 is raised to 1.25 (Signal-only minimum PF, 2026-09-29); 1.2 and
+    // Below 1.2 is raised to 1.35 (Signal-only minimum PF, 2026-09-29); 1.2 and
     // above is the operator's choice and is kept.
-    expect(loosened.minProfitFactor).toBe(1.25)
+    expect(loosened.minProfitFactor).toBe(1.35)
     expect(normalizeSignalSourceValidationSettings({ minProfitFactor: 1.22 }).minProfitFactor).toBe(1.22)
     expect(loosened.maxDrawdownPct).toBe(3)
     expect(loosened.maxLossStreak).toBe(5)
