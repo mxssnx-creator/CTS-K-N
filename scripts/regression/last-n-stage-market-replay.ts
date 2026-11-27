@@ -131,16 +131,18 @@ function replay(trades: readonly HoldStudyTrade[], grid: Grid, start: number, co
   const result: Run = { fills: [], stageFills: [[], [], [], []], opportunities: 0, evaluated: [0, 0, 0, 0], passed: [0, 0, 0, 0] }
   const retain = stageLastNRetention(grid.stages.flat())
   const rings = new Map<string, string[]>()
-  let pending: { trade: HoldStudyTrade; path?: Decision; stagesReached: number } | undefined
+  // qualified: the deepest stage's qualified lanes for this trade. Each one owns the outcome of its own exact path.
+  let pending: { trade: HoldStudyTrade; path?: Decision; stagesReached: number; qualified: Decision[] } | undefined
   const bookClose = () => {
     if (!pending) return
-    const { trade, path } = pending
+    const { trade, path, qualified } = pending
     const modelNet = trade.pnlPctOfInitialNotional - (cost - BASE_COST) * trade.volumeRatio
     const record = strategyOutcomeRecord({
       pnl: modelNet, pnlPct: modelNet, positionCostPct: POSITION_COST, drawdownMinutes: trade.drawdownTimeMin,
     })
     if (record) {
-      const keys = [trade.direction, ...(path ? stageLastNAncestors(path.key) : [])]
+      // Every qualified lane records the trade once, so no lane depends on which sibling was chosen for the position.
+      const keys = [...new Set([trade.direction, ...qualified.flatMap(lane => stageLastNAncestors(lane.key))])]
       for (const key of keys) {
         const ring = rings.get(key) ?? []
         ring.unshift(record)
@@ -156,7 +158,7 @@ function replay(trades: readonly HoldStudyTrade[], grid: Grid, start: number, co
   for (const trade of trades) {
     if (pending && pending.trade.exitTime >= trade.entryTime) continue
     bookClose()
-    pending = { trade, stagesReached: 0 }
+    pending = { trade, stagesReached: 0, qualified: [] }
     if (trade.entryTime < start) continue
     result.opportunities++
     let parents: Decision[] = [{ key: trade.direction, history: trade.direction, pf: 0 }]
@@ -187,7 +189,10 @@ function replay(trades: readonly HoldStudyTrade[], grid: Grid, start: number, co
         }
       }
       parents = children
-      if (children.length > 0) pending.stagesReached++
+      if (children.length > 0) {
+        pending.stagesReached++
+        pending.qualified = children
+      }
     }
     const choice = parents.reduce<Decision | undefined>((best, row) =>
       !best || row.pf > best.pf || (row.pf === best.pf && row.key < best.key) ? row : best, undefined)
