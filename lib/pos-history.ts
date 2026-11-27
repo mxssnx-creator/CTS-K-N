@@ -681,7 +681,7 @@ export function derivePosWindowStats(records: string[], window: number, blocks?:
     const prefix = blockPrefix(values, retention);
     const minPf = blocks.autoPfRatio === undefined ? 1.000001
       : calibratedBlockFloor(prefix, required, 1.000001, blocks.autoPfRatio);
-    const decision=evaluateBlocks(prefix,blocks,minPf);
+    const decision=evaluateBlocks(prefix,blocks,minPf,true);
     const aggregate=derivePosWindowStats(selected,required);
     let state=decision.state;
     if(state==="qualified"){
