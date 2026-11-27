@@ -1,3 +1,11 @@
+## 2026-11-27 — independent Last-N lane grid
+
+Canonical `/workspace/CTS-K-N`, branch `codex/exact-lastn-stage-lineage-20261127`, based on `df70eb9dc97100fb96e8fa3eb7b82e092cb33059`. Verify the exact published head through the containing pull request. The pre-edit verified checkpoint is `/workspace/backups/CTS-K-N/20261127T050958Z-before-exact-lastn-stage-lineage`.
+
+Enabled per-stage grids fork a successor for each configured window and sign on every qualifying predecessor. Each path carries its own close counts, PF and drawdown. Exact history governs a mature lane. New rows can start from measured path ancestors. Keep generic type-level prehistory outside the exact tape until the correct configuration and protection can be identified.
+
+The [verification report](../../../docs/verification/exact-last-n-stage-lineage-20261127.md) covers the 32-symbol BingX market replay, the separate BTC/ETH confirmation periods, compared branches and reproduction. The profitability gate remains open. Managed `/workspace/.network-clients/activate-cts.sh` is absent, so current x02 exchange parity and deployment remain pending.
+
 ## 2026-11-27 — independent forward-stage release checks
 
 The combined branch at `cb6e5502` exposed a TypeScript fixture inference error in the older-close Auto PF test. The test's tape now accepts numeric returns including its explicit unknown marker. The linked canonical worktree passed TypeScript, four signed Last-N checks and 146 focused stage ownership, Relate and live-dispatch tests.

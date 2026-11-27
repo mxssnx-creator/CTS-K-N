@@ -1,5 +1,22 @@
-import {normalizeStageAutoPfRatio,stageBlockPolicies,type StageBlockPolicies} from "@/lib/disjoint-last-n";
-import {blockPolicyKey} from "@/shared/cts-lastn/blocks";
+import {
+  LAST_N_STAGES,
+  normalizeStageAutoPfRatio,
+  stageBlockPolicies,
+  stageLastNAncestors,
+  stageLastNChoices,
+  usesIndependentLastNLanes,
+  type LastNStage,
+  type StageBlockPolicies,
+} from "@/lib/disjoint-last-n"
+import { blockPolicyKey, type BlockPolicy } from "@/shared/cts-lastn/blocks"
+import {
+  prepareStageLastNTape,
+  selectStageLastNWindow,
+  stageLastNLaneKey,
+  stageLastNRetention,
+  type StageLastNLane,
+  type StageLastNTape,
+} from "@/lib/stage-last-n-lineage"
 import {derivePosWindowStats} from "@/lib/pos-history";
 import {PORTED_CATALOG as VOLUME_SOURCE_CATALOG} from "@/shared/cts-indications/catalog.ts"
 import { DDR_DEFAULT_MAX, drawdownRatioNewestFirst, maxDrawdownRatioSetting, passesDrawdownRatio } from "@/lib/drawdown-ratio"
@@ -68,6 +85,7 @@ import {
 import {
   getStrategySetClosedResultKeys,
   getStrategySetLedgerBatch,
+  readMeasuredStrategySetOutcomes,
   getStrategyLedgerTotals,
   getStrategySetWindowBatch as readStrategySetWindowBatch,
   baseMeasuredHistoryRejection,
@@ -77,7 +95,7 @@ import {
 } from "@/lib/pos-history"
 import { findDeactivatedLiveSetKeys } from "@/lib/live-config-performance"
 import { liveConfigLossPolicy } from "@/lib/live-config-loss-policy"
-import { getLiveSetClosedCounts, getLiveSetWindowBatch, liveSetCloseIdsKey } from "@/lib/live-set-outcomes"
+import { getLiveSetClosedCounts, getLiveSetWindowBatch, liveSetCloseIdsKey, readMeasuredLiveSetOutcomes } from "@/lib/live-set-outcomes"
 import { DEFAULT_LIVE_OUTCOME_MIN_CLOSES, normalizeLiveOutcomeMinCloses } from "@/lib/live-outcome-settings"
 import { normalizeStrategyAxes } from "@/lib/strategy-axis-settings"
 import { buildProgressionScope } from "@/lib/progression-scope"
@@ -199,6 +217,7 @@ const RUNTIME_STAGE_SNAPSHOT_MAX_ROWS = 256
 type RuntimeStageSnapshotRow = {
   ref: string
   parentRef?: string
+  lastN?: { stage: LastNStage; policyKey: string; parentRef: string; historyRef: string }
   indicationType: string
   direction: string
   variant: string
@@ -275,6 +294,12 @@ function projectRuntimeStageRows(sets: readonly StrategySet[]): RuntimeStageSnap
     .map(({ set }): RuntimeStageSnapshotRow => ({
       ref: strategySetStorageRef(set.setKey),
       ...(set.parentSetKey ? { parentRef: strategySetStorageRef(set.parentSetKey) } : {}),
+      ...(set.lastNLane && { lastN: {
+        stage: set.lastNLane.stage,
+        policyKey: set.lastNLane.policyKey,
+        parentRef: strategySetStorageRef(set.lastNLane.parentSetKey),
+        historyRef: strategySetStorageRef(set.lastNLane.historySetKey),
+      } }),
       indicationType: String(set.indicationType || ""),
       direction: String(set.direction || ""),
       variant: String(set.variant || "default"),
@@ -771,6 +796,7 @@ export interface StrategySet {
   rowEvaluationWindow?: number
   /** Explicit false retains an owned position for protection without authorizing new risk. */
   rowEntryQualified?: boolean
+  lastNLane?: StageLastNLane
   
   /**
    * ── Set validity status across stages ──────────────────────────────────
@@ -3138,6 +3164,7 @@ export class StrategyCoordinator {
     /** Settled real closes from which a Set is judged on exchange results only (live trading). */
     liveOutcomeMinCloses: number
     lastNBlocks?: StageBlockPolicies
+    lastNLaneChoices?: Record<LastNStage, BlockPolicy[]>
   } = {
     axes: {
       prev:  { enabled: true,  maxWindow: 12 },
@@ -3231,6 +3258,105 @@ export class StrategyCoordinator {
     return totals
   }
 
+  private async expandLastNLanes(
+    stage: LastNStage,
+    sources: StrategySet[],
+    isPrehistoric: boolean,
+    shouldContinue?: () => boolean,
+    coordIndex?: CoordIndex,
+  ): Promise<{ sets: StrategySet[]; evaluated: number; blockEvaluated: number }> {
+    const choices = this._coordinationSettings.lastNLaneChoices?.[stage]
+    if (!choices?.length || sources.length === 0) return { sets: sources, evaluated: sources.length, blockEvaluated: 0 }
+    const predecessor = LAST_N_STAGES.slice(0, LAST_N_STAGES.indexOf(stage)).reverse()
+      .find(value => this._coordinationSettings.lastNLaneChoices?.[value].length)
+    const retention = stageLastNRetention(choices)
+    const metrics = this.METRICS[stage]
+    const venue = !isPrehistoric && await this.isLiveTradingEnabledForConnection()
+    const venueMinimum = this._coordinationSettings.liveOutcomeMinCloses
+    const sets: StrategySet[] = []
+    const seenSources = new Set<string>()
+    const candidates: Array<{ source: StrategySet; setKey: string; parentSetKey: string; policy: BlockPolicy; historyKeys: string[] }> = []
+    let evaluated = 0
+    let blockEvaluated = 0
+
+    const evaluateBatch = async () => {
+      assertStrategyGenerationCurrent(shouldContinue)
+      const keys = [...new Set(candidates.flatMap(candidate => candidate.historyKeys))]
+      const counts = venue ? await getLiveSetClosedCounts(this.connectionId, keys, true) : new Map<string, number>()
+      const [paper, exchange] = await Promise.all([
+        readMeasuredStrategySetOutcomes(this.connectionId, keys.filter(key => (counts.get(key) ?? 0) < venueMinimum), retention),
+        readMeasuredLiveSetOutcomes(this.connectionId, counts, retention, venueMinimum),
+      ])
+      assertStrategyGenerationCurrent(shouldContinue)
+      const tapes = new Map<string, StageLastNTape>()
+      for (const [key, rows] of paper) tapes.set(key, rows.length > 0 ? prepareStageLastNTape(rows) : () => ({ state: "unknown" }))
+      for (const [key, rows] of exchange) tapes.set(key, rows.length > 0 ? prepareStageLastNTape(rows) : () => ({ state: "unknown" }))
+      for (const { source, setKey, parentSetKey, policy, historyKeys } of candidates) {
+        const selection = selectStageLastNWindow(historyKeys, tapes, policy, {
+          ...metrics,
+          minProfitFactor: Math.max(metrics.minProfitFactor, Number(source.blockMinimumProfitFactor) || 0),
+        })
+        if (!selection) continue
+        const { stats, historySetKey } = selection
+        const row: StrategySet = {
+          ...source,
+          setKey,
+          lastNLane: { stage, parentSetKey, policyKey: blockPolicyKey(policy), historySetKey },
+          prevPos: stats,
+          avgProfitFactor: stats.positionCostRatio,
+          avgDrawdownTime: stats.avgDDT,
+          avgDrawdownRatio: stats.drawdownRatio,
+          rowEntryQualified: true,
+          _hasLivePositions: undefined,
+          status: stage === "base" ? "valid_base" : stage === "main" ? "valid_main" : "valid_real",
+        }
+        if (stage === "real" || stage === "live") {
+          row.rowStage = stage
+          row.rowSourceSetKey = source.rowSourceSetKey || source.setKey
+          row.rowEvaluationKey = setKey
+          row.rowEvaluationWindow = stats.count
+        }
+        const record = coordIndex?.byCoordKey.get(source.setKey) ?? (
+          source.rowSourceSetKey ? coordIndex?.byCoordKey.get(source.rowSourceSetKey) : undefined
+        )
+        if (coordIndex && record) {
+          registerCoordRecord(coordIndex, {
+            ...record,
+            coordKey: setKey,
+            status: stage === "main" ? "valid_main" : "valid_real",
+            avgProfitFactor: row.avgProfitFactor,
+            avgDrawdownTime: row.avgDrawdownTime,
+            prevPos: row.prevPos,
+            _setView: undefined,
+          })
+        }
+        sets.push(row)
+      }
+      candidates.length = 0
+      await yieldStrategyScheduler(false, shouldContinue)
+    }
+
+    for (const source of sources) {
+      if (!source.setKey || source.rowEntryQualified === false || seenSources.has(source.setKey)) continue
+      seenSources.add(source.setKey)
+      const ancestors = stageLastNAncestors(source.setKey)
+      if (predecessor && !ancestors.at(-1)?.split("#").at(-1)?.startsWith(`lastn-${predecessor}:`)) continue
+      const parentSetKey = ancestors.at(-1) ?? source.rowSourceSetKey ?? source.parentSetKey ?? source.setKey
+      const root = source.setKey.split("#", 1)[0]
+      const predecessorHistory = [source.setKey, parentSetKey, source.lastNLane?.historySetKey, root]
+        .filter((key): key is string => Boolean(key))
+      for (const policy of choices) {
+        const setKey = stageLastNLaneKey(source.setKey, stage, policy)
+        evaluated++
+        if (source.variant === "block") blockEvaluated++
+        candidates.push({ source, setKey, parentSetKey, policy, historyKeys: [setKey, ...predecessorHistory] })
+        if (candidates.length >= 250) await evaluateBatch()
+      }
+    }
+    if (candidates.length > 0) await evaluateBatch()
+    return { sets, evaluated, blockEvaluated }
+  }
+
   /**
    * Read exact rolling result rings only for Set keys that the close ledger
    * proves can contain a terminal outcome.  A complete strategy matrix can
@@ -3258,7 +3384,9 @@ export class StrategyCoordinator {
       const legacyClosedKeys = await getStrategySetClosedResultKeys(this.connectionId, setKeys)
       keysToRead = legacyClosedKeys === null ? setKeys : Array.from(legacyClosedKeys)
     }
-    const blocks = options.stage ? this._coordinationSettings.lastNBlocks?.[options.stage] : undefined
+    const blocks = options.stage && !this._coordinationSettings.lastNLaneChoices
+      ? this._coordinationSettings.lastNBlocks?.[options.stage]
+      : undefined
     const windows = await readStrategySetWindowBatch(this.connectionId, keysToRead, window,blocks)
     if (blocks && windows.size < setKeys.length) {
       const emptyWindow = derivePosWindowStats([], window, blocks)
@@ -3379,6 +3507,7 @@ export class StrategyCoordinator {
           const setKey = String(raw || "").trim()
           if (!setKey) continue
           keys.add(setKey)
+          for (const stageKey of stageLastNAncestors(setKey)) keys.add(stageKey)
           const parent = setKey.split("#")[0]
           if (parent) keys.add(parent)
         }
@@ -3411,6 +3540,7 @@ export class StrategyCoordinator {
     const keys = new Set<string>()
     for (const setKey of raw) {
       keys.add(setKey)
+      for (const stageKey of stageLastNAncestors(setKey)) keys.add(stageKey)
       const parent = setKey.split("#")[0]
       if (parent) keys.add(parent)
     }
@@ -3785,6 +3915,14 @@ export class StrategyCoordinator {
       const lastNBlocks = stageBlockPolicies((s as any).lastNBlocks)
       for (const policy of Object.values(lastNBlocks)) policy.autoPfRatio = autoPfRatio
       this._coordinationSettings.lastNBlocks = lastNBlocks
+      this._coordinationSettings.lastNLaneChoices = usesIndependentLastNLanes(lastNBlocks)
+        ? {
+            base: stageLastNChoices(lastNBlocks, "base"),
+            main: stageLastNChoices(lastNBlocks, "main"),
+            real: stageLastNChoices(lastNBlocks, "real"),
+            live: stageLastNChoices(lastNBlocks, "live"),
+          }
+        : undefined
       this._liveConfigLossGateEnabled = liveConfigLossPolicy(s as Record<string, unknown>).enabled
       this._coordinationSettings.liveOutcomeMinCloses = normalizeLiveOutcomeMinCloses(
         (s as any).liveOutcomeMinCloses ?? (s as any).live_outcome_min_closes,
@@ -4327,10 +4465,13 @@ export class StrategyCoordinator {
         // never truncate results; simply decline to retain oversized rows.
         const rawFastPathLimit = Number(process.env.STRATEGY_LIVE_FASTPATH_MAX_ROWS ?? 2048)
         const fastPathLimit = Number.isFinite(rawFastPathLimit) ? Math.max(0, Math.floor(rawFastPathLimit)) : 2048
-        if (liveSets.length <= fastPathLimit) {
-          ;(this as any)._lastRealSets[symbol] = liveSets
+        // Signed Live rows fork from their exact Real parents on every pass.
+        // Retaining a signed Live row here would lose those parents.
+        const fastPathInputs = this._coordinationSettings.lastNLaneChoices ? realSets : liveSets
+        if (fastPathInputs.length <= fastPathLimit) {
+          ;(this as any)._lastRealSets[symbol] = fastPathInputs
           ;(this as any)._lastRealSetCounts[symbol] = realSets.length
-          ;(this as any)._lastCoordIndex[symbol] = snapshotCoordIndexForLive(coordIndex, liveSets)
+          ;(this as any)._lastCoordIndex[symbol] = snapshotCoordIndexForLive(coordIndex, fastPathInputs)
           // A completed flow is reusable only when its Live inputs were retained.
           ;(this as any)._lastPosFingerprint[symbol] = posFingerprint
           ;(this as any)._lastIndicationFingerprint[symbol] = indicationFingerprint
@@ -4727,7 +4868,9 @@ export class StrategyCoordinator {
     // one Base row and made the per-config open-position limit appear global.
     const setMap = new Map<string, { indicationType: string; strategyRange: string; direction: "long" | "short"; indications: any[] }>()
 
-    const blockRevision=Object.entries(this._coordinationSettings.lastNBlocks??{}).sort(([a],[b])=>a.localeCompare(b)).map(([stage,p])=>[stage,blockPolicyKey(p)])
+    const independentBase = Boolean(this._coordinationSettings.lastNLaneChoices?.base.length)
+    const blockRevision = this._coordinationSettings.lastNLaneChoices ? []
+      : Object.entries(this._coordinationSettings.lastNBlocks ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([stage, p]) => [stage, blockPolicyKey(p)])
     const blockSuffix=blockRevision.length?":lastn:"+encodeURIComponent(JSON.stringify(blockRevision)):""
     let groupedIndications = 0
     for (const ind of expandedIndications) {
@@ -4767,7 +4910,7 @@ export class StrategyCoordinator {
       }
     }
 
-    const baseSets: StrategySet[] = []
+    let baseSets: StrategySet[] = []
     // ── Prev-Pos batch prefetch (one round-trip, all (type×dir) buckets) ──
     // Per spec: strategies must "evaluate prev pos and profitfactors min
     // from historic … prev pos cnts are working and added to settings,
@@ -4843,7 +4986,7 @@ export class StrategyCoordinator {
       // over the SAME `prevPosWindow` sample (single cumulative window). The
       // blend still only activates once the bucket has at least
       // prevPosMinCount samples (checked below via .count).
-      posMap = await getPosWindowBatch(
+      if (!independentBase) posMap = await getPosWindowBatch(
         this.connectionId,
         symbol,
         pairs,
@@ -4903,7 +5046,7 @@ export class StrategyCoordinator {
       return trailingPriceDistancesFit(variant, floors)
     }
     let prospectiveRows = 0
-    for (let variantIndex = 0; variantIndex < variantPasses.length; variantIndex++) {
+    for (let variantIndex = 0; !independentBase && variantIndex < variantPasses.length; variantIndex++) {
       const variant = variantPasses[variantIndex]
       for (const [baseSetKey, group] of setMap.entries()) {
         const isSignal = group.indicationType === "signal"
@@ -4934,7 +5077,7 @@ export class StrategyCoordinator {
         }
       }
     }
-    const exactPositionWindows = await this.getStrategySetWindowBatch(
+    const exactPositionWindows = independentBase ? new Map<string, PosWindowStats>() : await this.getStrategySetWindowBatch(
       prospectiveSetKeys,
       prevPosWindow,
       { stage: "base", prehistoric: isPrehistoric },
@@ -5197,6 +5340,9 @@ export class StrategyCoordinator {
       }
     }
 
+    const baseLanes = await this.expandLastNLanes("base", baseSets, isPrehistoric, shouldContinue)
+    baseSets = baseLanes.sets
+
     // Historical replay is an offline calculation checkpoint. Its output is
     // already tracked under `prehistoric_*` by the historic processor, so it
     // must neither replace the live runtime snapshot nor inflate the live
@@ -5406,8 +5552,8 @@ export class StrategyCoordinator {
         avgProfitFactor: baseSets.length > 0 ? baseSets.reduce((s, set) => s + set.avgProfitFactor, 0) / baseSets.length : 0,
         avgDrawdownTime: 0,
         logicalEvaluated: baseSets.length,
+        rawEvaluated: baseLanes.evaluated,
         logicalPassed: baseSets.length,
-        rawEvaluated: baseSets.length,
       },
       sets: baseSets,
       coordIndex,
@@ -5504,7 +5650,7 @@ export class StrategyCoordinator {
     const metricsBase = this.METRICS.base
     const metricsMain = this.METRICS.main
     const ctx = posCtx ?? this.neutralPositionContext()
-    const mainSets: StrategySet[] = []
+    let mainSets: StrategySet[] = []
     const emittedMainSetKeys = new Set<string>()
     let collapsedMainOutputSets = 0
     const appendMainSet = (set: StrategySet): boolean => {
@@ -5716,7 +5862,7 @@ export class StrategyCoordinator {
       // results to show. That also removes the bulk of the downstream work:
       // only Sets with measured history reach Main, Real and Live.
       const blockRejection = baseSet.prevPos?.blockDecision && baseSet.prevPos.blockDecision.state!=="qualified" ? `base_disjoint_${baseSet.prevPos.blockDecision.state}` : null
-      const measuredHistoryRejection = blockRejection || (requireMeasuredHistoryForBaseValidity
+      const measuredHistoryRejection = blockRejection || (requireMeasuredHistoryForBaseValidity && !baseSet.lastNLane
         ? baseMeasuredHistoryRejection(baseSet.prevPos, baseHistoryMinCount, baseHistoryWindow)
         : null)
       if (measuredHistoryRejection) {
@@ -5750,7 +5896,8 @@ export class StrategyCoordinator {
       // window cannot grow. Requiring more than the window holds (forex: 24
       // against the default 25) rejected every Set forever.
       const historyWindowFull = baseSet.prevPos?.hasSignal === true
-      if (hasHistoricData && histCount < mainMinPos && !historyWindowFull) {
+      const independentMain = Boolean(this._coordinationSettings.lastNLaneChoices?.main.length)
+      if (!independentMain && hasHistoricData && histCount < mainMinPos && !historyWindowFull) {
         baseSet.rejectionReason = `main_insufficient_history: ${histCount}/${mainMinPos}`
         skippedLowPos++
         continue
@@ -5758,11 +5905,11 @@ export class StrategyCoordinator {
 
       // Main evaluates only the already-valid Base pool with Main's own
       // threshold and DDT specification.
-      if (baseSet.avgProfitFactor < metrics.minProfitFactor) {
+      if (!independentMain && baseSet.avgProfitFactor < metrics.minProfitFactor) {
         baseSet.rejectionReason = `main_low_profitfactor: ${baseSet.avgProfitFactor.toFixed(2)} < ${metrics.minProfitFactor}`
         continue
       }
-      if (baseSet.avgDrawdownTime > metrics.maxDrawdownTime) {
+      if (!independentMain && baseSet.avgDrawdownTime > metrics.maxDrawdownTime) {
         baseSet.rejectionReason = `main_high_drawdowntime: ${baseSet.avgDrawdownTime} > ${metrics.maxDrawdownTime}`
         continue
       }
@@ -6013,6 +6160,8 @@ export class StrategyCoordinator {
     // trailingProfile, not a separate Main-stage Adjust bucket.
     //   3. additional trailing Sets (independent Base-derived Sets)
     //   4. Adjust Sets (block, then DCA)
+    const mainLanes = await this.expandLastNLanes("main", mainSets, isPrehistoric, shouldContinue, coordIndex)
+    mainSets = mainLanes.sets
     const mainSetOrder = (set: StrategySet): number => {
       if ((set.variant ?? "default") === "default" && !set.axisWindows?.axisKey) return 0
       if ((set.variant ?? "default") === "default" && set.axisWindows?.axisKey) return 1
@@ -6454,7 +6603,7 @@ export class StrategyCoordinator {
           mainPassedParentCount +
           mainAccounting.positionCountRelated +
           mainAccounting.otherRelated,
-        rawEvaluated: mainAccounting.rawMaterialized,
+        rawEvaluated: this._coordinationSettings.lastNLaneChoices?.main.length ? mainLanes.evaluated : mainAccounting.rawMaterialized,
         baseGate: {
           input: baseSets.length,
           valid: baseValidCount,
@@ -8194,6 +8343,7 @@ export class StrategyCoordinator {
     // Active-Set continuous validity: a Set that currently backs an OPEN live
     // position MUST stay valid_real regardless of PF/DDT wobble this cycle
     // (without this, a transient dip orphans the live position from its owner).
+    const independentReal = Boolean(this._coordinationSettings.lastNLaneChoices?.real.length)
     const realQualifying: StrategySet[] = []
     // Retain the exact rows that crossed the Real position gate, including
     // later PF/DDT rejects. This is the physical input whose logical Base /
@@ -8208,6 +8358,7 @@ export class StrategyCoordinator {
         await yieldStrategyScheduler(false, shouldContinue)
       }
       const s = mainSets[mainSetIndex]
+      if (independentReal && s.rowEntryQualified === false) continue
       const posCount = Math.max(s.entryCount ?? 0, s.prevPos?.count ?? 0)
       const isAxisSet = !!(s.axisWindows?.direction)
       // Axis Sets always have a synthetic entry (entries.length === 1) so
@@ -8229,7 +8380,7 @@ export class StrategyCoordinator {
       const hasActiveReal = realActiveKeysForVP.has(s.setKey) || (s as any)._hasLivePositions === true
 
       // ── 1. Position-count gate ───────────────────────────────────────────
-      if (posCount < realMinPos && !(isAxisSet && hasEntries) && !isVariantProjection) {
+      if (!independentReal && posCount < realMinPos && !(isAxisSet && hasEntries) && !isVariantProjection) {
         if (!hasActiveReal) {
           s.status = "invalid"
           s.rejectionReason = `insufficient_pos_count: ${posCount}/${realMinPos}`
@@ -8252,7 +8403,7 @@ export class StrategyCoordinator {
       }
 
       // ── 3. PF/DDT gate ─────────────────����──────����──────────────────────────
-      const passes = s.avgProfitFactor >= metrics.minProfitFactor &&
+      const passes = independentReal || s.avgProfitFactor >= metrics.minProfitFactor &&
                      s.avgDrawdownTime  <= metrics.maxDrawdownTime
       if (passes) {
         s.status = "valid_real"
@@ -8282,7 +8433,7 @@ export class StrategyCoordinator {
     // representative, and the final physical row is sorted below. Sorting the
     // complete pre-combination matrix here as well was therefore redundant and
     // could block the event loop for several seconds at 32 symbols.
-    const realSorted = (await this.combinePosCountAxisSets(
+    const realSorted = (independentReal ? realQualifying : await this.combinePosCountAxisSets(
       realQualifying,
       symbol,
       shouldContinue,
@@ -8581,7 +8732,15 @@ export class StrategyCoordinator {
     let continuousRealRejected = 0
     let continuousRealBlockEvaluated = 0
     let continuousRealBlockCreated = 0
-    try {
+    if (independentReal) {
+      const lanes = await this.expandLastNLanes("real", realPostHedge, isPrehistoric, shouldContinue, coordIndex)
+      realPostHedge = lanes.sets
+      rowRealSets = lanes.sets
+      continuousRealCreated = lanes.sets.length
+      continuousRealRejected = lanes.evaluated - lanes.sets.length
+      continuousRealBlockCreated = lanes.sets.filter(set => set.variant === "block").length
+      continuousRealBlockEvaluated = lanes.blockEvaluated
+    } else try {
       // One bounded batch resolves the exact closed positions for every
       // Base-anchored configuration lineage.  The row's future Live ledger
       // key is read first; source keys remain a compatibility fallback for
@@ -9745,70 +9904,102 @@ export class StrategyCoordinator {
     // The source is Row-Real whenever the normal pipeline is active. The
     // compatibility fallback only serves diagnostics/tests that call this
     // private stage directly without first materialising Row-Real.
-    const rowRealSets = realSets.filter((set) => set.rowStage === "real")
-    // DCA deliberately has no Row identity. It keeps its Real Set key and is
-    // appended as a separate lifecycle candidate after Row-Live validation.
-    const dcaAdditionalSets = realSets.filter(
-      (set) => set.variant === "dca" && !set.rowStage,
+    const independentLive = Boolean(this._coordinationSettings.lastNLaneChoices?.live.length)
+    const signedReal = Boolean(this._coordinationSettings.lastNLaneChoices?.real.length)
+    const rowRealSets = realSets.filter(set => set.rowStage === "real" && (!independentLive || (
+      set.rowEntryQualified !== false && (!signedReal || set.lastNLane?.stage === "real")
+    )))
+    const dcaAdditionalSets = independentLive ? [] : realSets.filter(
+      (set) => set.variant === "dca" && !set.rowStage && set.rowEntryQualified !== false,
     )
-    const rowLiveSource = rowRealSets.length > 0
+    const rowLiveSource = independentLive || rowRealSets.length > 0
       ? rowRealSets
       : realSets.filter((set) => set.variant !== "dca")
-    // Row-Live evaluates the exact results of its own stable evaluation key.
-    // Read all lineages in one bounded batch so a symbol with a wide axis
-    // matrix does not turn a 500 ms processing tick into an N+1 Redis stall.
-    const rowHistoryKeys = Array.from(new Set(
-      rowLiveSource.flatMap((set) => {
-        const sourceKey = set.rowSourceSetKey || set.setKey
-        const evaluationKey = set.rowEvaluationKey ||
-          coordIndex?.rowEvaluationKeyBySource.get(sourceKey) ||
-          `${set.setKey}#row_live`
-        return [
-          evaluationKey,
-          // Compatibility path for a stored Real source without the row field.
-          `${sourceKey}#row_real#row_live`,
-          set.setKey,
-          sourceKey,
-        ].filter(Boolean) as string[]
-      }),
-    ))
     const liveSub = { start: Date.now(), windows: 0, blockOverlays: 0, blockWindows: 0, persist: 0, marketData: 0, dispatch: 0 }
-    const rowWindows = await this.getStrategySetWindowBatch(
-      rowHistoryKeys,
-      this._coordinationSettings.liveEvalPosCount,
-      { stage: "live" },
-    )
-    liveSub.windows = Date.now() - liveSub.start; let liveMark = Date.now()
-    const rowLive = materializeContinuousStageRows(rowLiveSource, {
-      stage: "live",
-      lookback: this._coordinationSettings.liveEvalPosCount,
-      metrics,
-      activeSetKeys: activeStrategyKeys,
-      windowBySetKey: rowWindows,
-    })
-    // Row-Live is already PF/DDT validated. Do not feed it into the generic
-    // selector below, which would apply the Live gate a second time and make
-    // a saved 15-position row behave differently at dispatch.
+    let liveMark = liveSub.start
+    let rowLive: ReturnType<typeof materializeContinuousStageRows>
+    let rowLiveBlockEvaluated: number
+    let rowLiveBlock: StrategySet[]
+    if (independentLive) {
+      // These templates have no executable identity. Both ordinary and Block
+      // paths must pass a fresh Live policy independently of the Real verdict.
+      const liveSources = signedReal ? rowLiveSource : rowLiveSource.concat(realSets.filter(set =>
+        set.variant === "dca" && !set.rowStage && set.status === "valid_real" && set.rowEntryQualified !== false,
+      ))
+      const templates: StrategySet[] = liveSources.map(source => ({
+        ...source,
+        setKey: `${source.setKey}#row_live`,
+        rowStage: "live",
+        rowSourceSetKey: source.setKey,
+        rowEvaluationKey: undefined,
+      }))
+      const builtRowLiveBlock = await this.buildRowLiveBlockOverlays(symbol, templates, metrics)
+      liveSub.blockOverlays = Date.now() - liveMark
+      liveMark = Date.now()
+      const lanes = await this.expandLastNLanes("live", templates, false, shouldContinue, coordIndex)
+      liveSub.windows = Date.now() - liveMark
+      liveMark = Date.now()
+      rowLive = { rows: lanes.sets, evaluated: lanes.evaluated, rejected: lanes.evaluated - lanes.sets.length }
+      const blocks = await this.expandLastNLanes("live", builtRowLiveBlock, false, shouldContinue, coordIndex)
+      rowLiveBlock = blocks.sets
+      rowLiveBlockEvaluated = blocks.evaluated
+      liveSub.blockWindows = Date.now() - liveMark
+      liveMark = Date.now()
+    } else {
+      const rowHistoryKeys = Array.from(new Set(
+        rowLiveSource.flatMap((set) => {
+          const sourceKey = set.rowSourceSetKey || set.setKey
+          const evaluationKey = set.rowEvaluationKey ||
+            coordIndex?.rowEvaluationKeyBySource.get(sourceKey) ||
+            `${set.setKey}#row_live`
+          return [
+            evaluationKey,
+            // Compatibility path for a stored Real source without the row field.
+            `${sourceKey}#row_real#row_live`,
+            set.setKey,
+            sourceKey,
+          ].filter(Boolean) as string[]
+        }),
+      ))
+      const rowWindows = await this.getStrategySetWindowBatch(
+        rowHistoryKeys,
+        this._coordinationSettings.liveEvalPosCount,
+        { stage: "live" },
+      )
+      liveSub.windows = Date.now() - liveSub.start; liveMark = Date.now()
+      rowLive = materializeContinuousStageRows(rowLiveSource, {
+        stage: "live",
+        lookback: this._coordinationSettings.liveEvalPosCount,
+        metrics,
+        activeSetKeys: activeStrategyKeys,
+        windowBySetKey: rowWindows,
+      })
+      // Row-Live is already PF/DDT validated. Do not feed it into the generic
+      // selector below, which would apply the Live gate a second time and make
+      // a saved 15-position row behave differently at dispatch.
+      const entryRows = rowLive.rows.filter(set => set.rowEntryQualified !== false)
+      const builtRowLiveBlock = await this.buildRowLiveBlockOverlays(symbol, entryRows, metrics)
+      rowLiveBlockEvaluated = builtRowLiveBlock.length
+      liveSub.blockOverlays = Date.now() - liveMark; liveMark = Date.now()
+      // Independent Row-Live Blocks are executable configurations in their own
+      // right.  Read their exact result rings in one batch and retain a row only
+      // when its own rolling PF/DDT passes (or it is already actively protected).
+      // This keeps Block volume/count calculation independent while making its
+      // order IDs, position IDs, history, stats and next-cycle decision agree.
+      const blockWindows = await this.getStrategySetWindowBatch(
+        builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
+        this._coordinationSettings.liveEvalPosCount,
+        { stage: "live" },
+      )
+      liveSub.blockWindows = Date.now() - liveMark; liveMark = Date.now()
+      rowLiveBlock = applyExactBlockRowWindows(
+        builtRowLiveBlock,
+        blockWindows,
+        metrics,
+        activeStrategyKeys,
+      )
+    }
     const entryRows = rowLive.rows.filter(set => set.rowEntryQualified !== false)
-    const builtRowLiveBlock = await this.buildRowLiveBlockOverlays(symbol, entryRows, metrics)
-    liveSub.blockOverlays = Date.now() - liveMark; liveMark = Date.now()
-    // Independent Row-Live Blocks are executable configurations in their own
-    // right.  Read their exact result rings in one batch and retain a row only
-    // when its own rolling PF/DDT passes (or it is already actively protected).
-    // This keeps Block volume/count calculation independent while making its
-    // order IDs, position IDs, history, stats and next-cycle decision agree.
-    const blockWindows = await this.getStrategySetWindowBatch(
-      builtRowLiveBlock.map((set) => set.rowEvaluationKey || set.setKey),
-      this._coordinationSettings.liveEvalPosCount,
-      { stage: "live" },
-    )
-    liveSub.blockWindows = Date.now() - liveMark; liveMark = Date.now()
-    const rowLiveBlock = applyExactBlockRowWindows(
-      builtRowLiveBlock,
-      blockWindows,
-      metrics,
-      activeStrategyKeys,
-    )
     const rowQualifying = entryRows.concat(rowLiveBlock.filter(set => set.rowEntryQualified !== false))
     const qualifyingBeforeLossGate = Array.from(new Map(
       rowQualifying.concat(dcaAdditionalSets).map((set) => [set.setKey, set]),
@@ -9839,7 +10030,7 @@ export class StrategyCoordinator {
           // A Block row is an additional executable child of Row-Live.  Do
           // not overwrite the normal row's source mapping with the Block
           // result key; retain both exact index entries independently.
-          if (row.variant !== "block") {
+          if (!row.lastNLane && row.variant !== "block") {
             coordIndex.rowEvaluationKeyBySource.set(sourceKey, evaluationKey)
           }
           coordIndex.rowEvaluationKeyBySource.set(row.setKey, evaluationKey)
@@ -10006,7 +10197,7 @@ export class StrategyCoordinator {
           // Keep Block materialisation and its independent PF/DDT result
           // separate: an executable total contains normal Row-Live plus only
           // those Block rows that passed their own exact result window.
-          row_live_block_created: String(builtRowLiveBlock.length),
+          row_live_block_created: String(rowLiveBlockEvaluated),
           row_live_block_valid: String(rowLiveBlock.length),
           row_live_executable: String(rowQualifying.length),
           additional_dca_executable: String(dcaAdditionalSets.length),
@@ -10050,7 +10241,7 @@ export class StrategyCoordinator {
           [`s:${symbol}:row_mirrored`]: String(rowLive.rows.length),
           [`s:${symbol}:row_live_created`]: String(rowLive.rows.length),
           [`s:${symbol}:row_live_rejected`]: String(rowLive.rejected),
-          [`s:${symbol}:row_live_block_created`]: String(builtRowLiveBlock.length),
+          [`s:${symbol}:row_live_block_created`]: String(rowLiveBlockEvaluated),
           [`s:${symbol}:row_live_block_valid`]: String(rowLiveBlock.length),
           [`s:${symbol}:row_live_executable`]: String(rowQualifying.length),
           [`s:${symbol}:additional_dca_executable`]: String(dcaAdditionalSets.length),
@@ -12060,6 +12251,7 @@ export class StrategyCoordinator {
     // dispatch. Independent Block Count Sets later replace this legacy profile
     // size with the exact additive total multiplier.
     let repConfig: { size: number; leverage: number; pfBias: number } | null = null
+    const independentMain = Boolean(this._coordinationSettings.lastNLaneChoices?.main.length)
 
     // Exhaustively evaluate every Base entry × profile configuration. History
     // compaction is a persistence concern and never truncates this calculation.
@@ -12074,7 +12266,7 @@ export class StrategyCoordinator {
         const pf = scaleMainTradePfCoordinate(Number.isFinite(measuredBasePf) ? measuredBasePf : baseEntry.profitFactor, cfg.pfBias)
         const baseDDT = baseEntry.drawdownTime > 0 ? baseEntry.drawdownTime : baseDDTFallback
         const ddt     = baseDDT + cfg.ddtBias
-        if (ddt > metrics.maxDrawdownTime) continue
+        if (!independentMain && ddt > metrics.maxDrawdownTime) continue
         sumPF  += pf
         sumDDT += ddt
         sumCnf += Math.min(0.99, baseEntry.confidence)
@@ -12090,7 +12282,7 @@ export class StrategyCoordinator {
     const avgPF  = sumPF  / count
     // Do not manufacture a valid variant by clamping every constituent to the
     // configured gate. The measured coordinate must clear the gate itself.
-    if (avgPF < metrics.minProfitFactor) return null
+    if (!independentMain && avgPF < metrics.minProfitFactor) return null
     const avgDDT = sumDDT / count
     const avgCnf = sumCnf / count
 

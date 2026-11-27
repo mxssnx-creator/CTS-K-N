@@ -161,6 +161,15 @@ describe("Set lineage of a real result", () => {
 })
 
 describe("exchange-only Set rings", () => {
+  test("reads exactly two exchange closes without treating them as a pipeline tuple", async () => {
+    const connectionId = uniqueConnection("two-settlements")
+    const key = "BTCUSDT:direction:long#row_real#row_live"
+    await recordLiveSetOutcome(realRow(connectionId, "one", 0.25))
+    await recordLiveSetOutcome(realRow(connectionId, "two", -0.1))
+    const windows = await getLiveSetWindowBatch(connectionId, [key], 2, 2)
+    expect(windows.get(key)).toMatchObject({ count: 2, exchangeCloses: 2, outcomeSource: "exchange" })
+  })
+
   test("book exactly once per position and Set; paper rows never enter", async () => {
     const connectionId = uniqueConnection("book")
     const key = "BTCUSDT:direction:long#row_real#row_live"

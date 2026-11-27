@@ -1,3 +1,9 @@
+## 2026-11-27 — independent Last-N descendants from Base through Live
+
+The canonical branch `codex/exact-lastn-stage-lineage-20261127` was rebuilt from GitHub main `df70eb9dc97100fb96e8fa3eb7b82e092cb33059`. Each qualifying Set now owns a new identity per configured Long, Short and Last alternative at every stage. Exact paper and exchange ledgers validate each child, with bounded source reads and independent attribution. Existing held positions remain on the owned protection path. See [verification](verification/exact-last-n-stage-lineage-20261127.md) for the compared branches and replay results.
+
+The 32-symbol, 14-day BingX replay and separate BTC/ETH confirmations left the profitability release gate open. Cold-start evidence for an unmeasured exact Base configuration and x02 parity remain open. The pre-edit verified checkpoint is `/workspace/backups/CTS-K-N/20261127T050958Z-before-exact-lastn-stage-lineage`.
+
 ## 2026-11-27 — exact stage entry eligibility
 
 The forward-stage branch combines the current main Trend-Reversal work at `36a0a399` with the signed Auto PF branch at `aa13b48a`. Rows retained for owned-position handling carry current entry eligibility separately. A failed Short or Last window still reaches held-position management. New ordinary and Block exposure still require a qualified current row.

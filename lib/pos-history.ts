@@ -1,4 +1,5 @@
-import {AUTO_PF_CALIBRATION,blockPrefix,blockRequired,calibratedBlockFloor,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import {AUTO_PF_CALIBRATION,LAST_N_OUTCOME_RING_CAP,blockPrefix,blockRequired,calibratedBlockFloor,evaluateBlocks,type BlockPolicy} from "@/shared/cts-lastn/blocks";
+import { stageLastNAncestors } from "@/lib/disjoint-last-n"
 /**
  * Position (Pos) History — lifetime, atomic, hot-path-safe.
  *
@@ -79,7 +80,7 @@ const OVERALL_BUCKET = "_overall"
 // RING_CAP is the hard storage cap; callers pass the actual window N they
 // want (always ≤ RING_CAP). 600 comfortably covers the largest eval window
 // in play (Real/Main eval counts + the 550 DDT cap) with headroom.
-const RING_CAP = 600
+const RING_CAP = LAST_N_OUTCOME_RING_CAP
 
 /** The (symbol × type × direction) measured-close ring the Base gate reads. */
 export function posRingKey(connectionId: string, symbol: string, indicationType: string, direction: string): string {
@@ -1390,6 +1391,9 @@ async function recordStrategyCloseOutcomes(
 ): Promise<void> {
   const record = outcome ? strategyOutcomeRecord(outcome) : null
   if (memberships.length === 0 || record === null) return
+  if (memberships.some(key => key.includes("#lastn-"))) {
+    memberships = [...new Set(memberships.flatMap(key => [key, ...stageLastNAncestors(key)]))]
+  }
   const closeIdsKey = STRATEGY_SET_CLOSE_IDS_KEY(connectionId)
   const closedCountsKey = STRATEGY_SET_CLOSED_COUNTS_KEY(connectionId)
   const closedSetKeysKey = STRATEGY_CLOSED_SET_KEYS_KEY(connectionId)
@@ -1640,6 +1644,7 @@ export async function getStrategySetLedgerBatch(
   connectionId: string,
   setKeys: string[],
   fields: readonly (keyof StrategySetLedgerSnapshot)[] = ["entries", "active", "closed"],
+  strict = false,
 ): Promise<StrategySetLedgerSnapshot> {
   const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
   if (unique.length === 0) return { entries: {}, active: {}, closed: {} }
@@ -1665,10 +1670,19 @@ export async function getStrategySetLedgerBatch(
         else for (const setKey of batch) pipeline.hget(key, setKey)
       }
       const results = await pipeline.exec()
+      if (strict && (!Array.isArray(results) || results.length !== fields.length * (packed ? 1 : batch.length))) {
+        throw new Error("Incomplete exact Set ledger read")
+      }
       fields.forEach((field, column) => {
         const values = packed ? results?.[column] : undefined
+        if (strict && packed && (!Array.isArray(values) || values.length !== batch.length)) {
+          throw new Error("Incomplete packed Set ledger read")
+        }
         for (let index = 0; index < batch.length; index++) {
           const raw = packed ? values?.[index] : pipelineValue(results?.[column * batch.length + index])
+          if (strict && raw !== null && (typeof raw !== "string" && typeof raw !== "number" || !Number.isFinite(Number(raw)))) {
+            throw new Error("Invalid exact Set count")
+          }
           const count = Number(raw) || 0
           if (count > 0) snapshot[field][batch[index]] = count
         }
@@ -1676,7 +1690,8 @@ export async function getStrategySetLedgerBatch(
       if (start + batchSize < unique.length) await yieldLedgerBatch()
     }
     return snapshot
-  } catch {
+  } catch (error) {
+    if (strict) throw error
     return { entries: {}, active: {}, closed: {} }
   }
 }
@@ -1778,33 +1793,61 @@ export async function getStrategySetWindowBatch(
   window = 12,
   blocks?:BlockPolicy,
 ): Promise<Map<string, PosWindowStats>> {
+  const winN = Math.max(1, Math.floor(blocks ? blockRequired(blocks) + (blocks.autoPfRatio === undefined ? 0 : AUTO_PF_CALIBRATION) : window))
+  return readExactSetOutcomeRings(setKeys, winN, key => strategySetResultRingKey(connectionId, key),
+    rows => derivePosWindowStats(rows, Math.min(RING_CAP, winN), blocks))
+}
+
+export async function readExactSetOutcomeRings<T>(
+  setKeys: readonly string[],
+  retention: number,
+  ringKey: (setKey: string) => string,
+  project: (records: string[]) => T,
+  strict = false,
+): Promise<Map<string, T>> {
   const unique = Array.from(new Set(setKeys.map(String).filter(Boolean)))
-  const out = new Map<string, PosWindowStats>()
+  const out = new Map<string, T>()
   if (unique.length === 0) return out
   try {
-    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(blocks?blockRequired(blocks)+(blocks.autoPfRatio===undefined?0:AUTO_PF_CALIBRATION):window)))
+    const winN = Math.min(RING_CAP, Math.max(1, Math.floor(retention)))
     const client = getRedisClient()
     const batchSize = 500
     for (let start = 0; start < unique.length; start += batchSize) {
       const batch = unique.slice(start, start + batchSize)
       const pipeline = client.multi()
       for (const setKey of batch) {
-        pipeline.lrange(strategySetResultRingKey(connectionId, setKey), 0, winN - 1)
+        pipeline.lrange(ringKey(setKey), 0, winN - 1)
       }
       const results = (await (pipeline as any).exec()) as any[]
       batch.forEach((setKey, index) => {
         const raw = results?.[index]
-        const records = (Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
-          ? raw[1]
-          : raw) as string[] | undefined
-        out.set(setKey, derivePosWindowStats(Array.isArray(records) ? records : [], winN,blocks))
+        const tuple = Array.isArray(raw) && raw.length === 2 && Array.isArray(raw[1])
+        if (strict && tuple && raw[0] != null) throw new Error("Exact Set outcome ring read failed")
+        const records = (tuple ? raw[1] : raw) as string[] | undefined
+        if (strict && (!Array.isArray(records) || records.some(record => typeof record !== "string"))) {
+          throw new Error("Incomplete exact Set outcome ring read")
+        }
+        const rows = Array.isArray(records) ? records : []
+        out.set(setKey, project(rows))
       })
       if (start + batchSize < unique.length) await yieldLedgerBatch()
     }
-  } catch {
+  } catch (error) {
+    if (strict) throw error
     // Missing per-Set history is a normal bootstrap state.
   }
   return out
+}
+
+/** The exact indexed paper/general rings used for independent signed lanes. */
+export async function readMeasuredStrategySetOutcomes(
+  connectionId: string,
+  setKeys: string[],
+  retention: number,
+): Promise<Map<string, string[]>> {
+  const { closed } = await getStrategySetLedgerBatch(connectionId, setKeys, ["closed"], true)
+  const keys = Object.keys(closed)
+  return readExactSetOutcomeRings(keys, retention, key => strategySetResultRingKey(connectionId, key), rows => rows, true)
 }
 
 const VALID_POS_KEY = (connectionId: string) =>

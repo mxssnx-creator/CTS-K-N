@@ -17,7 +17,7 @@ describe("Main and Real carry the measured PF", () => {
   })
 
   test("a full history window is never 'insufficient' for Main", () => {
-    expect(coordinator).toContain("if (hasHistoricData && histCount < mainMinPos && !historyWindowFull) {")
+    expect(coordinator).toContain("if (!independentMain && hasHistoricData && histCount < mainMinPos && !historyWindowFull) {")
     expect(coordinator).toContain("hasSignal: (posStats as { hasSignal?: boolean }).hasSignal === true,")
   })
 })
